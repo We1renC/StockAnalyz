@@ -1,0 +1,29 @@
+{
+  "_comment": "複製此檔為 settings.json 並填入您的 API Keys。實際的 settings.json 已被 .gitignore 排除。",
+
+  "api_keys": {
+    "anthropic": "sk-ant-...",
+    "openai": "sk-proj-... 或 sk-...",
+    "google": "AIza..."
+  },
+
+  "roles": {
+    "analyst": {
+      "_comment": "主要分析角色。建議用旗艦推理模型。",
+      "provider": "openai",
+      "model": "gpt-5.5",
+      "mode": "cli"
+    },
+    "reviewer": {
+      "_comment": "審查角色。建議用不同家避免同質化偏誤。",
+      "provider": "anthropic",
+      "model": "opus",
+      "mode": "cli"
+    }
+  },
+
+  "_modes": {
+    "cli": "走 CLI 工具呼叫，用您的訂閱配額（不另收 API 費）",
+    "api": "走 SDK 呼叫，按 token 計費"
+  }
+}

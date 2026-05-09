@@ -1,0 +1,95 @@
+# ─────────── 敏感資料（絕對不能上傳） ───────────
+
+# API Keys 與 LLM 設定
+web/settings.json
+**/settings.json
+**/settings.local.json
+*.env
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+secrets/
+credentials/
+
+# 個人投資資料（持倉成本、警報歷史）
+web/portfolio.db
+web/portfolio.db-*
+*.db
+*.sqlite
+*.sqlite3
+web/seed_data_private.py
+**/seed_data_private.py
+
+# 工作筆記（個人交接、不適合公開）
+.agent-handoff.md
+*.handoff.md
+.claude-handoff*
+
+# Codex / Claude / 其他 agent 的本地狀態
+.codex/
+.claude/cache/
+.claude/projects/
+.claude/sessions/
+
+# ─────────── 執行時產生 ───────────
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 虛擬環境
+.venv/
+venv/
+env/
+ENV/
+
+# Node（若日後 web 改架構用）
+node_modules/
+.npm/
+.yarn/
+package-lock.json
+pnpm-lock.yaml
+
+# ─────────── 日誌 / 暫存 ───────────
+
+*.log
+logs/
+*.tmp
+*.temp
+.cache/
+
+# ─────────── IDE / OS ───────────
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+
+# ─────────── 建議手動忽略 ───────────
+
+# 個人測試 / 實驗腳本
+test_*.py
+scratch.py
+playground/
+
+# 截圖 / 個人筆記
+screenshots/
+notes-private/

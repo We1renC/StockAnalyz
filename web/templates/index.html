@@ -1,0 +1,1073 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TradingAgents 投資儀表板</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+tailwind.config = { darkMode: 'class' }
+</script>
+<style>
+  body { font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; }
+  .pulse-dot { animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .scrollbar-thin::-webkit-scrollbar { width: 6px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+</style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+
+<div class="container mx-auto p-4 max-w-7xl">
+
+  <!-- Header -->
+  <header class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-3xl font-bold text-emerald-400">TradingAgents 投資儀表板</h1>
+      <p class="text-sm text-gray-400" id="last-update">最後更新：—</p>
+    </div>
+    <div class="flex gap-2">
+      <button onclick="openSettings()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded font-semibold transition" title="LLM 設定">
+        設定
+      </button>
+      <button id="refresh-btn" class="bg-emerald-600 hover:bg-emerald-700 px-4 py-2 rounded font-semibold transition">
+        立即刷新
+      </button>
+      <select id="auto-refresh" class="bg-gray-800 px-3 py-2 rounded">
+        <option value="0">手動</option>
+        <option value="60">1分鐘</option>
+        <option value="300" selected>5分鐘</option>
+        <option value="900">15分鐘</option>
+      </select>
+    </div>
+  </header>
+
+  <!-- Market State Bar -->
+  <div id="market-bar" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6"></div>
+
+  <!-- Tabs -->
+  <div class="flex border-b border-gray-700 mb-4">
+    <button data-tab="portfolio" class="tab-btn px-6 py-3 font-semibold border-b-2 border-emerald-500 text-emerald-400">我的持倉</button>
+    <button data-tab="watchlist" class="tab-btn px-6 py-3 font-semibold border-b-2 border-transparent text-gray-400 hover:text-white">觀察清單</button>
+    <button data-tab="alerts" class="tab-btn px-6 py-3 font-semibold border-b-2 border-transparent text-gray-400 hover:text-white relative">
+      警報
+      <span id="alert-badge" class="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center hidden">0</span>
+    </button>
+  </div>
+
+  <!-- Portfolio Tab -->
+  <div id="tab-portfolio" class="tab-content">
+    <div class="flex justify-between items-center mb-3">
+      <div></div>
+      <button onclick="openAddPosition()" class="bg-emerald-600 hover:bg-emerald-700 px-3 py-1 rounded text-sm">新增持倉</button>
+    </div>
+    <div id="portfolio-summary" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
+    <div class="bg-gray-800 rounded-lg overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-700 text-xs uppercase">
+          <tr>
+            <th class="px-3 py-2 text-left">代號</th>
+            <th class="px-3 py-2 text-left">名稱</th>
+            <th class="px-3 py-2 text-right">股數</th>
+            <th class="px-3 py-2 text-right">成本</th>
+            <th class="px-3 py-2 text-right">現價</th>
+            <th class="px-3 py-2 text-right">日漲</th>
+            <th class="px-3 py-2 text-right">RSI</th>
+            <th class="px-3 py-2 text-right">損益%</th>
+            <th class="px-3 py-2 text-left">建議</th>
+            <th class="px-3 py-2 text-center">操作</th>
+          </tr>
+        </thead>
+        <tbody id="portfolio-tbody" class="divide-y divide-gray-700"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Watchlist Tab -->
+  <div id="tab-watchlist" class="tab-content hidden">
+    <div class="mb-3 flex gap-2 flex-wrap items-center justify-between">
+      <div class="flex gap-2 flex-wrap">
+        <button data-filter="all" class="filter-btn bg-emerald-600 px-3 py-1 rounded text-sm">全部</button>
+        <button data-filter="電力" class="filter-btn bg-gray-700 px-3 py-1 rounded text-sm">電力</button>
+        <button data-filter="潛力" class="filter-btn bg-gray-700 px-3 py-1 rounded text-sm">潛力</button>
+        <button data-filter="新創" class="filter-btn bg-gray-700 px-3 py-1 rounded text-sm">新創</button>
+        <button data-filter="防禦" class="filter-btn bg-gray-700 px-3 py-1 rounded text-sm">防禦</button>
+        <button data-filter="對沖" class="filter-btn bg-gray-700 px-3 py-1 rounded text-sm">對沖</button>
+      </div>
+      <button onclick="openAddWatch()" class="bg-emerald-600 hover:bg-emerald-700 px-3 py-1 rounded text-sm">新增觀察</button>
+    </div>
+    <div class="bg-gray-800 rounded-lg overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-700 text-xs uppercase">
+          <tr>
+            <th class="px-3 py-2 text-right">優先</th>
+            <th class="px-3 py-2 text-left">代號</th>
+            <th class="px-3 py-2 text-left">名稱</th>
+            <th class="px-3 py-2 text-left">類別</th>
+            <th class="px-3 py-2 text-right">現價</th>
+            <th class="px-3 py-2 text-right">RSI</th>
+            <th class="px-3 py-2 text-right">進場價</th>
+            <th class="px-3 py-2 text-right">距離</th>
+            <th class="px-3 py-2 text-right">停利</th>
+            <th class="px-3 py-2 text-right">停損</th>
+            <th class="px-3 py-2 text-center">狀態</th>
+            <th class="px-3 py-2 text-center">操作</th>
+          </tr>
+        </thead>
+        <tbody id="watchlist-tbody" class="divide-y divide-gray-700"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Alerts Tab -->
+  <div id="tab-alerts" class="tab-content hidden">
+    <div class="bg-gray-800 p-3 rounded mb-3 flex flex-wrap gap-2 items-center">
+      <span class="text-xs text-gray-400">時間範圍:</span>
+      <select id="alert-days" class="bg-gray-700 px-2 py-1 rounded text-xs">
+        <option value="1">今天</option>
+        <option value="3">3天</option>
+        <option value="7" selected>7天</option>
+        <option value="30">30天</option>
+        <option value="90">90天</option>
+      </select>
+      <span class="text-xs text-gray-400 ml-3">等級:</span>
+      <select id="alert-level" class="bg-gray-700 px-2 py-1 rounded text-xs">
+        <option value="">全部</option>
+        <option value="info">提示</option>
+        <option value="warning">警告</option>
+        <option value="danger">危險</option>
+      </select>
+      <span class="text-xs text-gray-400 ml-3">代號:</span>
+      <input id="alert-symbol" type="text" placeholder="例如: 2883" class="bg-gray-700 px-2 py-1 rounded text-xs w-32">
+      <button onclick="loadAlertsFiltered()" class="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-xs">查詢</button>
+      <button onclick="clearAlerts()" class="bg-red-700 hover:bg-red-800 px-3 py-1 rounded text-xs ml-auto">清除30天前</button>
+    </div>
+    <div id="alerts-container" class="space-y-2"></div>
+  </div>
+
+</div>
+
+<!-- Diagnosis Modal -->
+<div id="diag-modal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center hidden z-50 p-4">
+  <div class="bg-gray-800 rounded-lg p-6 max-w-5xl w-full max-h-[90vh] overflow-y-auto shadow-2xl">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-xl font-bold text-emerald-400" id="diag-title">診斷報告</h2>
+      <button onclick="closeDiag()" class="text-gray-400 hover:text-white text-2xl">×</button>
+    </div>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div>
+        <div class="flex gap-2 mb-2 items-center">
+          <span class="text-sm font-semibold">走勢圖</span>
+          <select id="chart-period" class="bg-gray-700 text-xs px-2 py-1 rounded ml-auto">
+            <option value="1mo">1月</option>
+            <option value="3mo">3月</option>
+            <option value="6mo" selected>6月</option>
+            <option value="1y">1年</option>
+            <option value="2y">2年</option>
+          </select>
+        </div>
+        <div id="chart-container" class="bg-gray-900 rounded" style="height: 350px;"></div>
+        <div class="text-xs text-gray-400 mt-1 flex gap-3">
+          <span><span class="inline-block w-3 h-1 bg-yellow-400 align-middle"></span> MA20</span>
+          <span><span class="inline-block w-3 h-1 bg-cyan-400 align-middle"></span> MA60</span>
+        </div>
+      </div>
+      <div id="diag-body" class="text-sm space-y-3"></div>
+    </div>
+    <div class="mt-4 pt-4 border-t border-gray-700">
+      <div class="flex gap-2 items-center flex-wrap">
+        <button onclick="runLLM('analyst')" id="llm-btn-analyst" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm font-semibold">
+          只跑分析師
+        </button>
+        <button onclick="runLLM('both')" id="llm-btn-both" class="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded text-sm font-semibold">
+          分析師 → 審查員
+        </button>
+        <span class="text-xs text-gray-400" id="llm-config-hint">設定中查看 LLM 配置</span>
+      </div>
+      <div id="llm-result" class="mt-3 hidden space-y-3"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div id="settings-modal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center hidden z-50 p-4">
+  <div class="bg-gray-800 rounded-lg p-6 max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-xl font-bold text-emerald-400">LLM 設定</h2>
+      <button onclick="closeSettings()" class="text-gray-400 hover:text-white text-2xl">×</button>
+    </div>
+
+    <!-- API Keys -->
+    <div class="mb-6">
+      <h3 class="text-lg font-semibold mb-3 border-b border-gray-700 pb-1">API Keys</h3>
+      <div class="space-y-3">
+        <div>
+          <label class="text-xs text-gray-400 flex items-center gap-2">
+            <span class="bg-orange-700 px-2 py-0.5 rounded text-white">Anthropic Claude</span>
+            <span id="key-status-anthropic" class="text-xs"></span>
+          </label>
+          <input id="key-anthropic" type="password" class="w-full bg-gray-700 px-3 py-2 rounded font-mono text-sm" placeholder="sk-ant-...">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 flex items-center gap-2">
+            <span class="bg-green-700 px-2 py-0.5 rounded text-white">OpenAI (GPT/o3)</span>
+            <span id="key-status-openai" class="text-xs"></span>
+          </label>
+          <input id="key-openai" type="password" class="w-full bg-gray-700 px-3 py-2 rounded font-mono text-sm" placeholder="sk-proj-...">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 flex items-center gap-2">
+            <span class="bg-blue-700 px-2 py-0.5 rounded text-white">Google Gemini</span>
+            <span id="key-status-google" class="text-xs"></span>
+          </label>
+          <input id="key-google" type="password" class="w-full bg-gray-700 px-3 py-2 rounded font-mono text-sm" placeholder="AIza...">
+        </div>
+        <div class="text-xs text-gray-500">
+          留空表示不更新；輸入新值才會覆蓋。Keys 加密保存於 <code class="bg-gray-900 px-1 rounded">~/.claude/mcp-servers/tradingagents/web/settings.json</code>
+        </div>
+      </div>
+    </div>
+
+    <!-- Roles -->
+    <div class="mb-6">
+      <h3 class="text-lg font-semibold mb-3 border-b border-gray-700 pb-1">角色指派</h3>
+      <p class="text-xs text-gray-400 mb-3">指定每個角色使用的 LLM。建議：分析師用主流推理模型，審查員用不同家來避免同質化偏誤。</p>
+
+      <!-- CLI Status Bar -->
+      <div id="cli-status-bar" class="text-xs bg-gray-900 p-2 rounded mb-3"></div>
+
+      <!-- Analyst -->
+      <div class="bg-blue-900 bg-opacity-30 p-3 rounded mb-3">
+        <div class="font-semibold text-blue-300 mb-2">分析師（Analyst）— 主要分析</div>
+        <div class="grid grid-cols-3 gap-3">
+          <div>
+            <label class="text-xs text-gray-400">Provider</label>
+            <select id="role-analyst-provider" class="w-full bg-gray-700 px-3 py-2 rounded" onchange="updateModelOptions('analyst')">
+              <option value="anthropic">Anthropic Claude</option>
+              <option value="openai">OpenAI</option>
+              <option value="google">Google Gemini</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-400">Model</label>
+            <select id="role-analyst-model" class="w-full bg-gray-700 px-3 py-2 rounded"></select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-400">模式</label>
+            <select id="role-analyst-mode" class="w-full bg-gray-700 px-3 py-2 rounded">
+              <option value="cli">CLI（走訂閱）</option>
+              <option value="api">API（按量計費）</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Reviewer -->
+      <div class="bg-purple-900 bg-opacity-30 p-3 rounded">
+        <div class="font-semibold text-purple-300 mb-2">審查員（Reviewer）— 批判性審查</div>
+        <div class="grid grid-cols-3 gap-3">
+          <div>
+            <label class="text-xs text-gray-400">Provider</label>
+            <select id="role-reviewer-provider" class="w-full bg-gray-700 px-3 py-2 rounded" onchange="updateModelOptions('reviewer')">
+              <option value="anthropic">Anthropic Claude</option>
+              <option value="openai">OpenAI</option>
+              <option value="google">Google Gemini</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-400">Model</label>
+            <select id="role-reviewer-model" class="w-full bg-gray-700 px-3 py-2 rounded"></select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-400">模式</label>
+            <select id="role-reviewer-mode" class="w-full bg-gray-700 px-3 py-2 rounded">
+              <option value="cli">CLI（走訂閱）</option>
+              <option value="api">API（按量計費）</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="flex gap-2 justify-end">
+      <button onclick="closeSettings()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded">取消</button>
+      <button onclick="saveSettings()" class="bg-emerald-600 hover:bg-emerald-700 px-4 py-2 rounded font-semibold">儲存設定</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Position Modal -->
+<div id="add-pos-modal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center hidden z-50 p-4">
+  <div class="bg-gray-800 rounded-lg p-6 max-w-md w-full">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-xl font-bold text-emerald-400">新增持倉</h2>
+      <button onclick="closeAddPos()" class="text-gray-400 hover:text-white text-2xl">×</button>
+    </div>
+    <form onsubmit="submitPosition(event)" class="space-y-3">
+      <div>
+        <label class="text-xs text-gray-400">代號（台股加 .TW，例 2883.TW）</label>
+        <input id="pos-symbol" required class="w-full bg-gray-700 px-3 py-2 rounded" placeholder="2883.TW">
+      </div>
+      <div>
+        <label class="text-xs text-gray-400">名稱</label>
+        <input id="pos-name" class="w-full bg-gray-700 px-3 py-2 rounded" placeholder="凱基金控">
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-gray-400">股數</label>
+          <input id="pos-shares" type="number" step="any" required class="w-full bg-gray-700 px-3 py-2 rounded">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400">成本價</label>
+          <input id="pos-cost" type="number" step="any" required class="w-full bg-gray-700 px-3 py-2 rounded">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-gray-400">類別</label>
+          <input id="pos-category" class="w-full bg-gray-700 px-3 py-2 rounded" placeholder="ETF / 金融 / 科技...">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400">幣別</label>
+          <select id="pos-currency" class="w-full bg-gray-700 px-3 py-2 rounded">
+            <option value="TWD">TWD</option>
+            <option value="USD">USD</option>
+          </select>
+        </div>
+      </div>
+      <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 py-2 rounded font-semibold">確認新增</button>
+    </form>
+  </div>
+</div>
+
+<!-- Add Watchlist Modal -->
+<div id="add-watch-modal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center hidden z-50 p-4">
+  <div class="bg-gray-800 rounded-lg p-6 max-w-md w-full">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-xl font-bold text-emerald-400">新增觀察清單</h2>
+      <button onclick="closeAddWatch()" class="text-gray-400 hover:text-white text-2xl">×</button>
+    </div>
+    <form onsubmit="submitWatch(event)" class="space-y-3">
+      <div>
+        <label class="text-xs text-gray-400">代號</label>
+        <input id="w-symbol" required class="w-full bg-gray-700 px-3 py-2 rounded" placeholder="2330.TW 或 NVDA">
+      </div>
+      <div>
+        <label class="text-xs text-gray-400">名稱</label>
+        <input id="w-name" class="w-full bg-gray-700 px-3 py-2 rounded">
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-gray-400">類別</label>
+          <input id="w-category" class="w-full bg-gray-700 px-3 py-2 rounded" placeholder="電力-S級">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400">幣別</label>
+          <select id="w-currency" class="w-full bg-gray-700 px-3 py-2 rounded">
+            <option value="TWD">TWD</option>
+            <option value="USD">USD</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-gray-400">進場價</label>
+          <input id="w-entry" type="number" step="any" class="w-full bg-gray-700 px-3 py-2 rounded">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400">加碼點</label>
+          <input id="w-add" type="number" step="any" class="w-full bg-gray-700 px-3 py-2 rounded">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400">停利點</label>
+          <input id="w-profit" type="number" step="any" class="w-full bg-gray-700 px-3 py-2 rounded">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400">停損點</label>
+          <input id="w-stop" type="number" step="any" class="w-full bg-gray-700 px-3 py-2 rounded">
+        </div>
+      </div>
+      <div>
+        <label class="text-xs text-gray-400">備註</label>
+        <input id="w-notes" class="w-full bg-gray-700 px-3 py-2 rounded">
+      </div>
+      <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 py-2 rounded font-semibold">確認新增</button>
+    </form>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = (n, d=2) => n == null ? '—' : Number(n).toLocaleString('en', {minimumFractionDigits:d, maximumFractionDigits:d});
+const fmtInt = n => n == null ? '—' : Math.round(n).toLocaleString();
+
+// Tab switching
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => {
+      b.classList.remove('border-emerald-500','text-emerald-400');
+      b.classList.add('border-transparent','text-gray-400');
+    });
+    btn.classList.add('border-emerald-500','text-emerald-400');
+    btn.classList.remove('border-transparent','text-gray-400');
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'));
+    $('tab-' + btn.dataset.tab).classList.remove('hidden');
+  });
+});
+
+// Watchlist filter
+let currentFilter = 'all';
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn').forEach(b => {
+      b.classList.remove('bg-emerald-600');
+      b.classList.add('bg-gray-700');
+    });
+    btn.classList.remove('bg-gray-700');
+    btn.classList.add('bg-emerald-600');
+    currentFilter = btn.dataset.filter;
+    renderWatchlist(window._watchlist || []);
+  });
+});
+
+async function loadAll() {
+  const [m, p, w, a] = await Promise.all([
+    fetch('/api/market').then(r=>r.json()),
+    fetch('/api/portfolio').then(r=>r.json()),
+    fetch('/api/watchlist').then(r=>r.json()),
+    fetch('/api/alerts?limit=100').then(r=>r.json()),
+  ]);
+  renderMarket(m);
+  renderPortfolio(p);
+  window._watchlist = w.watchlist;
+  renderWatchlist(w.watchlist);
+  renderAlerts(a.alerts);
+  $('last-update').textContent = '最後更新：' + new Date().toLocaleTimeString('zh-TW');
+}
+
+function renderMarket(m) {
+  if (m.error) {
+    $('market-bar').innerHTML = `<div class="col-span-5 bg-yellow-900 p-3 rounded">市場資料尚未就緒，請稍候或按刷新</div>`;
+    return;
+  }
+  const levelColor = m.risk_level === 'danger' ? 'bg-red-700' : m.risk_level === 'warning' ? 'bg-yellow-700' : 'bg-emerald-700';
+  const levelText = m.risk_level === 'danger' ? '危險' : m.risk_level === 'warning' ? '警戒' : '安全';
+  $('market-bar').innerHTML = `
+    <div class="${levelColor} p-3 rounded">
+      <div class="text-xs opacity-75">市場狀態</div>
+      <div class="text-lg font-bold">${levelText} (${m.warnings_count}/3)</div>
+    </div>
+    <div class="bg-gray-800 p-3 rounded">
+      <div class="text-xs text-gray-400">VIX 恐慌指數</div>
+      <div class="text-lg font-bold ${m.vix > 25 ? 'text-red-400' : m.vix > 15 ? 'text-yellow-400' : 'text-emerald-400'}">${fmt(m.vix)}</div>
+    </div>
+    <div class="bg-gray-800 p-3 rounded">
+      <div class="text-xs text-gray-400">台股加權</div>
+      <div class="text-lg font-bold">${fmtInt(m.twii)}</div>
+      <div class="text-xs ${m.twii > m.twii_ma60 ? 'text-emerald-400' : 'text-red-400'}">${m.twii > m.twii_ma60 ? '▲' : '▼'} MA60: ${fmtInt(m.twii_ma60)}</div>
+    </div>
+    <div class="bg-gray-800 p-3 rounded">
+      <div class="text-xs text-gray-400">S&P 500</div>
+      <div class="text-lg font-bold">${fmt(m.spx)}</div>
+      <div class="text-xs ${m.spx > m.spx_ma60 ? 'text-emerald-400' : 'text-red-400'}">${m.spx > m.spx_ma60 ? '▲' : '▼'} MA60: ${fmt(m.spx_ma60)}</div>
+    </div>
+    <div class="bg-gray-800 p-3 rounded">
+      <div class="text-xs text-gray-400">更新時間</div>
+      <div class="text-sm">${(m.ts || '').split('T')[1]?.substring(0,8) || '—'}</div>
+    </div>
+  `;
+}
+
+function renderPortfolio(data) {
+  const s = data.summary;
+  const pnlColor = s.total_pnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+  $('portfolio-summary').innerHTML = `
+    <div class="bg-gray-800 p-3 rounded">
+      <div class="text-xs text-gray-400">總投入</div>
+      <div class="text-xl font-bold">NT$ ${fmtInt(s.total_cost)}</div>
+    </div>
+    <div class="bg-gray-800 p-3 rounded">
+      <div class="text-xs text-gray-400">總市值</div>
+      <div class="text-xl font-bold">NT$ ${fmtInt(s.total_value)}</div>
+    </div>
+    <div class="bg-gray-800 p-3 rounded">
+      <div class="text-xs text-gray-400">總損益</div>
+      <div class="text-xl font-bold ${pnlColor}">NT$ ${s.total_pnl >= 0 ? '+' : ''}${fmtInt(s.total_pnl)}</div>
+    </div>
+    <div class="bg-gray-800 p-3 rounded">
+      <div class="text-xs text-gray-400">報酬率</div>
+      <div class="text-xl font-bold ${pnlColor}">${s.total_pnl_pct >= 0 ? '+' : ''}${fmt(s.total_pnl_pct)}%</div>
+    </div>
+  `;
+
+  $('portfolio-tbody').innerHTML = data.positions.map(p => {
+    const pnlColor = p.pnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+    const dayColor = p.change_1d >= 0 ? 'text-emerald-400' : 'text-red-400';
+    const rsiColor = p.rsi >= 75 ? 'text-red-400' : p.rsi <= 30 ? 'text-yellow-400' : 'text-gray-300';
+    const rec = p.recommendation || {};
+    const recBadge = rec.action ? `<span class="${rec.color || 'bg-gray-600'} text-white px-2 py-0.5 rounded text-xs font-semibold whitespace-nowrap" title="${rec.reason || ''}">${rec.action}</span>` : '';
+    const recReason = rec.reason ? `<div class="text-xs text-gray-400 mt-1 leading-tight">${rec.reason}</div>` : '';
+    const recStop = rec.stop_loss ? `<div class="text-xs text-red-300 mt-0.5">停損 ${fmt(rec.stop_loss)}</div>` : '';
+    const recProfit = rec.take_profit ? `<div class="text-xs text-emerald-300 mt-0.5">停利 ${fmt(rec.take_profit)}</div>` : '';
+    return `<tr class="hover:bg-gray-700">
+      <td class="px-3 py-2 font-mono align-top">${p.symbol}</td>
+      <td class="px-3 py-2 align-top">${p.name || ''}</td>
+      <td class="px-3 py-2 text-right align-top">${fmtInt(p.shares)}</td>
+      <td class="px-3 py-2 text-right align-top">${fmt(p.cost_price)}</td>
+      <td class="px-3 py-2 text-right font-bold align-top">${fmt(p.current_price)}</td>
+      <td class="px-3 py-2 text-right ${dayColor} align-top">${p.change_1d >= 0 ? '+' : ''}${fmt(p.change_1d)}%</td>
+      <td class="px-3 py-2 text-right ${rsiColor} align-top">${fmt(p.rsi, 1)}</td>
+      <td class="px-3 py-2 text-right ${pnlColor} font-bold align-top">${p.pnl_pct >= 0 ? '+' : ''}${fmt(p.pnl_pct)}%<div class="text-xs text-gray-400">${p.pnl >= 0 ? '+' : ''}${fmtInt(p.pnl)}</div></td>
+      <td class="px-3 py-2 align-top">${recBadge}${recReason}${recStop}${recProfit}</td>
+      <td class="px-3 py-2 text-center whitespace-nowrap align-top">
+        <button onclick="diagnose('${p.symbol}','${p.name}')" class="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-xs" title="診斷+K線">分析</button>
+        <button onclick="deletePosition(${p.id})" class="bg-red-700 hover:bg-red-800 px-2 py-1 rounded text-xs ml-1" title="刪除">刪除</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function renderWatchlist(items) {
+  let filtered = items;
+  if (currentFilter !== 'all') {
+    filtered = items.filter(w => (w.category||'').includes(currentFilter));
+  }
+  $('watchlist-tbody').innerHTML = filtered.map(w => {
+    const rsiColor = w.rsi >= 75 ? 'text-red-400' : w.rsi <= 30 ? 'text-yellow-400' : 'text-gray-300';
+    const dist = w.distance_to_entry;
+    const distColor = dist == null ? 'text-gray-500' : dist <= 2 ? 'text-emerald-400' : dist <= 8 ? 'text-yellow-400' : 'text-gray-400';
+    const pri = w.priority || 0;
+    let priColor = 'bg-gray-700 text-gray-400';
+    if (pri >= 100) priColor = 'bg-emerald-600 text-white';
+    else if (pri >= 70) priColor = 'bg-yellow-600 text-white';
+    else if (pri >= 40) priColor = 'bg-orange-700 text-gray-100';
+    else if (pri >= 20) priColor = 'bg-gray-700 text-gray-300';
+    else priColor = 'bg-red-900 text-gray-400';
+    const priBadge = `<span class="${priColor} px-2 py-0.5 rounded text-xs font-bold">${Math.round(pri)}</span>`;
+    return `<tr class="hover:bg-gray-700">
+      <td class="px-3 py-2 text-right">${priBadge}</td>
+      <td class="px-3 py-2 font-mono">${w.symbol}</td>
+      <td class="px-3 py-2">${w.name || ''}</td>
+      <td class="px-3 py-2 text-xs"><span class="bg-gray-700 px-2 py-1 rounded">${w.category}</span></td>
+      <td class="px-3 py-2 text-right font-bold">${fmt(w.current_price)}</td>
+      <td class="px-3 py-2 text-right ${rsiColor}">${fmt(w.rsi, 1)}</td>
+      <td class="px-3 py-2 text-right">${fmt(w.target_entry)}</td>
+      <td class="px-3 py-2 text-right ${distColor}">${dist == null ? '—' : (dist >= 0 ? '+' : '') + fmt(dist) + '%'}</td>
+      <td class="px-3 py-2 text-right text-emerald-300">${fmt(w.target_profit)}</td>
+      <td class="px-3 py-2 text-right text-red-300">${fmt(w.target_stop)}</td>
+      <td class="px-3 py-2 text-center text-xs font-semibold ${w.status_class || ''}">${w.status || '—'}</td>
+      <td class="px-3 py-2 text-center whitespace-nowrap">
+        <button onclick="diagnose('${w.symbol}','${w.name}')" class="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-xs" title="診斷+K線">分析</button>
+        <button onclick="deleteWatch(${w.id})" class="bg-red-700 hover:bg-red-800 px-2 py-1 rounded text-xs ml-1" title="刪除">刪除</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function renderAlerts(alerts) {
+  const unack = alerts.filter(a => !a.acknowledged);
+  const badge = $('alert-badge');
+  if (unack.length > 0) {
+    badge.textContent = unack.length;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+
+  $('alerts-container').innerHTML = alerts.length === 0 ?
+    `<div class="bg-gray-800 p-6 rounded text-center text-gray-400">目前沒有警報</div>` :
+    alerts.map(a => {
+      const colors = {
+        danger: 'bg-red-900 border-red-500',
+        warning: 'bg-yellow-900 border-yellow-500',
+        info: 'bg-blue-900 border-blue-500',
+      };
+      const ackOpacity = a.acknowledged ? 'opacity-50' : '';
+      return `<div class="${colors[a.level] || 'bg-gray-800'} ${ackOpacity} border-l-4 p-3 rounded">
+        <div class="flex justify-between items-start">
+          <div class="flex-1">
+            <div class="flex gap-2 items-center text-xs text-gray-300 mb-1">
+              <span class="font-mono">${a.symbol}</span>
+              <span>•</span>
+              <span>${a.type}</span>
+              <span>•</span>
+              <span>${(a.ts||'').replace('T',' ').substring(0,16)}</span>
+            </div>
+            <div class="font-semibold">${a.message}</div>
+            ${a.diagnosis ? `<div class="mt-2 text-xs text-gray-300 bg-black bg-opacity-30 p-2 rounded">${a.diagnosis}</div>` : ''}
+          </div>
+          ${!a.acknowledged ? `<button onclick="ackAlert(${a.id})" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">已讀</button>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+}
+
+let _currentSymbol = null;
+let _chart = null;
+
+async function diagnose(symbol, name) {
+  _currentSymbol = symbol;
+  $('diag-title').textContent = `${name || symbol} (${symbol})`;
+  $('diag-body').innerHTML = '<div class="text-gray-400">分析中...</div>';
+  $('llm-result').classList.add('hidden');
+  $('diag-modal').classList.remove('hidden');
+
+  // 並行載入診斷+K線
+  const [diagR] = await Promise.all([
+    fetch(`/api/diagnose/${encodeURIComponent(symbol)}`).then(r=>r.json()),
+    drawChart(symbol, $('chart-period').value),
+  ]);
+
+  if (diagR.error) {
+    $('diag-body').innerHTML = `<div class="text-red-400">錯誤: ${diagR.error}</div>`;
+    return;
+  }
+  const ind = diagR.indicators || {};
+  $('diag-body').innerHTML = `
+    <div class="bg-gray-700 p-3 rounded">
+      <div class="text-sm font-semibold mb-2">技術指標</div>
+      <div class="grid grid-cols-3 gap-3 text-sm">
+        <div><div class="text-xs text-gray-400">現價</div><div class="font-bold text-lg">${fmt(ind.price)}</div></div>
+        <div><div class="text-xs text-gray-400">RSI</div><div class="font-bold text-lg ${ind.rsi >=75?'text-red-400':ind.rsi<=30?'text-yellow-400':'text-gray-100'}">${fmt(ind.rsi,1)}</div></div>
+        <div><div class="text-xs text-gray-400">日漲跌</div><div class="font-bold text-lg ${ind.change_1d>=0?'text-emerald-400':'text-red-400'}">${ind.change_1d >= 0 ? '+' : ''}${fmt(ind.change_1d)}%</div></div>
+        <div><div class="text-xs text-gray-400">MA20</div><div>${fmt(ind.ma20)}</div></div>
+        <div><div class="text-xs text-gray-400">MA60</div><div>${fmt(ind.ma60)}</div></div>
+        <div><div class="text-xs text-gray-400">β / 1月%</div><div class="text-xs">${fmt(ind.beta,2)} / ${ind.change_1m>=0?'+':''}${fmt(ind.change_1m,1)}%</div></div>
+        <div class="col-span-3"><div class="text-xs text-gray-400">52週區間</div><div class="text-sm">${fmt(ind.low52)} ~ ${fmt(ind.high52)}</div></div>
+      </div>
+    </div>
+    <div class="bg-emerald-900 bg-opacity-40 p-3 rounded">
+      <div class="text-sm font-semibold mb-1">規則引擎診斷</div>
+      <div class="text-sm">${diagR.diagnosis}</div>
+    </div>
+  `;
+}
+
+async function drawChart(symbol, period) {
+  // 清除舊圖
+  const container = $('chart-container');
+  container.innerHTML = '<div class="flex items-center justify-center h-full text-gray-400">載入 K 線中...</div>';
+  if (_chart) {
+    try { _chart.remove(); } catch(e) {}
+    _chart = null;
+  }
+  try {
+    const r = await fetch(`/api/history/${encodeURIComponent(symbol)}?period=${period}`).then(r=>r.json());
+    if (r.error) {
+      container.innerHTML = `<div class="flex items-center justify-center h-full text-red-400">錯誤: ${r.error}</div>`;
+      return;
+    }
+    container.innerHTML = '';
+    _chart = LightweightCharts.createChart(container, {
+      width: container.clientWidth,
+      height: 350,
+      layout: {
+        background: { color: '#111827' },
+        textColor: '#9ca3af',
+      },
+      grid: {
+        vertLines: { color: '#1f2937' },
+        horzLines: { color: '#1f2937' },
+      },
+      timeScale: { timeVisible: false, borderColor: '#374151' },
+      rightPriceScale: { borderColor: '#374151' },
+    });
+    const candle = _chart.addCandlestickSeries({
+      upColor: '#10b981', downColor: '#ef4444',
+      borderUpColor: '#10b981', borderDownColor: '#ef4444',
+      wickUpColor: '#10b981', wickDownColor: '#ef4444',
+    });
+    candle.setData(r.candles);
+    const ma20 = _chart.addLineSeries({ color: '#facc15', lineWidth: 1, priceLineVisible: false });
+    ma20.setData(r.ma20);
+    const ma60 = _chart.addLineSeries({ color: '#22d3ee', lineWidth: 1, priceLineVisible: false });
+    ma60.setData(r.ma60);
+    const vol = _chart.addHistogramSeries({
+      priceFormat: { type: 'volume' },
+      priceScaleId: '',
+      scaleMargins: { top: 0.85, bottom: 0 },
+    });
+    vol.setData(r.volumes);
+  } catch (e) {
+    container.innerHTML = `<div class="text-red-400">圖表錯誤: ${e}</div>`;
+  }
+}
+
+$('chart-period').addEventListener('change', () => {
+  if (_currentSymbol) drawChart(_currentSymbol, $('chart-period').value);
+});
+
+function closeDiag() {
+  $('diag-modal').classList.add('hidden');
+  if (_chart) {
+    try { _chart.remove(); } catch(e) {}
+    _chart = null;
+  }
+}
+
+let _llmEventSource = null;
+
+function renderStep(step) {
+  const isAnalyst = step.role === 'analyst';
+  const headerClass = isAnalyst ? 'bg-blue-900 bg-opacity-50' : 'bg-purple-900 bg-opacity-50';
+  const bodyClass = isAnalyst ? 'bg-blue-900 bg-opacity-20' : 'bg-purple-900 bg-opacity-20';
+  const roleLabel = isAnalyst ? '分析師' : '審查員';
+  const modeBadge = step.mode === 'cli' ? '<span class="ml-1 text-emerald-300">CLI</span>' : '<span class="ml-1 text-yellow-300">API</span>';
+
+  if (step.status === 'running') {
+    return `<div class="${headerClass} p-2 rounded-t text-sm font-semibold flex justify-between items-center">
+              <span class="flex items-center gap-2">
+                <span class="inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                ${roleLabel} 思考中...
+              </span>
+              <span class="text-xs opacity-75 font-mono">${step.provider}/${step.model} ${modeBadge} · ${step.elapsed}s</span>
+            </div>
+            <div class="${bodyClass} p-4 rounded-b text-sm text-gray-400">
+              <div class="flex items-center gap-2">
+                <span>已用時 <b class="elapsed-counter">${step.elapsed}</b>s</span>
+                <span class="text-xs">（CLI 模式約需 30~60 秒，請耐心等候）</span>
+              </div>
+            </div>`;
+  }
+  if (step.status === 'error') {
+    return `<div class="${headerClass} p-2 rounded-t text-sm font-semibold flex justify-between">
+              <span>✗ ${roleLabel} 失敗</span>
+              <span class="text-xs opacity-75 font-mono">${step.provider}/${step.model} · ${step.elapsed}s</span>
+            </div>
+            <div class="${bodyClass} p-3 rounded-b text-red-400 text-sm">${step.error}</div>`;
+  }
+  // done
+  return `<div class="${headerClass} p-2 rounded-t text-sm font-semibold flex justify-between">
+            <span>✓ ${roleLabel}</span>
+            <span class="text-xs opacity-75 font-mono">${step.provider}/${step.model} ${modeBadge} · ${step.elapsed}s</span>
+          </div>
+          <div class="${bodyClass} p-4 rounded-b prose prose-invert prose-sm max-w-none">${marked.parse(step.output || '')}</div>`;
+}
+
+function rerenderLLM(steps) {
+  $('llm-result').innerHTML = steps.map(renderStep).join('<div class="h-2"></div>');
+}
+
+async function runLLM(mode) {
+  if (!_currentSymbol) return;
+  const btnA = $('llm-btn-analyst'), btnB = $('llm-btn-both');
+  btnA.disabled = btnB.disabled = true;
+  const targetBtn = mode === 'both' ? btnB : btnA;
+  const origText = targetBtn.textContent;
+  targetBtn.textContent = '分析中...';
+  $('llm-result').classList.remove('hidden');
+  $('llm-result').innerHTML = `
+    <div class="bg-gray-700 p-3 rounded text-sm flex items-center gap-3">
+      <span class="inline-block w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin"></span>
+      <span>連線中... 準備啟動 LLM 工作流</span>
+    </div>`;
+
+  // 關閉舊連線
+  if (_llmEventSource) { _llmEventSource.close(); _llmEventSource = null; }
+
+  const steps = [];
+  let elapsedTimer = null;
+
+  try {
+    const url = `/api/llm-analyze-stream/${encodeURIComponent(_currentSymbol)}?mode=${mode}`;
+    _llmEventSource = new EventSource(url);
+
+    _llmEventSource.addEventListener('started', e => {
+      const d = JSON.parse(e.data);
+      $('llm-result').innerHTML = `<div class="bg-emerald-900 bg-opacity-30 p-3 rounded text-sm">
+        ✓ 已建立連線：${d.name} (${d.symbol}) · 上下文 ${d.context_lines} 行
+      </div>`;
+    });
+
+    _llmEventSource.addEventListener('step_start', e => {
+      const d = JSON.parse(e.data);
+      // 推入 running 狀態
+      const idx = steps.findIndex(s => s.role === d.role);
+      const newStep = {...d, status: 'running'};
+      if (idx >= 0) steps[idx] = newStep; else steps.push(newStep);
+      rerenderLLM(steps);
+      // 啟動本地計時器，每秒更新 elapsed 顯示
+      if (elapsedTimer) clearInterval(elapsedTimer);
+      const startElapsed = d.elapsed;
+      const startTime = Date.now();
+      elapsedTimer = setInterval(() => {
+        const live = startElapsed + (Date.now() - startTime) / 1000;
+        document.querySelectorAll('.elapsed-counter').forEach(el => {
+          el.textContent = live.toFixed(1);
+        });
+      }, 200);
+    });
+
+    _llmEventSource.addEventListener('step_done', e => {
+      const d = JSON.parse(e.data);
+      const idx = steps.findIndex(s => s.role === d.role);
+      const doneStep = {...d, status: 'done'};
+      if (idx >= 0) steps[idx] = doneStep; else steps.push(doneStep);
+      if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+      rerenderLLM(steps);
+    });
+
+    _llmEventSource.addEventListener('step_error', e => {
+      const d = JSON.parse(e.data);
+      const idx = steps.findIndex(s => s.role === d.role);
+      const errStep = {...d, status: 'error'};
+      if (idx >= 0) steps[idx] = errStep; else steps.push(errStep);
+      if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+      rerenderLLM(steps);
+    });
+
+    _llmEventSource.addEventListener('error', e => {
+      try {
+        const d = JSON.parse(e.data);
+        $('llm-result').innerHTML = `<div class="text-red-400 p-3">錯誤: ${d.error}</div>`;
+      } catch {}
+    });
+
+    _llmEventSource.addEventListener('done', e => {
+      const d = JSON.parse(e.data);
+      const summary = `<div class="bg-emerald-900 bg-opacity-20 p-2 rounded text-xs text-emerald-300 mt-2">
+        全部完成，共耗時 ${d.elapsed} 秒
+      </div>`;
+      $('llm-result').insertAdjacentHTML('beforeend', summary);
+      if (_llmEventSource) { _llmEventSource.close(); _llmEventSource = null; }
+      if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+      btnA.disabled = btnB.disabled = false;
+      targetBtn.textContent = origText;
+    });
+
+    _llmEventSource.onerror = () => {
+      if (_llmEventSource && _llmEventSource.readyState === EventSource.CLOSED) {
+        if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+        btnA.disabled = btnB.disabled = false;
+        targetBtn.textContent = origText;
+      }
+    };
+  } catch (e) {
+    $('llm-result').innerHTML = `<div class="text-red-400 p-3">錯誤: ${e}</div>`;
+    if (elapsedTimer) clearInterval(elapsedTimer);
+    btnA.disabled = btnB.disabled = false;
+    targetBtn.textContent = origText;
+  }
+}
+
+// ─── Settings ───
+let _availableModels = {};
+
+async function openSettings() {
+  $('settings-modal').classList.remove('hidden');
+  const r = await fetch('/api/settings').then(r=>r.json());
+  _availableModels = r.available_models;
+
+  // API Key 狀態
+  ['anthropic','openai','google'].forEach(p => {
+    const set = r.api_keys_set[p];
+    const masked = r.api_keys_masked[p];
+    $(`key-status-${p}`).innerHTML = set
+      ? `<span class="text-emerald-400">已設定 ${masked}</span>`
+      : `<span class="text-yellow-400">未設定</span>`;
+    $(`key-${p}`).value = '';
+    $(`key-${p}`).placeholder = set ? '已設定（留空保持不變）' : `輸入 ${p === 'google' ? 'AIza...' : 'sk-...'}`;
+  });
+
+  // CLI 狀態列
+  const cli = r.cli_status || {};
+  const labels = { anthropic: 'claude', openai: 'codex', google: 'gemini' };
+  $('cli-status-bar').innerHTML = '<b>CLI 偵測：</b> ' +
+    Object.entries(cli).map(([p, info]) =>
+      info.available
+        ? `<span class="text-emerald-400">${labels[p]} ✓</span>`
+        : `<span class="text-red-400">${labels[p]} ✗ 未安裝</span>`
+    ).join(' &nbsp;|&nbsp; ') +
+    ` <span class="text-gray-500">(CLI 模式需先在 terminal 執行 <code>claude</code>/<code>codex</code>/<code>gemini</code> 完成登入)</span>`;
+
+  // Roles
+  $('role-analyst-provider').value = r.roles.analyst.provider;
+  updateModelOptions('analyst');
+  $('role-analyst-model').value = r.roles.analyst.model;
+  $('role-analyst-mode').value = r.roles.analyst.mode || 'cli';
+
+  $('role-reviewer-provider').value = r.roles.reviewer.provider;
+  updateModelOptions('reviewer');
+  $('role-reviewer-model').value = r.roles.reviewer.model;
+  $('role-reviewer-mode').value = r.roles.reviewer.mode || 'cli';
+
+  updateLLMHint(r.roles);
+}
+
+function closeSettings() { $('settings-modal').classList.add('hidden'); }
+
+function updateModelOptions(role) {
+  const provider = $(`role-${role}-provider`).value;
+  const sel = $(`role-${role}-model`);
+  const models = _availableModels[provider] || [];
+  sel.innerHTML = models.map(m => `<option value="${m}">${m}</option>`).join('');
+}
+
+function updateLLMHint(roles) {
+  const aMode = roles.analyst.mode === 'cli' ? 'CLI' : 'API';
+  const rMode = roles.reviewer.mode === 'cli' ? 'CLI' : 'API';
+  $('llm-config-hint').innerHTML = `分析師: <code class="bg-gray-900 px-1 rounded text-emerald-300">${roles.analyst.provider}/${roles.analyst.model} ${aMode}</code> &nbsp;|&nbsp; 審查員: <code class="bg-gray-900 px-1 rounded text-purple-300">${roles.reviewer.provider}/${roles.reviewer.model} ${rMode}</code>`;
+}
+
+async function saveSettings() {
+  const body = {
+    api_keys: {
+      anthropic: $('key-anthropic').value,
+      openai: $('key-openai').value,
+      google: $('key-google').value,
+    },
+    roles: {
+      analyst: {
+        provider: $('role-analyst-provider').value,
+        model: $('role-analyst-model').value,
+        mode: $('role-analyst-mode').value,
+      },
+      reviewer: {
+        provider: $('role-reviewer-provider').value,
+        model: $('role-reviewer-model').value,
+        mode: $('role-reviewer-mode').value,
+      },
+    },
+  };
+  const r = await fetch('/api/settings', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  }).then(r=>r.json());
+  if (r.ok) {
+    closeSettings();
+    // 更新底部 hint
+    fetch('/api/settings').then(r=>r.json()).then(s => updateLLMHint(s.roles));
+    alert('設定已儲存');
+  } else {
+    alert('儲存失敗');
+  }
+}
+
+// 頁面載入時也顯示一次配置
+fetch('/api/settings').then(r=>r.json()).then(s => updateLLMHint(s.roles));
+
+// ─── Add/Delete Position ───
+function openAddPosition() { $('add-pos-modal').classList.remove('hidden'); }
+function closeAddPos()    { $('add-pos-modal').classList.add('hidden'); }
+
+async function submitPosition(e) {
+  e.preventDefault();
+  const body = {
+    symbol: $('pos-symbol').value.trim(),
+    name: $('pos-name').value.trim(),
+    category: $('pos-category').value.trim(),
+    shares: parseFloat($('pos-shares').value),
+    cost_price: parseFloat($('pos-cost').value),
+    currency: $('pos-currency').value,
+  };
+  const r = await fetch('/api/positions', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  }).then(r=>r.json());
+  if (r.ok) {
+    closeAddPos();
+    document.querySelector('form').reset();
+    await fetch('/api/refresh', {method: 'POST'});
+    loadAll();
+  } else {
+    alert('新增失敗');
+  }
+}
+
+async function deletePosition(id) {
+  if (!confirm('確認刪除此持倉？')) return;
+  await fetch(`/api/positions/${id}`, {method: 'DELETE'});
+  loadAll();
+}
+
+// ─── Add/Delete Watchlist ───
+function openAddWatch() { $('add-watch-modal').classList.remove('hidden'); }
+function closeAddWatch(){ $('add-watch-modal').classList.add('hidden'); }
+
+async function submitWatch(e) {
+  e.preventDefault();
+  const body = {
+    symbol: $('w-symbol').value.trim(),
+    name: $('w-name').value.trim(),
+    category: $('w-category').value.trim(),
+    currency: $('w-currency').value,
+    target_entry: parseFloat($('w-entry').value) || null,
+    target_add: parseFloat($('w-add').value) || null,
+    target_profit: parseFloat($('w-profit').value) || null,
+    target_stop: parseFloat($('w-stop').value) || null,
+    notes: $('w-notes').value,
+  };
+  const r = await fetch('/api/watchlist', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  }).then(r=>r.json());
+  if (r.ok) {
+    closeAddWatch();
+    e.target.reset();
+    await fetch('/api/refresh', {method: 'POST'});
+    loadAll();
+  }
+}
+
+async function deleteWatch(id) {
+  if (!confirm('確認刪除此觀察項目？')) return;
+  await fetch(`/api/watchlist/${id}`, {method: 'DELETE'});
+  loadAll();
+}
+
+// ─── 警報篩選 ───
+async function loadAlertsFiltered() {
+  const days = $('alert-days').value;
+  const level = $('alert-level').value;
+  const symbol = $('alert-symbol').value.trim();
+  const params = new URLSearchParams({days, limit: 200});
+  if (level) params.set('level', level);
+  if (symbol) params.set('symbol', symbol);
+  const r = await fetch('/api/alerts/search?' + params.toString()).then(r=>r.json());
+  renderAlerts(r.alerts);
+}
+
+async function clearAlerts() {
+  if (!confirm('確認清除 30 天前的所有警報？')) return;
+  await fetch('/api/alerts/clear?days=30', {method: 'DELETE'});
+  loadAlertsFiltered();
+}
+
+async function ackAlert(id) {
+  await fetch('/api/alerts/ack', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({id}),
+  });
+  loadAll();
+}
+
+$('refresh-btn').addEventListener('click', async () => {
+  $('refresh-btn').disabled = true;
+  $('refresh-btn').textContent = '刷新中...';
+  await fetch('/api/refresh', {method:'POST'});
+  await loadAll();
+  $('refresh-btn').disabled = false;
+  $('refresh-btn').textContent = '立即刷新';
+});
+
+let autoTimer = null;
+function setupAutoRefresh() {
+  if (autoTimer) clearInterval(autoTimer);
+  const sec = parseInt($('auto-refresh').value);
+  if (sec > 0) {
+    autoTimer = setInterval(loadAll, sec * 1000);
+  }
+}
+$('auto-refresh').addEventListener('change', setupAutoRefresh);
+
+loadAll();
+setupAutoRefresh();
+</script>
+</body>
+</html>
