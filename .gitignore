@@ -85,8 +85,8 @@ ehthumbs.db
 
 # ─────────── 建議手動忽略 ───────────
 
-# 個人測試 / 實驗腳本
-test_*.py
+# 個人實驗腳本（但保留 tests/ 內的正式測試）
+/test_*.py
 scratch.py
 playground/
 
