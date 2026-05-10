@@ -200,7 +200,7 @@ tailwind.config = { darkMode: 'class' }
           只跑分析師
         </button>
         <button onclick="runLLM('both')" id="llm-btn-both" class="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded text-sm font-semibold">
-          分析師 → 審查員
+          分析師加審查員
         </button>
         <span class="text-xs text-gray-400" id="llm-config-hint">設定中查看 LLM 配置</span>
       </div>
@@ -485,12 +485,12 @@ function renderMarket(m) {
     <div class="bg-gray-800 p-3 rounded">
       <div class="text-xs text-gray-400">台股加權</div>
       <div class="text-lg font-bold">${fmtInt(m.twii)}</div>
-      <div class="text-xs ${m.twii > m.twii_ma60 ? 'text-emerald-400' : 'text-red-400'}">${m.twii > m.twii_ma60 ? '▲' : '▼'} MA60: ${fmtInt(m.twii_ma60)}</div>
+      <div class="text-xs ${m.twii > m.twii_ma60 ? 'text-emerald-400' : 'text-red-400'}">${m.twii > m.twii_ma60 ? '高於' : '低於'} MA60: ${fmtInt(m.twii_ma60)}</div>
     </div>
     <div class="bg-gray-800 p-3 rounded">
       <div class="text-xs text-gray-400">S&P 500</div>
       <div class="text-lg font-bold">${fmt(m.spx)}</div>
-      <div class="text-xs ${m.spx > m.spx_ma60 ? 'text-emerald-400' : 'text-red-400'}">${m.spx > m.spx_ma60 ? '▲' : '▼'} MA60: ${fmt(m.spx_ma60)}</div>
+      <div class="text-xs ${m.spx > m.spx_ma60 ? 'text-emerald-400' : 'text-red-400'}">${m.spx > m.spx_ma60 ? '高於' : '低於'} MA60: ${fmt(m.spx_ma60)}</div>
     </div>
     <div class="bg-gray-800 p-3 rounded">
       <div class="text-xs text-gray-400">更新時間</div>
@@ -808,7 +808,7 @@ function renderStep(step) {
                 <span class="inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
                 ${roleLabel} 思考中...
               </span>
-              <span class="text-xs opacity-75 font-mono">${step.provider}/${step.model} ${modeBadge} · ${step.elapsed}s</span>
+              <span class="text-xs opacity-75 font-mono">${step.provider}/${step.model} ${modeBadge}, ${step.elapsed}s</span>
             </div>
             <div class="${bodyClass} p-4 rounded-b text-sm text-gray-400">
               <div class="flex items-center gap-2">
@@ -819,15 +819,15 @@ function renderStep(step) {
   }
   if (step.status === 'error') {
     return `<div class="${headerClass} p-2 rounded-t text-sm font-semibold flex justify-between">
-              <span>✗ ${roleLabel} 失敗</span>
-              <span class="text-xs opacity-75 font-mono">${step.provider}/${step.model} · ${step.elapsed}s</span>
+              <span>${roleLabel} 失敗</span>
+              <span class="text-xs opacity-75 font-mono">${step.provider}/${step.model}, ${step.elapsed}s</span>
             </div>
             <div class="${bodyClass} p-3 rounded-b text-red-400 text-sm">${step.error}</div>`;
   }
   // done
   return `<div class="${headerClass} p-2 rounded-t text-sm font-semibold flex justify-between">
-            <span>✓ ${roleLabel}</span>
-            <span class="text-xs opacity-75 font-mono">${step.provider}/${step.model} ${modeBadge} · ${step.elapsed}s</span>
+            <span>${roleLabel} 完成</span>
+            <span class="text-xs opacity-75 font-mono">${step.provider}/${step.model} ${modeBadge}, ${step.elapsed}s</span>
           </div>
           <div class="${bodyClass} p-4 rounded-b prose prose-invert prose-sm max-w-none">${marked.parse(step.output || '')}</div>`;
 }
@@ -863,7 +863,7 @@ async function runLLM(mode) {
     _llmEventSource.addEventListener('started', e => {
       const d = JSON.parse(e.data);
       $('llm-result').innerHTML = `<div class="bg-emerald-900 bg-opacity-30 p-3 rounded text-sm">
-        ✓ 已建立連線：${d.name} (${d.symbol}) · 上下文 ${d.context_lines} 行
+        已建立連線：${d.name} (${d.symbol})，上下文 ${d.context_lines} 行
       </div>`;
     });
 
@@ -963,8 +963,8 @@ async function openSettings() {
   $('cli-status-bar').innerHTML = '<b>CLI 偵測：</b> ' +
     Object.entries(cli).map(([p, info]) =>
       info.available
-        ? `<span class="text-emerald-400">${labels[p]} ✓</span>`
-        : `<span class="text-red-400">${labels[p]} ✗ 未安裝</span>`
+        ? `<span class="text-emerald-400">${labels[p]} 已安裝</span>`
+        : `<span class="text-red-400">${labels[p]} 未安裝</span>`
     ).join(' &nbsp;|&nbsp; ') +
     ` <span class="text-gray-500">(CLI 模式需先在 terminal 執行 <code>claude</code>/<code>codex</code>/<code>gemini</code> 完成登入)</span>`;
 
