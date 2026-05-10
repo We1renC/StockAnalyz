@@ -35,9 +35,12 @@ tailwind.config = { darkMode: 'class' }
       <button onclick="openSettings()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded font-semibold transition" title="LLM 設定">
         設定
       </button>
-      <button id="refresh-btn" class="bg-emerald-600 hover:bg-emerald-700 px-4 py-2 rounded font-semibold transition">
-        立即刷新
-      </button>
+      <div class="flex items-center gap-2">
+        <button id="refresh-btn" class="bg-emerald-600 hover:bg-emerald-700 px-4 py-2 rounded font-semibold transition">
+          立即刷新
+        </button>
+        <span id="refresh-badge" class="text-xs text-gray-400 min-w-[140px]"></span>
+      </div>
       <select id="auto-refresh" class="bg-gray-800 px-3 py-2 rounded">
         <option value="0">手動</option>
         <option value="60">1分鐘</option>
@@ -1047,13 +1050,38 @@ async function ackAlert(id) {
   loadAll();
 }
 
+let _refreshBadgeTimer = null;
+function setRefreshBadge(text, color = 'text-gray-400', sticky = false) {
+  const el = $('refresh-badge');
+  el.className = `text-xs ${color} min-w-[140px]`;
+  el.textContent = text;
+  if (_refreshBadgeTimer) { clearTimeout(_refreshBadgeTimer); _refreshBadgeTimer = null; }
+  if (!sticky) {
+    _refreshBadgeTimer = setTimeout(() => setRefreshBadge(''), 8000);
+  }
+}
+
 $('refresh-btn').addEventListener('click', async () => {
   $('refresh-btn').disabled = true;
   $('refresh-btn').textContent = '刷新中...';
-  await fetch('/api/refresh', {method:'POST'});
-  await loadAll();
-  $('refresh-btn').disabled = false;
-  $('refresh-btn').textContent = '立即刷新';
+  setRefreshBadge('讀取中...', 'text-gray-400', true);
+  try {
+    const res = await fetch('/api/refresh', {method:'POST'});
+    const data = await res.json();
+    await loadAll();
+    const created = data.alerts_created || 0;
+    const refreshed = data.refreshed || 0;
+    if (created > 0) {
+      setRefreshBadge(`已更新 ${refreshed} 檔・新增 ${created} 筆警報`, 'text-yellow-400');
+    } else {
+      setRefreshBadge(`已更新 ${refreshed} 檔・無新警報`, 'text-emerald-400');
+    }
+  } catch (e) {
+    setRefreshBadge(`刷新失敗: ${e}`, 'text-red-400');
+  } finally {
+    $('refresh-btn').disabled = false;
+    $('refresh-btn').textContent = '立即刷新';
+  }
 });
 
 let autoTimer = null;

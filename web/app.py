@@ -249,8 +249,10 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
     if _twse_channel(symbol):
         official = fetch_tw_realtime_quote(symbol)
         if official:
-            # TWSE 即時 quote 優先覆蓋 price 與 change_1d，
-            # 但保留 yfinance 算出的 RSI/MA/Beta 等歷史指標。
+            if not yf_ind:
+                # yfinance 失敗：直接回 TWSE 完整 schema（含 rsi=None 等）
+                return official
+            # 兩邊都有：yfinance 為基底，TWSE 即時 price/change 覆蓋
             for key in ("price", "change_1d"):
                 if official.get(key) is not None:
                     yf_ind[key] = official[key]
@@ -258,10 +260,7 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
             for key in ("high52", "low52"):
                 if yf_ind.get(key) is None and official.get(key) is not None:
                     yf_ind[key] = official[key]
-            yf_ind["source"] = (
-                "twse_realtime+yfinance" if yf_ind.get("rsi") is not None
-                else "twse_realtime"
-            )
+            yf_ind["source"] = "twse_realtime+yfinance"
             return yf_ind
 
     return yf_ind
