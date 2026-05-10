@@ -3,11 +3,12 @@
 
 import asyncio
 import json
+import math
 import sqlite3
 import ssl
 import warnings
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from urllib.error import URLError
@@ -36,6 +37,8 @@ BASE = Path(__file__).parent
 DB = BASE / "portfolio.db"
 USD_TWD = 32.0  # 預估匯率 (簡化)
 TWSE_MIS_URL = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
+TWSE_STOCK_DAY_URL = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
+TPEX_DAILY_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock"
 
 # SSL context for HTTPS calls (TWSE, etc.).
 #
@@ -135,6 +138,38 @@ def _twse_channel(symbol: str) -> Optional[str]:
         return f"otc_{symbol[:-4]}.tw"
     return None
 
+def _tw_symbol_code(symbol: str) -> Optional[str]:
+    if symbol.endswith(".TW"):
+        return symbol[:-3]
+    if symbol.endswith(".TWO"):
+        return symbol[:-4]
+    return None
+
+def _month_starts(months: int) -> list[date]:
+    today = date.today()
+    starts = []
+    y, m = today.year, today.month
+    for _ in range(months):
+        starts.append(date(y, m, 1))
+        m -= 1
+        if m == 0:
+            y -= 1
+            m = 12
+    return starts
+
+def _parse_tw_date(value: str) -> Optional[pd.Timestamp]:
+    value = str(value).strip()
+    if not value:
+        return None
+    try:
+        parts = value.split("/")
+        if len(parts) == 3 and len(parts[0]) <= 3:
+            year = int(parts[0]) + 1911
+            return pd.Timestamp(year=year, month=int(parts[1]), day=int(parts[2]))
+        return pd.Timestamp(value)
+    except Exception:
+        return None
+
 def fetch_tw_realtime_quote(symbol: str) -> dict:
     """Fallback quote source for Taiwan symbols via TWSE/TPEX realtime feed.
 
@@ -193,6 +228,120 @@ def fetch_tw_realtime_quote(symbol: str) -> dict:
         "source": "twse_realtime",
     }
 
+def _fetch_json(url: str, params: dict, timeout: int = 10) -> dict:
+    req = Request(
+        f"{url}?{urlencode(params)}",
+        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+    )
+    with urlopen(req, timeout=timeout, context=SSL_CONTEXT) as resp:
+        return json.loads(resp.read().decode("utf-8-sig"))
+
+def fetch_twse_daily_history(symbol: str, months: int = 14) -> pd.DataFrame:
+    """Fetch TWSE-listed daily OHLCV history from official monthly API."""
+    code = _tw_symbol_code(symbol)
+    if not code or not symbol.endswith(".TW"):
+        return pd.DataFrame()
+
+    rows = []
+    for month_start in _month_starts(months):
+        try:
+            payload = _fetch_json(
+                TWSE_STOCK_DAY_URL,
+                {
+                    "response": "json",
+                    "date": month_start.strftime("%Y%m%d"),
+                    "stockNo": code,
+                },
+            )
+        except (URLError, TimeoutError, json.JSONDecodeError, OSError):
+            continue
+
+        for row in payload.get("data") or []:
+            if len(row) < 7:
+                continue
+            ts = _parse_tw_date(row[0])
+            close = _safe_float(row[6])
+            if ts is None or close is None:
+                continue
+            rows.append({
+                "Date": ts,
+                "Open": _safe_float(row[3]),
+                "High": _safe_float(row[4]),
+                "Low": _safe_float(row[5]),
+                "Close": close,
+                "Volume": _safe_float(row[1]) or 0,
+            })
+
+    return _rows_to_history(rows, "twse_daily")
+
+def fetch_tpex_daily_history(symbol: str, months: int = 14) -> pd.DataFrame:
+    """Fetch TPEx-listed daily OHLCV history from official monthly API."""
+    code = _tw_symbol_code(symbol)
+    if not code or not symbol.endswith(".TWO"):
+        return pd.DataFrame()
+
+    rows = []
+    for month_start in _month_starts(months):
+        date_str = month_start.strftime("%Y/%m/%d")
+        try:
+            payload = _fetch_json(
+                TPEX_DAILY_URL,
+                {"code": code, "date": date_str, "response": "json"},
+            )
+        except (URLError, TimeoutError, json.JSONDecodeError, OSError):
+            continue
+
+        table_rows = payload.get("data") or []
+        if not table_rows and payload.get("tables"):
+            table_rows = (payload.get("tables") or [{}])[0].get("data") or []
+        for row in table_rows:
+            if isinstance(row, dict):
+                vals = [
+                    row.get("date") or row.get("日期"),
+                    row.get("volume") or row.get("成交股數"),
+                    row.get("open") or row.get("開盤"),
+                    row.get("high") or row.get("最高"),
+                    row.get("low") or row.get("最低"),
+                    row.get("close") or row.get("收盤"),
+                ]
+            else:
+                vals = row
+            if len(vals) < 6:
+                continue
+            ts = _parse_tw_date(vals[0])
+            close = _safe_float(vals[5])
+            if ts is None or close is None:
+                continue
+            rows.append({
+                "Date": ts,
+                "Open": _safe_float(vals[2]),
+                "High": _safe_float(vals[3]),
+                "Low": _safe_float(vals[4]),
+                "Close": close,
+                "Volume": _safe_float(vals[1]) or 0,
+            })
+
+    return _rows_to_history(rows, "tpex_daily")
+
+def _rows_to_history(rows: list[dict], source: str) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame()
+    h = pd.DataFrame(rows).dropna(subset=["Date", "Close"])
+    h = h.drop_duplicates(subset=["Date"]).sort_values("Date")
+    h = h.set_index("Date")
+    h.attrs["source"] = source
+    for col in ("Open", "High", "Low"):
+        h[col] = h[col].fillna(h["Close"])
+    h["Volume"] = h["Volume"].fillna(0)
+    return h
+
+def fetch_official_tw_daily_history(symbol: str, months: int = 14) -> pd.DataFrame:
+    if symbol.endswith(".TW"):
+        return fetch_twse_daily_history(symbol, months=months)
+    if symbol.endswith(".TWO"):
+        return fetch_tpex_daily_history(symbol, months=months)
+    return pd.DataFrame()
+
 def fetch_benchmark_close(symbol: str) -> pd.Series:
     """Best-effort benchmark history for beta calculation."""
     try:
@@ -205,8 +354,34 @@ def fetch_benchmark_close(symbol: str) -> pd.Series:
     except Exception:
         return pd.Series(dtype=float)
 
-def fetch_yfinance_indicators(symbol: str, bench_close=None) -> dict:
-    """Full indicator source backed by Yahoo Finance history.
+def _normalize_history_index(h: pd.DataFrame) -> pd.DataFrame:
+    if len(h) == 0:
+        return h
+    h = h.copy()
+    h.index = pd.to_datetime(h.index).tz_localize(None)
+    return h
+
+def fetch_history(symbol: str, period: str = "1y") -> tuple[pd.DataFrame, str]:
+    """Fetch OHLCV history with official Taiwan daily data as fallback."""
+    try:
+        h = yf.Ticker(symbol).history(period=period)
+        if len(h) > 0:
+            h = _normalize_history_index(h)
+            h.attrs["source"] = "yfinance"
+            return h, "yfinance"
+    except Exception:
+        pass
+
+    if _twse_channel(symbol):
+        months_by_period = {"1mo": 2, "3mo": 4, "6mo": 8, "1y": 14, "2y": 26}
+        months = months_by_period.get(period, 14)
+        h = fetch_official_tw_daily_history(symbol, months=months)
+        if len(h) > 0:
+            return h, h.attrs.get("source", "official_tw_daily")
+    return pd.DataFrame(), ""
+
+def _indicators_from_history(h: pd.DataFrame, bench_close=None, source: str = "") -> dict:
+    """Compute partial indicator schema from any OHLCV history DataFrame.
 
     回 partial schema：每個 indicator 都有對應的最低資料量需求，缺的就回 None：
       - price / change_1d:  ≥ 1 筆
@@ -219,62 +394,76 @@ def fetch_yfinance_indicators(symbol: str, bench_close=None) -> dict:
     新上市股（如 009819 上市才 18 天）以前會被 len < 20 卡住整個 return {}，
     現在改成只缺什麼回什麼，至少 price 與 RSI 仍可用。
     """
+    if len(h) < 1:
+        return {}
+    c = h["Close"]
+    n = len(c)
+
+    price = float(c.iloc[-1])
+    prev_d = float(c.iloc[-2]) if n > 1 else price
+    change_1d = round((price / prev_d - 1) * 100, 2) if n > 1 else None
+    change_1m = round((price / float(c.iloc[-22]) - 1) * 100, 2) if n > 21 else None
+
+    ma20 = round(float(c.rolling(20).mean().iloc[-1]), 2) if n >= 20 else None
+    ma60 = round(float(c.rolling(60).mean().iloc[-1]), 2) if n >= 60 else None
+
+    if n >= 14:
+        d = c.diff()
+        gain = d.clip(lower=0).rolling(14).mean()
+        loss = (-d.clip(upper=0)).rolling(14).mean()
+        rsi_val = (100 - 100 / (1 + gain / loss)).iloc[-1]
+        rsi = round(float(rsi_val), 1) if not pd.isna(rsi_val) else None
+    else:
+        rsi = None
+
+    if n >= 20:
+        high52 = round(float(c.iloc[-252:].max()), 2)
+        low52 = round(float(c.iloc[-252:].min()), 2)
+    else:
+        high52 = round(float(c.max()), 2)
+        low52 = round(float(c.min()), 2)
+
+    beta = None
+    if bench_close is not None and len(bench_close) > 20 and n >= 20:
+        al = pd.concat([c.rename("s"), bench_close.rename("m")], axis=1).dropna()
+        if len(al) > 20:
+            rs = al["s"].pct_change().dropna()
+            rm = al["m"].pct_change().dropna()
+            cv = np.cov(rs, rm)
+            beta_val = cv[0, 1] / cv[1, 1]
+            beta = round(float(beta_val), 2) if not np.isnan(beta_val) else None
+
+    return {
+        "price": round(price, 2),
+        "change_1d": change_1d,
+        "change_1m": change_1m,
+        "rsi": rsi,
+        "ma20": ma20,
+        "ma60": ma60,
+        "high52": high52,
+        "low52": low52,
+        "beta": beta,
+        "source": source or h.attrs.get("source") or "history",
+    }
+
+def fetch_yfinance_indicators(symbol: str, bench_close=None) -> dict:
+    """Full indicator source backed by Yahoo Finance history."""
     try:
         h = yf.Ticker(symbol).history(period="1y")
         if len(h) < 1:
             return {}
-        h.index = h.index.tz_localize(None)
-        c = h["Close"]
-        n = len(c)
-
-        price = float(c.iloc[-1])
-        prev_d = float(c.iloc[-2]) if n > 1 else price
-        change_1d = round((price / prev_d - 1) * 100, 2) if n > 1 else None
-        change_1m = round((price / float(c.iloc[-22]) - 1) * 100, 2) if n > 21 else None
-
-        ma20 = round(float(c.rolling(20).mean().iloc[-1]), 2) if n >= 20 else None
-        ma60 = round(float(c.rolling(60).mean().iloc[-1]), 2) if n >= 60 else None
-
-        if n >= 14:
-            d = c.diff()
-            gain = d.clip(lower=0).rolling(14).mean()
-            loss = (-d.clip(upper=0)).rolling(14).mean()
-            rsi_val = (100 - 100 / (1 + gain / loss)).iloc[-1]
-            rsi = round(float(rsi_val), 1) if not pd.isna(rsi_val) else None
-        else:
-            rsi = None
-
-        if n >= 20:
-            high52 = round(float(c.iloc[-252:].max()), 2)
-            low52 = round(float(c.iloc[-252:].min()), 2)
-        else:
-            high52 = round(float(c.max()), 2)
-            low52 = round(float(c.min()), 2)
-
-        beta = None
-        if bench_close is not None and len(bench_close) > 20 and n >= 20:
-            al = pd.concat([c.rename("s"), bench_close.rename("m")], axis=1).dropna()
-            if len(al) > 20:
-                rs = al["s"].pct_change().dropna()
-                rm = al["m"].pct_change().dropna()
-                cv = np.cov(rs, rm)
-                beta_val = cv[0, 1] / cv[1, 1]
-                beta = round(float(beta_val), 2) if not np.isnan(beta_val) else None
-
-        return {
-            "price": round(price, 2),
-            "change_1d": change_1d,
-            "change_1m": change_1m,
-            "rsi": rsi,
-            "ma20": ma20,
-            "ma60": ma60,
-            "high52": high52,
-            "low52": low52,
-            "beta": beta,
-            "source": "yfinance",
-        }
+        h = _normalize_history_index(h)
+        return _indicators_from_history(h, bench_close=bench_close, source="yfinance")
     except Exception:
         return {}
+
+def fetch_official_tw_indicators(symbol: str, bench_close=None) -> dict:
+    h = fetch_official_tw_daily_history(symbol, months=14)
+    if len(h) == 0:
+        return {}
+    result = _indicators_from_history(h, bench_close=bench_close, source=h.attrs.get("source", "official_tw_daily"))
+    result["source"] = h.attrs.get("source", "official_tw_daily")
+    return result
 
 def fetch_indicators(symbol: str, bench_close=None) -> dict:
     """Market-aware quote fetcher.
@@ -284,6 +473,8 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
     這樣可避免「全走 TWSE 導致技術指標凍結」的問題。
     """
     yf_ind = fetch_yfinance_indicators(symbol, bench_close) or {}
+    if not yf_ind and _twse_channel(symbol):
+        yf_ind = fetch_official_tw_indicators(symbol, bench_close) or {}
 
     if _twse_channel(symbol):
         official = fetch_tw_realtime_quote(symbol)
@@ -299,7 +490,8 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
             for key in ("high52", "low52"):
                 if yf_ind.get(key) is None and official.get(key) is not None:
                     yf_ind[key] = official[key]
-            yf_ind["source"] = "twse_realtime+yfinance"
+            history_source = yf_ind.get("source") or "history"
+            yf_ind["source"] = f"twse_realtime+{history_source}"
             return yf_ind
 
     return yf_ind
@@ -709,6 +901,83 @@ def _recommend_position(d: dict, market: dict | None) -> dict:
         "color": "bg-gray-600",
         "reason": f"RSI {rsi:.0f} / β {beta:.2f} / 損益 {pnl_pct:+.1f}% 無強訊號",
         "stop_loss": round(ma20, 2) if ma20 else None,
+    }
+
+def _run_backtest_for_position(position: dict, months: int = 6) -> dict:
+    symbol = position["symbol"]
+    shares = float(position["shares"])
+    cost_price = float(position["cost_price"])
+    period = "2y" if months > 12 else "1y"
+    h, source = fetch_history(symbol, period=period)
+    if len(h) < 2:
+        return {
+            "symbol": symbol,
+            "name": position.get("name") or symbol,
+            "error": "no history",
+        }
+
+    cutoff = pd.Timestamp(datetime.now() - timedelta(days=months * 31))
+    h = h[h.index >= cutoff]
+    if len(h) < 2:
+        return {
+            "symbol": symbol,
+            "name": position.get("name") or symbol,
+            "error": "not enough history",
+        }
+
+    close = h["Close"].astype(float)
+    first = float(close.iloc[0])
+    last = float(close.iloc[-1])
+    current_value = last * shares
+    buy_hold_value = first * shares
+    cost_value = cost_price * shares
+    if position.get("currency") == "USD":
+        current_value *= USD_TWD
+        buy_hold_value *= USD_TWD
+        cost_value *= USD_TWD
+
+    daily = close.pct_change().dropna()
+    cumulative = close / first - 1
+    peak = cumulative.cummax()
+    drawdown = cumulative - peak
+    volatility = float(daily.std() * math.sqrt(252) * 100) if len(daily) else 0
+
+    return {
+        "symbol": symbol,
+        "name": position.get("name") or symbol,
+        "source": source,
+        "days": int(len(h)),
+        "first_date": h.index[0].date().isoformat(),
+        "last_date": h.index[-1].date().isoformat(),
+        "start_price": round(first, 2),
+        "end_price": round(last, 2),
+        "period_return_pct": round((last / first - 1) * 100, 2),
+        "position_pnl": round(current_value - cost_value, 0),
+        "buy_hold_pnl": round(current_value - buy_hold_value, 0),
+        "max_drawdown_pct": round(float(drawdown.min() * 100), 2),
+        "volatility_pct": round(volatility, 2),
+    }
+
+@app.get("/api/backtest")
+def api_backtest(months: int = 6):
+    months = max(1, min(months, 24))
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM positions").fetchall()
+    conn.close()
+    items = [_run_backtest_for_position(dict(r), months=months) for r in rows]
+    valid = [x for x in items if not x.get("error")]
+    total_position_pnl = sum(x["position_pnl"] for x in valid)
+    total_buy_hold_pnl = sum(x["buy_hold_pnl"] for x in valid)
+    avg_return = sum(x["period_return_pct"] for x in valid) / len(valid) if valid else 0
+    return {
+        "months": months,
+        "items": items,
+        "summary": {
+            "valid_count": len(valid),
+            "total_position_pnl": round(total_position_pnl, 0),
+            "total_buy_hold_pnl": round(total_buy_hold_pnl, 0),
+            "avg_return_pct": round(avg_return, 2),
+        },
     }
 
 
@@ -1136,6 +1405,67 @@ def _build_context(symbol: str) -> dict:
         parts.append(f"大盤: VIX {m.get('vix')}, 風險等級 {m.get('risk_level')}, 警訊數 {m.get('warnings_count')}/3")
 
     return {"context": "\n".join(parts), "symbol": symbol, "name": name}
+
+def _extract_tradingagents_sections(final_state) -> dict:
+    keys = [
+        "final_trade_decision",
+        "trader_proposal",
+        "risk_debate_state",
+        "investment_debate_state",
+        "market_report",
+        "sentiment_report",
+        "news_report",
+        "fundamentals_report",
+    ]
+    out = {}
+    for key in keys:
+        value = final_state.get(key) if isinstance(final_state, dict) else getattr(final_state, key, None)
+        if value:
+            out[key] = str(value)[:2500]
+    return out
+
+def _run_tradingagents(symbol: str, mode: str = "full") -> dict:
+    try:
+        from tradingagents.default_config import DEFAULT_CONFIG
+        from tradingagents.graph.trading_graph import TradingAgentsGraph
+    except ImportError as exc:
+        return {"error": f"TradingAgents 尚未安裝: {exc}"}
+
+    analysts = ["market", "fundamentals"] if mode == "quick" else ["market", "fundamentals", "news", "social"]
+    config = DEFAULT_CONFIG.copy()
+    config.update({
+        "llm_provider": "anthropic",
+        "deep_think_llm": "claude-sonnet-4-6" if mode == "quick" else "claude-opus-4-7",
+        "quick_think_llm": "claude-haiku-4-5-20251001",
+        "max_debate_rounds": 1,
+        "max_risk_discuss_rounds": 1,
+        "output_language": "Chinese",
+        "data_vendors": {
+            "core_stock_apis": "yfinance",
+            "technical_indicators": "yfinance",
+            "fundamental_data": "yfinance",
+            "news_data": "yfinance",
+        },
+    })
+    try:
+        graph = TradingAgentsGraph(selected_analysts=analysts, debug=False, config=config)
+        trade_date = str(date.today() - timedelta(days=1))
+        final_state, decision = graph.propagate(symbol, trade_date)
+        return {
+            "symbol": symbol,
+            "mode": mode,
+            "trade_date": trade_date,
+            "decision": decision,
+            "analysts": analysts,
+            "sections": _extract_tradingagents_sections(final_state),
+        }
+    except Exception as exc:
+        return {"error": str(exc), "symbol": symbol, "mode": mode}
+
+@app.get("/api/tradingagents/{symbol}")
+def api_tradingagents(symbol: str, mode: str = "full"):
+    mode = mode if mode in ("quick", "full") else "full"
+    return _run_tradingagents(symbol, mode=mode)
 
 @app.get("/api/llm-analyze-stream/{symbol}")
 def api_llm_analyze_stream(symbol: str, mode: str = "both"):

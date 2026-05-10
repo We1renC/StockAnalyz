@@ -61,6 +61,7 @@ tailwind.config = { darkMode: 'class' }
       警報
       <span id="alert-badge" class="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center hidden">0</span>
     </button>
+    <button data-tab="backtest" class="tab-btn px-6 py-3 font-semibold border-b-2 border-transparent text-gray-400 hover:text-white">回測</button>
   </div>
 
   <!-- Portfolio Tab -->
@@ -165,6 +166,38 @@ tailwind.config = { darkMode: 'class' }
     <div id="alerts-container" class="space-y-2"></div>
   </div>
 
+  <!-- Backtest Tab -->
+  <div id="tab-backtest" class="tab-content hidden">
+    <div class="bg-gray-800 p-3 rounded mb-3 flex gap-2 items-center flex-wrap">
+      <span class="text-xs text-gray-400">期間:</span>
+      <select id="backtest-months" class="bg-gray-700 px-2 py-1 rounded text-xs">
+        <option value="3">3 個月</option>
+        <option value="6" selected>6 個月</option>
+        <option value="12">12 個月</option>
+        <option value="24">24 個月</option>
+      </select>
+      <button onclick="loadBacktest()" class="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-xs">執行回測</button>
+    </div>
+    <div id="backtest-summary" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
+    <div class="bg-gray-800 rounded-lg overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-700 text-xs uppercase">
+          <tr>
+            <th class="px-3 py-2 text-left">代號</th>
+            <th class="px-3 py-2 text-left">名稱</th>
+            <th class="px-3 py-2 text-right">期間報酬</th>
+            <th class="px-3 py-2 text-right">持倉損益</th>
+            <th class="px-3 py-2 text-right">期初買入損益</th>
+            <th class="px-3 py-2 text-right">最大回撤</th>
+            <th class="px-3 py-2 text-right">年化波動</th>
+            <th class="px-3 py-2 text-left">資料源</th>
+          </tr>
+        </thead>
+        <tbody id="backtest-tbody" class="divide-y divide-gray-700"></tbody>
+      </table>
+    </div>
+  </div>
+
 </div>
 
 <!-- Diagnosis Modal -->
@@ -201,6 +234,12 @@ tailwind.config = { darkMode: 'class' }
         </button>
         <button onclick="runLLM('both')" id="llm-btn-both" class="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded text-sm font-semibold">
           分析師加審查員
+        </button>
+        <button onclick="runTradingAgents('full')" id="ta-btn-full" class="bg-emerald-700 hover:bg-emerald-800 px-4 py-2 rounded text-sm font-semibold">
+          TradingAgents 深度分析
+        </button>
+        <button onclick="runTradingAgents('quick')" id="ta-btn-quick" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm font-semibold">
+          TradingAgents 快速版
         </button>
         <span class="text-xs text-gray-400" id="llm-config-hint">設定中查看 LLM 配置</span>
       </div>
@@ -432,6 +471,9 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.classList.remove('border-transparent','text-gray-400');
     document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'));
     $('tab-' + btn.dataset.tab).classList.remove('hidden');
+    if (btn.dataset.tab === 'backtest' && !$('backtest-tbody').innerHTML.trim()) {
+      loadBacktest();
+    }
   });
 });
 
@@ -589,6 +631,7 @@ function renderWatchlist(items) {
 let _alertTypeMeta = {};
 // 前端額外篩選（type chip）
 let _alertTypeFilter = '';
+let _collapsedAlertDates = {};
 
 function renderAlertTypeChips(alerts) {
   // 統計每個 type 出現次數，產生 chip
@@ -726,6 +769,7 @@ function renderAlerts(alerts) {
   $('alerts-container').innerHTML = order.map(key => {
     const items = groups[key];
     const unack = items.filter(x => !x.acknowledged).length;
+    const collapsed = !!_collapsedAlertDates[key];
     const badge = unack > 0
       ? `<span class="text-xs bg-red-600 text-white px-2 py-0.5 rounded ml-2">${unack} 未讀</span>`
       : '';
@@ -734,10 +778,16 @@ function renderAlerts(alerts) {
         <span class="text-sm font-bold text-emerald-400">${formatDateHeader(key)}</span>
         <span class="text-xs text-gray-500 ml-2">${items.length} 筆</span>
         ${badge}
+        <button onclick="toggleAlertDate('${key}')" class="ml-auto text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">${collapsed ? '展開' : '收合'}</button>
       </div>
-      <div class="space-y-2">${items.map(renderCard).join('')}</div>
+      <div class="space-y-2 ${collapsed ? 'hidden' : ''}">${items.map(renderCard).join('')}</div>
     </div>`;
   }).join('');
+}
+
+function toggleAlertDate(key) {
+  _collapsedAlertDates[key] = !_collapsedAlertDates[key];
+  renderAlerts(window._allAlerts || []);
 }
 
 let _currentSymbol = null;
@@ -884,6 +934,53 @@ function renderStep(step) {
 
 function rerenderLLM(steps) {
   $('llm-result').innerHTML = steps.map(renderStep).join('<div class="h-2"></div>');
+}
+
+function renderTradingAgentsResult(data) {
+  if (data.error) {
+    return `<div class="bg-red-900 bg-opacity-30 p-3 rounded text-sm text-red-200">${data.error}</div>`;
+  }
+  const sectionLabels = {
+    final_trade_decision: '最終決策',
+    trader_proposal: '交易員提案',
+    risk_debate_state: '風險委員會',
+    investment_debate_state: '多空辯論',
+    market_report: '技術分析',
+    sentiment_report: '情緒分析',
+    news_report: '新聞分析',
+    fundamentals_report: '基本面分析',
+  };
+  const sections = Object.entries(data.sections || {}).map(([key, value]) => `
+    <div class="bg-gray-900 bg-opacity-40 p-3 rounded">
+      <div class="text-xs text-emerald-300 font-semibold mb-1">${sectionLabels[key] || key}</div>
+      <div class="prose prose-invert prose-sm max-w-none">${marked.parse(String(value || ''))}</div>
+    </div>`).join('');
+  return `<div class="bg-emerald-900 bg-opacity-20 p-3 rounded text-sm">
+      <div class="font-semibold text-emerald-300 mb-1">TradingAgents ${data.mode === 'quick' ? '快速版' : '深度分析'}</div>
+      <div class="text-xs text-gray-300 mb-2">分析師: ${(data.analysts || []).join(', ')}，日期: ${data.trade_date || '—'}</div>
+      <div class="bg-black bg-opacity-30 p-2 rounded mb-3">${marked.parse(String(data.decision || '無決策輸出'))}</div>
+      <div class="space-y-2">${sections || '<div class="text-gray-400">沒有額外段落</div>'}</div>
+    </div>`;
+}
+
+async function runTradingAgents(mode) {
+  if (!_currentSymbol) return;
+  const btnFull = $('ta-btn-full'), btnQuick = $('ta-btn-quick');
+  const target = mode === 'quick' ? btnQuick : btnFull;
+  const original = target.textContent;
+  btnFull.disabled = btnQuick.disabled = true;
+  target.textContent = '分析中...';
+  $('llm-result').classList.remove('hidden');
+  $('llm-result').innerHTML = `<div class="bg-gray-700 p-3 rounded text-sm">TradingAgents 啟動中，完整模式可能需要數分鐘。</div>`;
+  try {
+    const data = await fetch(`/api/tradingagents/${encodeURIComponent(_currentSymbol)}?mode=${mode}`).then(r=>r.json());
+    $('llm-result').innerHTML = renderTradingAgentsResult(data);
+  } catch (e) {
+    $('llm-result').innerHTML = `<div class="text-red-400 p-3">錯誤: ${e}</div>`;
+  } finally {
+    btnFull.disabled = btnQuick.disabled = false;
+    target.textContent = original;
+  }
 }
 
 async function runLLM(mode) {
@@ -1186,6 +1283,59 @@ async function ackAlert(id) {
     body: JSON.stringify({id}),
   });
   loadAll();
+}
+
+function renderBacktest(data) {
+  const s = data.summary || {};
+  const pnlColor = (s.total_position_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-red-400';
+  $('backtest-summary').innerHTML = `
+    <div class="bg-gray-800 p-3 rounded">
+      <div class="text-xs text-gray-400">有效標的</div>
+      <div class="text-xl font-bold">${s.valid_count || 0}</div>
+    </div>
+    <div class="bg-gray-800 p-3 rounded">
+      <div class="text-xs text-gray-400">平均期間報酬</div>
+      <div class="text-xl font-bold ${(s.avg_return_pct || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}">${(s.avg_return_pct || 0) >= 0 ? '+' : ''}${fmt(s.avg_return_pct)}%</div>
+    </div>
+    <div class="bg-gray-800 p-3 rounded">
+      <div class="text-xs text-gray-400">目前持倉損益</div>
+      <div class="text-xl font-bold ${pnlColor}">NT$ ${(s.total_position_pnl || 0) >= 0 ? '+' : ''}${fmtInt(s.total_position_pnl || 0)}</div>
+    </div>
+    <div class="bg-gray-800 p-3 rounded">
+      <div class="text-xs text-gray-400">期初買入損益</div>
+      <div class="text-xl font-bold ${(s.total_buy_hold_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}">NT$ ${(s.total_buy_hold_pnl || 0) >= 0 ? '+' : ''}${fmtInt(s.total_buy_hold_pnl || 0)}</div>
+    </div>`;
+
+  $('backtest-tbody').innerHTML = (data.items || []).map(item => {
+    if (item.error) {
+      return `<tr class="hover:bg-gray-700">
+        <td class="px-3 py-2 font-mono">${item.symbol}</td>
+        <td class="px-3 py-2">${item.name || ''}</td>
+        <td class="px-3 py-2 text-red-300" colspan="6">${item.error}</td>
+      </tr>`;
+    }
+    const retColor = item.period_return_pct >= 0 ? 'text-emerald-400' : 'text-red-400';
+    const pnlColor = item.position_pnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+    const bhColor = item.buy_hold_pnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+    return `<tr class="hover:bg-gray-700">
+      <td class="px-3 py-2 font-mono">${item.symbol}</td>
+      <td class="px-3 py-2">${item.name || ''}<div class="text-xs text-gray-500">${item.first_date} 到 ${item.last_date}</div></td>
+      <td class="px-3 py-2 text-right font-bold ${retColor}">${item.period_return_pct >= 0 ? '+' : ''}${fmt(item.period_return_pct)}%</td>
+      <td class="px-3 py-2 text-right ${pnlColor}">${item.position_pnl >= 0 ? '+' : ''}${fmtInt(item.position_pnl)}</td>
+      <td class="px-3 py-2 text-right ${bhColor}">${item.buy_hold_pnl >= 0 ? '+' : ''}${fmtInt(item.buy_hold_pnl)}</td>
+      <td class="px-3 py-2 text-right text-red-300">${fmt(item.max_drawdown_pct)}%</td>
+      <td class="px-3 py-2 text-right">${fmt(item.volatility_pct)}%</td>
+      <td class="px-3 py-2 text-xs text-gray-400">${item.source || '—'}<div>${item.days} 日</div></td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadBacktest() {
+  $('backtest-summary').innerHTML = `<div class="col-span-4 bg-gray-800 p-4 rounded text-gray-400">回測中...</div>`;
+  $('backtest-tbody').innerHTML = '';
+  const months = $('backtest-months').value;
+  const data = await fetch(`/api/backtest?months=${months}`).then(r=>r.json());
+  renderBacktest(data);
 }
 
 let _refreshBadgeTimer = null;
