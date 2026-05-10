@@ -821,23 +821,24 @@ def api_watchlist():
     out.sort(key=lambda x: (-x["priority"], x.get("category") or ""))
     return {"watchlist": out}
 
-# Alert type 顯示資訊：icon (用於分類視覺化)、中文標籤、優先排序權重 (大=越優先)
+# Alert type 顯示資訊：中文標籤、tailwind 配色、優先排序權重 (大=越優先)
+# color 是 tailwind class，前端直接套用 → 不同 type 用不同色塊辨識，不靠 icon
 ALERT_TYPE_META = {
-    "STOP_LOSS":       {"icon": "🛑", "label": "停損",     "priority": 100},
-    "ENTRY_TRIGGER":   {"icon": "🎯", "label": "進場",     "priority": 80},
-    "PROFIT_TARGET":   {"icon": "💰", "label": "停利",     "priority": 75},
-    "LOSS_WARN":       {"icon": "⚠️", "label": "虧損預警", "priority": 70},
-    "BELOW_MA20":      {"icon": "📉", "label": "破均線",   "priority": 60},
-    "RSI_OVERBOUGHT":  {"icon": "🔥", "label": "超買",     "priority": 50},
-    "PROFIT_30":       {"icon": "📈", "label": "獲利達標", "priority": 45},
-    "RSI_OVERSOLD":    {"icon": "❄️", "label": "超賣",     "priority": 40},
+    "STOP_LOSS":       {"label": "停損",     "color": "bg-red-700",    "priority": 100},
+    "ENTRY_TRIGGER":   {"label": "進場",     "color": "bg-emerald-700","priority": 80},
+    "PROFIT_TARGET":   {"label": "停利",     "color": "bg-yellow-600", "priority": 75},
+    "LOSS_WARN":       {"label": "虧損預警", "color": "bg-orange-700", "priority": 70},
+    "BELOW_MA20":      {"label": "破均線",   "color": "bg-rose-700",   "priority": 60},
+    "RSI_OVERBOUGHT":  {"label": "超買",     "color": "bg-pink-700",   "priority": 50},
+    "PROFIT_30":       {"label": "獲利達標", "color": "bg-green-700",  "priority": 45},
+    "RSI_OVERSOLD":    {"label": "超賣",     "color": "bg-cyan-700",   "priority": 40},
 }
 
 def _enrich_alert(row: dict) -> dict:
-    """Add icon/label/sort_priority to alert row for frontend display."""
-    meta = ALERT_TYPE_META.get(row.get("type"), {"icon": "•", "label": row.get("type") or "其他", "priority": 0})
-    row["type_icon"] = meta["icon"]
+    """Add label/color/sort_priority to alert row for frontend display."""
+    meta = ALERT_TYPE_META.get(row.get("type"), {"label": row.get("type") or "其他", "color": "bg-gray-700", "priority": 0})
     row["type_label"] = meta["label"]
+    row["type_color"] = meta["color"]
     row["sort_priority"] = meta["priority"]
     return row
 

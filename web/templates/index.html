@@ -614,10 +614,13 @@ function renderAlertTypeChips(alerts) {
     return pb - pa;
   });
   types.forEach(t => {
-    const meta = _alertTypeMeta[t] || { icon: '•', label: t };
-    const active = _alertTypeFilter === t ? 'bg-emerald-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600';
+    const meta = _alertTypeMeta[t] || { label: t, color: 'bg-gray-700' };
+    // 未選中：用 type 自己的顏色 (淡)；選中：強調色
+    const active = _alertTypeFilter === t
+      ? `${meta.color} text-white ring-2 ring-white`
+      : `${meta.color} bg-opacity-50 text-gray-100 hover:bg-opacity-80`;
     container.insertAdjacentHTML('beforeend',
-      `<button data-type="${t}" class="alert-type-chip ${active} px-2 py-1 rounded">${meta.icon} ${meta.label} ${counts[t]}</button>`);
+      `<button data-type="${t}" class="alert-type-chip ${active} px-2 py-1 rounded font-semibold">${meta.label} ${counts[t]}</button>`);
   });
 
   // 綁事件
@@ -662,30 +665,27 @@ function renderAlerts(alerts) {
     `<div class="bg-gray-800 p-6 rounded text-center text-gray-400">沒有符合條件的警報</div>` :
     visible.map(a => {
       const levelStyles = {
-        danger:  { bar: 'border-red-500',    bg: 'bg-red-900 bg-opacity-30',    icon: 'bg-red-700' },
-        warning: { bar: 'border-yellow-500', bg: 'bg-yellow-900 bg-opacity-30', icon: 'bg-yellow-700' },
-        info:    { bar: 'border-blue-500',   bg: 'bg-blue-900 bg-opacity-30',   icon: 'bg-blue-700' },
+        danger:  { bar: 'border-red-500',    bg: 'bg-red-900 bg-opacity-20' },
+        warning: { bar: 'border-yellow-500', bg: 'bg-yellow-900 bg-opacity-20' },
+        info:    { bar: 'border-blue-500',   bg: 'bg-blue-900 bg-opacity-20' },
       };
       const s = levelStyles[a.level] || levelStyles.info;
       const ackOpacity = a.acknowledged ? 'opacity-40' : '';
       const tsShort = (a.ts || '').replace('T', ' ').substring(5, 16);  // MM-DD HH:MM
-      const icon = a.type_icon || '•';
       const typeLabel = a.type_label || a.type;
+      const typeColor = a.type_color || 'bg-gray-700';
       const priceStr = (a.price !== null && a.price !== undefined) ? `@ ${Number(a.price).toFixed(2)}` : '';
 
-      return `<div class="${s.bg} ${ackOpacity} border-l-4 ${s.bar} rounded flex">
-        <div class="${s.icon} flex items-center justify-center px-4 text-2xl rounded-l">${icon}</div>
-        <div class="flex-1 p-3">
-          <div class="flex items-center gap-2 mb-1">
-            <span class="text-xs ${s.icon} text-white px-2 py-0.5 rounded font-semibold">${typeLabel}</span>
-            <span class="font-mono font-semibold">${a.symbol}</span>
-            <span class="text-xs text-gray-400">${priceStr}</span>
-            <span class="text-xs text-gray-500 ml-auto">${tsShort}</span>
-            ${!a.acknowledged ? `<button onclick="ackAlert(${a.id})" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">已讀</button>` : ''}
-          </div>
-          <div class="text-sm">${a.message}</div>
-          ${a.diagnosis ? `<div class="mt-2 text-xs text-gray-300 bg-black bg-opacity-30 p-2 rounded">${a.diagnosis}</div>` : ''}
+      return `<div class="${s.bg} ${ackOpacity} border-l-4 ${s.bar} rounded p-3">
+        <div class="flex items-center gap-2 mb-1.5 flex-wrap">
+          <span class="text-xs ${typeColor} text-white px-2.5 py-0.5 rounded font-bold">${typeLabel}</span>
+          <span class="font-mono font-bold text-base">${a.symbol}</span>
+          <span class="text-xs text-gray-400">${priceStr}</span>
+          <span class="text-xs text-gray-500 ml-auto">${tsShort}</span>
+          ${!a.acknowledged ? `<button onclick="ackAlert(${a.id})" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">已讀</button>` : ''}
         </div>
+        <div class="text-sm">${a.message}</div>
+        ${a.diagnosis ? `<div class="mt-2 text-xs text-gray-300 bg-black bg-opacity-30 p-2 rounded">${a.diagnosis}</div>` : ''}
       </div>`;
     }).join('');
 }
