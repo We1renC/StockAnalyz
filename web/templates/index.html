@@ -129,8 +129,9 @@ tailwind.config = { darkMode: 'class' }
 
   <!-- Alerts Tab -->
   <div id="tab-alerts" class="tab-content hidden">
-    <div class="bg-gray-800 p-3 rounded mb-3 flex flex-wrap gap-2 items-center">
-      <span class="text-xs text-gray-400">時間範圍:</span>
+    <!-- 篩選列 -->
+    <div class="bg-gray-800 p-3 rounded mb-2 flex flex-wrap gap-2 items-center">
+      <span class="text-xs text-gray-400">時間:</span>
       <select id="alert-days" class="bg-gray-700 px-2 py-1 rounded text-xs">
         <option value="1">今天</option>
         <option value="3">3天</option>
@@ -138,17 +139,28 @@ tailwind.config = { darkMode: 'class' }
         <option value="30">30天</option>
         <option value="90">90天</option>
       </select>
-      <span class="text-xs text-gray-400 ml-3">等級:</span>
+      <span class="text-xs text-gray-400 ml-2">等級:</span>
       <select id="alert-level" class="bg-gray-700 px-2 py-1 rounded text-xs">
         <option value="">全部</option>
         <option value="info">提示</option>
         <option value="warning">警告</option>
         <option value="danger">危險</option>
       </select>
-      <span class="text-xs text-gray-400 ml-3">代號:</span>
-      <input id="alert-symbol" type="text" placeholder="例如: 2883" class="bg-gray-700 px-2 py-1 rounded text-xs w-32">
+      <span class="text-xs text-gray-400 ml-2">代號:</span>
+      <input id="alert-symbol" type="text" placeholder="例如 2883" class="bg-gray-700 px-2 py-1 rounded text-xs w-28">
+      <span class="text-xs text-gray-400 ml-2">排序:</span>
+      <select id="alert-sort" class="bg-gray-700 px-2 py-1 rounded text-xs">
+        <option value="time" selected>時間倒序</option>
+        <option value="priority">重要性</option>
+      </select>
       <button onclick="loadAlertsFiltered()" class="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-xs">查詢</button>
       <button onclick="clearAlerts()" class="bg-red-700 hover:bg-red-800 px-3 py-1 rounded text-xs ml-auto">清除30天前</button>
+    </div>
+    <!-- Type chips：點擊快篩同類型 -->
+    <div id="alert-type-chips" class="bg-gray-800 p-2 rounded mb-3 flex flex-wrap gap-1.5 items-center text-xs">
+      <span class="text-gray-400 mr-1">類型:</span>
+      <button data-type="" class="alert-type-chip bg-emerald-600 px-2 py-1 rounded">全部</button>
+      <!-- 動態插入各 type chip -->
     </div>
     <div id="alerts-container" class="space-y-2"></div>
   </div>
@@ -449,6 +461,7 @@ async function loadAll() {
   renderPortfolio(p);
   window._watchlist = w.watchlist;
   renderWatchlist(w.watchlist);
+  if (a.type_meta) _alertTypeMeta = a.type_meta;
   renderAlerts(a.alerts);
   $('last-update').textContent = '最後更新：' + new Date().toLocaleTimeString('zh-TW');
 }
@@ -572,7 +585,54 @@ function renderWatchlist(items) {
   }).join('');
 }
 
+// 後端傳回的 type metadata，用於 chip 與排序
+let _alertTypeMeta = {};
+// 前端額外篩選（type chip）
+let _alertTypeFilter = '';
+
+function renderAlertTypeChips(alerts) {
+  // 統計每個 type 出現次數，產生 chip
+  const counts = {};
+  alerts.forEach(a => { counts[a.type] = (counts[a.type] || 0) + 1; });
+
+  const container = $('alert-type-chips');
+  // 移除舊 chip（保留第一個「全部」）
+  const all = container.querySelector('button[data-type=""]');
+  container.innerHTML = '';
+  container.insertAdjacentHTML('beforeend', '<span class="text-gray-400 mr-1">類型:</span>');
+
+  // 全部 chip
+  const totalCount = alerts.length;
+  const allActive = _alertTypeFilter === '' ? 'bg-emerald-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600';
+  container.insertAdjacentHTML('beforeend',
+    `<button data-type="" class="alert-type-chip ${allActive} px-2 py-1 rounded">全部 ${totalCount}</button>`);
+
+  // 各類型 chip（按 metadata priority 降序排）
+  const types = Object.keys(counts).sort((a, b) => {
+    const pa = _alertTypeMeta[a]?.priority || 0;
+    const pb = _alertTypeMeta[b]?.priority || 0;
+    return pb - pa;
+  });
+  types.forEach(t => {
+    const meta = _alertTypeMeta[t] || { icon: '•', label: t };
+    const active = _alertTypeFilter === t ? 'bg-emerald-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600';
+    container.insertAdjacentHTML('beforeend',
+      `<button data-type="${t}" class="alert-type-chip ${active} px-2 py-1 rounded">${meta.icon} ${meta.label} ${counts[t]}</button>`);
+  });
+
+  // 綁事件
+  container.querySelectorAll('.alert-type-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _alertTypeFilter = btn.dataset.type;
+      renderAlerts(window._allAlerts || []);
+    });
+  });
+}
+
 function renderAlerts(alerts) {
+  window._allAlerts = alerts;  // 存原始供 chip 過濾用
+
+  // unack badge（從原始全部算，不受 chip 影響）
   const unack = alerts.filter(a => !a.acknowledged);
   const badge = $('alert-badge');
   if (unack.length > 0) {
@@ -582,29 +642,49 @@ function renderAlerts(alerts) {
     badge.classList.add('hidden');
   }
 
-  $('alerts-container').innerHTML = alerts.length === 0 ?
-    `<div class="bg-gray-800 p-6 rounded text-center text-gray-400">目前沒有警報</div>` :
-    alerts.map(a => {
-      const colors = {
-        danger: 'bg-red-900 border-red-500',
-        warning: 'bg-yellow-900 border-yellow-500',
-        info: 'bg-blue-900 border-blue-500',
+  // 渲染 type chips
+  renderAlertTypeChips(alerts);
+
+  // 套用 type 篩選
+  let visible = _alertTypeFilter ? alerts.filter(a => a.type === _alertTypeFilter) : alerts;
+
+  // 套用排序
+  const sortMode = $('alert-sort')?.value || 'time';
+  if (sortMode === 'priority') {
+    visible = [...visible].sort((a, b) => {
+      const pa = a.sort_priority ?? 0, pb = b.sort_priority ?? 0;
+      if (pb !== pa) return pb - pa;
+      return (b.ts || '').localeCompare(a.ts || '');
+    });
+  }
+
+  $('alerts-container').innerHTML = visible.length === 0 ?
+    `<div class="bg-gray-800 p-6 rounded text-center text-gray-400">沒有符合條件的警報</div>` :
+    visible.map(a => {
+      const levelStyles = {
+        danger:  { bar: 'border-red-500',    bg: 'bg-red-900 bg-opacity-30',    icon: 'bg-red-700' },
+        warning: { bar: 'border-yellow-500', bg: 'bg-yellow-900 bg-opacity-30', icon: 'bg-yellow-700' },
+        info:    { bar: 'border-blue-500',   bg: 'bg-blue-900 bg-opacity-30',   icon: 'bg-blue-700' },
       };
-      const ackOpacity = a.acknowledged ? 'opacity-50' : '';
-      return `<div class="${colors[a.level] || 'bg-gray-800'} ${ackOpacity} border-l-4 p-3 rounded">
-        <div class="flex justify-between items-start">
-          <div class="flex-1">
-            <div class="flex gap-2 items-center text-xs text-gray-300 mb-1">
-              <span class="font-mono">${a.symbol}</span>
-              <span>•</span>
-              <span>${a.type}</span>
-              <span>•</span>
-              <span>${(a.ts||'').replace('T',' ').substring(0,16)}</span>
-            </div>
-            <div class="font-semibold">${a.message}</div>
-            ${a.diagnosis ? `<div class="mt-2 text-xs text-gray-300 bg-black bg-opacity-30 p-2 rounded">${a.diagnosis}</div>` : ''}
+      const s = levelStyles[a.level] || levelStyles.info;
+      const ackOpacity = a.acknowledged ? 'opacity-40' : '';
+      const tsShort = (a.ts || '').replace('T', ' ').substring(5, 16);  // MM-DD HH:MM
+      const icon = a.type_icon || '•';
+      const typeLabel = a.type_label || a.type;
+      const priceStr = (a.price !== null && a.price !== undefined) ? `@ ${Number(a.price).toFixed(2)}` : '';
+
+      return `<div class="${s.bg} ${ackOpacity} border-l-4 ${s.bar} rounded flex">
+        <div class="${s.icon} flex items-center justify-center px-4 text-2xl rounded-l">${icon}</div>
+        <div class="flex-1 p-3">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-xs ${s.icon} text-white px-2 py-0.5 rounded font-semibold">${typeLabel}</span>
+            <span class="font-mono font-semibold">${a.symbol}</span>
+            <span class="text-xs text-gray-400">${priceStr}</span>
+            <span class="text-xs text-gray-500 ml-auto">${tsShort}</span>
+            ${!a.acknowledged ? `<button onclick="ackAlert(${a.id})" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">已讀</button>` : ''}
           </div>
-          ${!a.acknowledged ? `<button onclick="ackAlert(${a.id})" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">已讀</button>` : ''}
+          <div class="text-sm">${a.message}</div>
+          ${a.diagnosis ? `<div class="mt-2 text-xs text-gray-300 bg-black bg-opacity-30 p-2 rounded">${a.diagnosis}</div>` : ''}
         </div>
       </div>`;
     }).join('');
@@ -1032,8 +1112,16 @@ async function loadAlertsFiltered() {
   if (level) params.set('level', level);
   if (symbol) params.set('symbol', symbol);
   const r = await fetch('/api/alerts/search?' + params.toString()).then(r=>r.json());
+  if (r.type_meta) _alertTypeMeta = r.type_meta;
   renderAlerts(r.alerts);
 }
+
+// 排序下拉變更時即時重渲染（不重打 API）
+document.addEventListener('change', e => {
+  if (e.target && e.target.id === 'alert-sort') {
+    renderAlerts(window._allAlerts || []);
+  }
+});
 
 async function clearAlerts() {
   if (!confirm('確認清除 30 天前的所有警報？')) return;

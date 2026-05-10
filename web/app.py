@@ -821,12 +821,36 @@ def api_watchlist():
     out.sort(key=lambda x: (-x["priority"], x.get("category") or ""))
     return {"watchlist": out}
 
+# Alert type 顯示資訊：icon (用於分類視覺化)、中文標籤、優先排序權重 (大=越優先)
+ALERT_TYPE_META = {
+    "STOP_LOSS":       {"icon": "🛑", "label": "停損",     "priority": 100},
+    "ENTRY_TRIGGER":   {"icon": "🎯", "label": "進場",     "priority": 80},
+    "PROFIT_TARGET":   {"icon": "💰", "label": "停利",     "priority": 75},
+    "LOSS_WARN":       {"icon": "⚠️", "label": "虧損預警", "priority": 70},
+    "BELOW_MA20":      {"icon": "📉", "label": "破均線",   "priority": 60},
+    "RSI_OVERBOUGHT":  {"icon": "🔥", "label": "超買",     "priority": 50},
+    "PROFIT_30":       {"icon": "📈", "label": "獲利達標", "priority": 45},
+    "RSI_OVERSOLD":    {"icon": "❄️", "label": "超賣",     "priority": 40},
+}
+
+def _enrich_alert(row: dict) -> dict:
+    """Add icon/label/sort_priority to alert row for frontend display."""
+    meta = ALERT_TYPE_META.get(row.get("type"), {"icon": "•", "label": row.get("type") or "其他", "priority": 0})
+    row["type_icon"] = meta["icon"]
+    row["type_label"] = meta["label"]
+    row["sort_priority"] = meta["priority"]
+    return row
+
+
 @app.get("/api/alerts")
 def api_alerts(limit: int = 50):
     conn = get_db()
     rows = conn.execute("SELECT * FROM alerts ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
     conn.close()
-    return {"alerts": [dict(r) for r in rows]}
+    return {
+        "alerts": [_enrich_alert(dict(r)) for r in rows],
+        "type_meta": ALERT_TYPE_META,
+    }
 
 class AckRequest(BaseModel):
     id: int
@@ -991,7 +1015,10 @@ def api_alerts_search(
     params.append(limit)
     rows = conn.execute(query, params).fetchall()
     conn.close()
-    return {"alerts": [dict(r) for r in rows]}
+    return {
+        "alerts": [_enrich_alert(dict(r)) for r in rows],
+        "type_meta": ALERT_TYPE_META,
+    }
 
 @app.delete("/api/alerts/clear")
 def api_clear_alerts(days: Optional[int] = None):
