@@ -9,6 +9,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.error import URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 import numpy as np
 import pandas as pd
@@ -29,6 +32,7 @@ warnings.filterwarnings("ignore")
 BASE = Path(__file__).parent
 DB = BASE / "portfolio.db"
 USD_TWD = 32.0  # 預估匯率 (簡化)
+TWSE_MIS_URL = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
 
 # ─────────────── Database ───────────────
 def get_db():
@@ -103,7 +107,93 @@ def init_db():
     conn.close()
 
 # ─────────────── Price + Indicators ───────────────
-def fetch_indicators(symbol: str, bench_close=None) -> dict:
+def _safe_float(value):
+    if value in (None, "", "-", "--", "---", "----", "null"):
+        return None
+    try:
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+def _twse_channel(symbol: str) -> Optional[str]:
+    if symbol.endswith(".TW"):
+        return f"tse_{symbol[:-3]}.tw"
+    if symbol.endswith(".TWO"):
+        return f"otc_{symbol[:-4]}.tw"
+    return None
+
+def fetch_tw_realtime_quote(symbol: str) -> dict:
+    """Fallback quote source for Taiwan symbols via TWSE/TPEX realtime feed.
+
+    Returns empty dict on any failure (network/timeout/parse error) so caller
+    can gracefully fall back to other sources without raising.
+    """
+    channel = _twse_channel(symbol)
+    if not channel:
+        return {}
+
+    query = urlencode({
+        "ex_ch": channel,
+        "json": "1",
+        "delay": "0",
+        "_": int(datetime.now().timestamp() * 1000),
+    })
+    req = Request(
+        f"{TWSE_MIS_URL}?{query}",
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://mis.twse.com.tw/stock/index.jsp",
+        },
+    )
+    try:
+        with urlopen(req, timeout=8) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return {}
+
+    msg_array = payload.get("msgArray") or []
+    if not msg_array:
+        return {}
+
+    row = msg_array[0]
+    price = _safe_float(row.get("z")) or _safe_float(row.get("pz")) or _safe_float(row.get("y"))
+    prev_close = _safe_float(row.get("y"))
+    high = _safe_float(row.get("h"))
+    low = _safe_float(row.get("l"))
+    if not price:
+        return {}
+
+    change_1d = None
+    if prev_close and prev_close != 0:
+        change_1d = (price / prev_close - 1) * 100
+
+    return {
+        "price": round(price, 2),
+        "change_1d": round(change_1d, 2) if change_1d is not None else None,
+        "change_1m": None,
+        "rsi": None,
+        "ma20": None,
+        "ma60": None,
+        "high52": round(high, 2) if high is not None else None,
+        "low52": round(low, 2) if low is not None else None,
+        "beta": None,
+        "source": "twse_realtime",
+    }
+
+def fetch_benchmark_close(symbol: str) -> pd.Series:
+    """Best-effort benchmark history for beta calculation."""
+    try:
+        h = yf.Ticker(symbol).history(period="1y")
+        if len(h) == 0:
+            return pd.Series(dtype=float)
+        close = h["Close"]
+        close.index = close.index.tz_localize(None)
+        return close
+    except Exception:
+        return pd.Series(dtype=float)
+
+def fetch_yfinance_indicators(symbol: str, bench_close=None) -> dict:
+    """Full indicator source backed by Yahoo Finance history."""
     try:
         h = yf.Ticker(symbol).history(period="1y")
         if len(h) < 20:
@@ -142,9 +232,69 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
             "high52": round(high52, 2),
             "low52": round(low52, 2),
             "beta": round(beta, 2) if beta else None,
+            "source": "yfinance",
         }
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception:
+        return {}
+
+def fetch_indicators(symbol: str, bench_close=None) -> dict:
+    """Market-aware quote fetcher.
+
+    Strategy: 永遠取 yfinance 的歷史指標（RSI/MA/Beta/52週高低），
+    台股額外用 TWSE/TPEX 即時 quote 覆蓋 price/change_1d 提升即時性。
+    這樣可避免「全走 TWSE 導致技術指標凍結」的問題。
+    """
+    yf_ind = fetch_yfinance_indicators(symbol, bench_close) or {}
+
+    if _twse_channel(symbol):
+        official = fetch_tw_realtime_quote(symbol)
+        if official:
+            # TWSE 即時 quote 優先覆蓋 price 與 change_1d，
+            # 但保留 yfinance 算出的 RSI/MA/Beta 等歷史指標。
+            for key in ("price", "change_1d"):
+                if official.get(key) is not None:
+                    yf_ind[key] = official[key]
+            # high/low 只在 yfinance 沒有時用 TWSE 的當日高低備援
+            for key in ("high52", "low52"):
+                if yf_ind.get(key) is None and official.get(key) is not None:
+                    yf_ind[key] = official[key]
+            yf_ind["source"] = (
+                "twse_realtime+yfinance" if yf_ind.get("rsi") is not None
+                else "twse_realtime"
+            )
+            return yf_ind
+
+    return yf_ind
+
+def store_price_cache(c, symbol: str, ind: dict):
+    """Persist fresh quote data while keeping older indicator fields when absent."""
+    existing = c.execute("SELECT * FROM price_cache WHERE symbol=?", (symbol,)).fetchone()
+    existing_data = json.loads(existing["data"] or "{}") if existing and existing["data"] else {}
+    merged = dict(existing_data)
+    for key, value in ind.items():
+        if value is not None:
+            merged[key] = value
+    merged["source"] = ind.get("source", merged.get("source"))
+
+    c.execute(
+        """INSERT OR REPLACE INTO price_cache
+           (symbol, ts, price, rsi, ma20, ma60, high52, low52, change_1d, change_1m, beta, data)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            symbol,
+            datetime.now().isoformat(timespec="seconds"),
+            merged.get("price"),
+            merged.get("rsi"),
+            merged.get("ma20"),
+            merged.get("ma60"),
+            merged.get("high52"),
+            merged.get("low52"),
+            merged.get("change_1d"),
+            merged.get("change_1m"),
+            merged.get("beta"),
+            json.dumps(merged),
+        ),
+    )
 
 def get_market_state():
     """Pull VIX, TWII, SPX state."""
@@ -203,14 +353,14 @@ def evaluate_alerts(symbol: str, name: str, ind: dict, position=None, watch=None
             alerts.append({
                 "level": "info",
                 "type": "ENTRY_TRIGGER",
-                "message": f"📍 {name} 已到進場區 {target_entry:.2f}（現價 {price}）",
+                "message": f"{name} 已到進場區 {target_entry:.2f}（現價 {price}）",
                 "price": price,
             })
         if target_profit and price >= target_profit * 0.98:
             alerts.append({
                 "level": "info",
                 "type": "PROFIT_TARGET",
-                "message": f"🎯 {name} 已達停利目標 {target_profit:.2f}（現價 {price}）",
+                "message": f"{name} 已達停利目標 {target_profit:.2f}（現價 {price}）",
                 "price": price,
             })
 
@@ -223,21 +373,21 @@ def evaluate_alerts(symbol: str, name: str, ind: dict, position=None, watch=None
                 alerts.append({
                     "level": "danger",
                     "type": "STOP_LOSS",
-                    "message": f"🔴 {name} 虧損 {pnl_pct:.1f}% 觸及 -10% 停損線",
+                    "message": f"{name} 虧損 {pnl_pct:.1f}% 觸及 -10% 停損線",
                     "price": price,
                 })
             elif pnl_pct <= -7:
                 alerts.append({
                     "level": "warning",
                     "type": "LOSS_WARN",
-                    "message": f"⚠️ {name} 虧損 {pnl_pct:.1f}% 接近停損線",
+                    "message": f"{name} 虧損 {pnl_pct:.1f}% 接近停損線",
                     "price": price,
                 })
             elif pnl_pct >= 30:
                 alerts.append({
                     "level": "info",
                     "type": "PROFIT_30",
-                    "message": f"💰 {name} 獲利 {pnl_pct:.1f}%，可考慮分批停利",
+                    "message": f"{name} 獲利 {pnl_pct:.1f}%，可考慮分批停利",
                     "price": price,
                 })
 
@@ -246,14 +396,14 @@ def evaluate_alerts(symbol: str, name: str, ind: dict, position=None, watch=None
         alerts.append({
             "level": "warning",
             "type": "RSI_OVERBOUGHT",
-            "message": f"🔥 {name} RSI {rsi:.1f} 超買，注意回檔風險",
+            "message": f"{name} RSI {rsi:.1f} 超買，注意回檔風險",
             "price": price,
         })
     if rsi and rsi <= 25:
         alerts.append({
             "level": "info",
             "type": "RSI_OVERSOLD",
-            "message": f"❄️ {name} RSI {rsi:.1f} 超賣，可能反彈",
+            "message": f"{name} RSI {rsi:.1f} 超賣，可能反彈",
             "price": price,
         })
 
@@ -261,7 +411,7 @@ def evaluate_alerts(symbol: str, name: str, ind: dict, position=None, watch=None
         alerts.append({
             "level": "warning",
             "type": "BELOW_MA20",
-            "message": f"📉 {name} 跌破 MA20 ({ma20:.2f}) 約 3%，趨勢轉弱",
+            "message": f"{name} 跌破 MA20 ({ma20:.2f}) 約 3%，趨勢轉弱",
             "price": price,
         })
 
@@ -279,9 +429,9 @@ def diagnose(symbol: str, name: str, ind: dict, market: dict, position=None) -> 
 
     # 大盤狀態
     if market_level == "danger":
-        diag.append("🚨 大盤處於危險區（3+ 紅燈），任何進場都需減半。")
+        diag.append("[大盤危險] 3+ 紅燈，任何進場都需減半。")
     elif market_level == "warning":
-        diag.append("⚠️ 大盤警戒中，建議分批進場。")
+        diag.append("[大盤警戒] 建議分批進場。")
 
     # 個股技術
     if not price:
@@ -289,33 +439,62 @@ def diagnose(symbol: str, name: str, ind: dict, market: dict, position=None) -> 
 
     if rsi:
         if rsi >= 80:
-            diag.append(f"🔥 RSI {rsi} 嚴重超買 → 不追高，等回到 60 以下。")
+            diag.append(f"RSI {rsi} 嚴重超買 → 不追高，等回到 60 以下。")
         elif rsi >= 70:
-            diag.append(f"⚡ RSI {rsi} 偏高 → 短線回調風險。")
+            diag.append(f"RSI {rsi} 偏高 → 短線回調風險。")
         elif rsi <= 30:
-            diag.append(f"❄️ RSI {rsi} 超賣 → 反彈機會大。")
+            diag.append(f"RSI {rsi} 超賣 → 反彈機會大。")
         elif 40 <= rsi <= 60:
-            diag.append(f"✅ RSI {rsi} 健康 → 適合進場。")
+            diag.append(f"RSI {rsi} 健康 → 適合進場。")
 
     if ma20 and ma60:
         if price > ma20 > ma60:
-            diag.append("📈 多頭排列：價格 > MA20 > MA60，趨勢向上。")
+            diag.append("多頭排列：價格 > MA20 > MA60，趨勢向上。")
         elif price < ma20 < ma60:
-            diag.append("📉 空頭排列：建議先觀望。")
+            diag.append("空頭排列：建議先觀望。")
 
     if high52 and price >= high52 * 0.98:
-        diag.append(f"🎯 已達52週新高 {high52} 附近 → 突破有效則加碼，失敗則減碼。")
+        diag.append(f"已達52週新高 {high52} 附近 → 突破有效則加碼，失敗則減碼。")
 
     if position:
         cost = position.get("cost_price")
         if cost and price:
             pnl_pct = (price/cost - 1) * 100
             if pnl_pct < -10:
-                diag.append(f"🔴 已虧損 {pnl_pct:.1f}%，建議停損出場。")
+                diag.append(f"已虧損 {pnl_pct:.1f}%，建議停損出場。")
             elif pnl_pct > 30:
-                diag.append(f"💰 已獲利 {pnl_pct:.1f}%，建議分批停利 30~50%。")
+                diag.append(f"已獲利 {pnl_pct:.1f}%，建議分批停利 30~50%。")
 
-    return " | ".join(diag) if diag else "📊 暫無重大訊號，繼續觀察。"
+    return " | ".join(diag) if diag else "暫無重大訊號，繼續觀察。"
+
+def insert_alerts(c, symbol: str, name: str, ind: dict, market: dict, position=None, watch=None) -> int:
+    """Evaluate alerts, apply daily de-duplication, and insert new rows."""
+    created = 0
+    today_start = f"{datetime.now().date().isoformat()}T00:00:00"
+    alerts = evaluate_alerts(symbol, name, ind, position=position, watch=watch)
+    for a in alerts:
+        existing = c.execute(
+            "SELECT 1 FROM alerts WHERE symbol=? AND type=? AND ts>=? LIMIT 1",
+            (symbol, a["type"], today_start),
+        ).fetchone()
+        if existing:
+            continue
+
+        diag_text = diagnose(symbol, name, ind, market, position=position)
+        c.execute(
+            "INSERT INTO alerts (ts, symbol, level, type, message, price, diagnosis) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                datetime.now().isoformat(timespec="seconds"),
+                symbol,
+                a["level"],
+                a["type"],
+                a["message"],
+                a["price"],
+                diag_text,
+            ),
+        )
+        created += 1
+    return created
 
 # ─────────────── Background Monitor ───────────────
 async def monitor_loop():
@@ -323,10 +502,8 @@ async def monitor_loop():
     while True:
         try:
             print(f"[{datetime.now():%H:%M:%S}] Monitor cycle started...")
-            twii = yf.Ticker("^TWII").history(period="1y")["Close"]
-            twii.index = twii.index.tz_localize(None)
-            spx = yf.Ticker("^GSPC").history(period="1y")["Close"]
-            spx.index = spx.index.tz_localize(None)
+            twii = fetch_benchmark_close("^TWII")
+            spx = fetch_benchmark_close("^GSPC")
 
             market = get_market_state()
             conn = get_db()
@@ -341,24 +518,10 @@ async def monitor_loop():
                 bench = twii if ".TW" in d["symbol"] else spx
                 ind = fetch_indicators(d["symbol"], bench)
                 if ind and "price" in ind:
-                    c.execute("""INSERT OR REPLACE INTO price_cache
-                                 (symbol, ts, price, rsi, ma20, ma60, high52, low52, change_1d, change_1m, beta, data)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                              (d["symbol"], datetime.now().isoformat(timespec="seconds"),
-                               ind.get("price"), ind.get("rsi"), ind.get("ma20"), ind.get("ma60"),
-                               ind.get("high52"), ind.get("low52"), ind.get("change_1d"), ind.get("change_1m"),
-                               ind.get("beta"), json.dumps(ind)))
-                    alerts = evaluate_alerts(d["symbol"], d["name"], ind, position=d)
-                    for a in alerts:
-                        # avoid duplicate same-day alerts of same type
-                        existing = c.execute("SELECT 1 FROM alerts WHERE symbol=? AND type=? AND date(ts)=date('now') LIMIT 1",
-                                            (d["symbol"], a["type"])).fetchone()
-                        if not existing:
-                            diag_text = diagnose(d["symbol"], d["name"], ind, market, position=d)
-                            c.execute("INSERT INTO alerts (ts, symbol, level, type, message, price, diagnosis) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                                      (datetime.now().isoformat(timespec="seconds"),
-                                       d["symbol"], a["level"], a["type"], a["message"], a["price"], diag_text))
-                            print(f"  🚨 ALERT: {a['message']}")
+                    store_price_cache(c, d["symbol"], ind)
+                    created = insert_alerts(c, d["symbol"], d["name"], ind, market, position=d)
+                    if created:
+                        print(f"  [ALERT] {d['symbol']}: {created} new alert(s)")
 
             # Watchlist
             for row in c.execute("SELECT * FROM watchlist").fetchall():
@@ -366,23 +529,10 @@ async def monitor_loop():
                 bench = twii if ".TW" in d["symbol"] else spx
                 ind = fetch_indicators(d["symbol"], bench)
                 if ind and "price" in ind:
-                    c.execute("""INSERT OR REPLACE INTO price_cache
-                                 (symbol, ts, price, rsi, ma20, ma60, high52, low52, change_1d, change_1m, beta, data)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                              (d["symbol"], datetime.now().isoformat(timespec="seconds"),
-                               ind.get("price"), ind.get("rsi"), ind.get("ma20"), ind.get("ma60"),
-                               ind.get("high52"), ind.get("low52"), ind.get("change_1d"), ind.get("change_1m"),
-                               ind.get("beta"), json.dumps(ind)))
-                    alerts = evaluate_alerts(d["symbol"], d["name"], ind, watch=d)
-                    for a in alerts:
-                        existing = c.execute("SELECT 1 FROM alerts WHERE symbol=? AND type=? AND date(ts)=date('now') LIMIT 1",
-                                            (d["symbol"], a["type"])).fetchone()
-                        if not existing:
-                            diag_text = diagnose(d["symbol"], d["name"], ind, market)
-                            c.execute("INSERT INTO alerts (ts, symbol, level, type, message, price, diagnosis) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                                      (datetime.now().isoformat(timespec="seconds"),
-                                       d["symbol"], a["level"], a["type"], a["message"], a["price"], diag_text))
-                            print(f"  📍 ALERT: {a['message']}")
+                    store_price_cache(c, d["symbol"], ind)
+                    created = insert_alerts(c, d["symbol"], d["name"], ind, market, watch=d)
+                    if created:
+                        print(f"  [ALERT] {d['symbol']}: {created} new alert(s)")
 
             conn.commit()
             conn.close()
@@ -653,11 +803,9 @@ def api_ack_alert(req: AckRequest):
 
 @app.post("/api/refresh")
 async def api_refresh():
-    """Manually trigger one monitor cycle."""
-    twii = yf.Ticker("^TWII").history(period="1y")["Close"]
-    twii.index = twii.index.tz_localize(None)
-    spx = yf.Ticker("^GSPC").history(period="1y")["Close"]
-    spx.index = spx.index.tz_localize(None)
+    """Manually refresh prices and evaluate alerts immediately."""
+    twii = fetch_benchmark_close("^TWII")
+    spx = fetch_benchmark_close("^GSPC")
     market = get_market_state()
     conn = get_db()
     c = conn.cursor()
@@ -666,23 +814,22 @@ async def api_refresh():
                market.get("spx"), market.get("spx_ma60"), market.get("risk_level"), market.get("warnings_count")))
 
     refreshed = 0
+    alerts_created = 0
     for table in ("positions", "watchlist"):
         for row in c.execute(f"SELECT * FROM {table}").fetchall():
             d = dict(row)
             bench = twii if ".TW" in d["symbol"] else spx
             ind = fetch_indicators(d["symbol"], bench)
             if ind and "price" in ind:
-                c.execute("""INSERT OR REPLACE INTO price_cache
-                             (symbol, ts, price, rsi, ma20, ma60, high52, low52, change_1d, change_1m, beta, data)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                          (d["symbol"], datetime.now().isoformat(timespec="seconds"),
-                           ind.get("price"), ind.get("rsi"), ind.get("ma20"), ind.get("ma60"),
-                           ind.get("high52"), ind.get("low52"), ind.get("change_1d"), ind.get("change_1m"),
-                           ind.get("beta"), json.dumps(ind)))
+                store_price_cache(c, d["symbol"], ind)
                 refreshed += 1
+                if table == "positions":
+                    alerts_created += insert_alerts(c, d["symbol"], d["name"], ind, market, position=d)
+                else:
+                    alerts_created += insert_alerts(c, d["symbol"], d["name"], ind, market, watch=d)
     conn.commit()
     conn.close()
-    return {"refreshed": refreshed, "market": market}
+    return {"refreshed": refreshed, "alerts_created": alerts_created, "market": market}
 
 @app.get("/api/history/{symbol}")
 def api_history(symbol: str, period: str = "6mo"):
