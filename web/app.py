@@ -834,12 +834,47 @@ ALERT_TYPE_META = {
     "RSI_OVERSOLD":    {"label": "超賣",     "color": "bg-cyan-700",   "priority": 40},
 }
 
+# Emoji + 特殊符號 regex（涵蓋常見表情、符號、箭頭、幾何圖形等）
+import re
+_EMOJI_RE = re.compile(
+    "["                                  # noqa: RUF001
+    "\U0001F300-\U0001F5FF"              # symbols & pictographs
+    "\U0001F600-\U0001F64F"              # emoticons
+    "\U0001F680-\U0001F6FF"              # transport
+    "\U0001F700-\U0001F77F"              # alchemical
+    "\U0001F780-\U0001F7FF"              # geometric extended
+    "\U0001F800-\U0001F8FF"              # arrows-c
+    "\U0001F900-\U0001F9FF"              # supplemental symbols
+    "\U0001FA00-\U0001FA6F"              # chess
+    "\U0001FA70-\U0001FAFF"              # extended-a
+    "\U00002600-\U000026FF"              # misc symbols (☀⚡⚠ etc)
+    "\U00002700-\U000027BF"              # dingbats (✓✗✅❌ etc)
+    "\U0001F1E0-\U0001F1FF"              # flags
+    "⌀-⏿"                      # misc technical (⌚⌛)
+    "■-◿"                      # geometric (■▲▼ etc)
+    "←-⇿"                      # arrows (→←↑↓)
+    "︀-️"                      # variation selectors
+    "]+",
+    flags=re.UNICODE,
+)
+
+def _strip_emoji(text):
+    if not text:
+        return text
+    # 先去 emoji，再去多餘空白
+    cleaned = _EMOJI_RE.sub("", text)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def _enrich_alert(row: dict) -> dict:
-    """Add label/color/sort_priority to alert row for frontend display."""
+    """Add label/color/sort_priority + strip emoji from message/diagnosis."""
     meta = ALERT_TYPE_META.get(row.get("type"), {"label": row.get("type") or "其他", "color": "bg-gray-700", "priority": 0})
     row["type_label"] = meta["label"]
     row["type_color"] = meta["color"]
     row["sort_priority"] = meta["priority"]
+    # 清掉舊資料殘留的 emoji（新警報已不會產生，這層做雙保險）
+    row["message"] = _strip_emoji(row.get("message"))
+    row["diagnosis"] = _strip_emoji(row.get("diagnosis"))
     return row
 
 
