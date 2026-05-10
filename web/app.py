@@ -4,6 +4,7 @@
 import asyncio
 import json
 import sqlite3
+import ssl
 import warnings
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -12,6 +13,8 @@ from typing import Optional
 from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+import certifi
 
 import numpy as np
 import pandas as pd
@@ -33,6 +36,16 @@ BASE = Path(__file__).parent
 DB = BASE / "portfolio.db"
 USD_TWD = 32.0  # 預估匯率 (簡化)
 TWSE_MIS_URL = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
+
+# SSL context for HTTPS calls (TWSE, etc.).
+#
+# 兩個常見問題在 Python 3.13 + macOS 環境：
+#   1. 內建 CA 鏈不全 → 用 certifi 補
+#   2. 某些公部門網站證書缺 Subject Key Identifier extension（如 mis.twse.com.tw），
+#      Python 3.13 / OpenSSL 3.x 嚴格模式會擋下，需關掉 VERIFY_X509_STRICT。
+#      仍保留 hostname 驗證與 CA 驗證，安全性影響極小。
+SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+SSL_CONTEXT.verify_flags &= ~ssl.VERIFY_X509_STRICT
 
 # ─────────────── Database ───────────────
 def get_db():
@@ -146,7 +159,7 @@ def fetch_tw_realtime_quote(symbol: str) -> dict:
         },
     )
     try:
-        with urlopen(req, timeout=8) as resp:
+        with urlopen(req, timeout=8, context=SSL_CONTEXT) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except (URLError, TimeoutError, json.JSONDecodeError, OSError):
         return {}
@@ -193,45 +206,71 @@ def fetch_benchmark_close(symbol: str) -> pd.Series:
         return pd.Series(dtype=float)
 
 def fetch_yfinance_indicators(symbol: str, bench_close=None) -> dict:
-    """Full indicator source backed by Yahoo Finance history."""
+    """Full indicator source backed by Yahoo Finance history.
+
+    回 partial schema：每個 indicator 都有對應的最低資料量需求，缺的就回 None：
+      - price / change_1d:  ≥ 1 筆
+      - change_1m:          ≥ 22 筆
+      - rsi:                ≥ 14 筆
+      - ma20 / high52 / low52: ≥ 20 筆
+      - ma60:               ≥ 60 筆
+      - beta:               ≥ 20 筆 + bench_close ≥ 20 筆
+
+    新上市股（如 009819 上市才 18 天）以前會被 len < 20 卡住整個 return {}，
+    現在改成只缺什麼回什麼，至少 price 與 RSI 仍可用。
+    """
     try:
         h = yf.Ticker(symbol).history(period="1y")
-        if len(h) < 20:
+        if len(h) < 1:
             return {}
         h.index = h.index.tz_localize(None)
         c = h["Close"]
+        n = len(c)
+
         price = float(c.iloc[-1])
-        prev_d = float(c.iloc[-2]) if len(c) > 1 else price
-        ma20 = float(c.rolling(20).mean().iloc[-1])
-        ma60 = float(c.rolling(60).mean().iloc[-1]) if len(c) >= 60 else ma20
-        high52 = float(c.iloc[-252:].max() if len(c) >= 20 else c.max())
-        low52 = float(c.iloc[-252:].min() if len(c) >= 20 else c.min())
-        d = c.diff()
-        gain = d.clip(lower=0).rolling(14).mean()
-        loss = (-d.clip(upper=0)).rolling(14).mean()
-        rsi = float((100 - 100/(1 + gain/loss)).iloc[-1])
-        change_1d = (price/prev_d - 1) * 100
-        change_1m = (price/float(c.iloc[-22]) - 1)*100 if len(c) > 21 else 0
+        prev_d = float(c.iloc[-2]) if n > 1 else price
+        change_1d = round((price / prev_d - 1) * 100, 2) if n > 1 else None
+        change_1m = round((price / float(c.iloc[-22]) - 1) * 100, 2) if n > 21 else None
+
+        ma20 = round(float(c.rolling(20).mean().iloc[-1]), 2) if n >= 20 else None
+        ma60 = round(float(c.rolling(60).mean().iloc[-1]), 2) if n >= 60 else None
+
+        if n >= 14:
+            d = c.diff()
+            gain = d.clip(lower=0).rolling(14).mean()
+            loss = (-d.clip(upper=0)).rolling(14).mean()
+            rsi_val = (100 - 100 / (1 + gain / loss)).iloc[-1]
+            rsi = round(float(rsi_val), 1) if not pd.isna(rsi_val) else None
+        else:
+            rsi = None
+
+        if n >= 20:
+            high52 = round(float(c.iloc[-252:].max()), 2)
+            low52 = round(float(c.iloc[-252:].min()), 2)
+        else:
+            high52 = round(float(c.max()), 2)
+            low52 = round(float(c.min()), 2)
 
         beta = None
-        if bench_close is not None and len(bench_close) > 20:
+        if bench_close is not None and len(bench_close) > 20 and n >= 20:
             al = pd.concat([c.rename("s"), bench_close.rename("m")], axis=1).dropna()
             if len(al) > 20:
                 rs = al["s"].pct_change().dropna()
                 rm = al["m"].pct_change().dropna()
                 cv = np.cov(rs, rm)
-                beta = float(cv[0, 1]/cv[1, 1])
+                beta_val = cv[0, 1] / cv[1, 1]
+                beta = round(float(beta_val), 2) if not np.isnan(beta_val) else None
 
         return {
             "price": round(price, 2),
-            "change_1d": round(change_1d, 2),
-            "change_1m": round(change_1m, 2),
-            "rsi": round(rsi, 1),
-            "ma20": round(ma20, 2),
-            "ma60": round(ma60, 2),
-            "high52": round(high52, 2),
-            "low52": round(low52, 2),
-            "beta": round(beta, 2) if beta else None,
+            "change_1d": change_1d,
+            "change_1m": change_1m,
+            "rsi": rsi,
+            "ma20": ma20,
+            "ma60": ma60,
+            "high52": high52,
+            "low52": low52,
+            "beta": beta,
             "source": "yfinance",
         }
     except Exception:
