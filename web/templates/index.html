@@ -661,33 +661,83 @@ function renderAlerts(alerts) {
     });
   }
 
-  $('alerts-container').innerHTML = visible.length === 0 ?
-    `<div class="bg-gray-800 p-6 rounded text-center text-gray-400">沒有符合條件的警報</div>` :
-    visible.map(a => {
-      const levelStyles = {
-        danger:  { bar: 'border-red-500',    bg: 'bg-red-900 bg-opacity-20' },
-        warning: { bar: 'border-yellow-500', bg: 'bg-yellow-900 bg-opacity-20' },
-        info:    { bar: 'border-blue-500',   bg: 'bg-blue-900 bg-opacity-20' },
-      };
-      const s = levelStyles[a.level] || levelStyles.info;
-      const ackOpacity = a.acknowledged ? 'opacity-40' : '';
-      const tsShort = (a.ts || '').replace('T', ' ').substring(5, 16);  // MM-DD HH:MM
-      const typeLabel = a.type_label || a.type;
-      const typeColor = a.type_color || 'bg-gray-700';
-      const priceStr = (a.price !== null && a.price !== undefined) ? `@ ${Number(a.price).toFixed(2)}` : '';
+  if (visible.length === 0) {
+    $('alerts-container').innerHTML = `<div class="bg-gray-800 p-6 rounded text-center text-gray-400">沒有符合條件的警報</div>`;
+    return;
+  }
 
-      return `<div class="${s.bg} ${ackOpacity} border-l-4 ${s.bar} rounded p-3">
-        <div class="flex items-center gap-2 mb-1.5 flex-wrap">
-          <span class="text-xs ${typeColor} text-white px-2.5 py-0.5 rounded font-bold">${typeLabel}</span>
-          <span class="font-mono font-bold text-base">${a.symbol}</span>
-          <span class="text-xs text-gray-400">${priceStr}</span>
-          <span class="text-xs text-gray-500 ml-auto">${tsShort}</span>
-          ${!a.acknowledged ? `<button onclick="ackAlert(${a.id})" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">已讀</button>` : ''}
-        </div>
-        <div class="text-sm">${a.message}</div>
-        ${a.diagnosis ? `<div class="mt-2 text-xs text-gray-300 bg-black bg-opacity-30 p-2 rounded">${a.diagnosis}</div>` : ''}
-      </div>`;
-    }).join('');
+  // 按日期分組（原排序保留在組內）
+  const groups = {};  // dateKey -> [alerts]
+  const order = [];   // 保留出現順序
+  visible.forEach(a => {
+    const dateKey = (a.ts || '').substring(0, 10) || 'unknown';  // YYYY-MM-DD
+    if (!groups[dateKey]) {
+      groups[dateKey] = [];
+      order.push(dateKey);
+    }
+    groups[dateKey].push(a);
+  });
+
+  // 日期標籤格式化
+  const today = new Date();
+  const toYMD = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const todayKey = toYMD(today);
+  const ydayDate = new Date(today); ydayDate.setDate(today.getDate() - 1);
+  const yesterdayKey = toYMD(ydayDate);
+  const weekday = ['週日','週一','週二','週三','週四','週五','週六'];
+
+  function formatDateHeader(key) {
+    if (key === todayKey) return '今天';
+    if (key === yesterdayKey) return '昨天';
+    if (key === 'unknown') return '未知日期';
+    const d = new Date(key);
+    const diff = Math.floor((today - d) / 86400000);
+    const wd = weekday[d.getDay()];
+    if (diff < 7) return `${key} (${wd}, ${diff} 天前)`;
+    return `${key} (${wd})`;
+  }
+
+  function renderCard(a) {
+    const levelStyles = {
+      danger:  { bar: 'border-red-500',    bg: 'bg-red-900 bg-opacity-20' },
+      warning: { bar: 'border-yellow-500', bg: 'bg-yellow-900 bg-opacity-20' },
+      info:    { bar: 'border-blue-500',   bg: 'bg-blue-900 bg-opacity-20' },
+    };
+    const s = levelStyles[a.level] || levelStyles.info;
+    const ackOpacity = a.acknowledged ? 'opacity-40' : '';
+    const timeOnly = (a.ts || '').substring(11, 16);  // HH:MM
+    const typeLabel = a.type_label || a.type;
+    const typeColor = a.type_color || 'bg-gray-700';
+    const priceStr = (a.price !== null && a.price !== undefined) ? `@ ${Number(a.price).toFixed(2)}` : '';
+
+    return `<div class="${s.bg} ${ackOpacity} border-l-4 ${s.bar} rounded p-3">
+      <div class="flex items-center gap-2 mb-1.5 flex-wrap">
+        <span class="text-xs ${typeColor} text-white px-2.5 py-0.5 rounded font-bold">${typeLabel}</span>
+        <span class="font-mono font-bold text-base">${a.symbol}</span>
+        <span class="text-xs text-gray-400">${priceStr}</span>
+        <span class="text-xs text-gray-500 ml-auto">${timeOnly}</span>
+        ${!a.acknowledged ? `<button onclick="ackAlert(${a.id})" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">已讀</button>` : ''}
+      </div>
+      <div class="text-sm">${a.message}</div>
+      ${a.diagnosis ? `<div class="mt-2 text-xs text-gray-300 bg-black bg-opacity-30 p-2 rounded">${a.diagnosis}</div>` : ''}
+    </div>`;
+  }
+
+  $('alerts-container').innerHTML = order.map(key => {
+    const items = groups[key];
+    const unack = items.filter(x => !x.acknowledged).length;
+    const badge = unack > 0
+      ? `<span class="text-xs bg-red-600 text-white px-2 py-0.5 rounded ml-2">${unack} 未讀</span>`
+      : '';
+    return `<div class="mt-4 first:mt-0">
+      <div class="sticky top-0 bg-gray-900 z-10 py-2 mb-2 border-b border-gray-700 flex items-center">
+        <span class="text-sm font-bold text-emerald-400">${formatDateHeader(key)}</span>
+        <span class="text-xs text-gray-500 ml-2">${items.length} 筆</span>
+        ${badge}
+      </div>
+      <div class="space-y-2">${items.map(renderCard).join('')}</div>
+    </div>`;
+  }).join('');
 }
 
 let _currentSymbol = null;
