@@ -1037,6 +1037,8 @@ function renderPortfolioTrend(trendData) {
       borderColor: 'rgba(148,163,184,0.1)',
       fixLeftEdge: true,
       fixRightEdge: true,
+      timeVisible: true,
+      secondsVisible: false,
     },
     rightPriceScale: {
       borderColor: 'rgba(148,163,184,0.1)',
@@ -1071,6 +1073,8 @@ function renderPortfolioTrend(trendData) {
       borderColor: 'rgba(148,163,184,0.1)',
       fixLeftEdge: true,
       fixRightEdge: true,
+      timeVisible: true,
+      secondsVisible: false,
     },
     rightPriceScale: {
       borderColor: 'rgba(148,163,184,0.1)',
@@ -1097,12 +1101,12 @@ function renderPortfolioTrend(trendData) {
   });
 
   const valueData = trendData.map(d => ({
-    time: d.date,
+    time: d.time,
     value: d.total_value
   }));
 
   const pnlData = trendData.map(d => ({
-    time: d.date,
+    time: d.time,
     value: d.total_pnl
   }));
 

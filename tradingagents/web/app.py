@@ -1140,9 +1140,9 @@ def api_portfolio_trend():
     
     def _fetch_history(symbol):
         try:
-            h = yf.Ticker(symbol).history(period="1mo")
+            h = yf.Ticker(symbol).history(period="1wk", interval="15m")
             h = h.dropna(subset=["Close"])
-            prices = {ts.date().isoformat(): float(close) for ts, close in h["Close"].items()}
+            prices = {int(ts.timestamp()): float(close) for ts, close in h["Close"].items()}
             return symbol, prices
         except Exception:
             return symbol, {}
@@ -1154,34 +1154,34 @@ def api_portfolio_trend():
             sym, prices = f.result()
             histories[sym] = prices
             
-    all_dates = set()
+    all_timestamps = set()
     for prices in histories.values():
-        all_dates.update(prices.keys())
+        all_timestamps.update(prices.keys())
         
-    if not all_dates:
+    if not all_timestamps:
         return {"trend": []}
         
-    sorted_dates = sorted(list(all_dates))
+    sorted_timestamps = sorted(list(all_timestamps))
     
     last_seen_prices = {}
     for p in positions:
         sym = p["symbol"]
         sym_prices = histories.get(sym, {})
         if sym_prices:
-            first_date = min(sym_prices.keys())
-            last_seen_prices[sym] = sym_prices[first_date]
+            first_ts = min(sym_prices.keys())
+            last_seen_prices[sym] = sym_prices[first_ts]
         else:
             last_seen_prices[sym] = p["cost_price"]
             
     trend = []
-    for date_str in sorted_dates:
+    for ts in sorted_timestamps:
         total_cost = 0.0
         total_value = 0.0
         for p in positions:
             sym = p["symbol"]
             sym_prices = histories.get(sym, {})
-            if date_str in sym_prices:
-                last_seen_prices[sym] = sym_prices[date_str]
+            if ts in sym_prices:
+                last_seen_prices[sym] = sym_prices[ts]
                 
             price = last_seen_prices[sym]
             cost_total = p["cost_price"] * p["shares"]
@@ -1197,7 +1197,7 @@ def api_portfolio_trend():
         total_pnl = total_value - total_cost
         total_pnl_pct = (total_value / total_cost - 1) * 100 if total_cost > 0 else 0.0
         trend.append({
-            "date": date_str,
+            "time": ts,
             "total_value": round(total_value, 0),
             "total_pnl": round(total_pnl, 0),
             "total_pnl_pct": round(total_pnl_pct, 2)
