@@ -1035,6 +1035,7 @@ function renderPortfolioTrend(trendData) {
     color: '#3b82f6',
     lineWidth: 2.5,
     title: '總市值',
+    priceLineVisible: false, // 隱藏最新的水平虛線
     priceFormat: {
       type: 'custom',
       formatter: (price) => 'NT$ ' + Math.round(price).toLocaleString(),
@@ -1046,6 +1047,7 @@ function renderPortfolioTrend(trendData) {
     color: '#facc15',
     lineWidth: 2.5,
     title: '總成本',
+    priceLineVisible: false, // 隱藏成本的水平虛線
     priceFormat: {
       type: 'custom',
       formatter: (price) => 'NT$ ' + Math.round(price).toLocaleString(),
