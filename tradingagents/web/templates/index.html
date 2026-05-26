@@ -1030,24 +1030,28 @@ function renderPortfolioTrend(trendData) {
     },
   });
 
-  // 總市值 (藍色折線圖)
-  const valueSeries = _trendChart.addLineSeries({
-    color: '#3b82f6',
+  // 總市值 (藍色面積圖 - 高清晰度)
+  const valueSeries = _trendChart.addAreaSeries({
+    lineColor: 'rgba(59, 130, 246, 0.95)',
+    topColor: 'rgba(59, 130, 246, 0.25)',
+    bottomColor: 'rgba(59, 130, 246, 0.0)',
     lineWidth: 2.5,
     title: '總市值',
-    priceLineVisible: false, // 隱藏最新的水平虛線
+    priceLineVisible: false,
     priceFormat: {
       type: 'custom',
       formatter: (price) => 'NT$ ' + Math.round(price).toLocaleString(),
     },
   });
 
-  // 總成本 (黃色折線圖)
-  const costSeries = _trendChart.addLineSeries({
-    color: '#facc15',
-    lineWidth: 2.5,
+  // 總成本 (黃色面積圖 - 低清晰度對照)
+  const costSeries = _trendChart.addAreaSeries({
+    lineColor: 'rgba(250, 204, 21, 0.4)',
+    topColor: 'rgba(250, 204, 21, 0.1)',
+    bottomColor: 'rgba(250, 204, 21, 0.0)',
+    lineWidth: 2,
     title: '總成本',
-    priceLineVisible: false, // 隱藏成本的水平虛線
+    priceLineVisible: false,
     priceFormat: {
       type: 'custom',
       formatter: (price) => 'NT$ ' + Math.round(price).toLocaleString(),
