@@ -285,7 +285,10 @@ body { background: var(--bg-base); color: var(--text-primary); }
 
     <!-- 持倉趨勢圖表 (單張圖整合成本與市值) -->
     <div id="portfolio-charts-container" class="glass-card p-4 flex flex-col relative mb-6 hidden">
-      <div class="text-sm font-semibold text-slate-300 mb-2">資產總值與投入成本趨勢 (NT$)</div>
+      <div class="flex justify-between items-center mb-2">
+        <div class="text-sm font-semibold text-slate-300">資產總值與投入成本趨勢 (NT$)</div>
+        <button id="chart-scale-toggle" onclick="toggleChartScale()" class="btn-action text-xs px-2.5 py-0.5 rounded border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300">對數座標</button>
+      </div>
       <div id="portfolio-trend-chart" class="w-full h-72"></div>
     </div>
 
@@ -995,6 +998,24 @@ async function loadAll() {
 }
 
 let _trendChart = null;
+let _trendChartScaleMode = 0; // 0: Normal, 1: Logarithmic
+
+function toggleChartScale() {
+  if (!_trendChart) return;
+  _trendChartScaleMode = _trendChartScaleMode === 0 ? 1 : 0;
+  _trendChart.priceScale('right').applyOptions({
+    mode: _trendChartScaleMode
+  });
+  const btn = $('chart-scale-toggle');
+  if (btn) {
+    btn.textContent = _trendChartScaleMode === 1 ? '線性座標' : '對數座標';
+    if (_trendChartScaleMode === 1) {
+      btn.classList.add('bg-slate-700', 'text-amber-400');
+    } else {
+      btn.classList.remove('bg-slate-700', 'text-amber-400');
+    }
+  }
+}
 
 function renderPortfolioTrend(trendData) {
   const container = $('portfolio-charts-container');
@@ -1035,8 +1056,19 @@ function renderPortfolioTrend(trendData) {
     rightPriceScale: {
       borderColor: 'rgba(148,163,184,0.1)',
       autoScale: true,
+      mode: _trendChartScaleMode,
     },
   });
+
+  const btn = $('chart-scale-toggle');
+  if (btn) {
+    btn.textContent = _trendChartScaleMode === 1 ? '線性座標' : '對數座標';
+    if (_trendChartScaleMode === 1) {
+      btn.classList.add('bg-slate-700', 'text-amber-400');
+    } else {
+      btn.classList.remove('bg-slate-700', 'text-amber-400');
+    }
+  }
 
   // 總市值 (藍色面積圖 - 高清晰度)
   const valueSeries = _trendChart.addAreaSeries({
