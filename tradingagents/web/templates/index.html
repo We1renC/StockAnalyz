@@ -262,24 +262,66 @@ body { background: var(--bg-base); color: var(--text-primary); }
       <button onclick="openAddPosition()" class="btn-primary text-sm px-4 py-1.5">＋ 新增持倉</button>
     </div>
     <div id="portfolio-summary" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
-    <div class="glass-card overflow-hidden">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th class="text-left">代號</th>
-            <th class="text-left">名稱</th>
-            <th class="text-right">股數</th>
-            <th class="text-right">成本</th>
-            <th class="text-right">現價</th>
-            <th class="text-right">日漲</th>
-            <th class="text-right">RSI</th>
-            <th class="text-right">損益%</th>
-            <th class="text-left">建議</th>
-            <th class="text-center">操作</th>
-          </tr>
-        </thead>
-        <tbody id="portfolio-tbody"></tbody>
-      </table>
+    <!-- 🇹🇼 台股持倉 -->
+    <div class="mb-6">
+      <div class="flex items-center justify-between mb-2 px-1">
+        <div class="flex items-center gap-2">
+          <span class="text-base font-bold text-slate-100">🇹🇼 台股持倉</span>
+          <span id="tw-portfolio-count" class="pill pill-gray text-xs" style="font-size:10px;padding:2px 6px">0 檔</span>
+        </div>
+        <div id="tw-portfolio-summary" class="flex gap-4 text-xs text-slate-400"></div>
+      </div>
+      <div class="glass-card overflow-hidden">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th class="text-left">代號</th>
+              <th class="text-left">名稱</th>
+              <th class="text-right">股數</th>
+              <th class="text-right">成本</th>
+              <th class="text-right">現價</th>
+              <th class="text-right">日漲</th>
+              <th class="text-right">RSI</th>
+              <th class="text-right">損益金額</th>
+              <th class="text-right">報酬率</th>
+              <th class="text-left">建議</th>
+              <th class="text-center">操作</th>
+            </tr>
+          </thead>
+          <tbody id="tw-portfolio-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 🇺🇸 美股持倉 -->
+    <div class="mb-6">
+      <div class="flex items-center justify-between mb-2 px-1">
+        <div class="flex items-center gap-2">
+          <span class="text-base font-bold text-slate-100">🇺🇸 美股持倉</span>
+          <span id="us-portfolio-count" class="pill pill-gray text-xs" style="font-size:10px;padding:2px 6px">0 檔</span>
+        </div>
+        <div id="us-portfolio-summary" class="flex gap-4 text-xs text-slate-400"></div>
+      </div>
+      <div class="glass-card overflow-hidden">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th class="text-left">代號</th>
+              <th class="text-left">名稱</th>
+              <th class="text-right">股數</th>
+              <th class="text-right">成本</th>
+              <th class="text-right">現價</th>
+              <th class="text-right">日漲</th>
+              <th class="text-right">RSI</th>
+              <th class="text-right">損益金額</th>
+              <th class="text-right">報酬率</th>
+              <th class="text-left">建議</th>
+              <th class="text-center">操作</th>
+            </tr>
+          </thead>
+          <tbody id="us-portfolio-tbody"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -885,7 +927,50 @@ function renderPortfolio(data) {
       <div class="text-2xl font-bold tabular-nums ${pnlColor}">${s.total_pnl_pct >= 0 ? '+' : ''}${fmt(s.total_pnl_pct)}%</div>
     </div>`;
 
-  $('portfolio-tbody').innerHTML = data.positions.map(p => {
+  // 1. 分流台美股
+  const twPositions = data.positions.filter(p => p.currency === 'TWD' || p.symbol.endsWith('.TW'));
+  const usPositions = data.positions.filter(p => p.currency === 'USD' || !p.symbol.endsWith('.TW'));
+
+  // 2. 更新檔數顯示
+  $('tw-portfolio-count').textContent = `${twPositions.length} 檔`;
+  $('us-portfolio-count').textContent = `${usPositions.length} 檔`;
+
+  // 3. 計算並更新台股小彙總
+  let twCost = 0, twValue = 0, twPnl = 0;
+  twPositions.forEach(p => {
+    twCost += p.cost_price * p.shares;
+    const cur = p.current_price || p.cost_price;
+    twValue += cur * p.shares;
+  });
+  twPnl = twValue - twCost;
+  const twPnlPct = twCost > 0 ? (twPnl / twCost) * 100 : 0;
+  const twPnlColor = twPnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+  $('tw-portfolio-summary').innerHTML = `
+    <span>投入: <strong class="text-slate-200 font-mono">NT$ ${fmtInt(twCost)}</strong></span>
+    <span>市值: <strong class="text-slate-200 font-mono">NT$ ${fmtInt(twValue)}</strong></span>
+    <span>損益: <strong class="${twPnlColor} font-mono">${twPnl >= 0 ? '+' : ''}${fmtInt(twPnl)} (${twPnlPct >= 0 ? '+' : ''}${fmt(twPnlPct)}%)</strong></span>
+  `;
+
+  // 4. 計算並更新美股小彙總
+  let usCost = 0, usValue = 0, usPnl = 0, usPnlTwd = 0;
+  usPositions.forEach(p => {
+    usCost += p.cost_price * p.shares;
+    const cur = p.current_price || p.cost_price;
+    usValue += cur * p.shares;
+    usPnlTwd += p.pnl || 0;
+  });
+  usPnl = usValue - usCost;
+  const usPnlPct = usCost > 0 ? (usPnl / usCost) * 100 : 0;
+  const usPnlColor = usPnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+  $('us-portfolio-summary').innerHTML = `
+    <span>投入: <strong class="text-slate-200 font-mono">$ ${fmt(usCost, 2)}</strong></span>
+    <span>市值: <strong class="text-slate-200 font-mono">$ ${fmt(usValue, 2)}</strong></span>
+    <span>損益: <strong class="${usPnlColor} font-mono">$ ${usPnl >= 0 ? '+' : ''}${fmt(usPnl, 2)} (${usPnlPct >= 0 ? '+' : ''}${fmt(usPnlPct)}%)</strong></span>
+    <span class="text-slate-500">/ 折合 ${usPnlTwd >= 0 ? '+' : ''}${fmtInt(usPnlTwd)} TWD</span>
+  `;
+
+  // 5. 渲染表格 Row 產生器
+  const makeRowHtml = (p) => {
     const pnlPill = p.pnl_pct >= 0 ? 'pill-green' : 'pill-red';
     const dayPill = (p.change_1d||0) >= 0 ? 'pill-green' : 'pill-red';
     const rsiPct = Math.min(Math.max(p.rsi||50, 0), 100);
@@ -893,6 +978,23 @@ function renderPortfolio(data) {
     const rec = p.recommendation || {};
     const recPill = rec.urgency === 'danger' ? 'pill-red animate-pulse-dot' : rec.urgency === 'warning' ? 'pill-amber' : 'pill-gray';
     const targetInfo = [p.target_profit ? `<span class="text-emerald-400">TP:${fmt(p.target_profit)}</span>` : '', p.target_stop ? `<span class="text-red-400">SL:${fmt(p.target_stop)}</span>` : ''].filter(Boolean).join(' ');
+    
+    // 損益金額與貨幣顯示
+    let pnlAmountHtml = '';
+    if (p.currency === 'USD') {
+      const usdPnl = (p.current_price - p.cost_price) * p.shares;
+      const usdPnlColor = usdPnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+      pnlAmountHtml = `
+        <div class="font-semibold font-mono ${usdPnlColor}">${usdPnl >= 0 ? '+' : ''}${fmt(usdPnl, 2)}</div>
+        <div class="text-[10px] text-slate-500 font-mono">(NT$ ${p.pnl >= 0 ? '+' : ''}${fmtInt(p.pnl)})</div>
+      `;
+    } else {
+      const twdPnlColor = p.pnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+      pnlAmountHtml = `
+        <div class="font-semibold font-mono ${twdPnlColor}">NT$ ${p.pnl >= 0 ? '+' : ''}${fmtInt(p.pnl)}</div>
+      `;
+    }
+
     return `<tr>
       <td class="font-mono font-semibold text-slate-200">${p.symbol}</td>
       <td><div class="text-slate-300">${p.name||''}</div><div class="text-[10px] text-slate-600">${p.category||''}</div></td>
@@ -901,7 +1003,8 @@ function renderPortfolio(data) {
       <td class="text-right tabular-nums font-semibold">${fmt(p.current_price)}</td>
       <td class="text-right"><span class="pill ${dayPill} tabular-nums">${(p.change_1d||0) >= 0 ? '+' : ''}${fmt(p.change_1d)}%</span></td>
       <td class="text-right"><span class="tabular-nums text-xs ${rsiPct>=75?'text-red-400':rsiPct<=30?'text-amber-400':'text-slate-400'}">${fmt(p.rsi,1)}</span><div class="rsi-bar"><div class="rsi-fill ${rsiColor}" style="width:${rsiPct}%"></div></div></td>
-      <td class="text-right"><span class="pill ${pnlPill} tabular-nums">${p.pnl_pct >= 0 ? '+' : ''}${fmt(p.pnl_pct)}%</span><div class="text-[10px] text-slate-500 tabular-nums">${p.pnl >= 0 ? '+' : ''}${fmtInt(p.pnl)}</div></td>
+      <td class="text-right tabular-nums">${pnlAmountHtml}</td>
+      <td class="text-right"><span class="pill ${pnlPill} tabular-nums">${p.pnl_pct >= 0 ? '+' : ''}${fmt(p.pnl_pct)}%</span></td>
       <td><span class="pill ${recPill} text-[11px]">${rec.action||'—'}</span>${rec.reason ? `<div class="text-[10px] text-slate-500 mt-1 leading-tight max-w-[180px]">${rec.reason}</div>` : ''}${targetInfo ? `<div class="text-[10px] mt-0.5">${targetInfo}</div>` : ''}</td>
       <td class="text-center whitespace-nowrap">
         <button onclick="diagnose('${p.symbol}','${(p.name||'').replace(/'/g,"\\\'")}')" class="btn-icon btn-sm" data-tip="分析">📊</button>
@@ -909,7 +1012,20 @@ function renderPortfolio(data) {
         <button onclick="deletePosition(${p.id})" class="btn-icon btn-sm" style="border-color:rgba(239,68,68,0.2)" data-tip="刪除">🗑️</button>
       </td>
     </tr>`;
-  }).join('');
+  };
+
+  // 6. 渲染台美股的 rows
+  if (twPositions.length > 0) {
+    $('tw-portfolio-tbody').innerHTML = twPositions.map(makeRowHtml).join('');
+  } else {
+    $('tw-portfolio-tbody').innerHTML = `<tr><td colspan="11" class="text-center text-slate-500 py-6">無台股持倉資料</td></tr>`;
+  }
+
+  if (usPositions.length > 0) {
+    $('us-portfolio-tbody').innerHTML = usPositions.map(makeRowHtml).join('');
+  } else {
+    $('us-portfolio-tbody').innerHTML = `<tr><td colspan="11" class="text-center text-slate-500 py-6">無美股持倉資料</td></tr>`;
+  }
 }
 
 function renderWatchlist(items) {
