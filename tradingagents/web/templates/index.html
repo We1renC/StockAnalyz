@@ -248,6 +248,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
         <span style="position:relative;z-index:1">AI 智能分析</span>
       </button>
       <button onclick="openSettings()" class="btn-secondary text-xs" style="padding:8px 16px;height:36px;border-radius:10px" title="LLM 設定">設定</button>
+      <button onclick="toggleShortcutsHelp()" class="btn-secondary text-xs" style="padding:8px 16px;height:36px;border-radius:10px" title="按 ? 鍵顯示快捷鍵說明">快捷鍵</button>
       <button id="refresh-btn" class="btn-secondary text-xs" style="padding:8px 16px;height:36px;border-radius:10px" title="立即刷新"><span id="refresh-icon">刷新</span></button>
       <span id="refresh-badge" class="text-xs text-slate-500 min-w-[100px]"></span>
       <select id="auto-refresh" class="input-field" style="width:auto;padding:8px 12px;font-size:12px">
@@ -872,6 +873,56 @@ body { background: var(--bg-base); color: var(--text-primary); }
       </div>
       <button type="submit" class="w-full btn-primary py-2 rounded font-semibold">確認新增</button>
     </form>
+  </div>
+</div>
+
+<!-- Keyboard Shortcuts Help Modal -->
+<div id="shortcuts-help-modal" class="modal-backdrop hidden">
+  <div class="modal-content p-6 max-w-md w-full">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-xl font-bold text-emerald-400">鍵盤快捷鍵說明</h2>
+      <button onclick="toggleShortcutsHelp()" class="text-gray-400 hover:text-white text-2xl">×</button>
+    </div>
+    <div class="space-y-4 text-sm text-gray-200">
+      <div class="border-b border-gray-700 pb-2">
+        <div class="text-xs text-gray-450 uppercase font-semibold tracking-wider mb-2">切換分頁</div>
+        <div class="grid grid-cols-2 gap-2 font-mono">
+          <div class="flex items-center gap-1.5"><kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">Alt</kbd> + <kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">1</kbd></div>
+          <div class="text-xs text-gray-300">我的持倉</div>
+          <div class="flex items-center gap-1.5"><kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">Alt</kbd> + <kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">2</kbd></div>
+          <div class="text-xs text-gray-300">台股觀察</div>
+          <div class="flex items-center gap-1.5"><kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">Alt</kbd> + <kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">3</kbd></div>
+          <div class="text-xs text-gray-300">美股觀察</div>
+          <div class="flex items-center gap-1.5"><kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">Alt</kbd> + <kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">4</kbd></div>
+          <div class="text-xs text-gray-300">警報清單</div>
+          <div class="flex items-center gap-1.5"><kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">Alt</kbd> + <kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">5</kbd></div>
+          <div class="text-xs text-gray-300">策略回測</div>
+        </div>
+      </div>
+      <div class="border-b border-gray-700 pb-2">
+        <div class="text-xs text-gray-450 uppercase font-semibold tracking-wider mb-2">全局操作</div>
+        <div class="grid grid-cols-2 gap-2 font-mono">
+          <div class="flex items-center gap-1.5"><kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">R</kbd></div>
+          <div class="text-xs text-gray-300">立即整理/刷新數據</div>
+          <div class="flex items-center gap-1.5"><kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">A</kbd></div>
+          <div class="text-xs text-gray-300">開啟 AI 智能分析</div>
+          <div class="flex items-center gap-1.5"><kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">S</kbd></div>
+          <div class="text-xs text-gray-300">開啟設定視窗</div>
+        </div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-450 uppercase font-semibold tracking-wider mb-2">視窗控制</div>
+        <div class="grid grid-cols-2 gap-2 font-mono">
+          <div class="flex items-center gap-1.5"><kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">Esc</kbd></div>
+          <div class="text-xs text-gray-300">關閉當前彈出視窗</div>
+          <div class="flex items-center gap-1.5"><kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">?</kbd> / <kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">Shift</kbd> + <kbd class="bg-gray-800 px-1.5 py-0.5 rounded border border-gray-650 text-emerald-400">/</kbd></div>
+          <div class="text-xs text-gray-300">顯示 / 隱藏本說明</div>
+        </div>
+      </div>
+    </div>
+    <div class="text-center text-xs text-gray-450 mt-4 border-t border-gray-700 pt-3">
+      提示：在輸入框中打字時，快捷鍵會自動停用。
+    </div>
   </div>
 </div>
 
@@ -2392,6 +2443,65 @@ async function clearAllAlerts() {
     alert('清除失敗');
   }
 }
+
+// ─── Keyboard Shortcuts ───
+function closeAllModals() {
+  $('diag-modal').classList.add('hidden');
+  $('settings-modal').classList.add('hidden');
+  $('add-pos-modal').classList.add('hidden');
+  $('edit-pos-modal').classList.add('hidden');
+  $('batch-analyze-modal').classList.add('hidden');
+  $('add-watch-modal').classList.add('hidden');
+  $('shortcuts-help-modal')?.classList.add('hidden');
+}
+
+function toggleShortcutsHelp() {
+  const modal = $('shortcuts-help-modal');
+  if (modal) {
+    if (modal.classList.contains('hidden')) {
+      modal.classList.remove('hidden');
+    } else {
+      modal.classList.add('hidden');
+    }
+  }
+}
+
+function switchTab(tabName) {
+  const btn = document.querySelector(`.tab-btn[data-tab="${tabName}"]`);
+  if (btn) {
+    btn.click();
+  }
+}
+
+window.addEventListener('keydown', (e) => {
+  // Ignore shortcuts when user is entering data
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
+    if (e.key === 'Escape') {
+      closeAllModals();
+    }
+    return;
+  }
+
+  if (e.key === 'Escape') {
+    closeAllModals();
+  } else if (e.key === '?') {
+    toggleShortcutsHelp();
+  } else if (e.altKey && e.key >= '1' && e.key <= '5') {
+    e.preventDefault();
+    const tabs = ['portfolio', 'watchlist-tw', 'watchlist-us', 'alerts', 'backtest'];
+    const tabName = tabs[parseInt(e.key) - 1];
+    switchTab(tabName);
+  } else if (e.key.toLowerCase() === 'r') {
+    e.preventDefault();
+    $('refresh-btn').click();
+  } else if (e.key.toLowerCase() === 'a') {
+    e.preventDefault();
+    openBatchAnalyze();
+  } else if (e.key.toLowerCase() === 's') {
+    e.preventDefault();
+    openSettings();
+  }
+});
 
 loadAll();
 setupAutoRefresh();
