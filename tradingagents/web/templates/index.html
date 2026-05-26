@@ -289,7 +289,6 @@ body { background: var(--bg-base); color: var(--text-primary); }
       <div id="tw-trend-card" class="glass-card p-4 flex flex-col relative">
         <div class="flex justify-between items-center mb-2">
           <div class="text-sm font-semibold text-slate-300">台股資產與投入成本趨勢 (TWD)</div>
-          <button id="tw-chart-scale-toggle" onclick="toggleChartScale('tw')" class="btn-action text-xs px-2.5 py-0.5 rounded border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300">對數座標</button>
         </div>
         <div id="tw-portfolio-trend-chart" class="w-full h-72"></div>
       </div>
@@ -297,7 +296,6 @@ body { background: var(--bg-base); color: var(--text-primary); }
       <div id="us-trend-card" class="glass-card p-4 flex flex-col relative">
         <div class="flex justify-between items-center mb-2">
           <div class="text-sm font-semibold text-slate-300">美股資產與投入成本趨勢 (USD)</div>
-          <button id="us-chart-scale-toggle" onclick="toggleChartScale('us')" class="btn-action text-xs px-2.5 py-0.5 rounded border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300">對數座標</button>
         </div>
         <div id="us-portfolio-trend-chart" class="w-full h-72"></div>
       </div>
@@ -1023,38 +1021,8 @@ async function loadAll() {
 
 let _twTrendChart = null;
 let _usTrendChart = null;
-let _twChartScaleMode = 0;
-let _usChartScaleMode = 0;
-
-function toggleChartScale(type) {
-  if (type === 'tw') {
-    if (!_twTrendChart) return;
-    _twChartScaleMode = _twChartScaleMode === 0 ? 1 : 0;
-    _twTrendChart.priceScale('right').applyOptions({ mode: _twChartScaleMode });
-    const btn = $('tw-chart-scale-toggle');
-    if (btn) {
-      btn.textContent = _twChartScaleMode === 1 ? '線性座標' : '對數座標';
-      if (_twChartScaleMode === 1) {
-        btn.classList.add('bg-slate-700', 'text-amber-400');
-      } else {
-        btn.classList.remove('bg-slate-700', 'text-amber-400');
-      }
-    }
-  } else {
-    if (!_usTrendChart) return;
-    _usChartScaleMode = _usChartScaleMode === 0 ? 1 : 0;
-    _usTrendChart.priceScale('right').applyOptions({ mode: _usChartScaleMode });
-    const btn = $('us-chart-scale-toggle');
-    if (btn) {
-      btn.textContent = _usChartScaleMode === 1 ? '線性座標' : '對數座標';
-      if (_usChartScaleMode === 1) {
-        btn.classList.add('bg-slate-700', 'text-amber-400');
-      } else {
-        btn.classList.remove('bg-slate-700', 'text-amber-400');
-      }
-    }
-  }
-}
+let _twChartScaleMode = 1; // Default directly to Logarithmic (1)
+let _usChartScaleMode = 1; // Default directly to Logarithmic (1)
 
 function renderPortfolioTrend(trendObj) {
   const container = $('portfolio-charts-container');
@@ -1133,15 +1101,7 @@ function renderPortfolioTrend(trendObj) {
     costSeries.setData(twData.map(d => ({ time: d.time, value: d.total_cost })));
     _twTrendChart.timeScale().fitContent();
 
-    const btn = $('tw-chart-scale-toggle');
-    if (btn) {
-      btn.textContent = _twChartScaleMode === 1 ? '線性座標' : '對數座標';
-      if (_twChartScaleMode === 1) {
-        btn.classList.add('bg-slate-700', 'text-amber-400');
-      } else {
-        btn.classList.remove('bg-slate-700', 'text-amber-400');
-      }
-    }
+    // Default Logarithmic scale - no toggle updates needed
   } else {
     twCard.classList.add('hidden');
   }
@@ -1207,15 +1167,7 @@ function renderPortfolioTrend(trendObj) {
     costSeries.setData(usData.map(d => ({ time: d.time, value: d.total_cost })));
     _usTrendChart.timeScale().fitContent();
 
-    const btn = $('us-chart-scale-toggle');
-    if (btn) {
-      btn.textContent = _usChartScaleMode === 1 ? '線性座標' : '對數座標';
-      if (_usChartScaleMode === 1) {
-        btn.classList.add('bg-slate-700', 'text-amber-400');
-      } else {
-        btn.classList.remove('bg-slate-700', 'text-amber-400');
-      }
-    }
+    // Default Logarithmic scale - no toggle updates needed
   } else {
     usCard.classList.add('hidden');
   }
