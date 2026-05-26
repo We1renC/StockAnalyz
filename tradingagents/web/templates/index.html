@@ -2207,28 +2207,73 @@ async function startBatchAnalyze() {
   applyBtn.disabled = true;
 
   progressDiv.classList.remove('hidden');
-  progressBar.style.width = '20%';
-  progressPercent.textContent = '20%';
-  progressText.textContent = '收集清單與技術指標數據...';
+  progressBar.style.width = '5%';
+  progressPercent.textContent = '5%';
+  progressText.textContent = '初始化分析環境...';
 
   tbody.innerHTML = `<tr><td colspan="7" class="px-3 py-12 text-center text-gray-400 font-medium">AI 正在評估個股指標並計算推薦進出場與止損點位，請稍候...</td></tr>`;
 
   try {
-    progressBar.style.width = '50%';
-    progressPercent.textContent = '50%';
-    progressText.textContent = '分析師與投資委員會評估中...';
+    const response = await fetch('/api/batch-suggest-levels');
+    if (!response.ok) {
+      throw new Error(`HTTP 錯誤: ${response.status}`);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    let finalResult = null;
 
-    const r = await fetch('/api/batch-suggest-levels').then(res => res.json());
-    
-    progressBar.style.width = '90%';
-    progressPercent.textContent = '90%';
-    progressText.textContent = '整理與渲染點位調整建議...';
-
-    if (!r.ok) {
-      throw new Error(r.error || '未知錯誤');
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop();
+      
+      for (const part of parts) {
+        if (!part.trim()) continue;
+        const lines = part.split("\n");
+        for (const line of lines) {
+          if (line.startsWith("data:")) {
+            const dataStr = line.substring(5).trim();
+            try {
+              const data = JSON.parse(dataStr);
+              if (data.status === "progress") {
+                progressBar.style.width = `${data.percent}%`;
+                progressPercent.textContent = `${data.percent}%`;
+                progressText.textContent = data.message;
+              } else if (data.status === "done") {
+                finalResult = data;
+              } else if (data.status === "error") {
+                throw new Error(data.error);
+              }
+            } catch (jsonErr) {
+              console.error("JSON 解析失敗:", jsonErr, line);
+            }
+          }
+        }
+      }
     }
 
-    _batchSuggestions = r.suggestions;
+    if (buffer.trim()) {
+      const lines = buffer.split("\n");
+      for (const line of lines) {
+        if (line.startsWith("data:")) {
+          const dataStr = line.substring(5).trim();
+          try {
+            const data = JSON.parse(dataStr);
+            if (data.status === "done") finalResult = data;
+            else if (data.status === "error") throw new Error(data.error);
+          } catch (e) {}
+        }
+      }
+    }
+
+    if (!finalResult) {
+      throw new Error("伺服器未回傳完整的分析結果");
+    }
+
+    _batchSuggestions = finalResult.suggestions;
     const symbols = Object.keys(_batchSuggestions);
     
     if (symbols.length === 0) {

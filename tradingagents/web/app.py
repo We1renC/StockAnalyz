@@ -1549,78 +1549,85 @@ def api_delete_alert(aid: int):
 @app.get("/api/batch-suggest-levels")
 def api_batch_suggest_levels():
     """針對所有列出的個股（持倉與觀察清單）進行 AI 批量點位分析與建議。"""
-    conn = get_db()
-    watchlist_rows = conn.execute("SELECT symbol, name, target_entry, target_stop, target_profit FROM watchlist").fetchall()
-    positions_rows = conn.execute("SELECT symbol, name, target_entry, target_stop, target_profit FROM positions").fetchall()
-    market_row = conn.execute("SELECT * FROM market_state WHERE id=1").fetchone()
-    conn.close()
+    def event_generator():
+        try:
+            yield "data: " + json.dumps({"status": "progress", "percent": 10, "message": "正在讀取持股與觀察清單資料..."}) + "\n\n"
+            conn = get_db()
+            watchlist_rows = conn.execute("SELECT symbol, name, target_entry, target_stop, target_profit FROM watchlist").fetchall()
+            positions_rows = conn.execute("SELECT symbol, name, target_entry, target_stop, target_profit FROM positions").fetchall()
+            market_row = conn.execute("SELECT * FROM market_state WHERE id=1").fetchone()
+            conn.close()
 
-    # 合併所有獨特的個股代號
-    symbols_map = {}
-    for r in watchlist_rows:
-        row_dict = dict(r)
-        symbols_map[row_dict["symbol"]] = {
-            "name": row_dict["name"],
-            "target_entry": row_dict["target_entry"],
-            "target_stop": row_dict["target_stop"],
-            "target_profit": row_dict["target_profit"]
-        }
-    for r in positions_rows:
-        row_dict = dict(r)
-        if row_dict["symbol"] not in symbols_map:
-            symbols_map[row_dict["symbol"]] = {
-                "name": row_dict["name"],
-                "target_entry": row_dict["target_entry"],
-                "target_stop": row_dict["target_stop"],
-                "target_profit": row_dict["target_profit"]
-            }
+            # 合併所有獨特的個股代號
+            symbols_map = {}
+            for r in watchlist_rows:
+                row_dict = dict(r)
+                symbols_map[row_dict["symbol"]] = {
+                    "name": row_dict["name"],
+                    "target_entry": row_dict["target_entry"],
+                    "target_stop": row_dict["target_stop"],
+                    "target_profit": row_dict["target_profit"]
+                }
+            for r in positions_rows:
+                row_dict = dict(r)
+                if row_dict["symbol"] not in symbols_map:
+                    symbols_map[row_dict["symbol"]] = {
+                        "name": row_dict["name"],
+                        "target_entry": row_dict["target_entry"],
+                        "target_stop": row_dict["target_stop"],
+                        "target_profit": row_dict["target_profit"]
+                    }
 
-    if not symbols_map:
-        return {"ok": True, "suggestions": {}}
+            if not symbols_map:
+                yield "data: " + json.dumps({"status": "done", "percent": 100, "message": "分析完成", "suggestions": {}}) + "\n\n"
+                return
 
-    # 批次查詢最新價格快取
-    conn = get_db()
-    placeholders = ",".join("?" * len(symbols_map))
-    cache_rows = conn.execute(
-        f"SELECT symbol, price, rsi, change_1d, change_1m, beta, ma20, ma60, high52, low52, data FROM price_cache WHERE symbol IN ({placeholders})",
-        list(symbols_map.keys())
-    ).fetchall()
-    conn.close()
+            yield "data: " + json.dumps({"status": "progress", "percent": 30, "message": f"已載入 {len(symbols_map)} 檔個股，正在讀取技術指標快取..."}) + "\n\n"
 
-    cache_map = {r["symbol"]: dict(r) for r in cache_rows}
+            # 批次查詢最新價格快取
+            conn = get_db()
+            placeholders = ",".join("?" * len(symbols_map))
+            cache_rows = conn.execute(
+                f"SELECT symbol, price, rsi, change_1d, change_1m, beta, ma20, ma60, high52, low52, data FROM price_cache WHERE symbol IN ({placeholders})",
+                list(symbols_map.keys())
+            ).fetchall()
+            conn.close()
 
-    # 構築大盤與個股的上下文數據
-    context_lines = []
-    if market_row:
-        m = dict(market_row)
-        context_lines.append(f"大盤指標: VIX {m.get('vix')}, 風險等級 {m.get('risk_level')}, 警訊數 {m.get('warnings_count')}/3")
+            cache_map = {r["symbol"]: dict(r) for r in cache_rows}
 
-    for symbol, info in symbols_map.items():
-        cache = cache_map.get(symbol)
-        if not cache:
-            # 若無快取，跳過或提供基本資料
-            continue
-        ind = json.loads(cache.get("data") or "{}")
-        line = [
-            f"標的: {symbol} ({info['name']})",
-            f"現價: {cache.get('price') or ind.get('price')}, RSI: {cache.get('rsi') or ind.get('rsi')}, β: {cache.get('beta') or ind.get('beta')}",
-            f"MA20: {cache.get('ma20') or ind.get('ma20')}, MA60: {cache.get('ma60') or ind.get('ma60')}",
-            f"52週高/低: {cache.get('high52') or ind.get('high52')} / {cache.get('low52') or ind.get('low52')}",
-            f"今日漲跌: {cache.get('change_1d') or ind.get('change_1d')}%, 1月漲跌: {cache.get('change_1m') or ind.get('change_1m')}%"
-        ]
-        if info['target_entry'] or info['target_profit'] or info['target_stop']:
-            line.append(f"目前設定 -> 進場: {info.get('target_entry') or '未設定'}, 停利: {info.get('target_profit') or '未設定'}, 停損: {info.get('target_stop') or '未設定'}")
-        context_lines.append("\n".join(line))
-        context_lines.append("---")
+            # 構築大盤與個股的上下文數據
+            context_lines = []
+            if market_row:
+                m = dict(market_row)
+                context_lines.append(f"大盤指標: VIX {m.get('vix')}, 風險等級 {m.get('risk_level')}, 警訊數 {m.get('warnings_count')}/3")
 
-    context_str = "\n".join(context_lines)
+            for symbol, info in symbols_map.items():
+                cache = cache_map.get(symbol)
+                if not cache:
+                    continue
+                ind = json.loads(cache.get("data") or "{}")
+                line = [
+                    f"標的: {symbol} ({info['name']})",
+                    f"現價: {cache.get('price') or ind.get('price')}, RSI: {cache.get('rsi') or ind.get('rsi')}, β: {cache.get('beta') or ind.get('beta')}",
+                    f"MA20: {cache.get('ma20') or ind.get('ma20')}, MA60: {cache.get('ma60') or ind.get('ma60')}",
+                    f"52週高/低: {cache.get('high52') or ind.get('high52')} / {cache.get('low52') or ind.get('low52')}",
+                    f"今日漲跌: {cache.get('change_1d') or ind.get('change_1d')}%, 1月漲跌: {cache.get('change_1m') or ind.get('change_1m')}%"
+                ]
+                if info['target_entry'] or info['target_profit'] or info['target_stop']:
+                    line.append(f"目前設定 -> 進場: {info.get('target_entry') or '未設定'}, 停利: {info.get('target_profit') or '未設定'}, 停損: {info.get('target_stop') or '未設定'}")
+                context_lines.append("\n".join(line))
+                context_lines.append("---")
 
-    settings = load_settings()
-    keys = settings["api_keys"]
-    roles = settings["roles"]
-    analyst = roles["analyst"]
+            context_str = "\n".join(context_lines)
 
-    prompt = f"""你是專業金融分析師與資深投資經理。請針對以下所有股票的最新數據與指標，分析並給出適合的推薦點位：
+            settings = load_settings()
+            keys = settings["api_keys"]
+            roles = settings["roles"]
+            analyst = roles["analyst"]
+
+            yield "data: " + json.dumps({"status": "progress", "percent": 50, "message": f"正在使用 {analyst['provider']} ({analyst['model']}) 進行 AI 智能點位分析與建議規劃..."}) + "\n\n"
+
+            prompt = f"""你是專業金融分析師與資深投資經理。請針對以下所有股票的最新數據與指標，分析並給出適合的推薦點位：
 1. 進場價位 (entry)
 2. 停損價位 (stop)
 3. 停利價位 (profit)
@@ -1640,46 +1647,49 @@ def api_batch_suggest_levels():
 }}
 如果某些數值不適用或無法建議，請給予合適的預估數字。
 """
+            raw_output = call_llm(
+                analyst["provider"], analyst["model"],
+                prompt,
+                keys.get(analyst["provider"], ""),
+                mode=analyst.get("mode", "api"),
+            )
 
-    try:
-        raw_output = call_llm(
-            analyst["provider"], analyst["model"],
-            prompt,
-            keys.get(analyst["provider"], ""),
-            mode=analyst.get("mode", "api"),
-        )
-        
-        # 解析 JSON (防範 LLM 自動包裹 markdown 的情況)
-        clean_json = raw_output.strip()
-        if clean_json.startswith("```"):
-            lines = clean_json.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines[-1].strip() == "```":
-                lines = lines[:-1]
-            clean_json = "\n".join(lines).strip()
-            
-        suggestions = json.loads(clean_json)
-        
-        # 整合原始名稱、現價與建議數據
-        response_data = {}
-        for symbol, info in symbols_map.items():
-            cache = cache_map.get(symbol)
-            current_price = cache.get("price") if cache else None
-            
-            sug = suggestions.get(symbol, {})
-            response_data[symbol] = {
-                "name": info["name"],
-                "current_price": current_price,
-                "entry": sug.get("entry") or info["target_entry"],
-                "profit": sug.get("profit") or info["target_profit"],
-                "stop": sug.get("stop") or info["target_stop"],
-                "reason": sug.get("reason") or "暫無建議"
-            }
-            
-        return {"ok": True, "suggestions": response_data}
-    except Exception as e:
-        return {"ok": False, "error": f"LLM 批量分析失敗: {e}"}
+            yield "data: " + json.dumps({"status": "progress", "percent": 90, "message": "正在解析 AI 建議並整理輸出結果..."}) + "\n\n"
+
+            # 解析 JSON
+            clean_json = raw_output.strip()
+            if clean_json.startswith("```"):
+                lines = clean_json.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                clean_json = "\n".join(lines).strip()
+
+            suggestions = json.loads(clean_json)
+
+            # 整合原始名稱、現價與建議數據
+            response_data = {}
+            for symbol, info in symbols_map.items():
+                cache = cache_map.get(symbol)
+                current_price = cache.get("price") if cache else None
+
+                sug = suggestions.get(symbol, {})
+                response_data[symbol] = {
+                    "name": info["name"],
+                    "current_price": current_price,
+                    "entry": sug.get("entry") or info["target_entry"],
+                    "profit": sug.get("profit") or info["target_profit"],
+                    "stop": sug.get("stop") or info["target_stop"],
+                    "reason": sug.get("reason") or "暫無建議"
+                }
+
+            yield "data: " + json.dumps({"status": "done", "percent": 100, "message": "分析完成", "suggestions": response_data}) + "\n\n"
+
+        except Exception as e:
+            yield "data: " + json.dumps({"status": "error", "error": f"LLM 批量分析失敗: {e}"}) + "\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @app.post("/api/batch-update-levels")
 def api_batch_update_levels(req: BatchUpdateRequests):
