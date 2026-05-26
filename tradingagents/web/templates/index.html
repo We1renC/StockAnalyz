@@ -1009,6 +1009,16 @@ async function loadAll() {
   if (a.type_meta) _alertTypeMeta = a.type_meta;
   renderAlerts(a.alerts);
   $('last-update').textContent = '最後更新：' + new Date().toLocaleTimeString('zh-TW');
+
+  // Trigger resize 100ms later to ensure correct width is calculated after layout paints
+  setTimeout(() => {
+    if (_twTrendChart && $('tw-portfolio-trend-chart')) {
+      try { _twTrendChart.resize($('tw-portfolio-trend-chart').clientWidth, 288); } catch(e){}
+    }
+    if (_usTrendChart && $('us-portfolio-trend-chart')) {
+      try { _usTrendChart.resize($('us-portfolio-trend-chart').clientWidth, 288); } catch(e){}
+    }
+  }, 100);
 }
 
 let _twTrendChart = null;
@@ -1072,7 +1082,7 @@ function renderPortfolioTrend(trendObj) {
     }
 
     _twTrendChart = LightweightCharts.createChart(twChartContainer, {
-      width: twChartContainer.clientWidth,
+      width: twChartContainer.clientWidth || 500,
       height: 288,
       layout: { background: { color: 'transparent' }, textColor: '#94a3b8' },
       grid: {
@@ -1146,7 +1156,7 @@ function renderPortfolioTrend(trendObj) {
     }
 
     _usTrendChart = LightweightCharts.createChart(usChartContainer, {
-      width: usChartContainer.clientWidth,
+      width: usChartContainer.clientWidth || 500,
       height: 288,
       layout: { background: { color: 'transparent' }, textColor: '#94a3b8' },
       grid: {
