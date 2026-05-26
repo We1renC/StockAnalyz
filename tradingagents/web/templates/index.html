@@ -283,13 +283,24 @@ body { background: var(--bg-base); color: var(--text-primary); }
     </div>
     <div id="portfolio-summary" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
 
-    <!-- 持倉趨勢圖表 (單張圖整合成本與市值) -->
-    <div id="portfolio-charts-container" class="glass-card p-4 flex flex-col relative mb-6 hidden">
-      <div class="flex justify-between items-center mb-2">
-        <div class="text-sm font-semibold text-slate-300">資產總值與投入成本趨勢 (NT$)</div>
-        <button id="chart-scale-toggle" onclick="toggleChartScale()" class="btn-action text-xs px-2.5 py-0.5 rounded border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300">對數座標</button>
+    <!-- 持倉趨勢圖表 (台股美股分開顯示) -->
+    <div id="portfolio-charts-container" class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6 hidden">
+      <!-- 台股趨勢 -->
+      <div id="tw-trend-card" class="glass-card p-4 flex flex-col relative">
+        <div class="flex justify-between items-center mb-2">
+          <div class="text-sm font-semibold text-slate-300">台股資產與投入成本趨勢 (TWD)</div>
+          <button id="tw-chart-scale-toggle" onclick="toggleChartScale('tw')" class="btn-action text-xs px-2.5 py-0.5 rounded border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300">對數座標</button>
+        </div>
+        <div id="tw-portfolio-trend-chart" class="w-full h-72"></div>
       </div>
-      <div id="portfolio-trend-chart" class="w-full h-72"></div>
+      <!-- 美股趨勢 -->
+      <div id="us-trend-card" class="glass-card p-4 flex flex-col relative">
+        <div class="flex justify-between items-center mb-2">
+          <div class="text-sm font-semibold text-slate-300">美股資產與投入成本趨勢 (USD)</div>
+          <button id="us-chart-scale-toggle" onclick="toggleChartScale('us')" class="btn-action text-xs px-2.5 py-0.5 rounded border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300">對數座標</button>
+        </div>
+        <div id="us-portfolio-trend-chart" class="w-full h-72"></div>
+      </div>
     </div>
 
     <!-- 台股持倉 -->
@@ -989,7 +1000,7 @@ async function loadAll() {
   ]);
   renderMarket(m);
   renderPortfolio(p);
-  renderPortfolioTrend(t.trend || []);
+  renderPortfolioTrend(t || { tw: [], us: [] });
   window._watchlist = w.watchlist;
   renderWatchlist(w.watchlist);
   if (a.type_meta) _alertTypeMeta = a.type_meta;
@@ -997,126 +1008,212 @@ async function loadAll() {
   $('last-update').textContent = '最後更新：' + new Date().toLocaleTimeString('zh-TW');
 }
 
-let _trendChart = null;
-let _trendChartScaleMode = 0; // 0: Normal, 1: Logarithmic
+let _twTrendChart = null;
+let _usTrendChart = null;
+let _twChartScaleMode = 0;
+let _usChartScaleMode = 0;
 
-function toggleChartScale() {
-  if (!_trendChart) return;
-  _trendChartScaleMode = _trendChartScaleMode === 0 ? 1 : 0;
-  _trendChart.priceScale('right').applyOptions({
-    mode: _trendChartScaleMode
-  });
-  const btn = $('chart-scale-toggle');
-  if (btn) {
-    btn.textContent = _trendChartScaleMode === 1 ? '線性座標' : '對數座標';
-    if (_trendChartScaleMode === 1) {
-      btn.classList.add('bg-slate-700', 'text-amber-400');
-    } else {
-      btn.classList.remove('bg-slate-700', 'text-amber-400');
+function toggleChartScale(type) {
+  if (type === 'tw') {
+    if (!_twTrendChart) return;
+    _twChartScaleMode = _twChartScaleMode === 0 ? 1 : 0;
+    _twTrendChart.priceScale('right').applyOptions({ mode: _twChartScaleMode });
+    const btn = $('tw-chart-scale-toggle');
+    if (btn) {
+      btn.textContent = _twChartScaleMode === 1 ? '線性座標' : '對數座標';
+      if (_twChartScaleMode === 1) {
+        btn.classList.add('bg-slate-700', 'text-amber-400');
+      } else {
+        btn.classList.remove('bg-slate-700', 'text-amber-400');
+      }
+    }
+  } else {
+    if (!_usTrendChart) return;
+    _usChartScaleMode = _usChartScaleMode === 0 ? 1 : 0;
+    _usTrendChart.priceScale('right').applyOptions({ mode: _usChartScaleMode });
+    const btn = $('us-chart-scale-toggle');
+    if (btn) {
+      btn.textContent = _usChartScaleMode === 1 ? '線性座標' : '對數座標';
+      if (_usChartScaleMode === 1) {
+        btn.classList.add('bg-slate-700', 'text-amber-400');
+      } else {
+        btn.classList.remove('bg-slate-700', 'text-amber-400');
+      }
     }
   }
 }
 
-function renderPortfolioTrend(trendData) {
+function renderPortfolioTrend(trendObj) {
   const container = $('portfolio-charts-container');
-  const chartContainer = $('portfolio-trend-chart');
-  
-  if (!trendData || trendData.length === 0) {
+  const twChartContainer = $('tw-portfolio-trend-chart');
+  const usChartContainer = $('us-portfolio-trend-chart');
+  const twCard = $('tw-trend-card');
+  const usCard = $('us-trend-card');
+
+  const twData = trendObj.tw || [];
+  const usData = trendObj.us || [];
+
+  if (twData.length === 0 && usData.length === 0) {
     container.classList.add('hidden');
     return;
   }
   container.classList.remove('hidden');
 
-  chartContainer.innerHTML = '';
-
-  if (_trendChart) {
-    try { _trendChart.remove(); } catch(e) {}
-    _trendChart = null;
-  }
-
-  // 建立資產與成本走勢圖
-  _trendChart = LightweightCharts.createChart(chartContainer, {
-    width: chartContainer.clientWidth,
-    height: 288,
-    layout: {
-      background: { color: 'transparent' },
-      textColor: '#94a3b8',
-    },
-    grid: {
-      vertLines: { color: 'rgba(148,163,184,0.04)' },
-      horzLines: { color: 'rgba(148,163,184,0.04)' },
-    },
-    timeScale: {
-      borderColor: 'rgba(148,163,184,0.1)',
-      fixLeftEdge: true,
-      fixRightEdge: true,
-      timeVisible: true,
-      secondsVisible: false,
-    },
-    rightPriceScale: {
-      borderColor: 'rgba(148,163,184,0.1)',
-      autoScale: true,
-      mode: _trendChartScaleMode,
-    },
-  });
-
-  const btn = $('chart-scale-toggle');
-  if (btn) {
-    btn.textContent = _trendChartScaleMode === 1 ? '線性座標' : '對數座標';
-    if (_trendChartScaleMode === 1) {
-      btn.classList.add('bg-slate-700', 'text-amber-400');
-    } else {
-      btn.classList.remove('bg-slate-700', 'text-amber-400');
+  // Render TW Chart
+  if (twData.length > 0) {
+    twCard.classList.remove('hidden');
+    twChartContainer.innerHTML = '';
+    if (_twTrendChart) {
+      try { _twTrendChart.remove(); } catch(e) {}
+      _twTrendChart = null;
     }
+
+    _twTrendChart = LightweightCharts.createChart(twChartContainer, {
+      width: twChartContainer.clientWidth,
+      height: 288,
+      layout: { background: { color: 'transparent' }, textColor: '#94a3b8' },
+      grid: {
+        vertLines: { color: 'rgba(148,163,184,0.04)' },
+        horzLines: { color: 'rgba(148,163,184,0.04)' },
+      },
+      timeScale: {
+        borderColor: 'rgba(148,163,184,0.1)',
+        fixLeftEdge: true,
+        fixRightEdge: true,
+        timeVisible: true,
+        secondsVisible: false,
+      },
+      rightPriceScale: {
+        borderColor: 'rgba(148,163,184,0.1)',
+        autoScale: true,
+        mode: _twChartScaleMode,
+      },
+    });
+
+    const valueSeries = _twTrendChart.addAreaSeries({
+      lineColor: 'rgba(239, 68, 68, 0.95)', // TW uses Red for rising/value
+      topColor: 'rgba(239, 68, 68, 0.25)',
+      bottomColor: 'rgba(239, 68, 68, 0.0)',
+      lineWidth: 2.5,
+      title: '市值',
+      priceLineVisible: false,
+      priceFormat: {
+        type: 'custom',
+        formatter: (price) => 'NT$ ' + Math.round(price).toLocaleString(),
+      },
+    });
+
+    const costSeries = _twTrendChart.addAreaSeries({
+      lineColor: 'rgba(250, 204, 21, 0.4)',
+      topColor: 'rgba(250, 204, 21, 0.1)',
+      bottomColor: 'rgba(250, 204, 21, 0.0)',
+      lineWidth: 2,
+      title: '成本',
+      priceLineVisible: false,
+      priceFormat: {
+        type: 'custom',
+        formatter: (price) => 'NT$ ' + Math.round(price).toLocaleString(),
+      },
+    });
+
+    valueSeries.setData(twData.map(d => ({ time: d.time, value: d.total_value })));
+    costSeries.setData(twData.map(d => ({ time: d.time, value: d.total_cost })));
+    _twTrendChart.timeScale().fitContent();
+
+    const btn = $('tw-chart-scale-toggle');
+    if (btn) {
+      btn.textContent = _twChartScaleMode === 1 ? '線性座標' : '對數座標';
+      if (_twChartScaleMode === 1) {
+        btn.classList.add('bg-slate-700', 'text-amber-400');
+      } else {
+        btn.classList.remove('bg-slate-700', 'text-amber-400');
+      }
+    }
+  } else {
+    twCard.classList.add('hidden');
   }
 
-  // 總市值 (藍色面積圖 - 高清晰度)
-  const valueSeries = _trendChart.addAreaSeries({
-    lineColor: 'rgba(59, 130, 246, 0.95)',
-    topColor: 'rgba(59, 130, 246, 0.25)',
-    bottomColor: 'rgba(59, 130, 246, 0.0)',
-    lineWidth: 2.5,
-    title: '總市值',
-    priceLineVisible: false,
-    priceFormat: {
-      type: 'custom',
-      formatter: (price) => 'NT$ ' + Math.round(price).toLocaleString(),
-    },
-  });
+  // Render US Chart
+  if (usData.length > 0) {
+    usCard.classList.remove('hidden');
+    usChartContainer.innerHTML = '';
+    if (_usTrendChart) {
+      try { _usTrendChart.remove(); } catch(e) {}
+      _usTrendChart = null;
+    }
 
-  // 總成本 (黃色面積圖 - 低清晰度對照)
-  const costSeries = _trendChart.addAreaSeries({
-    lineColor: 'rgba(250, 204, 21, 0.4)',
-    topColor: 'rgba(250, 204, 21, 0.1)',
-    bottomColor: 'rgba(250, 204, 21, 0.0)',
-    lineWidth: 2,
-    title: '總成本',
-    priceLineVisible: false,
-    priceFormat: {
-      type: 'custom',
-      formatter: (price) => 'NT$ ' + Math.round(price).toLocaleString(),
-    },
-  });
+    _usTrendChart = LightweightCharts.createChart(usChartContainer, {
+      width: usChartContainer.clientWidth,
+      height: 288,
+      layout: { background: { color: 'transparent' }, textColor: '#94a3b8' },
+      grid: {
+        vertLines: { color: 'rgba(148,163,184,0.04)' },
+        horzLines: { color: 'rgba(148,163,184,0.04)' },
+      },
+      timeScale: {
+        borderColor: 'rgba(148,163,184,0.1)',
+        fixLeftEdge: true,
+        fixRightEdge: true,
+        timeVisible: true,
+        secondsVisible: false,
+      },
+      rightPriceScale: {
+        borderColor: 'rgba(148,163,184,0.1)',
+        autoScale: true,
+        mode: _usChartScaleMode,
+      },
+    });
 
-  const valueData = trendData.map(d => ({
-    time: d.time,
-    value: d.total_value
-  }));
+    const valueSeries = _usTrendChart.addAreaSeries({
+      lineColor: 'rgba(59, 130, 246, 0.95)', // US uses Blue for rising/value
+      topColor: 'rgba(59, 130, 246, 0.25)',
+      bottomColor: 'rgba(59, 130, 246, 0.0)',
+      lineWidth: 2.5,
+      title: '市值',
+      priceLineVisible: false,
+      priceFormat: {
+        type: 'custom',
+        formatter: (price) => 'US$ ' + price.toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,'),
+      },
+    });
 
-  const costData = trendData.map(d => ({
-    time: d.time,
-    value: d.total_cost
-  }));
+    const costSeries = _usTrendChart.addAreaSeries({
+      lineColor: 'rgba(250, 204, 21, 0.4)',
+      topColor: 'rgba(250, 204, 21, 0.1)',
+      bottomColor: 'rgba(250, 204, 21, 0.0)',
+      lineWidth: 2,
+      title: '成本',
+      priceLineVisible: false,
+      priceFormat: {
+        type: 'custom',
+        formatter: (price) => 'US$ ' + price.toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,'),
+      },
+    });
 
-  valueSeries.setData(valueData);
-  costSeries.setData(costData);
+    valueSeries.setData(usData.map(d => ({ time: d.time, value: d.total_value })));
+    costSeries.setData(usData.map(d => ({ time: d.time, value: d.total_cost })));
+    _usTrendChart.timeScale().fitContent();
 
-  _trendChart.timeScale().fitContent();
+    const btn = $('us-chart-scale-toggle');
+    if (btn) {
+      btn.textContent = _usChartScaleMode === 1 ? '線性座標' : '對數座標';
+      if (_usChartScaleMode === 1) {
+        btn.classList.add('bg-slate-700', 'text-amber-400');
+      } else {
+        btn.classList.remove('bg-slate-700', 'text-amber-400');
+      }
+    }
+  } else {
+    usCard.classList.add('hidden');
+  }
 }
 
 window.addEventListener('resize', () => {
-  if (_trendChart && $('portfolio-trend-chart')) {
-    try { _trendChart.resize($('portfolio-trend-chart').clientWidth, 288); } catch(e){}
+  if (_twTrendChart && $('tw-portfolio-trend-chart')) {
+    try { _twTrendChart.resize($('tw-portfolio-trend-chart').clientWidth, 288); } catch(e){}
+  }
+  if (_usTrendChart && $('us-portfolio-trend-chart')) {
+    try { _usTrendChart.resize($('us-portfolio-trend-chart').clientWidth, 288); } catch(e){}
   }
 });
 

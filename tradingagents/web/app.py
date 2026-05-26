@@ -1134,7 +1134,7 @@ def api_portfolio_trend():
     
     positions = [dict(r) for r in rows]
     if not positions:
-        return {"trend": []}
+        return {"tw": [], "us": []}
         
     from concurrent.futures import ThreadPoolExecutor
     
@@ -1159,7 +1159,7 @@ def api_portfolio_trend():
         all_timestamps.update(prices.keys())
         
     if not all_timestamps:
-        return {"trend": []}
+        return {"tw": [], "us": []}
         
     sorted_timestamps = sorted(list(all_timestamps))
     
@@ -1187,14 +1187,15 @@ def api_portfolio_trend():
         else:
             purchase_dates[p["id"]] = None
             
-    trend = []
+    trend_tw = []
+    trend_us = []
     for ts in sorted_timestamps:
         # 將時間戳記轉為本地日期做比較
         ts_date = datetime.datetime.fromtimestamp(ts).date()
         
-        total_cost = 0.0
-        total_value = 0.0
-        active_positions = False
+        tw_cost = tw_val = 0.0
+        us_cost = us_val = 0.0
+        tw_active = us_active = False
         
         for p in positions:
             p_date = purchase_dates.get(p["id"])
@@ -1211,26 +1212,33 @@ def api_portfolio_trend():
             cost_total = p["cost_price"] * p["shares"]
             val_total = price * p["shares"]
             
-            if p["currency"] == "USD":
-                cost_total *= USD_TWD
-                val_total *= USD_TWD
+            is_tw = p["currency"] == "TWD" or p["symbol"].endswith(".TW")
+            if is_tw:
+                tw_cost += cost_total
+                tw_val += val_total
+                tw_active = True
+            else:
+                us_cost += cost_total
+                us_val += val_total
+                us_active = True
                 
-            total_cost += cost_total
-            total_value += val_total
-            active_positions = True
-            
-        if active_positions:
-            total_pnl = total_value - total_cost
-            total_pnl_pct = (total_value / total_cost - 1) * 100 if total_cost > 0 else 0.0
-            trend.append({
+        if tw_active:
+            trend_tw.append({
                 "time": ts,
-                "total_value": round(total_value, 0),
-                "total_cost": round(total_cost, 0),
-                "total_pnl": round(total_pnl, 0),
-                "total_pnl_pct": round(total_pnl_pct, 2)
+                "total_value": round(tw_val, 0),
+                "total_cost": round(tw_cost, 0),
+            })
+        if us_active:
+            trend_us.append({
+                "time": ts,
+                "total_value": round(us_val, 2),
+                "total_cost": round(us_cost, 2),
             })
         
-    return sanitize_float_values({"trend": trend})
+    return sanitize_float_values({
+        "tw": trend_tw,
+        "us": trend_us
+    })
 
 
 @app.get("/api/watchlist")
