@@ -1125,7 +1125,89 @@ def api_portfolio():
         }
     })
 
+
+@app.get("/api/portfolio/trend")
+def api_portfolio_trend():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM positions").fetchall()
+    conn.close()
+    
+    positions = [dict(r) for r in rows]
+    if not positions:
+        return {"trend": []}
+        
+    from concurrent.futures import ThreadPoolExecutor
+    
+    def _fetch_history(symbol):
+        try:
+            h = yf.Ticker(symbol).history(period="1mo")
+            h = h.dropna(subset=["Close"])
+            prices = {ts.date().isoformat(): float(close) for ts, close in h["Close"].items()}
+            return symbol, prices
+        except Exception:
+            return symbol, {}
+            
+    histories = {}
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futures = [ex.submit(_fetch_history, p["symbol"]) for p in positions]
+        for f in futures:
+            sym, prices = f.result()
+            histories[sym] = prices
+            
+    all_dates = set()
+    for prices in histories.values():
+        all_dates.update(prices.keys())
+        
+    if not all_dates:
+        return {"trend": []}
+        
+    sorted_dates = sorted(list(all_dates))
+    
+    last_seen_prices = {}
+    for p in positions:
+        sym = p["symbol"]
+        sym_prices = histories.get(sym, {})
+        if sym_prices:
+            first_date = min(sym_prices.keys())
+            last_seen_prices[sym] = sym_prices[first_date]
+        else:
+            last_seen_prices[sym] = p["cost_price"]
+            
+    trend = []
+    for date_str in sorted_dates:
+        total_cost = 0.0
+        total_value = 0.0
+        for p in positions:
+            sym = p["symbol"]
+            sym_prices = histories.get(sym, {})
+            if date_str in sym_prices:
+                last_seen_prices[sym] = sym_prices[date_str]
+                
+            price = last_seen_prices[sym]
+            cost_total = p["cost_price"] * p["shares"]
+            val_total = price * p["shares"]
+            
+            if p["currency"] == "USD":
+                cost_total *= USD_TWD
+                val_total *= USD_TWD
+                
+            total_cost += cost_total
+            total_value += val_total
+            
+        total_pnl = total_value - total_cost
+        total_pnl_pct = (total_value / total_cost - 1) * 100 if total_cost > 0 else 0.0
+        trend.append({
+            "date": date_str,
+            "total_value": round(total_value, 0),
+            "total_pnl": round(total_pnl, 0),
+            "total_pnl_pct": round(total_pnl_pct, 2)
+        })
+        
+    return sanitize_float_values({"trend": trend})
+
+
 @app.get("/api/watchlist")
+
 def api_watchlist():
     conn = get_db()
     rows = conn.execute("""

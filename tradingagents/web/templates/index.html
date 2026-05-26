@@ -282,6 +282,19 @@ body { background: var(--bg-base); color: var(--text-primary); }
       <button onclick="openAddPosition()" class="btn-primary text-sm px-4 py-1.5">新增持倉</button>
     </div>
     <div id="portfolio-summary" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
+
+    <!-- 持倉趨勢圖表 -->
+    <div id="portfolio-charts-container" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6 hidden">
+      <div class="glass-card p-4 flex flex-col relative">
+        <div class="text-sm font-semibold text-slate-300 mb-2">總金額趨勢 (NT$)</div>
+        <div id="portfolio-value-chart" class="w-full h-64"></div>
+      </div>
+      <div class="glass-card p-4 flex flex-col relative">
+        <div class="text-sm font-semibold text-slate-300 mb-2">累積損益趨勢 (NT$)</div>
+        <div id="portfolio-pnl-chart" class="w-full h-64"></div>
+      </div>
+    </div>
+
     <!-- 台股持倉 -->
     <div class="mb-6">
       <div class="flex items-center justify-between mb-2 px-1">
@@ -941,6 +954,14 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (btn.dataset.tab === 'backtest' && !$('backtest-tbody').innerHTML.trim()) {
       loadBacktest();
     }
+    if (btn.dataset.tab === 'portfolio') {
+      if (_valueChart && $('portfolio-value-chart')) {
+        try { _valueChart.resize($('portfolio-value-chart').clientWidth, 256); } catch(e){}
+      }
+      if (_pnlChart && $('portfolio-pnl-chart')) {
+        try { _pnlChart.resize($('portfolio-pnl-chart').clientWidth, 256); } catch(e){}
+      }
+    }
   });
 });
 
@@ -957,20 +978,150 @@ document.querySelectorAll('.filter-pill').forEach(btn => {
 });
 
 async function loadAll() {
-  const [m, p, w, a] = await Promise.all([
+  const [m, p, w, a, t] = await Promise.all([
     fetch('/api/market').then(r=>r.json()),
     fetch('/api/portfolio').then(r=>r.json()),
     fetch('/api/watchlist').then(r=>r.json()),
     fetch('/api/alerts?limit=100').then(r=>r.json()),
+    fetch('/api/portfolio/trend').then(r=>r.json()),
   ]);
   renderMarket(m);
   renderPortfolio(p);
+  renderPortfolioTrend(t.trend || []);
   window._watchlist = w.watchlist;
   renderWatchlist(w.watchlist);
   if (a.type_meta) _alertTypeMeta = a.type_meta;
   renderAlerts(a.alerts);
   $('last-update').textContent = '最後更新：' + new Date().toLocaleTimeString('zh-TW');
 }
+
+let _valueChart = null;
+let _pnlChart = null;
+
+function renderPortfolioTrend(trendData) {
+  const container = $('portfolio-charts-container');
+  const valueContainer = $('portfolio-value-chart');
+  const pnlContainer = $('portfolio-pnl-chart');
+  
+  if (!trendData || trendData.length === 0) {
+    container.classList.add('hidden');
+    return;
+  }
+  container.classList.remove('hidden');
+
+  valueContainer.innerHTML = '';
+  pnlContainer.innerHTML = '';
+
+  if (_valueChart) {
+    try { _valueChart.remove(); } catch(e) {}
+    _valueChart = null;
+  }
+  if (_pnlChart) {
+    try { _pnlChart.remove(); } catch(e) {}
+    _pnlChart = null;
+  }
+
+  // 建立總金額趨勢圖
+  _valueChart = LightweightCharts.createChart(valueContainer, {
+    width: valueContainer.clientWidth,
+    height: 256,
+    layout: {
+      background: { color: 'transparent' },
+      textColor: '#94a3b8',
+    },
+    grid: {
+      vertLines: { color: 'rgba(148,163,184,0.04)' },
+      horzLines: { color: 'rgba(148,163,184,0.04)' },
+    },
+    timeScale: {
+      borderColor: 'rgba(148,163,184,0.1)',
+      fixLeftEdge: true,
+      fixRightEdge: true,
+    },
+    rightPriceScale: {
+      borderColor: 'rgba(148,163,184,0.1)',
+      autoScale: true,
+    },
+  });
+
+  const valueSeries = _valueChart.addAreaSeries({
+    lineColor: '#a855f7', // 紫色
+    topColor: 'rgba(168, 85, 247, 0.2)',
+    bottomColor: 'rgba(168, 85, 247, 0.0)',
+    lineWidth: 2,
+    priceFormat: {
+      type: 'custom',
+      formatter: (price) => 'NT$ ' + Math.round(price).toLocaleString(),
+    },
+  });
+
+  // 建立累積損益趨勢圖
+  _pnlChart = LightweightCharts.createChart(pnlContainer, {
+    width: pnlContainer.clientWidth,
+    height: 256,
+    layout: {
+      background: { color: 'transparent' },
+      textColor: '#94a3b8',
+    },
+    grid: {
+      vertLines: { color: 'rgba(148,163,184,0.04)' },
+      horzLines: { color: 'rgba(148,163,184,0.04)' },
+    },
+    timeScale: {
+      borderColor: 'rgba(148,163,184,0.1)',
+      fixLeftEdge: true,
+      fixRightEdge: true,
+    },
+    rightPriceScale: {
+      borderColor: 'rgba(148,163,184,0.1)',
+      autoScale: true,
+    },
+  });
+
+  const lastPnl = trendData[trendData.length - 1]?.total_pnl || 0;
+  const pnlColor = lastPnl >= 0 ? '#ef4444' : '#10b981'; // 獲利紅 / 虧損綠
+  const pnlBgColor = lastPnl >= 0 ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.2)';
+
+  const pnlSeries = _pnlChart.addAreaSeries({
+    lineColor: pnlColor,
+    topColor: pnlBgColor,
+    bottomColor: 'rgba(0, 0, 0, 0)',
+    lineWidth: 2,
+    priceFormat: {
+      type: 'custom',
+      formatter: (price) => {
+        const prefix = price >= 0 ? '+' : '';
+        return 'NT$ ' + prefix + Math.round(price).toLocaleString();
+      },
+    },
+  });
+
+  const valueData = trendData.map(d => ({
+    time: d.date,
+    value: d.total_value
+  }));
+
+  const pnlData = trendData.map(d => ({
+    time: d.date,
+    value: d.total_pnl
+  }));
+
+  valueSeries.setData(valueData);
+  pnlSeries.setData(pnlData);
+
+  _valueChart.timeScale().fitContent();
+  _pnlChart.timeScale().fitContent();
+}
+
+window.addEventListener('resize', () => {
+  if (_valueChart && $('portfolio-value-chart')) {
+    try { _valueChart.resize($('portfolio-value-chart').clientWidth, 256); } catch(e){}
+  }
+  if (_pnlChart && $('portfolio-pnl-chart')) {
+    try { _pnlChart.resize($('portfolio-pnl-chart').clientWidth, 256); } catch(e){}
+  }
+});
+
 
 function renderMarket(m) {
   if (m.error) {
@@ -1036,6 +1187,11 @@ function renderPortfolio(data) {
       <div class="text-xs text-slate-400 mb-1">報酬率</div>
       <div class="text-2xl font-bold tabular-nums ${pnlColor}">${s.total_pnl_pct >= 0 ? '+' : ''}${fmt(s.total_pnl_pct)}%</div>
     </div>`;
+
+  // 按照損益數字大小 (pnl) 降序排列 (獲利高排上方，虧損大排下方)
+  if (data.positions) {
+    data.positions.sort((a, b) => (b.pnl || 0) - (a.pnl || 0));
+  }
 
   // 1. 分流台美股
   const twPositions = data.positions.filter(p => p.currency === 'TWD' || p.symbol.endsWith('.TW'));
