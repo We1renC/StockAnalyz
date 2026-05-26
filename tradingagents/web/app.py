@@ -33,6 +33,20 @@ from llm_providers import (
 
 warnings.filterwarnings("ignore")
 
+def sanitize_float_values(obj):
+    """Recursively replace float('nan'), float('inf'), and -float('inf') with None in dictionaries and lists."""
+    if isinstance(obj, dict):
+        return {k: sanitize_float_values(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_float_values(v) for v in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+    elif isinstance(obj, (np.floating, np.integer)):
+        if np.isnan(obj):
+            return None
+    return obj
+
 BASE = Path(__file__).parent
 DB = BASE / "portfolio.db"
 USD_TWD = 32.0  # 預估匯率 (簡化)
@@ -422,6 +436,9 @@ def _indicators_from_history(h: pd.DataFrame, bench_close=None, source: str = ""
     """
     if len(h) < 1:
         return {}
+    h = h.dropna(subset=["Close", "Open", "High", "Low"])
+    if len(h) < 1:
+        return {}
     c = h["Close"]
     n = len(c)
 
@@ -459,7 +476,7 @@ def _indicators_from_history(h: pd.DataFrame, bench_close=None, source: str = ""
             beta_val = cv[0, 1] / cv[1, 1]
             beta = round(float(beta_val), 2) if not np.isnan(beta_val) else None
 
-    return {
+    return sanitize_float_values({
         "price": round(price, 2),
         "change_1d": change_1d,
         "change_1m": change_1m,
@@ -470,7 +487,7 @@ def _indicators_from_history(h: pd.DataFrame, bench_close=None, source: str = ""
         "low52": low52,
         "beta": beta,
         "source": source or h.attrs.get("source") or "history",
-    }
+    })
 
 def fetch_yfinance_indicators(symbol: str, bench_close=None) -> dict:
     """Full indicator source backed by Yahoo Finance history."""
@@ -547,6 +564,7 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
 
 def store_price_cache(c, symbol: str, ind: dict):
     """Persist fresh quote data while keeping older indicator fields when absent."""
+    ind = sanitize_float_values(ind)
     existing = c.execute("SELECT * FROM price_cache WHERE symbol=?", (symbol,)).fetchone()
     existing_data = json.loads(existing["data"] or "{}") if existing and existing["data"] else {}
     merged = dict(existing_data)
@@ -554,6 +572,7 @@ def store_price_cache(c, symbol: str, ind: dict):
         if value is not None:
             merged[key] = value
     merged["source"] = ind.get("source", merged.get("source"))
+    merged = sanitize_float_values(merged)
 
     c.execute(
         """INSERT OR REPLACE INTO price_cache
@@ -1096,7 +1115,7 @@ def api_portfolio():
         total_cost += cost_total
         total_value += val_total
         out.append(d)
-    return {
+    return sanitize_float_values({
         "positions": out,
         "summary": {
             "total_cost": round(total_cost, 0),
@@ -1104,7 +1123,7 @@ def api_portfolio():
             "total_pnl": round(total_value - total_cost, 0),
             "total_pnl_pct": round((total_value/total_cost-1)*100, 2) if total_cost > 0 else 0,
         }
-    }
+    })
 
 @app.get("/api/watchlist")
 def api_watchlist():
@@ -1173,7 +1192,7 @@ def api_watchlist():
 
     # 按優先度降序，再按類別
     out.sort(key=lambda x: (-x["priority"], x.get("category") or ""))
-    return {"watchlist": out}
+    return sanitize_float_values({"watchlist": out})
 
 # Alert type 顯示資訊：中文標籤、tailwind 配色、優先排序權重 (大=越優先)
 # color 是 tailwind class，前端直接套用 → 不同 type 用不同色塊辨識，不靠 icon
@@ -1326,6 +1345,7 @@ def api_history(symbol: str, period: str = "6mo"):
     """歷史 OHLC 數據 (給 K 線圖使用)。"""
     try:
         h = yf.Ticker(symbol).history(period=period)
+        h = h.dropna(subset=["Open", "High", "Low", "Close"])
         if len(h) == 0:
             return {"error": "no data"}
         h.index = h.index.tz_localize(None)
@@ -1355,7 +1375,7 @@ def api_history(symbol: str, period: str = "6mo"):
             ma20.append({"time": int(ts.timestamp()), "value": round(float(val), 2)})
         for ts, val in ma60_series.dropna().items():
             ma60.append({"time": int(ts.timestamp()), "value": round(float(val), 2)})
-        return {"symbol": symbol, "candles": candles, "volumes": volumes, "ma20": ma20, "ma60": ma60}
+        return sanitize_float_values({"symbol": symbol, "candles": candles, "volumes": volumes, "ma20": ma20, "ma60": ma60})
     except Exception as e:
         return {"error": str(e)}
 
@@ -2506,7 +2526,7 @@ def api_diagnose(symbol: str):
         return {"error": "no price cache for symbol"}
     ind = json.loads(dict(cache).get("data") or "{}")
     diag = diagnose(symbol, name, ind, market, position=dict(pos) if pos else None)
-    return {"symbol": symbol, "name": name, "diagnosis": diag, "indicators": ind}
+    return sanitize_float_values({"symbol": symbol, "name": name, "diagnosis": diag, "indicators": ind})
 
 if __name__ == "__main__":
     import uvicorn
