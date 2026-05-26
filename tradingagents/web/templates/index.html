@@ -701,6 +701,10 @@ body { background: var(--bg-base); color: var(--text-primary); }
           </select>
         </div>
       </div>
+      <div>
+        <label class="text-xs text-gray-400">購買日期</label>
+        <input id="pos-date" type="date" required class="input-field">
+      </div>
       <button type="submit" class="w-full btn-primary py-2 rounded font-semibold">確認新增</button>
     </form>
   </div>
@@ -741,6 +745,10 @@ body { background: var(--bg-base); color: var(--text-primary); }
             <option value="USD">USD</option>
           </select>
         </div>
+      </div>
+      <div>
+        <label class="text-xs text-gray-400">購買日期</label>
+        <input id="edit-pos-date" type="date" required class="input-field">
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div>
@@ -1232,7 +1240,7 @@ function renderPortfolio(data) {
       <td><span class="pill ${recPill} text-[11px]">${rec.action||'—'}</span>${rec.reason ? `<div class="text-[10px] text-slate-500 mt-1 leading-tight max-w-[180px]">${rec.reason}</div>` : ''}${targetInfo ? `<div class="text-[10px] mt-0.5">${targetInfo}</div>` : ''}</td>
       <td class="text-center whitespace-nowrap">
         <button onclick="diagnose('${p.symbol}','${(p.name||'').replace(/'/g,"\\\'")}')" class="btn-action" data-tip="分析">分析</button>
-        <button onclick="editPosition(${p.id},'${p.symbol}','${(p.name||'').replace(/'/g,"\\\'")}',${p.shares},${p.cost_price},'${p.category||''}','${p.currency||'TWD'}',${p.target_profit||'null'},${p.target_stop||'null'})" class="btn-action" data-tip="編輯">編輯</button>
+        <button onclick="editPosition(${p.id},'${p.symbol}','${(p.name||'').replace(/'/g,"\\\'")}',${p.shares},${p.cost_price},'${p.category||''}','${p.currency||'TWD'}',${p.target_profit||'null'},${p.target_stop||'null'},'${p.purchase_date||''}')" class="btn-action" data-tip="編輯">編輯</button>
         <button onclick="deletePosition(${p.id})" class="btn-action-danger" data-tip="刪除">刪除</button>
       </td>
     </tr>`;
@@ -2074,7 +2082,14 @@ async function saveSettings() {
 fetch('/api/settings').then(r=>r.json()).then(s => updateLLMHint(s.roles));
 
 // ─── Add/Delete Position ───
-function openAddPosition() { $('add-pos-modal').classList.remove('hidden'); }
+function openAddPosition() {
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  $('pos-date').value = `${yyyy}-${mm}-${dd}`;
+  $('add-pos-modal').classList.remove('hidden');
+}
 function closeAddPos()    { $('add-pos-modal').classList.add('hidden'); }
 
 async function submitPosition(e) {
@@ -2086,6 +2101,7 @@ async function submitPosition(e) {
     shares: parseFloat($('pos-shares').value),
     cost_price: parseFloat($('pos-cost').value),
     currency: $('pos-currency').value,
+    purchase_date: $('pos-date').value,
   };
   const r = await fetch('/api/positions', {
     method: 'POST', headers: {'Content-Type':'application/json'},
@@ -2110,7 +2126,7 @@ async function deletePosition(id) {
 // ─── Edit Position Modal ───
 let _editPosId = null;
 
-function editPosition(id, symbol, name, shares, cost, category, currency, target_profit, target_stop) {
+function editPosition(id, symbol, name, shares, cost, category, currency, target_profit, target_stop, purchase_date) {
   _editPosId = id;
   $('edit-pos-symbol-label').textContent = `${symbol} (${name})`;
   $('edit-pos-shares').value = shares;
@@ -2120,6 +2136,17 @@ function editPosition(id, symbol, name, shares, cost, category, currency, target
   $('edit-pos-currency').value = currency || 'TWD';
   $('edit-pos-profit').value = target_profit || '';
   $('edit-pos-stop').value = target_stop || '';
+  
+  if (purchase_date) {
+    $('edit-pos-date').value = purchase_date;
+  } else {
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    $('edit-pos-date').value = `${yyyy}-${mm}-${dd}`;
+  }
+  
   $('edit-pos-modal').classList.remove('hidden');
 }
 function closeEditPos() { $('edit-pos-modal').classList.add('hidden'); }
@@ -2134,6 +2161,7 @@ async function submitEditPosition(e) {
     currency: $('edit-pos-currency').value,
     target_profit: $('edit-pos-profit').value ? parseFloat($('edit-pos-profit').value) : null,
     target_stop: $('edit-pos-stop').value ? parseFloat($('edit-pos-stop').value) : null,
+    purchase_date: $('edit-pos-date').value,
   };
   const r = await fetch(`/api/positions/${_editPosId}`, {
     method: 'PUT', headers: {'Content-Type':'application/json'},

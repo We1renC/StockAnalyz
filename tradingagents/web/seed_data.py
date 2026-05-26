@@ -17,9 +17,9 @@ DB = Path(__file__).parent / "portfolio.db"
 
 # 範例持倉（公開可分享 — 不含真實成本價）
 POSITIONS = [
-    # (symbol, name, category, shares, cost, currency)
-    ("2330.TW", "台積電",   "半導體", 0, 0.0, "TWD"),
-    ("2412.TW", "中華電信", "電信",   0, 0.0, "TWD"),
+    # (symbol, name, category, shares, cost, currency, purchase_date)
+    ("2330.TW", "台積電",   "半導體", 0, 0.0, "TWD", "2026-05-26"),
+    ("2412.TW", "中華電信", "電信",   0, 0.0, "TWD", "2026-05-26"),
 ]
 
 # 嘗試讀取個人覆蓋檔（不會被 git 追蹤）
@@ -105,7 +105,13 @@ def seed():
     c.execute("DELETE FROM positions")
     c.execute("DELETE FROM watchlist")
     for p in POSITIONS:
-        c.execute("INSERT INTO positions (symbol, name, category, shares, cost_price, currency) VALUES (?, ?, ?, ?, ?, ?)", p)
+        if len(p) == 7:
+            c.execute("INSERT INTO positions (symbol, name, category, shares, cost_price, currency, purchase_date) VALUES (?, ?, ?, ?, ?, ?, ?)", p)
+        else:
+            from datetime import date
+            today_str = date.today().isoformat()
+            full_p = p + (today_str,)
+            c.execute("INSERT INTO positions (symbol, name, category, shares, cost_price, currency, purchase_date) VALUES (?, ?, ?, ?, ?, ?, ?)", full_p)
     for w in WATCHLIST:
         c.execute("INSERT INTO watchlist (symbol, name, category, currency, target_entry, target_add, target_profit, target_stop, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", w)
     conn.commit()

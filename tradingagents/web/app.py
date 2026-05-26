@@ -1173,11 +1173,35 @@ def api_portfolio_trend():
         else:
             last_seen_prices[sym] = p["cost_price"]
             
+    import datetime
+    
+    # 解析各持倉的購買日期
+    purchase_dates = {}
+    for p in positions:
+        p_date_str = p.get("purchase_date")
+        if p_date_str:
+            try:
+                purchase_dates[p["id"]] = datetime.date.fromisoformat(p_date_str.strip())
+            except Exception:
+                purchase_dates[p["id"]] = None
+        else:
+            purchase_dates[p["id"]] = None
+            
     trend = []
     for ts in sorted_timestamps:
+        # 將時間戳記轉為本地日期做比較
+        ts_date = datetime.datetime.fromtimestamp(ts).date()
+        
         total_cost = 0.0
         total_value = 0.0
+        active_positions = False
+        
         for p in positions:
+            p_date = purchase_dates.get(p["id"])
+            # 若該時間點尚未購買此股票，則不計入持倉成本與市值
+            if p_date and ts_date < p_date:
+                continue
+                
             sym = p["symbol"]
             sym_prices = histories.get(sym, {})
             if ts in sym_prices:
@@ -1193,16 +1217,18 @@ def api_portfolio_trend():
                 
             total_cost += cost_total
             total_value += val_total
+            active_positions = True
             
-        total_pnl = total_value - total_cost
-        total_pnl_pct = (total_value / total_cost - 1) * 100 if total_cost > 0 else 0.0
-        trend.append({
-            "time": ts,
-            "total_value": round(total_value, 0),
-            "total_cost": round(total_cost, 0),
-            "total_pnl": round(total_pnl, 0),
-            "total_pnl_pct": round(total_pnl_pct, 2)
-        })
+        if active_positions:
+            total_pnl = total_value - total_cost
+            total_pnl_pct = (total_value / total_cost - 1) * 100 if total_cost > 0 else 0.0
+            trend.append({
+                "time": ts,
+                "total_value": round(total_value, 0),
+                "total_cost": round(total_cost, 0),
+                "total_pnl": round(total_pnl, 0),
+                "total_pnl_pct": round(total_pnl_pct, 2)
+            })
         
     return sanitize_float_values({"trend": trend})
 
@@ -1470,6 +1496,7 @@ class PositionCreate(BaseModel):
     shares: float
     cost_price: float
     currency: str = "TWD"
+    purchase_date: Optional[str] = None
     target_entry: Optional[float] = None
     target_profit: Optional[float] = None
     target_stop: Optional[float] = None
@@ -1477,9 +1504,10 @@ class PositionCreate(BaseModel):
 @app.post("/api/positions")
 def api_add_position(p: PositionCreate):
     conn = get_db()
+    p_date = p.purchase_date or date.today().isoformat()
     conn.execute(
         "INSERT INTO positions (symbol, name, category, shares, cost_price, currency, purchase_date, target_entry, target_profit, target_stop) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (p.symbol, p.name, p.category, p.shares, p.cost_price, p.currency, datetime.now().date().isoformat(), p.target_entry, p.target_profit, p.target_stop)
+        (p.symbol, p.name, p.category, p.shares, p.cost_price, p.currency, p_date, p.target_entry, p.target_profit, p.target_stop)
     )
     conn.commit()
     conn.close()
@@ -1499,6 +1527,7 @@ class PositionUpdate(BaseModel):
     name: Optional[str] = None
     category: Optional[str] = None
     currency: Optional[str] = None
+    purchase_date: Optional[str] = None
     target_entry: Optional[float] = None
     target_profit: Optional[float] = None
     target_stop: Optional[float] = None
@@ -1512,18 +1541,9 @@ def api_update_position(pid: int, p: PositionUpdate):
         raise HTTPException(404, "Position not found")
     updates = []
     params = []
-    for field in ("shares", "cost_price", "name", "category", "currency", "target_entry", "target_profit", "target_stop"):
-        val = getattr(p, field)
-        # We allow setting target_entry, target_profit, target_stop to None (null) explicitly,
-        # but only if they are passed in the JSON body. Since they are Optional, we need to check if they were provided.
-        # In Pydantic v1 (FastAPI default), checking model_fields_set is standard. Or we can just check if key exists in body.
-        # But wait! A simpler way is: if getattr(p, field) is not None, or if we want to allow setting to null,
-        # we can check if it is passed in the request body. Let's see: `p.dict(exclude_unset=True)` gets only set fields!
-        # This is extremely clean and standard!
-        pass
     
     set_fields = p.dict(exclude_unset=True)
-    for field in ("shares", "cost_price", "name", "category", "currency", "target_entry", "target_profit", "target_stop"):
+    for field in ("shares", "cost_price", "name", "category", "currency", "purchase_date", "target_entry", "target_profit", "target_stop"):
         if field in set_fields:
             updates.append(f"{field}=?")
             params.append(set_fields[field])
