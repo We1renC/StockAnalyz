@@ -52,6 +52,9 @@ AVAILABLE_MODELS = {
         "gpt-5.2",
     ],
     "google": [
+        "gemini-3.5-flash",                  # 旗艦推薦（近 Pro 智能、超快超省）
+        "gemini-3.1-pro",                    # 高階推理首選
+        "gemini-3.1-flash-lite",             # 極致低延遲
         "auto",                              # 自動路由（Gemini CLI 推薦）
         "pro",                               # 別名：當前 pro
         "flash",                             # 別名：當前 flash
