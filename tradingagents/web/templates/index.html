@@ -995,17 +995,17 @@ function renderMarket(m) {
     <div class="glass-card p-4">
       <div class="text-xs text-slate-400 mb-1">台股加權</div>
       <div class="text-xl font-bold tabular-nums">${fmtInt(m.twii)}</div>
-      <div class="flex items-center gap-1 mt-1 text-xs ${m.twii > m.twii_ma60 ? 'text-emerald-400' : 'text-red-400'}">
+      <div class="flex items-center gap-1 mt-1 text-xs ${m.twii > m.twii_ma60 ? 'text-red-400' : 'text-emerald-400'}">
         <span>${m.twii > m.twii_ma60 ? '▲' : '▼'}</span><span>MA60: ${fmtInt(m.twii_ma60)}</span>
-        <span class="pill ${m.twii > m.twii_ma60 ? 'pill-green' : 'pill-red'} ml-1" style="font-size:10px;padding:1px 6px">${((m.twii/m.twii_ma60-1)*100).toFixed(1)}%</span>
+        <span class="pill ${m.twii > m.twii_ma60 ? 'pill-red' : 'pill-green'} ml-1" style="font-size:10px;padding:1px 6px">${((m.twii/m.twii_ma60-1)*100).toFixed(1)}%</span>
       </div>
     </div>
     <div class="glass-card p-4">
       <div class="text-xs text-slate-400 mb-1">S&P 500</div>
       <div class="text-xl font-bold tabular-nums">${fmt(m.spx)}</div>
-      <div class="flex items-center gap-1 mt-1 text-xs ${m.spx > m.spx_ma60 ? 'text-emerald-400' : 'text-red-400'}">
+      <div class="flex items-center gap-1 mt-1 text-xs ${m.spx > m.spx_ma60 ? 'text-red-400' : 'text-emerald-400'}">
         <span>${m.spx > m.spx_ma60 ? '▲' : '▼'}</span><span>MA60: ${fmt(m.spx_ma60)}</span>
-        <span class="pill ${m.spx > m.spx_ma60 ? 'pill-green' : 'pill-red'} ml-1" style="font-size:10px;padding:1px 6px">${((m.spx/m.spx_ma60-1)*100).toFixed(1)}%</span>
+        <span class="pill ${m.spx > m.spx_ma60 ? 'pill-red' : 'pill-green'} ml-1" style="font-size:10px;padding:1px 6px">${((m.spx/m.spx_ma60-1)*100).toFixed(1)}%</span>
       </div>
     </div>
     <div class="glass-card p-4">
@@ -1017,8 +1017,8 @@ function renderMarket(m) {
 
 function renderPortfolio(data) {
   const s = data.summary;
-  const pnlColor = s.total_pnl >= 0 ? 'text-emerald-400' : 'text-red-400';
-  const pnlAccent = s.total_pnl >= 0 ? 'summary-accent-green' : 'summary-accent-red';
+  const pnlColor = s.total_pnl >= 0 ? 'text-red-400' : 'text-emerald-400';
+  const pnlAccent = s.total_pnl >= 0 ? 'summary-accent-red' : 'summary-accent-green';
   $('portfolio-summary').innerHTML = `
     <div class="glass-card p-4 summary-accent summary-accent-blue">
       <div class="text-xs text-slate-400 mb-1">總投入</div>
@@ -1032,7 +1032,7 @@ function renderPortfolio(data) {
       <div class="text-xs text-slate-400 mb-1">總損益</div>
       <div class="text-xl font-bold tabular-nums ${pnlColor}">NT$ ${s.total_pnl >= 0 ? '+' : ''}${fmtInt(s.total_pnl)}</div>
     </div>
-    <div class="glass-card p-4 ${s.total_pnl_pct >= 0 ? 'glow-border-green' : 'glow-border-red'}">
+    <div class="glass-card p-4 ${s.total_pnl_pct >= 0 ? 'glow-border-red' : 'glow-border-green'}">
       <div class="text-xs text-slate-400 mb-1">報酬率</div>
       <div class="text-2xl font-bold tabular-nums ${pnlColor}">${s.total_pnl_pct >= 0 ? '+' : ''}${fmt(s.total_pnl_pct)}%</div>
     </div>`;
@@ -1054,7 +1054,7 @@ function renderPortfolio(data) {
   });
   twPnl = twValue - twCost;
   const twPnlPct = twCost > 0 ? (twPnl / twCost) * 100 : 0;
-  const twPnlColor = twPnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+  const twPnlColor = twPnl >= 0 ? 'text-red-400' : 'text-emerald-400';
   $('tw-portfolio-summary').innerHTML = `
     <span>投入: <strong class="text-slate-200 font-mono">NT$ ${fmtInt(twCost)}</strong></span>
     <span>市值: <strong class="text-slate-200 font-mono">NT$ ${fmtInt(twValue)}</strong></span>
@@ -1071,7 +1071,7 @@ function renderPortfolio(data) {
   });
   usPnl = usValue - usCost;
   const usPnlPct = usCost > 0 ? (usPnl / usCost) * 100 : 0;
-  const usPnlColor = usPnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+  const usPnlColor = usPnl >= 0 ? 'text-red-400' : 'text-emerald-400';
   $('us-portfolio-summary').innerHTML = `
     <span>投入: <strong class="text-slate-200 font-mono">$ ${fmt(usCost, 2)}</strong></span>
     <span>市值: <strong class="text-slate-200 font-mono">$ ${fmt(usValue, 2)}</strong></span>
@@ -1081,25 +1081,25 @@ function renderPortfolio(data) {
 
   // 5. 渲染表格 Row 產生器
   const makeRowHtml = (p) => {
-    const pnlPill = p.pnl_pct >= 0 ? 'pill-green' : 'pill-red';
-    const dayPill = (p.change_1d||0) >= 0 ? 'pill-green' : 'pill-red';
+    const pnlPill = p.pnl_pct >= 0 ? 'pill-red' : 'pill-green';
+    const dayPill = (p.change_1d||0) >= 0 ? 'pill-red' : 'pill-green';
     const rsiPct = Math.min(Math.max(p.rsi||50, 0), 100);
     const rsiColor = rsiPct >= 75 ? 'bg-red-500' : rsiPct <= 30 ? 'bg-amber-400' : 'bg-slate-500';
     const rec = p.recommendation || {};
     const recPill = rec.urgency === 'danger' ? 'pill-red animate-pulse-dot' : rec.urgency === 'warning' ? 'pill-amber' : 'pill-gray';
-    const targetInfo = [p.target_profit ? `<span class="text-emerald-400">TP:${fmt(p.target_profit)}</span>` : '', p.target_stop ? `<span class="text-red-400">SL:${fmt(p.target_stop)}</span>` : ''].filter(Boolean).join(' ');
+    const targetInfo = [p.target_profit ? `<span class="text-red-400">TP:${fmt(p.target_profit)}</span>` : '', p.target_stop ? `<span class="text-emerald-400">SL:${fmt(p.target_stop)}</span>` : ''].filter(Boolean).join(' ');
     
     // 損益金額與貨幣顯示
     let pnlAmountHtml = '';
     if (p.currency === 'USD') {
       const usdPnl = (p.current_price - p.cost_price) * p.shares;
-      const usdPnlColor = usdPnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+      const usdPnlColor = usdPnl >= 0 ? 'text-red-400' : 'text-emerald-400';
       pnlAmountHtml = `
         <div class="font-semibold font-mono ${usdPnlColor}">${usdPnl >= 0 ? '+' : ''}${fmt(usdPnl, 2)}</div>
         <div class="text-[10px] text-slate-500 font-mono">(NT$ ${p.pnl >= 0 ? '+' : ''}${fmtInt(p.pnl)})</div>
       `;
     } else {
-      const twdPnlColor = p.pnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+      const twdPnlColor = p.pnl >= 0 ? 'text-red-400' : 'text-emerald-400';
       pnlAmountHtml = `
         <div class="font-semibold font-mono ${twdPnlColor}">NT$ ${p.pnl >= 0 ? '+' : ''}${fmtInt(p.pnl)}</div>
       `;
@@ -1182,8 +1182,8 @@ function renderWatchlist(items) {
       <td class="text-right"><span class="pill ${betaPill} tabular-nums" style="font-size:11px">${fmt(w.beta, 2)}</span></td>
       <td class="text-right tabular-nums">${fmt(w.target_entry)}</td>
       <td class="text-right"><span class="pill ${distPill} tabular-nums" style="font-size:11px">${dist == null ? '—' : (dist >= 0 ? '+' : '') + fmt(dist) + '%'}</span></td>
-      <td class="text-right tabular-nums text-emerald-400">${fmt(w.target_profit)}</td>
-      <td class="text-right tabular-nums text-red-400">${fmt(w.target_stop)}</td>
+      <td class="text-right tabular-nums text-red-400">${fmt(w.target_profit)}</td>
+      <td class="text-right tabular-nums text-emerald-400">${fmt(w.target_stop)}</td>
       <td class="text-center text-sm"><span class="pill ${statusPill} text-[11px]">${statusText}</span></td>
       <td class="text-center whitespace-nowrap">
         <button onclick="diagnose('${w.symbol}','${(w.name||'').replace(/'/g,"\\\'")}')" class="btn-action" data-tip="分析">分析</button>
@@ -1398,7 +1398,7 @@ async function diagnose(symbol, name) {
       <div class="grid grid-cols-3 gap-3 text-sm">
         <div><div class="text-xs text-slate-400">現價</div><div class="font-bold text-lg tabular-nums">${fmt(ind.price)}</div></div>
         <div><div class="text-xs text-slate-400">RSI</div><div class="font-bold text-lg tabular-nums ${ind.rsi >=75?'text-red-400':ind.rsi<=30?'text-amber-400':'text-slate-100'}">${fmt(ind.rsi,1)}</div></div>
-        <div><div class="text-xs text-slate-400">日漲跌</div><div class="font-bold text-lg tabular-nums ${ind.change_1d>=0?'text-emerald-400':'text-red-400'}">${ind.change_1d >= 0 ? '+' : ''}${fmt(ind.change_1d)}%</div></div>
+        <div><div class="text-xs text-slate-400">日漲跌</div><div class="font-bold text-lg tabular-nums ${ind.change_1d>=0?'text-red-400':'text-emerald-400'}">${ind.change_1d >= 0 ? '+' : ''}${fmt(ind.change_1d)}%</div></div>
         <div><div class="text-xs text-slate-400">MA20</div><div class="tabular-nums">${fmt(ind.ma20)}</div></div>
         <div><div class="text-xs text-slate-400">MA60</div><div class="tabular-nums">${fmt(ind.ma60)}</div></div>
         <div><div class="text-xs text-slate-400">β / 1月%</div><div class="text-xs tabular-nums">${fmt(ind.beta,2)} / ${ind.change_1m>=0?'+':''}${fmt(ind.change_1m,1)}%</div></div>
@@ -1508,9 +1508,9 @@ async function drawChart(symbol, period) {
       rightPriceScale: { borderColor: 'rgba(148,163,184,0.1)' },
     });
     const candle = _chart.addCandlestickSeries({
-      upColor: '#10b981', downColor: '#ef4444',
-      borderUpColor: '#10b981', borderDownColor: '#ef4444',
-      wickUpColor: '#10b981', wickDownColor: '#ef4444',
+      upColor: '#ef4444', downColor: '#10b981',
+      borderUpColor: '#ef4444', borderDownColor: '#10b981',
+      wickUpColor: '#ef4444', wickDownColor: '#10b981',
     });
     candle.setData(r.candles);
     const ma20 = _chart.addLineSeries({ color: '#facc15', lineWidth: 1, priceLineVisible: false });
@@ -2133,23 +2133,23 @@ async function ackAlert(id) {
 
 function renderBacktest(data) {
   const s = data.summary || {};
-  const pnlColor = (s.total_position_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-red-400';
+  const pnlColor = (s.total_position_pnl || 0) >= 0 ? 'text-red-400' : 'text-emerald-400';
   $('backtest-summary').innerHTML = `
     <div class="glass-card p-4 summary-accent summary-accent-blue">
       <div class="text-xs text-slate-400 mb-1">有效標的</div>
       <div class="text-xl font-bold">${s.valid_count || 0}</div>
     </div>
-    <div class="glass-card p-4 summary-accent ${(s.avg_return_pct||0)>=0?'summary-accent-green':'summary-accent-red'}">
+    <div class="glass-card p-4 summary-accent ${(s.avg_return_pct||0)>=0?'summary-accent-red':'summary-accent-green'}">
       <div class="text-xs text-slate-400 mb-1">平均期間報酬</div>
-      <div class="text-xl font-bold tabular-nums ${(s.avg_return_pct || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}">${(s.avg_return_pct || 0) >= 0 ? '+' : ''}${fmt(s.avg_return_pct)}%</div>
+      <div class="text-xl font-bold tabular-nums ${(s.avg_return_pct || 0) >= 0 ? 'text-red-400' : 'text-emerald-400'}">${(s.avg_return_pct || 0) >= 0 ? '+' : ''}${fmt(s.avg_return_pct)}%</div>
     </div>
-    <div class="glass-card p-4 summary-accent ${(s.total_position_pnl||0)>=0?'summary-accent-green':'summary-accent-red'}">
+    <div class="glass-card p-4 summary-accent ${(s.total_position_pnl||0)>=0?'summary-accent-red':'summary-accent-green'}">
       <div class="text-xs text-slate-400 mb-1">目前持倉損益</div>
       <div class="text-xl font-bold tabular-nums ${pnlColor}">NT$ ${(s.total_position_pnl || 0) >= 0 ? '+' : ''}${fmtInt(s.total_position_pnl || 0)}</div>
     </div>
     <div class="glass-card p-4 summary-accent summary-accent-purple">
       <div class="text-xs text-slate-400 mb-1">期初買入損益</div>
-      <div class="text-xl font-bold tabular-nums ${(s.total_buy_hold_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}">NT$ ${(s.total_buy_hold_pnl || 0) >= 0 ? '+' : ''}${fmtInt(s.total_buy_hold_pnl || 0)}</div>
+      <div class="text-xl font-bold tabular-nums ${(s.total_buy_hold_pnl || 0) >= 0 ? 'text-red-400' : 'text-emerald-400'}">NT$ ${(s.total_buy_hold_pnl || 0) >= 0 ? '+' : ''}${fmtInt(s.total_buy_hold_pnl || 0)}</div>
     </div>`;
 
   $('backtest-tbody').innerHTML = (data.items || []).map(item => {
@@ -2160,9 +2160,9 @@ function renderBacktest(data) {
         <td class="text-red-300" colspan="6">${item.error}</td>
       </tr>`;
     }
-    const retPill = item.period_return_pct >= 0 ? 'pill-green' : 'pill-red';
-    const pnlColor = item.position_pnl >= 0 ? 'text-emerald-400' : 'text-red-400';
-    const bhColor = item.buy_hold_pnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+    const retPill = item.period_return_pct >= 0 ? 'pill-red' : 'pill-green';
+    const pnlColor = item.position_pnl >= 0 ? 'text-red-400' : 'text-emerald-400';
+    const bhColor = item.buy_hold_pnl >= 0 ? 'text-red-400' : 'text-emerald-400';
     return `<tr>
       <td class="font-mono font-semibold text-slate-200">${item.symbol}</td>
       <td><div class="text-slate-300">${item.name || ''}</div><div class="text-[10px] text-slate-600">${item.first_date} → ${item.last_date}</div></td>

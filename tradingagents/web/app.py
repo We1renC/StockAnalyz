@@ -1363,7 +1363,7 @@ def api_history(symbol: str, period: str = "6mo"):
             volumes.append({
                 "time": t,
                 "value": int(row["Volume"]),
-                "color": "rgba(16,185,129,0.6)" if row["Close"] >= row["Open"] else "rgba(239,68,68,0.6)",
+                "color": "rgba(239,68,68,0.6)" if row["Close"] >= row["Open"] else "rgba(16,185,129,0.6)",
             })
         # MA 線
         close = h["Close"]
