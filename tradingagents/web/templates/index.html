@@ -1030,11 +1030,9 @@ function renderPortfolioTrend(trendData) {
     },
   });
 
-  // 總市值 (藍色面積圖)
-  const valueSeries = _trendChart.addAreaSeries({
-    lineColor: '#3b82f6',
-    topColor: 'rgba(59, 130, 246, 0.25)',
-    bottomColor: 'rgba(59, 130, 246, 0.0)',
+  // 總市值 (藍色折線圖)
+  const valueSeries = _trendChart.addLineSeries({
+    color: '#3b82f6',
     lineWidth: 2.5,
     title: '總市值',
     priceFormat: {
@@ -1043,11 +1041,10 @@ function renderPortfolioTrend(trendData) {
     },
   });
 
-  // 總成本 (黃色虛線)
+  // 總成本 (黃色折線圖)
   const costSeries = _trendChart.addLineSeries({
     color: '#facc15',
-    lineWidth: 2,
-    lineStyle: 2, // Dashed
+    lineWidth: 2.5,
     title: '總成本',
     priceFormat: {
       type: 'custom',
