@@ -1199,6 +1199,7 @@ def api_portfolio_trend():
         trend.append({
             "time": ts,
             "total_value": round(total_value, 0),
+            "total_cost": round(total_cost, 0),
             "total_pnl": round(total_pnl, 0),
             "total_pnl_pct": round(total_pnl_pct, 2)
         })

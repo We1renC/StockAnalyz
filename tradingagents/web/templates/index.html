@@ -283,16 +283,10 @@ body { background: var(--bg-base); color: var(--text-primary); }
     </div>
     <div id="portfolio-summary" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
 
-    <!-- 持倉趨勢圖表 -->
-    <div id="portfolio-charts-container" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6 hidden">
-      <div class="glass-card p-4 flex flex-col relative">
-        <div class="text-sm font-semibold text-slate-300 mb-2">總金額趨勢 (NT$)</div>
-        <div id="portfolio-value-chart" class="w-full h-64"></div>
-      </div>
-      <div class="glass-card p-4 flex flex-col relative">
-        <div class="text-sm font-semibold text-slate-300 mb-2">累積損益趨勢 (NT$)</div>
-        <div id="portfolio-pnl-chart" class="w-full h-64"></div>
-      </div>
+    <!-- 持倉趨勢圖表 (單張圖整合成本與市值) -->
+    <div id="portfolio-charts-container" class="glass-card p-4 flex flex-col relative mb-6 hidden">
+      <div class="text-sm font-semibold text-slate-300 mb-2">資產總值與投入成本趨勢 (NT$)</div>
+      <div id="portfolio-trend-chart" class="w-full h-72"></div>
     </div>
 
     <!-- 台股持倉 -->
@@ -955,11 +949,8 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       loadBacktest();
     }
     if (btn.dataset.tab === 'portfolio') {
-      if (_valueChart && $('portfolio-value-chart')) {
-        try { _valueChart.resize($('portfolio-value-chart').clientWidth, 256); } catch(e){}
-      }
-      if (_pnlChart && $('portfolio-pnl-chart')) {
-        try { _pnlChart.resize($('portfolio-pnl-chart').clientWidth, 256); } catch(e){}
+      if (_trendChart && $('portfolio-trend-chart')) {
+        try { _trendChart.resize($('portfolio-trend-chart').clientWidth, 288); } catch(e){}
       }
     }
   });
@@ -995,13 +986,11 @@ async function loadAll() {
   $('last-update').textContent = '最後更新：' + new Date().toLocaleTimeString('zh-TW');
 }
 
-let _valueChart = null;
-let _pnlChart = null;
+let _trendChart = null;
 
 function renderPortfolioTrend(trendData) {
   const container = $('portfolio-charts-container');
-  const valueContainer = $('portfolio-value-chart');
-  const pnlContainer = $('portfolio-pnl-chart');
+  const chartContainer = $('portfolio-trend-chart');
   
   if (!trendData || trendData.length === 0) {
     container.classList.add('hidden');
@@ -1009,22 +998,17 @@ function renderPortfolioTrend(trendData) {
   }
   container.classList.remove('hidden');
 
-  valueContainer.innerHTML = '';
-  pnlContainer.innerHTML = '';
+  chartContainer.innerHTML = '';
 
-  if (_valueChart) {
-    try { _valueChart.remove(); } catch(e) {}
-    _valueChart = null;
-  }
-  if (_pnlChart) {
-    try { _pnlChart.remove(); } catch(e) {}
-    _pnlChart = null;
+  if (_trendChart) {
+    try { _trendChart.remove(); } catch(e) {}
+    _trendChart = null;
   }
 
-  // 建立總金額趨勢圖
-  _valueChart = LightweightCharts.createChart(valueContainer, {
-    width: valueContainer.clientWidth,
-    height: 256,
+  // 建立資產與成本走勢圖
+  _trendChart = LightweightCharts.createChart(chartContainer, {
+    width: chartContainer.clientWidth,
+    height: 288,
     layout: {
       background: { color: 'transparent' },
       textColor: '#94a3b8',
@@ -1046,57 +1030,28 @@ function renderPortfolioTrend(trendData) {
     },
   });
 
-  const valueSeries = _valueChart.addAreaSeries({
-    lineColor: '#a855f7', // 紫色
-    topColor: 'rgba(168, 85, 247, 0.2)',
-    bottomColor: 'rgba(168, 85, 247, 0.0)',
-    lineWidth: 2,
+  // 總市值 (藍色面積圖)
+  const valueSeries = _trendChart.addAreaSeries({
+    lineColor: '#3b82f6',
+    topColor: 'rgba(59, 130, 246, 0.25)',
+    bottomColor: 'rgba(59, 130, 246, 0.0)',
+    lineWidth: 2.5,
+    title: '總市值',
     priceFormat: {
       type: 'custom',
       formatter: (price) => 'NT$ ' + Math.round(price).toLocaleString(),
     },
   });
 
-  // 建立累積損益趨勢圖
-  _pnlChart = LightweightCharts.createChart(pnlContainer, {
-    width: pnlContainer.clientWidth,
-    height: 256,
-    layout: {
-      background: { color: 'transparent' },
-      textColor: '#94a3b8',
-    },
-    grid: {
-      vertLines: { color: 'rgba(148,163,184,0.04)' },
-      horzLines: { color: 'rgba(148,163,184,0.04)' },
-    },
-    timeScale: {
-      borderColor: 'rgba(148,163,184,0.1)',
-      fixLeftEdge: true,
-      fixRightEdge: true,
-      timeVisible: true,
-      secondsVisible: false,
-    },
-    rightPriceScale: {
-      borderColor: 'rgba(148,163,184,0.1)',
-      autoScale: true,
-    },
-  });
-
-  const lastPnl = trendData[trendData.length - 1]?.total_pnl || 0;
-  const pnlColor = lastPnl >= 0 ? '#ef4444' : '#10b981'; // 獲利紅 / 虧損綠
-  const pnlBgColor = lastPnl >= 0 ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.2)';
-
-  const pnlSeries = _pnlChart.addAreaSeries({
-    lineColor: pnlColor,
-    topColor: pnlBgColor,
-    bottomColor: 'rgba(0, 0, 0, 0)',
+  // 總成本 (黃色虛線)
+  const costSeries = _trendChart.addLineSeries({
+    color: '#facc15',
     lineWidth: 2,
+    lineStyle: 2, // Dashed
+    title: '總成本',
     priceFormat: {
       type: 'custom',
-      formatter: (price) => {
-        const prefix = price >= 0 ? '+' : '';
-        return 'NT$ ' + prefix + Math.round(price).toLocaleString();
-      },
+      formatter: (price) => 'NT$ ' + Math.round(price).toLocaleString(),
     },
   });
 
@@ -1105,24 +1060,20 @@ function renderPortfolioTrend(trendData) {
     value: d.total_value
   }));
 
-  const pnlData = trendData.map(d => ({
+  const costData = trendData.map(d => ({
     time: d.time,
-    value: d.total_pnl
+    value: d.total_cost
   }));
 
   valueSeries.setData(valueData);
-  pnlSeries.setData(pnlData);
+  costSeries.setData(costData);
 
-  _valueChart.timeScale().fitContent();
-  _pnlChart.timeScale().fitContent();
+  _trendChart.timeScale().fitContent();
 }
 
 window.addEventListener('resize', () => {
-  if (_valueChart && $('portfolio-value-chart')) {
-    try { _valueChart.resize($('portfolio-value-chart').clientWidth, 256); } catch(e){}
-  }
-  if (_pnlChart && $('portfolio-pnl-chart')) {
-    try { _pnlChart.resize($('portfolio-pnl-chart').clientWidth, 256); } catch(e){}
+  if (_trendChart && $('portfolio-trend-chart')) {
+    try { _trendChart.resize($('portfolio-trend-chart').clientWidth, 288); } catch(e){}
   }
 });
 
