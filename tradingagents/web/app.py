@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from llm_providers import (
     load_settings, save_settings, mask_key,
     run_workflow, AVAILABLE_MODELS, detect_cli_availability,
-    call_llm,
+    call_llm, call_cli,
 )
 
 warnings.filterwarnings("ignore")
@@ -68,7 +68,10 @@ def init_db():
         shares REAL NOT NULL,
         cost_price REAL NOT NULL,
         currency TEXT DEFAULT 'TWD',
-        purchase_date TEXT
+        purchase_date TEXT,
+        target_entry REAL,
+        target_profit REAL,
+        target_stop REAL
     );
     CREATE TABLE IF NOT EXISTS watchlist (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,8 +121,31 @@ def init_db():
         beta REAL,
         data TEXT
     );
+    CREATE TABLE IF NOT EXISTS analysis_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT NOT NULL,
+        name TEXT,
+        ts TEXT NOT NULL,
+        mode TEXT,
+        provider TEXT,
+        model TEXT,
+        elapsed REAL,
+        decision_summary TEXT,
+        sections TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_analysis_symbol_ts ON analysis_results(symbol, ts DESC);
     """)
     conn.commit()
+
+    # Migration for existing databases to add target columns to positions table
+    c = conn.cursor()
+    for col in ("target_entry", "target_profit", "target_stop"):
+        try:
+            c.execute(f"ALTER TABLE positions ADD COLUMN {col} REAL")
+            conn.commit()
+        except Exception:
+            pass
+
     conn.close()
 
 # ─────────────── Price + Indicators ───────────────
@@ -476,24 +502,47 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
     if not yf_ind and _twse_channel(symbol):
         yf_ind = fetch_official_tw_indicators(symbol, bench_close) or {}
 
+    # 用 yfinance info.regularMarketPrice 補充盤中即時價
+    if yf_ind:
+        try:
+            info = yf.Ticker(symbol).info or {}
+            rmp = info.get("regularMarketPrice") or info.get("currentPrice")
+            if rmp and rmp > 0:
+                yf_ind["_yf_realtime"] = float(rmp)
+        except Exception:
+            pass
+
     if _twse_channel(symbol):
         official = fetch_tw_realtime_quote(symbol)
         if official:
             if not yf_ind:
                 # yfinance 失敗：直接回 TWSE 完整 schema（含 rsi=None 等）
                 return official
-            # 兩邊都有：yfinance 為基底，TWSE 即時 price/change 覆蓋
-            for key in ("price", "change_1d"):
-                if official.get(key) is not None:
-                    yf_ind[key] = official[key]
+            # 兩邊都有：取較可能即時的價格
+            twse_price = official.get("price")
+            yf_price = yf_ind.get("_yf_realtime") or yf_ind.get("price")
+            twse_change = official.get("change_1d") or 0
+
+            # TWSE 在盤中若 change_1d==0 且價格與 yfinance 昨收相同，
+            # 代表 TWSE 還沒更新到盤中即時價 → 優先用 yfinance
+            if twse_price and yf_price and abs(twse_change) > 0.001:
+                # TWSE 有即時漲跌 → 用 TWSE
+                yf_ind["price"] = twse_price
+                yf_ind["change_1d"] = official["change_1d"]
+            elif yf_price:
+                # TWSE 疑似未更新 → 保留 yfinance 的值
+                yf_ind["price"] = yf_price
+
             # high/low 只在 yfinance 沒有時用 TWSE 的當日高低備援
             for key in ("high52", "low52"):
                 if yf_ind.get(key) is None and official.get(key) is not None:
                     yf_ind[key] = official[key]
             history_source = yf_ind.get("source") or "history"
             yf_ind["source"] = f"twse_realtime+{history_source}"
+            yf_ind.pop("_yf_realtime", None)
             return yf_ind
 
+    yf_ind.pop("_yf_realtime", None)
     return yf_ind
 
 def store_price_cache(c, symbol: str, ind: dict):
@@ -729,36 +778,71 @@ def insert_alerts(c, symbol: str, name: str, ind: dict, market: dict, position=N
 # ─────────────── Background Monitor ───────────────
 async def monitor_loop():
     """Background task: refresh prices + evaluate alerts every 5 minutes."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     while True:
         try:
-            print(f"[{datetime.now():%H:%M:%S}] Monitor cycle started...")
-            twii = fetch_benchmark_close("^TWII")
-            spx = fetch_benchmark_close("^GSPC")
+            t0 = datetime.now()
+            print(f"[{t0:%H:%M:%S}] Monitor cycle started...")
 
-            market = get_market_state()
+            # ── Phase 1: 平行抓大盤指數 + 市場狀態 ──
+            with ThreadPoolExecutor(max_workers=3) as ex:
+                f_twii = ex.submit(fetch_benchmark_close, "^TWII")
+                f_spx = ex.submit(fetch_benchmark_close, "^GSPC")
+                f_market = ex.submit(get_market_state)
+                twii = f_twii.result()
+                spx = f_spx.result()
+                market = f_market.result()
+
             conn = get_db()
             c = conn.cursor()
             c.execute("INSERT OR REPLACE INTO market_state (id, ts, vix, twii, twii_ma60, spx, spx_ma60, risk_level, warnings_count) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)",
                       (market.get("ts"), market.get("vix"), market.get("twii"), market.get("twii_ma60"),
                        market.get("spx"), market.get("spx_ma60"), market.get("risk_level"), market.get("warnings_count")))
 
-            # Positions
-            for row in c.execute("SELECT * FROM positions").fetchall():
-                d = dict(row)
-                bench = twii if ".TW" in d["symbol"] else spx
-                ind = fetch_indicators(d["symbol"], bench)
-                if ind and "price" in ind:
+            # ── Phase 2: 收集所有需抓價格的標的 ──
+            positions = [dict(row) for row in c.execute("SELECT * FROM positions").fetchall()]
+            watchlist = [dict(row) for row in c.execute("SELECT * FROM watchlist").fetchall()]
+
+            # 去重：同一個 symbol 只抓一次
+            all_symbols = {}
+            for d in positions:
+                all_symbols[d["symbol"]] = {"bench": twii if ".TW" in d["symbol"] else spx}
+            for d in watchlist:
+                all_symbols.setdefault(d["symbol"], {"bench": twii if ".TW" in d["symbol"] else spx})
+
+            # ── Phase 3: 平行抓所有標的的即時指標 ──
+            indicators = {}  # symbol -> ind dict
+
+            def _fetch_one(symbol, bench):
+                return symbol, fetch_indicators(symbol, bench)
+
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                futures = {
+                    ex.submit(_fetch_one, sym, info["bench"]): sym
+                    for sym, info in all_symbols.items()
+                }
+                for future in as_completed(futures):
+                    try:
+                        sym, ind = future.result()
+                        if ind and "price" in ind:
+                            indicators[sym] = ind
+                    except Exception as e:
+                        sym = futures[future]
+                        print(f"  [WARN] {sym} fetch failed: {e}")
+
+            # ── Phase 4: 寫入快取 + 產生警報（循序寫 DB） ──
+            for d in positions:
+                ind = indicators.get(d["symbol"])
+                if ind:
                     store_price_cache(c, d["symbol"], ind)
                     created = insert_alerts(c, d["symbol"], d["name"], ind, market, position=d)
                     if created:
                         print(f"  [ALERT] {d['symbol']}: {created} new alert(s)")
 
-            # Watchlist
-            for row in c.execute("SELECT * FROM watchlist").fetchall():
-                d = dict(row)
-                bench = twii if ".TW" in d["symbol"] else spx
-                ind = fetch_indicators(d["symbol"], bench)
-                if ind and "price" in ind:
+            for d in watchlist:
+                ind = indicators.get(d["symbol"])
+                if ind:
                     store_price_cache(c, d["symbol"], ind)
                     created = insert_alerts(c, d["symbol"], d["name"], ind, market, watch=d)
                     if created:
@@ -766,7 +850,8 @@ async def monitor_loop():
 
             conn.commit()
             conn.close()
-            print(f"[{datetime.now():%H:%M:%S}] Monitor cycle done.")
+            elapsed = (datetime.now() - t0).total_seconds()
+            print(f"[{datetime.now():%H:%M:%S}] Monitor cycle done. ({elapsed:.1f}s, {len(indicators)}/{len(all_symbols)} symbols)")
         except Exception as e:
             print(f"Monitor error: {e}")
 
@@ -1025,7 +1110,7 @@ def api_portfolio():
 def api_watchlist():
     conn = get_db()
     rows = conn.execute("""
-        SELECT w.*, pc.price as current_price, pc.rsi, pc.change_1d, pc.ma20, pc.ma60
+        SELECT w.*, pc.price as current_price, pc.rsi, pc.change_1d, pc.ma20, pc.ma60, pc.beta
         FROM watchlist w
         LEFT JOIN price_cache pc ON w.symbol = pc.symbol
     """).fetchall()
@@ -1170,33 +1255,71 @@ def api_ack_alert(req: AckRequest):
 
 @app.post("/api/refresh")
 async def api_refresh():
-    """Manually refresh prices and evaluate alerts immediately."""
-    twii = fetch_benchmark_close("^TWII")
-    spx = fetch_benchmark_close("^GSPC")
-    market = get_market_state()
+    """Manually refresh prices and evaluate alerts immediately (parallel)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time as _time
+    t0 = _time.time()
+
+    # Phase 1: 平行抓大盤
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_twii = ex.submit(fetch_benchmark_close, "^TWII")
+        f_spx = ex.submit(fetch_benchmark_close, "^GSPC")
+        f_market = ex.submit(get_market_state)
+        twii = f_twii.result()
+        spx = f_spx.result()
+        market = f_market.result()
+
     conn = get_db()
     c = conn.cursor()
     c.execute("INSERT OR REPLACE INTO market_state (id, ts, vix, twii, twii_ma60, spx, spx_ma60, risk_level, warnings_count) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)",
               (market.get("ts"), market.get("vix"), market.get("twii"), market.get("twii_ma60"),
                market.get("spx"), market.get("spx_ma60"), market.get("risk_level"), market.get("warnings_count")))
 
+    # Phase 2: 收集標的 + 去重
+    positions = [dict(row) for row in c.execute("SELECT * FROM positions").fetchall()]
+    watchlist_rows = [dict(row) for row in c.execute("SELECT * FROM watchlist").fetchall()]
+
+    all_symbols = {}
+    for d in positions:
+        all_symbols[d["symbol"]] = {"bench": twii if ".TW" in d["symbol"] else spx}
+    for d in watchlist_rows:
+        all_symbols.setdefault(d["symbol"], {"bench": twii if ".TW" in d["symbol"] else spx})
+
+    # Phase 3: 平行抓報價
+    indicators = {}
+    def _fetch_one(symbol, bench):
+        return symbol, fetch_indicators(symbol, bench)
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures = {ex.submit(_fetch_one, sym, info["bench"]): sym for sym, info in all_symbols.items()}
+        for future in as_completed(futures):
+            try:
+                sym, ind = future.result()
+                if ind and "price" in ind:
+                    indicators[sym] = ind
+            except Exception:
+                pass
+
+    # Phase 4: 寫入 DB
     refreshed = 0
     alerts_created = 0
-    for table in ("positions", "watchlist"):
-        for row in c.execute(f"SELECT * FROM {table}").fetchall():
-            d = dict(row)
-            bench = twii if ".TW" in d["symbol"] else spx
-            ind = fetch_indicators(d["symbol"], bench)
-            if ind and "price" in ind:
-                store_price_cache(c, d["symbol"], ind)
-                refreshed += 1
-                if table == "positions":
-                    alerts_created += insert_alerts(c, d["symbol"], d["name"], ind, market, position=d)
-                else:
-                    alerts_created += insert_alerts(c, d["symbol"], d["name"], ind, market, watch=d)
+    for d in positions:
+        ind = indicators.get(d["symbol"])
+        if ind:
+            store_price_cache(c, d["symbol"], ind)
+            refreshed += 1
+            alerts_created += insert_alerts(c, d["symbol"], d["name"], ind, market, position=d)
+    for d in watchlist_rows:
+        ind = indicators.get(d["symbol"])
+        if ind:
+            store_price_cache(c, d["symbol"], ind)
+            refreshed += 1
+            alerts_created += insert_alerts(c, d["symbol"], d["name"], ind, market, watch=d)
+
     conn.commit()
     conn.close()
-    return {"refreshed": refreshed, "alerts_created": alerts_created, "market": market}
+    elapsed = round(_time.time() - t0, 1)
+    return {"refreshed": refreshed, "alerts_created": alerts_created, "market": market, "elapsed_seconds": elapsed}
 
 @app.get("/api/history/{symbol}")
 def api_history(symbol: str, period: str = "6mo"):
@@ -1244,13 +1367,16 @@ class PositionCreate(BaseModel):
     shares: float
     cost_price: float
     currency: str = "TWD"
+    target_entry: Optional[float] = None
+    target_profit: Optional[float] = None
+    target_stop: Optional[float] = None
 
 @app.post("/api/positions")
 def api_add_position(p: PositionCreate):
     conn = get_db()
     conn.execute(
-        "INSERT INTO positions (symbol, name, category, shares, cost_price, currency, purchase_date) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (p.symbol, p.name, p.category, p.shares, p.cost_price, p.currency, datetime.now().date().isoformat())
+        "INSERT INTO positions (symbol, name, category, shares, cost_price, currency, purchase_date, target_entry, target_profit, target_stop) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (p.symbol, p.name, p.category, p.shares, p.cost_price, p.currency, datetime.now().date().isoformat(), p.target_entry, p.target_profit, p.target_stop)
     )
     conn.commit()
     conn.close()
@@ -1261,6 +1387,48 @@ def api_del_position(pid: int):
     conn = get_db()
     conn.execute("DELETE FROM positions WHERE id=?", (pid,))
     conn.commit()
+    conn.close()
+    return {"ok": True}
+
+class PositionUpdate(BaseModel):
+    shares: Optional[float] = None
+    cost_price: Optional[float] = None
+    name: Optional[str] = None
+    category: Optional[str] = None
+    currency: Optional[str] = None
+    target_entry: Optional[float] = None
+    target_profit: Optional[float] = None
+    target_stop: Optional[float] = None
+
+@app.put("/api/positions/{pid}")
+def api_update_position(pid: int, p: PositionUpdate):
+    conn = get_db()
+    existing = conn.execute("SELECT * FROM positions WHERE id=?", (pid,)).fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(404, "Position not found")
+    updates = []
+    params = []
+    for field in ("shares", "cost_price", "name", "category", "currency", "target_entry", "target_profit", "target_stop"):
+        val = getattr(p, field)
+        # We allow setting target_entry, target_profit, target_stop to None (null) explicitly,
+        # but only if they are passed in the JSON body. Since they are Optional, we need to check if they were provided.
+        # In Pydantic v1 (FastAPI default), checking model_fields_set is standard. Or we can just check if key exists in body.
+        # But wait! A simpler way is: if getattr(p, field) is not None, or if we want to allow setting to null,
+        # we can check if it is passed in the request body. Let's see: `p.dict(exclude_unset=True)` gets only set fields!
+        # This is extremely clean and standard!
+        pass
+    
+    set_fields = p.dict(exclude_unset=True)
+    for field in ("shares", "cost_price", "name", "category", "currency", "target_entry", "target_profit", "target_stop"):
+        if field in set_fields:
+            updates.append(f"{field}=?")
+            params.append(set_fields[field])
+            
+    if updates:
+        params.append(pid)
+        conn.execute(f"UPDATE positions SET {', '.join(updates)} WHERE id=?", params)
+        conn.commit()
     conn.close()
     return {"ok": True}
 
@@ -1333,6 +1501,207 @@ def api_clear_alerts(days: Optional[int] = None):
         conn.execute("DELETE FROM alerts")
     else:
         conn.execute("DELETE FROM alerts WHERE date(ts) < date('now', ?)", (f"-{days} days",))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+# ─────────────── 新增的批次點位分析與調整 API ───────────────
+from typing import List
+
+class BatchUpdateItem(BaseModel):
+    symbol: str
+    entry: Optional[float] = None
+    profit: Optional[float] = None
+    stop: Optional[float] = None
+
+class BatchUpdateRequests(BaseModel):
+    items: List[BatchUpdateItem]
+
+@app.delete("/api/alerts/{aid}")
+def api_delete_alert(aid: int):
+    """刪除單筆警報。"""
+    conn = get_db()
+    conn.execute("DELETE FROM alerts WHERE id=?", (aid,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+@app.get("/api/batch-suggest-levels")
+def api_batch_suggest_levels():
+    """針對所有列出的個股（持倉與觀察清單）進行 AI 批量點位分析與建議。"""
+    conn = get_db()
+    watchlist_rows = conn.execute("SELECT symbol, name, target_entry, target_stop, target_profit FROM watchlist").fetchall()
+    positions_rows = conn.execute("SELECT symbol, name, target_entry, target_stop, target_profit FROM positions").fetchall()
+    market_row = conn.execute("SELECT * FROM market_state WHERE id=1").fetchone()
+    conn.close()
+
+    # 合併所有獨特的個股代號
+    symbols_map = {}
+    for r in watchlist_rows:
+        row_dict = dict(r)
+        symbols_map[row_dict["symbol"]] = {
+            "name": row_dict["name"],
+            "target_entry": row_dict["target_entry"],
+            "target_stop": row_dict["target_stop"],
+            "target_profit": row_dict["target_profit"]
+        }
+    for r in positions_rows:
+        row_dict = dict(r)
+        if row_dict["symbol"] not in symbols_map:
+            symbols_map[row_dict["symbol"]] = {
+                "name": row_dict["name"],
+                "target_entry": row_dict["target_entry"],
+                "target_stop": row_dict["target_stop"],
+                "target_profit": row_dict["target_profit"]
+            }
+
+    if not symbols_map:
+        return {"ok": True, "suggestions": {}}
+
+    # 批次查詢最新價格快取
+    conn = get_db()
+    placeholders = ",".join("?" * len(symbols_map))
+    cache_rows = conn.execute(
+        f"SELECT symbol, price, rsi, change_1d, change_1m, beta, ma20, ma60, high52, low52, data FROM price_cache WHERE symbol IN ({placeholders})",
+        list(symbols_map.keys())
+    ).fetchall()
+    conn.close()
+
+    cache_map = {r["symbol"]: dict(r) for r in cache_rows}
+
+    # 構築大盤與個股的上下文數據
+    context_lines = []
+    if market_row:
+        m = dict(market_row)
+        context_lines.append(f"大盤指標: VIX {m.get('vix')}, 風險等級 {m.get('risk_level')}, 警訊數 {m.get('warnings_count')}/3")
+
+    for symbol, info in symbols_map.items():
+        cache = cache_map.get(symbol)
+        if not cache:
+            # 若無快取，跳過或提供基本資料
+            continue
+        ind = json.loads(cache.get("data") or "{}")
+        line = [
+            f"標的: {symbol} ({info['name']})",
+            f"現價: {cache.get('price') or ind.get('price')}, RSI: {cache.get('rsi') or ind.get('rsi')}, β: {cache.get('beta') or ind.get('beta')}",
+            f"MA20: {cache.get('ma20') or ind.get('ma20')}, MA60: {cache.get('ma60') or ind.get('ma60')}",
+            f"52週高/低: {cache.get('high52') or ind.get('high52')} / {cache.get('low52') or ind.get('low52')}",
+            f"今日漲跌: {cache.get('change_1d') or ind.get('change_1d')}%, 1月漲跌: {cache.get('change_1m') or ind.get('change_1m')}%"
+        ]
+        if info['target_entry'] or info['target_profit'] or info['target_stop']:
+            line.append(f"目前設定 -> 進場: {info.get('target_entry') or '未設定'}, 停利: {info.get('target_profit') or '未設定'}, 停損: {info.get('target_stop') or '未設定'}")
+        context_lines.append("\n".join(line))
+        context_lines.append("---")
+
+    context_str = "\n".join(context_lines)
+
+    settings = load_settings()
+    keys = settings["api_keys"]
+    roles = settings["roles"]
+    analyst = roles["analyst"]
+
+    prompt = f"""你是專業金融分析師與資深投資經理。請針對以下所有股票的最新數據與指標，分析並給出適合的推薦點位：
+1. 進場價位 (entry)
+2. 停損價位 (stop)
+3. 停利價位 (profit)
+並且給出 1-2 句話的操作策略理由 (reason)。
+
+[股票即時數據與指標]
+{context_str}
+
+請務必嚴格以下列 JSON 格式回傳，不要有任何其他 markdown 標記或包裹字元（例如 ```json 或 ``` 都不需要，直接輸出純 JSON 字符串）：
+{{
+  "2330.TW": {{
+    "entry": 800.0,
+    "profit": 920.0,
+    "stop": 760.0,
+    "reason": "多頭趨勢，RSI 中性，建議拉回至 MA20 附近分批進場，跌破 760 停損。"
+  }}
+}}
+如果某些數值不適用或無法建議，請給予合適的預估數字。
+"""
+
+    try:
+        raw_output = call_llm(
+            analyst["provider"], analyst["model"],
+            prompt,
+            keys.get(analyst["provider"], ""),
+            mode=analyst.get("mode", "api"),
+        )
+        
+        # 解析 JSON (防範 LLM 自動包裹 markdown 的情況)
+        clean_json = raw_output.strip()
+        if clean_json.startswith("```"):
+            lines = clean_json.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines[-1].strip() == "```":
+                lines = lines[:-1]
+            clean_json = "\n".join(lines).strip()
+            
+        suggestions = json.loads(clean_json)
+        
+        # 整合原始名稱、現價與建議數據
+        response_data = {}
+        for symbol, info in symbols_map.items():
+            cache = cache_map.get(symbol)
+            current_price = cache.get("price") if cache else None
+            
+            sug = suggestions.get(symbol, {})
+            response_data[symbol] = {
+                "name": info["name"],
+                "current_price": current_price,
+                "entry": sug.get("entry") or info["target_entry"],
+                "profit": sug.get("profit") or info["target_profit"],
+                "stop": sug.get("stop") or info["target_stop"],
+                "reason": sug.get("reason") or "暫無建議"
+            }
+            
+        return {"ok": True, "suggestions": response_data}
+    except Exception as e:
+        return {"ok": False, "error": f"LLM 批量分析失敗: {e}"}
+
+@app.post("/api/batch-update-levels")
+def api_batch_update_levels(req: BatchUpdateRequests):
+    """批量套用微調後的進場、停損與停利點位。"""
+    conn = get_db()
+    for item in req.items:
+        # 更新觀察清單中的點位
+        watch_row = conn.execute("SELECT id FROM watchlist WHERE symbol=?", (item.symbol,)).fetchone()
+        if watch_row:
+            updates = []
+            params = []
+            if item.entry is not None:
+                updates.append("target_entry=?")
+                params.append(item.entry)
+            if item.profit is not None:
+                updates.append("target_profit=?")
+                params.append(item.profit)
+            if item.stop is not None:
+                updates.append("target_stop=?")
+                params.append(item.stop)
+            if updates:
+                params.append(watch_row["id"])
+                conn.execute(f"UPDATE watchlist SET {', '.join(updates)} WHERE id=?", params)
+
+        # 更新持倉中的點位
+        pos_row = conn.execute("SELECT id FROM positions WHERE symbol=?", (item.symbol,)).fetchone()
+        if pos_row:
+            updates = []
+            params = []
+            if item.entry is not None:
+                updates.append("target_entry=?")
+                params.append(item.entry)
+            if item.profit is not None:
+                updates.append("target_profit=?")
+                params.append(item.profit)
+            if item.stop is not None:
+                updates.append("target_stop=?")
+                params.append(item.stop)
+            if updates:
+                params.append(pos_row["id"])
+                conn.execute(f"UPDATE positions SET {', '.join(updates)} WHERE id=?", params)
+                
     conn.commit()
     conn.close()
     return {"ok": True}
@@ -1448,6 +1817,12 @@ def _run_tradingagents(symbol: str, mode: str = "full") -> dict:
         },
     })
     try:
+        settings = load_settings()
+        keys = settings.get("api_keys", {})
+        if keys.get("anthropic"): os.environ["ANTHROPIC_API_KEY"] = keys["anthropic"]
+        if keys.get("openai"): os.environ["OPENAI_API_KEY"] = keys["openai"]
+        if keys.get("google"): os.environ["GOOGLE_API_KEY"] = keys["google"]
+
         graph = TradingAgentsGraph(selected_analysts=analysts, debug=False, config=config)
         trade_date = str(date.today() - timedelta(days=1))
         final_state, decision = graph.propagate(symbol, trade_date)
@@ -1466,6 +1841,478 @@ def _run_tradingagents(symbol: str, mode: str = "full") -> dict:
 def api_tradingagents(symbol: str, mode: str = "full"):
     mode = mode if mode in ("quick", "full") else "full"
     return _run_tradingagents(symbol, mode=mode)
+
+
+# ─────────────── CLI 深度分析 (多代理人模擬，走訂閱免費) ───────────────
+
+def _fetch_stock_context(symbol: str) -> str:
+    """用 yfinance 抓取即時股票數據，組成分析上下文文字。"""
+    try:
+        tk = yf.Ticker(symbol)
+        info = tk.info or {}
+        hist = tk.history(period="6mo")
+        close = hist["Close"].astype(float) if len(hist) > 0 else pd.Series(dtype=float)
+
+        price = round(float(close.iloc[-1]), 2) if len(close) > 0 else info.get("regularMarketPrice", "N/A")
+        high52 = round(float(close.max()), 2) if len(close) > 20 else info.get("fiftyTwoWeekHigh", "N/A")
+        low52 = round(float(close.min()), 2) if len(close) > 20 else info.get("fiftyTwoWeekLow", "N/A")
+
+        # RSI
+        rsi_val = "N/A"
+        if len(close) >= 14:
+            delta = close.diff()
+            gain = delta.where(delta > 0, 0).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            rs = gain / loss.replace(0, float("nan"))
+            rsi_series = 100 - (100 / (1 + rs))
+            rsi_val = round(float(rsi_series.iloc[-1]), 1)
+
+        # MA
+        ma20 = round(float(close.rolling(20).mean().iloc[-1]), 2) if len(close) >= 20 else "N/A"
+        ma60 = round(float(close.rolling(60).mean().iloc[-1]), 2) if len(close) >= 60 else "N/A"
+
+        # change
+        change_1d = round(float((close.iloc[-1] / close.iloc[-2] - 1) * 100), 2) if len(close) >= 2 else "N/A"
+
+        # Beta
+        beta = round(float(info.get("beta", 0) or 0), 2)
+
+        # Fundamentals
+        pe = info.get("trailingPE", "N/A")
+        pb = info.get("priceToBook", "N/A")
+        mktcap = info.get("marketCap", "N/A")
+        if isinstance(mktcap, (int, float)) and mktcap > 1e9:
+            mktcap = f"{mktcap/1e9:.1f}B"
+        sector = info.get("sector", "N/A")
+        industry = info.get("industry", "N/A")
+        name = info.get("shortName") or info.get("longName") or symbol
+
+        # Volume
+        vol = "N/A"
+        if len(hist) > 0 and "Volume" in hist.columns:
+            vol = f"{int(hist['Volume'].iloc[-1]):,}"
+
+        lines = [
+            f"標的: {symbol} ({name})",
+            f"產業: {sector} / {industry}",
+            f"現價: {price}, 日漲跌: {change_1d}%",
+            f"RSI(14): {rsi_val}, MA20: {ma20}, MA60: {ma60}",
+            f"52週高/低: {high52} / {low52}",
+            f"Beta: {beta}, P/E: {pe}, P/B: {pb}, 市值: {mktcap}",
+            f"今日成交量: {vol}",
+        ]
+
+        # 加入持倉/觀察資訊
+        conn = get_db()
+        pos = conn.execute("SELECT * FROM positions WHERE symbol=?", (symbol,)).fetchone()
+        watch = conn.execute("SELECT * FROM watchlist WHERE symbol=?", (symbol,)).fetchone()
+        market_row = conn.execute("SELECT * FROM market_state WHERE id=1").fetchone()
+        conn.close()
+
+        if pos:
+            d = dict(pos)
+            ret_pct = (float(price) / d["cost_price"] - 1) * 100 if isinstance(price, (int, float)) and d["cost_price"] > 0 else 0
+            lines.append(f"持倉: {d['shares']} 股 @ 成本 {d['cost_price']} (報酬 {ret_pct:+.2f}%)")
+        if watch:
+            d = dict(watch)
+            lines.append(f"觀察目標: 進場 {d.get('target_entry')}, 停利 {d.get('target_profit')}, 停損 {d.get('target_stop')}")
+            if d.get("notes"):
+                lines.append(f"備註: {d['notes']}")
+        if market_row:
+            m = dict(market_row)
+            lines.append(f"大盤: VIX {m.get('vix')}, 風險等級 {m.get('risk_level')}, 警訊 {m.get('warnings_count')}/3")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"標的: {symbol}\n（數據抓取失敗: {e}）"
+
+
+_CLI_DEEP_STEPS = [
+    {
+        "key": "market_report",
+        "label": "技術分析師",
+        "prompt": """你是專業的技術分析師。根據以下股票數據，產出**繁體中文**技術分析報告（markdown，400字內）：
+
+{context}
+
+請涵蓋：
+1. 趨勢判斷（多頭/空頭/盤整）
+2. 動能指標解讀（RSI、均線排列）
+3. 關鍵支撐與壓力價位
+4. 量價配合度
+5. 短期技術面結論（看多/看空/中性）""",
+    },
+    {
+        "key": "fundamentals_report",
+        "label": "基本面分析師",
+        "prompt": """你是專業的基本面分析師。根據以下股票數據，產出**繁體中文**基本面分析報告（markdown，400字內）：
+
+{context}
+
+請涵蓋：
+1. 估值評估（P/E、P/B 與同業比較）
+2. 市值與產業地位
+3. 營收/獲利趨勢（如有數據）
+4. 競爭優勢與護城河
+5. 基本面結論（低估/合理/高估）""",
+    },
+    {
+        "key": "news_report",
+        "label": "新聞分析師",
+        "prompt": """你是專業的新聞分析師。根據以下股票數據，從產業趨勢與潛在新聞面角度產出**繁體中文**分析（markdown，300字內）：
+
+{context}
+
+請涵蓋：
+1. 該產業近期重大趨勢
+2. 可能影響股價的催化劑（正面/負面）
+3. 總體經濟環境影響
+4. 新聞面結論""",
+    },
+    {
+        "key": "sentiment_report",
+        "label": "情緒分析師",
+        "prompt": """你是市場情緒分析師。根據以下數據判斷市場對該標的的情緒狀態，產出**繁體中文**分析（markdown，300字內）：
+
+{context}
+
+請涵蓋：
+1. 市場情緒（貪婪/恐懼/中性）
+2. RSI + VIX 綜合判讀
+3. 散戶 vs 法人可能動向
+4. 情緒面結論""",
+    },
+    {
+        "key": "investment_debate_state",
+        "label": "多空辯論",
+        "prompt": """你是投資辯論主持人。以下是四位分析師的報告與原始數據。請模擬一場**多空辯論**：
+
+[原始數據]
+{context}
+
+[技術分析報告]
+{market_report}
+
+[基本面分析報告]
+{fundamentals_report}
+
+[新聞分析報告]
+{news_report}
+
+[情緒分析報告]
+{sentiment_report}
+
+請以**繁體中文** markdown 格式回應（500字內）：
+## 多頭論點
+（整合分析師報告中的正面因素，給出 3 個最強看多理由）
+
+## 空頭論點
+（整合報告中的風險與負面因素，給出 3 個最強看空理由）
+
+## 辯論結論
+（判定哪方論點更有力，給出多空比例如 60:40）""",
+    },
+    {
+        "key": "risk_debate_state",
+        "label": "風險委員會",
+        "prompt": """你是投資風險委員會主席。以下是多空辯論結果與原始數據。請從風險管理角度做最後審查：
+
+[原始數據]
+{context}
+
+[多空辯論]
+{investment_debate_state}
+
+請以**繁體中文** markdown 格式回應（400字內）：
+## 主要風險因素
+（列出 3 個最需要注意的風險）
+
+## 風險緩解策略
+（針對每個風險提出對策）
+
+## 倉位建議
+（建議投入資金比例、分批策略）
+
+## 風險等級評估
+（低/中/高風險，並說明理由）""",
+    },
+    {
+        "key": "final_trade_decision",
+        "label": "最終投資決策",
+        "prompt": """你是資深投資組合經理。綜合所有分析與風險評估，做出最終投資決策：
+
+[原始數據]
+{context}
+
+[技術分析]
+{market_report}
+
+[基本面分析]
+{fundamentals_report}
+
+[多空辯論]
+{investment_debate_state}
+
+[風險委員會]
+{risk_debate_state}
+
+請以**繁體中文** markdown 格式回應（500字內）：
+## 最終決策
+**買入 / 持有 / 賣出 / 觀望**（明確選一個）
+
+## 操作計畫
+1. 進場價位與時機
+2. 停損價位（明確數字）
+3. 停利目標（明確數字）
+4. 建議倉位比例
+
+## 時間框架
+（短線 / 波段 / 長期）
+
+## 信心度
+（1~10 分，並說明理由）
+
+## 一句話摘要
+（用一句話概括你的建議）""",
+    },
+]
+
+
+@app.get("/api/tradingagents-cli/{symbol}")
+def api_tradingagents_cli_stream(symbol: str, mode: str = "full"):
+    """CLI 版深度分析 — SSE 串流，走訂閱配額不扣 API 費。"""
+    import time as _time
+
+    def event_stream():
+        def emit(event_type: str, data: dict):
+            payload = json.dumps(data, ensure_ascii=False)
+            return f"event: {event_type}\ndata: {payload}\n\n"
+
+        t0 = _time.time()
+
+        # 決定要跑哪些步驟
+        if mode == "quick":
+            step_keys = ["market_report", "fundamentals_report", "investment_debate_state", "final_trade_decision"]
+        else:
+            step_keys = [s["key"] for s in _CLI_DEEP_STEPS]
+
+        steps = [s for s in _CLI_DEEP_STEPS if s["key"] in step_keys]
+
+        # 讀取設定
+        settings = load_settings()
+        roles = settings["roles"]
+        # 深度分析用 analyst 角色的 provider/model
+        analyst_cfg = roles.get("analyst", {})
+        provider = analyst_cfg.get("provider", "anthropic")
+        model = analyst_cfg.get("model", "opus")
+        cli_mode = analyst_cfg.get("mode", "cli")
+        api_key = settings.get("api_keys", {}).get(provider, "")
+
+        yield emit("started", {
+            "symbol": symbol,
+            "mode": mode,
+            "provider": provider,
+            "model": model,
+            "cli_mode": cli_mode,
+            "total_steps": len(steps),
+        })
+
+        # 抓股票數據
+        yield emit("step_start", {"label": "抓取股票數據", "elapsed": round(_time.time() - t0, 1)})
+        context = _fetch_stock_context(symbol)
+        yield emit("step_done", {"label": "抓取股票數據", "output": context, "elapsed": round(_time.time() - t0, 1)})
+
+        # 依序跑每個代理人
+        results = {"context": context}
+        for i, step in enumerate(steps):
+            label = step["label"]
+            key = step["key"]
+
+            yield emit("step_start", {
+                "label": label,
+                "step_index": i + 1,
+                "total_steps": len(steps),
+                "elapsed": round(_time.time() - t0, 1),
+            })
+
+            # 組 prompt — 替換所有已有的結果
+            prompt = step["prompt"]
+            for rk, rv in results.items():
+                prompt = prompt.replace("{" + rk + "}", str(rv))
+
+            try:
+                if cli_mode == "cli":
+                    output = call_cli(provider, model, prompt, timeout=300)
+                else:
+                    output = call_llm(provider, model, prompt, api_key=api_key, mode="api")
+
+                results[key] = output
+
+                yield emit("step_done", {
+                    "label": label,
+                    "key": key,
+                    "step_index": i + 1,
+                    "output": output,
+                    "elapsed": round(_time.time() - t0, 1),
+                })
+            except Exception as e:
+                error_msg = str(e)
+                results[key] = f"（{label}分析失敗: {error_msg}）"
+                yield emit("step_error", {
+                    "label": label,
+                    "key": key,
+                    "step_index": i + 1,
+                    "error": error_msg,
+                    "elapsed": round(_time.time() - t0, 1),
+                })
+
+        # ── 儲存分析結果到資料庫 ──
+        sections_to_save = {k: v for k, v in results.items() if k != "context"}
+        decision_summary = ""
+        ftd = results.get("final_trade_decision", "")
+        # 嘗試擷取一句話摘要
+        for line in ftd.split("\n"):
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and not stripped.startswith("*"):
+                decision_summary = stripped[:200]
+                break
+
+        try:
+            # 查名稱
+            conn = get_db()
+            row = conn.execute(
+                "SELECT name FROM positions WHERE symbol=? UNION SELECT name FROM watchlist WHERE symbol=?",
+                (symbol, symbol)
+            ).fetchone()
+            sym_name = dict(row)["name"] if row else symbol
+            conn.execute(
+                """INSERT INTO analysis_results
+                   (symbol, name, ts, mode, provider, model, elapsed, decision_summary, sections)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (symbol, sym_name, datetime.now().isoformat(),
+                 mode, provider, model,
+                 round(_time.time() - t0, 1),
+                 decision_summary,
+                 json.dumps(sections_to_save, ensure_ascii=False))
+            )
+
+            # ── 從最終決策中解析進出場價位，回寫到 watchlist ──
+            import re as _re
+            def _extract_prices(text):
+                """從決策文本中抓數字價位。先去掉 markdown 粗體標記再解析。"""
+                prices = {}
+                clean = text.replace('**', '')  # 去掉 markdown 粗體
+
+                # 進場 / 買入 — 嘗試抓「進場...數字～數字」的範圍格式
+                m = _re.search(r'進場.*?(\d+(?:\.\d+)?)\s*[~～\-至到]+\s*(\d+(?:\.\d+)?)', clean)
+                if m:
+                    prices['entry'] = float(m.group(1))
+                    prices['add'] = float(m.group(2))
+                else:
+                    # 退而求其次：抓「進場」或「買入」或「回測」後面第一個數字
+                    m = _re.search(r'(?:進場|買入|回測)\D{0,30}?(\d+(?:\.\d+)?)', clean)
+                    if m:
+                        prices['entry'] = float(m.group(1))
+
+                # 停損 — 「停損」後面最近的數字
+                m = _re.search(r'停損\D{0,20}?(\d+(?:\.\d+)?)', clean)
+                if m:
+                    prices['stop'] = float(m.group(1))
+
+                # 停利 — 「停利」後面最近的數字
+                m = _re.search(r'停利\D{0,20}?(\d+(?:\.\d+)?)', clean)
+                if m:
+                    prices['profit'] = float(m.group(1))
+
+                return prices
+
+            extracted = _extract_prices(ftd)
+            if extracted:
+                watch_row = conn.execute("SELECT id, target_entry, target_stop, target_profit FROM watchlist WHERE symbol=?", (symbol,)).fetchone()
+                if watch_row:
+                    wd = dict(watch_row)
+                    updates = []
+                    params = []
+                    if extracted.get('entry'):
+                        updates.append("target_entry=?")
+                        params.append(extracted['entry'])
+                    if extracted.get('add'):
+                        updates.append("target_add=?")
+                        params.append(extracted['add'])
+                    if extracted.get('stop'):
+                        updates.append("target_stop=?")
+                        params.append(extracted['stop'])
+                    if extracted.get('profit'):
+                        updates.append("target_profit=?")
+                        params.append(extracted['profit'])
+                    if updates:
+                        params.append(wd["id"])
+                        conn.execute(f"UPDATE watchlist SET {', '.join(updates)} WHERE id=?", params)
+
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass  # 儲存失敗不影響串流
+
+        yield emit("done", {
+            "symbol": symbol,
+            "mode": mode,
+            "elapsed": round(_time.time() - t0, 1),
+            "sections": sections_to_save,
+        })
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+# ─────────────── 分析結果 CRUD ───────────────
+
+@app.get("/api/analysis/{symbol}")
+def api_get_analysis(symbol: str, limit: int = 10):
+    """取得某標的的歷史分析結果。"""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM analysis_results WHERE symbol=? ORDER BY ts DESC LIMIT ?",
+        (symbol, limit)
+    ).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["sections"] = json.loads(d["sections"]) if d.get("sections") else {}
+        except Exception:
+            d["sections"] = {}
+        out.append(d)
+    return {"analyses": out}
+
+
+@app.get("/api/analysis")
+def api_get_all_analysis(limit: int = 50):
+    """取得最近的所有分析結果（概覽）。"""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, symbol, name, ts, mode, provider, model, elapsed, decision_summary FROM analysis_results ORDER BY ts DESC LIMIT ?",
+        (limit,)
+    ).fetchall()
+    conn.close()
+    return {"analyses": [dict(r) for r in rows]}
+
+
+@app.delete("/api/analysis/{aid}")
+def api_delete_analysis(aid: int):
+    conn = get_db()
+    conn.execute("DELETE FROM analysis_results WHERE id=?", (aid,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
 
 @app.get("/api/llm-analyze-stream/{symbol}")
 def api_llm_analyze_stream(symbol: str, mode: str = "both"):
@@ -1664,4 +2511,4 @@ def api_diagnose(symbol: str):
 if __name__ == "__main__":
     import uvicorn
     init_db()
-    uvicorn.run(app, host="127.0.0.1", port=8765)
+    uvicorn.run(app, host="127.0.0.1", port=6500)

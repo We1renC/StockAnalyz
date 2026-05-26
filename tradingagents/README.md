@@ -16,7 +16,7 @@
 ```bash
 cd web
 ./start.sh
-# 開瀏覽器 http://localhost:8765
+# 開瀏覽器 http://localhost:6500
 ```
 
 ## 設定您的個人資料
@@ -67,7 +67,7 @@ POSITIONS = [
 
 ### 部署提醒
 
-- 預設只 bind `127.0.0.1:8765`，**沒做認證**
+- 預設只 bind `127.0.0.1:6500`，**沒做認證**
 - 不要直接 expose 到公網（會洩漏您的持倉與 API Key）
 - 如需遠端使用，建議用 Cloudflare Tunnel + Access 加上身份驗證
 

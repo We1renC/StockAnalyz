@@ -1,5 +1,7 @@
 # ─────────── 敏感資料（絕對不能上傳） ───────────
-tradingagents/web/settings.json
+
+# API Keys 與 LLM 設定
+web/settings.json
 **/settings.json
 **/settings.local.json
 *.env
@@ -13,16 +15,16 @@ secrets/
 credentials/
 
 # 個人投資資料（持倉成本、警報歷史）
-tradingagents/web/portfolio.db
-tradingagents/web/portfolio.db-*
+web/portfolio.db
+web/portfolio.db-*
 *.db
 *.sqlite
 *.sqlite3
-tradingagents/web/seed_data_private.py
+web/seed_data_private.py
 **/seed_data_private.py
 
 # 工作筆記（個人交接、不適合公開）
-tradingagents/.agent-handoff.md
+.agent-handoff.md
 *.handoff.md
 .claude-handoff*
 
@@ -33,6 +35,8 @@ tradingagents/.agent-handoff.md
 .claude/sessions/
 
 # ─────────── 執行時產生 ───────────
+
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -43,13 +47,12 @@ __pycache__/
 .ruff_cache/
 
 # 虛擬環境
-tradingagents/.venv/
 .venv/
 venv/
 env/
 ENV/
 
-# Node
+# Node（若日後 web 改架構用）
 node_modules/
 .npm/
 .yarn/
@@ -57,6 +60,7 @@ package-lock.json
 pnpm-lock.yaml
 
 # ─────────── 日誌 / 暫存 ───────────
+
 *.log
 logs/
 *.tmp
@@ -64,11 +68,13 @@ logs/
 .cache/
 
 # ─────────── IDE / OS ───────────
+
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+
 .DS_Store
 .DS_Store?
 ._*
@@ -76,3 +82,14 @@ logs/
 .Trashes
 Thumbs.db
 ehthumbs.db
+
+# ─────────── 建議手動忽略 ───────────
+
+# 個人實驗腳本（但保留 tests/ 內的正式測試）
+/test_*.py
+scratch.py
+playground/
+
+# 截圖 / 個人筆記
+screenshots/
+notes-private/

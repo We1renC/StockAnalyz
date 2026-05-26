@@ -32,6 +32,9 @@ tailwind.config = { darkMode: 'class' }
       <p class="text-sm text-gray-400" id="last-update">最後更新：—</p>
     </div>
     <div class="flex gap-2">
+      <button onclick="openBatchAnalyze()" class="bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-white px-4 py-2 rounded font-semibold transition flex items-center gap-1">
+        🤖 AI 智能點位調整
+      </button>
       <button onclick="openSettings()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded font-semibold transition" title="LLM 設定">
         設定
       </button>
@@ -115,6 +118,7 @@ tailwind.config = { darkMode: 'class' }
             <th class="px-3 py-2 text-left">類別</th>
             <th class="px-3 py-2 text-right">現價</th>
             <th class="px-3 py-2 text-right">RSI</th>
+            <th class="px-3 py-2 text-right">Beta</th>
             <th class="px-3 py-2 text-right">進場價</th>
             <th class="px-3 py-2 text-right">距離</th>
             <th class="px-3 py-2 text-right">停利</th>
@@ -155,7 +159,8 @@ tailwind.config = { darkMode: 'class' }
         <option value="priority">重要性</option>
       </select>
       <button onclick="loadAlertsFiltered()" class="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-xs">查詢</button>
-      <button onclick="clearAlerts()" class="bg-red-700 hover:bg-red-800 px-3 py-1 rounded text-xs ml-auto">清除30天前</button>
+      <button onclick="clearAlerts()" class="bg-yellow-700 hover:bg-yellow-800 px-3 py-1 rounded text-xs ml-auto">清除30天前</button>
+      <button onclick="clearAllAlerts()" class="bg-red-700 hover:bg-red-800 px-3 py-1 rounded text-xs ml-2">一鍵清除所有</button>
     </div>
     <!-- Type chips：點擊快篩同類型 -->
     <div id="alert-type-chips" class="bg-gray-800 p-2 rounded mb-3 flex flex-wrap gap-1.5 items-center text-xs">
@@ -236,14 +241,21 @@ tailwind.config = { darkMode: 'class' }
           分析師加審查員
         </button>
         <button onclick="runTradingAgents('full')" id="ta-btn-full" class="bg-emerald-700 hover:bg-emerald-800 px-4 py-2 rounded text-sm font-semibold">
-          TradingAgents 深度分析
+          TradingAgents 深度(API)
         </button>
         <button onclick="runTradingAgents('quick')" id="ta-btn-quick" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm font-semibold">
-          TradingAgents 快速版
+          TradingAgents 快速(API)
+        </button>
+        <button onclick="runTradingAgentsCLI('full')" id="ta-cli-btn-full" class="bg-teal-600 hover:bg-teal-700 px-4 py-2 rounded text-sm font-semibold">
+          深度分析(CLI)
+        </button>
+        <button onclick="runTradingAgentsCLI('quick')" id="ta-cli-btn-quick" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm font-semibold">
+          快速分析(CLI)
         </button>
         <span class="text-xs text-gray-400" id="llm-config-hint">設定中查看 LLM 配置</span>
       </div>
       <div id="llm-result" class="mt-3 hidden space-y-3"></div>
+      <div id="past-analysis" class="mt-3 hidden"></div>
     </div>
   </div>
 </div>
@@ -396,6 +408,127 @@ tailwind.config = { darkMode: 'class' }
       </div>
       <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 py-2 rounded font-semibold">確認新增</button>
     </form>
+  </div>
+</div>
+
+<!-- Edit Position Modal -->
+<div id="edit-pos-modal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center hidden z-50 p-4">
+  <div class="bg-gray-800 rounded-lg p-6 max-w-md w-full">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-xl font-bold text-yellow-400">編輯持倉</h2>
+      <button onclick="closeEditPos()" class="text-gray-400 hover:text-white text-2xl">×</button>
+    </div>
+    <div class="text-sm text-gray-300 mb-3 font-mono" id="edit-pos-symbol-label"></div>
+    <form onsubmit="submitEditPosition(event)" class="space-y-3">
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-gray-400">股數</label>
+          <input id="edit-pos-shares" type="number" step="any" required class="w-full bg-gray-700 px-3 py-2 rounded">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400">均價（成本）</label>
+          <input id="edit-pos-cost" type="number" step="any" required class="w-full bg-gray-700 px-3 py-2 rounded">
+        </div>
+      </div>
+      <div>
+        <label class="text-xs text-gray-400">名稱</label>
+        <input id="edit-pos-name" class="w-full bg-gray-700 px-3 py-2 rounded">
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-gray-400">類別</label>
+          <input id="edit-pos-category" class="w-full bg-gray-700 px-3 py-2 rounded">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400">幣別</label>
+          <select id="edit-pos-currency" class="w-full bg-gray-700 px-3 py-2 rounded">
+            <option value="TWD">TWD</option>
+            <option value="USD">USD</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-gray-400">目標停利</label>
+          <input id="edit-pos-profit" type="number" step="any" class="w-full bg-gray-700 px-3 py-2 rounded" placeholder="未設定">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400">目標停損</label>
+          <input id="edit-pos-stop" type="number" step="any" class="w-full bg-gray-700 px-3 py-2 rounded" placeholder="未設定">
+        </div>
+      </div>
+      <div class="flex gap-2">
+        <button type="button" onclick="sellPartialPosition()" class="flex-1 bg-red-700 hover:bg-red-800 py-2 rounded text-sm font-semibold">賣出部分</button>
+        <button type="button" onclick="buyMorePosition()" class="flex-1 bg-blue-700 hover:bg-blue-800 py-2 rounded text-sm font-semibold">加碼買入</button>
+      </div>
+      <button type="submit" class="w-full bg-yellow-600 hover:bg-yellow-700 py-2 rounded font-semibold">儲存變更</button>
+    </form>
+  </div>
+</div>
+
+<!-- Batch AI Analyze Modal -->
+<div id="batch-analyze-modal" class="fixed inset-0 bg-black bg-opacity-75 backdrop-blur-md flex items-center justify-center hidden z-50 p-4">
+  <div class="bg-gray-850 bg-opacity-90 border border-gray-700 rounded-xl p-6 max-w-4xl w-full flex flex-col max-h-[85vh] shadow-2xl">
+    <div class="flex justify-between items-center mb-4 pb-2 border-b border-gray-700">
+      <h2 class="text-xl font-bold text-teal-400 flex items-center gap-2">
+        <span>🤖 AI 智能點位分析與調整</span>
+      </h2>
+      <button onclick="closeBatchAnalyze()" class="text-gray-400 hover:text-white text-2xl">×</button>
+    </div>
+    
+    <div class="mb-4 flex flex-wrap gap-3 items-center justify-between">
+      <div class="text-sm text-gray-300">
+        分析所有持倉與觀察清單中的個股，並依技術指標智慧推薦點位。<br>
+        <span class="text-xs text-gray-400">（進場點、停損點、停利點。您可自由微調，並選擇性套用回資料庫中）</span>
+      </div>
+      <div>
+        <button id="batch-analyze-start-btn" onclick="startBatchAnalyze()" class="bg-teal-600 hover:bg-teal-700 text-white px-5 py-2 rounded-lg font-semibold transition">
+          開始 AI 批量分析
+        </button>
+      </div>
+    </div>
+
+    <!-- Progress Indicator -->
+    <div id="batch-analyze-progress" class="hidden mb-4 p-4 bg-gray-900 bg-opacity-50 rounded border border-gray-700">
+      <div class="flex items-center justify-between mb-2">
+        <span id="batch-progress-text" class="text-sm text-teal-300 font-semibold">正在整理數據...</span>
+        <span id="batch-progress-percent" class="text-sm text-gray-400">0%</span>
+      </div>
+      <div class="w-full bg-gray-700 rounded-full h-2">
+        <div id="batch-progress-bar" class="bg-teal-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+      </div>
+    </div>
+
+    <!-- Suggestions Table -->
+    <div class="flex-1 overflow-y-auto scrollbar-thin mb-4 bg-gray-900 bg-opacity-40 rounded-lg p-2 border border-gray-800">
+      <table class="w-full text-sm text-left">
+        <thead class="bg-gray-800 text-xs uppercase sticky top-0 text-gray-400">
+          <tr>
+            <th class="px-3 py-2 text-center w-12"><input type="checkbox" id="batch-select-all" checked onchange="toggleSelectAllBatch(this)"></th>
+            <th class="px-3 py-2">個股</th>
+            <th class="px-3 py-2 text-right">現價</th>
+            <th class="px-3 py-2 text-right">建議進場</th>
+            <th class="px-3 py-2 text-right">建議停利</th>
+            <th class="px-3 py-2 text-right">建議停損</th>
+            <th class="px-3 py-2 w-1/3">分析理由 / 操作策略</th>
+          </tr>
+        </thead>
+        <tbody id="batch-analyze-tbody" class="divide-y divide-gray-800">
+          <tr>
+            <td colspan="7" class="px-3 py-12 text-center text-gray-500 font-medium">尚未開始分析。請點擊上方「開始 AI 批量分析」以啟動流程。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="flex justify-end gap-3 pt-3 border-t border-gray-700">
+      <button onclick="closeBatchAnalyze()" class="bg-gray-750 hover:bg-gray-700 px-4 py-2 rounded-lg font-semibold transition">
+        取消
+      </button>
+      <button id="batch-apply-btn" onclick="applyBatchSuggestions()" disabled class="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:hover:bg-emerald-600 px-6 py-2 rounded-lg font-semibold transition">
+        確認套用所選點位
+      </button>
+    </div>
   </div>
 </div>
 
@@ -570,8 +703,13 @@ function renderPortfolio(data) {
     const rec = p.recommendation || {};
     const recBadge = rec.action ? `<span class="${rec.color || 'bg-gray-600'} text-white px-2 py-0.5 rounded text-xs font-semibold whitespace-nowrap" title="${rec.reason || ''}">${rec.action}</span>` : '';
     const recReason = rec.reason ? `<div class="text-xs text-gray-400 mt-1 leading-tight">${rec.reason}</div>` : '';
-    const recStop = rec.stop_loss ? `<div class="text-xs text-red-300 mt-0.5">停損 ${fmt(rec.stop_loss)}</div>` : '';
-    const recProfit = rec.take_profit ? `<div class="text-xs text-emerald-300 mt-0.5">停利 ${fmt(rec.take_profit)}</div>` : '';
+    const recStop = rec.stop_loss ? `<div class="text-xs text-red-300 mt-0.5">系統停損 ${fmt(rec.stop_loss)}</div>` : '';
+    const recProfit = rec.take_profit ? `<div class="text-xs text-emerald-300 mt-0.5">系統停利 ${fmt(rec.take_profit)}</div>` : '';
+    
+    // 自訂/AI設定的目標點位
+    const targetStop = p.target_stop ? `<div class="text-xs text-red-400 font-bold mt-1">設定停損: ${fmt(p.target_stop)}</div>` : '';
+    const targetProfit = p.target_profit ? `<div class="text-xs text-emerald-400 font-bold mt-1">設定停利: ${fmt(p.target_profit)}</div>` : '';
+
     return `<tr class="hover:bg-gray-700">
       <td class="px-3 py-2 font-mono align-top">${p.symbol}</td>
       <td class="px-3 py-2 align-top">${p.name || ''}</td>
@@ -581,9 +719,10 @@ function renderPortfolio(data) {
       <td class="px-3 py-2 text-right ${dayColor} align-top">${p.change_1d >= 0 ? '+' : ''}${fmt(p.change_1d)}%</td>
       <td class="px-3 py-2 text-right ${rsiColor} align-top">${fmt(p.rsi, 1)}</td>
       <td class="px-3 py-2 text-right ${pnlColor} font-bold align-top">${p.pnl_pct >= 0 ? '+' : ''}${fmt(p.pnl_pct)}%<div class="text-xs text-gray-400">${p.pnl >= 0 ? '+' : ''}${fmtInt(p.pnl)}</div></td>
-      <td class="px-3 py-2 align-top">${recBadge}${recReason}${recStop}${recProfit}</td>
+      <td class="px-3 py-2 align-top">${recBadge}${recReason}${recStop}${recProfit}${targetProfit}${targetStop}</td>
       <td class="px-3 py-2 text-center whitespace-nowrap align-top">
         <button onclick="diagnose('${p.symbol}','${p.name}')" class="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-xs" title="診斷+K線">分析</button>
+        <button onclick="editPosition(${p.id},'${p.symbol}','${(p.name||'').replace(/'/g,"\\'")}',${ p.shares},${p.cost_price},'${p.category||''}','${p.currency||'TWD'}',${p.target_profit || 'null'},${p.target_stop || 'null'})" class="bg-yellow-600 hover:bg-yellow-700 px-2 py-1 rounded text-xs ml-1" title="編輯">編輯</button>
         <button onclick="deletePosition(${p.id})" class="bg-red-700 hover:bg-red-800 px-2 py-1 rounded text-xs ml-1" title="刪除">刪除</button>
       </td>
     </tr>`;
@@ -614,6 +753,7 @@ function renderWatchlist(items) {
       <td class="px-3 py-2 text-xs"><span class="bg-gray-700 px-2 py-1 rounded">${w.category}</span></td>
       <td class="px-3 py-2 text-right font-bold">${fmt(w.current_price)}</td>
       <td class="px-3 py-2 text-right ${rsiColor}">${fmt(w.rsi, 1)}</td>
+      <td class="px-3 py-2 text-right ${w.beta >= 1.3 ? 'text-red-400' : w.beta <= 0.7 ? 'text-emerald-400' : 'text-gray-300'}">${fmt(w.beta, 2)}</td>
       <td class="px-3 py-2 text-right">${fmt(w.target_entry)}</td>
       <td class="px-3 py-2 text-right ${distColor}">${dist == null ? '—' : (dist >= 0 ? '+' : '') + fmt(dist) + '%'}</td>
       <td class="px-3 py-2 text-right text-emerald-300">${fmt(w.target_profit)}</td>
@@ -760,6 +900,7 @@ function renderAlerts(alerts) {
         <span class="text-xs text-gray-400">${priceStr}</span>
         <span class="text-xs text-gray-500 ml-auto">${timeOnly}</span>
         ${!a.acknowledged ? `<button onclick="ackAlert(${a.id})" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded">已讀</button>` : ''}
+        <button onclick="deleteAlert(${a.id})" class="text-xs bg-red-950 bg-opacity-70 hover:bg-red-800 text-red-200 hover:text-white px-2 py-0.5 rounded border border-red-800 transition ml-1" title="刪除警報">刪除</button>
       </div>
       <div class="text-sm">${a.message}</div>
       ${a.diagnosis ? `<div class="mt-2 text-xs text-gray-300 bg-black bg-opacity-30 p-2 rounded">${a.diagnosis}</div>` : ''}
@@ -798,13 +939,20 @@ async function diagnose(symbol, name) {
   $('diag-title').textContent = `${name || symbol} (${symbol})`;
   $('diag-body').innerHTML = '<div class="text-gray-400">分析中...</div>';
   $('llm-result').classList.add('hidden');
+  $('past-analysis').classList.add('hidden');
   $('diag-modal').classList.remove('hidden');
 
-  // 並行載入診斷+K線
-  const [diagR] = await Promise.all([
+  // 並行載入診斷+K線+歷史分析
+  const [diagR, , pastR] = await Promise.all([
     fetch(`/api/diagnose/${encodeURIComponent(symbol)}`).then(r=>r.json()),
     drawChart(symbol, $('chart-period').value),
+    fetch(`/api/analysis/${encodeURIComponent(symbol)}?limit=5`).then(r=>r.json()).catch(()=>({analyses:[]})),
   ]);
+
+  // 顯示歷史分析
+  if (pastR.analyses && pastR.analyses.length > 0) {
+    renderPastAnalysis(pastR.analyses);
+  }
 
   if (diagR.error) {
     $('diag-body').innerHTML = `<div class="text-red-400">錯誤: ${diagR.error}</div>`;
@@ -828,7 +976,73 @@ async function diagnose(symbol, name) {
       <div class="text-sm font-semibold mb-1">規則引擎診斷</div>
       <div class="text-sm">${diagR.diagnosis}</div>
     </div>
-  `;
+   `;
+}
+
+function renderPastAnalysis(analyses) {
+  const container = $('past-analysis');
+  container.classList.remove('hidden');
+
+  const sectionLabels = {
+    market_report: '技術分析', fundamentals_report: '基本面分析',
+    news_report: '新聞分析', sentiment_report: '情緒分析',
+    investment_debate_state: '多空辯論', risk_debate_state: '風險委員會',
+    final_trade_decision: '最終決策',
+  };
+
+  const cards = analyses.map((a, idx) => {
+    const ts = (a.ts || '').replace('T', ' ').substring(0, 16);
+    const modeBadge = a.mode === 'quick'
+      ? '<span class="bg-yellow-700 text-xs px-2 py-0.5 rounded">快速</span>'
+      : '<span class="bg-teal-700 text-xs px-2 py-0.5 rounded">完整</span>';
+    const summary = a.decision_summary || '（無摘要）';
+    const sections = a.sections || {};
+    const sectionHTML = Object.entries(sections).map(([key, value]) => `
+      <div class="bg-gray-900 bg-opacity-40 p-3 rounded mt-2">
+        <div class="text-xs text-teal-300 font-semibold mb-1">${sectionLabels[key] || key}</div>
+        <div class="prose prose-invert prose-sm max-w-none">${marked.parse(String(value || ''))}</div>
+      </div>`).join('');
+
+    return `<div class="bg-gray-800 rounded-lg p-3 border border-gray-700">
+      <div class="flex items-center gap-2 flex-wrap">
+        ${modeBadge}
+        <span class="text-xs text-gray-400">${a.provider}/${a.model}</span>
+        <span class="text-xs text-gray-500">${ts}</span>
+        <span class="text-xs text-gray-500">${a.elapsed}s</span>
+        <button onclick="togglePastDetail(${idx})" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-0.5 rounded ml-auto">展開</button>
+        <button onclick="deletePastAnalysis(${a.id})" class="text-xs bg-red-800 hover:bg-red-700 px-2 py-0.5 rounded">刪除</button>
+      </div>
+      <div class="text-sm text-gray-200 mt-1">${summary}</div>
+      <div id="past-detail-${idx}" class="hidden mt-2 space-y-1">${sectionHTML}</div>
+    </div>`;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="border-t border-gray-700 pt-3 mt-3">
+      <div class="flex items-center gap-2 mb-2">
+        <span class="text-sm font-semibold text-teal-300">歷史分析紀錄</span>
+        <span class="text-xs text-gray-500">(${analyses.length} 筆)</span>
+      </div>
+      <div class="space-y-2 max-h-[400px] overflow-y-auto scrollbar-thin">${cards}</div>
+    </div>`;
+}
+
+function togglePastDetail(idx) {
+  const el = document.getElementById('past-detail-' + idx);
+  if (el) el.classList.toggle('hidden');
+}
+
+async function deletePastAnalysis(id) {
+  if (!confirm('確定刪除此分析紀錄？')) return;
+  await fetch('/api/analysis/' + id, { method: 'DELETE' });
+  if (_currentSymbol) {
+    const r = await fetch(`/api/analysis/${encodeURIComponent(_currentSymbol)}?limit=5`).then(r=>r.json()).catch(()=>({analyses:[]}));
+    if (r.analyses && r.analyses.length > 0) {
+      renderPastAnalysis(r.analyses);
+    } else {
+      $('past-analysis').classList.add('hidden');
+    }
+  }
 }
 
 async function drawChart(symbol, period) {
@@ -981,6 +1195,137 @@ async function runTradingAgents(mode) {
     btnFull.disabled = btnQuick.disabled = false;
     target.textContent = original;
   }
+}
+
+// ─── CLI 版深度分析（SSE 串流） ───
+let _cliEventSource = null;
+
+function runTradingAgentsCLI(mode) {
+  if (!_currentSymbol) return;
+  const btnFull = $('ta-cli-btn-full'), btnQuick = $('ta-cli-btn-quick');
+  const target = mode === 'quick' ? btnQuick : btnFull;
+  const origText = target.textContent;
+  btnFull.disabled = btnQuick.disabled = true;
+  target.textContent = '分析中...';
+  $('llm-result').classList.remove('hidden');
+  $('llm-result').innerHTML = `
+    <div class="bg-teal-900 bg-opacity-30 p-3 rounded text-sm flex items-center gap-3">
+      <span class="inline-block w-4 h-4 border-2 border-teal-400 border-t-transparent rounded-full animate-spin"></span>
+      <span>CLI 深度分析啟動中... 將依序呼叫多個 AI 代理人</span>
+    </div>`;
+
+  if (_cliEventSource) { _cliEventSource.close(); _cliEventSource = null; }
+
+  const url = `/api/tradingagents-cli/${encodeURIComponent(_currentSymbol)}?mode=${mode}`;
+  const es = new EventSource(url);
+  _cliEventSource = es;
+
+  const stepResults = [];  // {label, key, output, error, elapsed}
+  let startInfo = {};
+
+  function renderProgress() {
+    const header = `<div class="bg-teal-900 bg-opacity-20 p-3 rounded mb-2 text-sm">
+      <div class="font-semibold text-teal-300 mb-1">CLI 深度分析 (${startInfo.mode === 'quick' ? '快速版' : '完整版'})</div>
+      <div class="text-xs text-gray-400">${startInfo.provider}/${startInfo.model} · ${startInfo.cli_mode === 'cli' ? 'CLI 訂閱模式' : 'API 模式'}</div>
+    </div>`;
+
+    const steps = stepResults.map((s, i) => {
+      if (s.status === 'running') {
+        return `<div class="bg-gray-700 p-3 rounded text-sm flex items-center gap-3">
+          <span class="inline-block w-4 h-4 border-2 border-teal-400 border-t-transparent rounded-full animate-spin"></span>
+          <span class="text-teal-300 font-semibold">[${s.step_index || ''}/${startInfo.total_steps || ''}] ${s.label} 分析中...</span>
+          <span class="text-xs text-gray-500 ml-auto">${s.elapsed}s</span>
+        </div>`;
+      }
+      if (s.error) {
+        return `<div class="bg-red-900 bg-opacity-30 p-3 rounded text-sm">
+          <div class="text-red-300 font-semibold">${s.label} — 失敗</div>
+          <div class="text-xs text-red-200 mt-1">${s.error}</div>
+        </div>`;
+      }
+      // 成功
+      const sectionLabels = {
+        market_report: '技術分析', fundamentals_report: '基本面分析',
+        news_report: '新聞分析', sentiment_report: '情緒分析',
+        investment_debate_state: '多空辯論', risk_debate_state: '風險委員會',
+        final_trade_decision: '最終決策',
+      };
+      const title = sectionLabels[s.key] || s.label;
+      const bgClass = s.key === 'final_trade_decision' ? 'bg-emerald-900 bg-opacity-30' : 'bg-gray-900 bg-opacity-40';
+      const titleClass = s.key === 'final_trade_decision' ? 'text-emerald-300' : 'text-teal-300';
+      return `<div class="${bgClass} p-3 rounded">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="text-xs ${titleClass} font-semibold">[${s.step_index}/${startInfo.total_steps}] ${title}</span>
+          <span class="text-xs text-gray-500 ml-auto">${s.elapsed}s</span>
+        </div>
+        <div class="prose prose-invert prose-sm max-w-none">${marked.parse(String(s.output || ''))}</div>
+      </div>`;
+    }).join('<div class="h-2"></div>');
+
+    $('llm-result').innerHTML = header + '<div class="space-y-2">' + steps + '</div>';
+  }
+
+  es.addEventListener('started', e => {
+    startInfo = JSON.parse(e.data);
+    renderProgress();
+  });
+
+  es.addEventListener('step_start', e => {
+    const d = JSON.parse(e.data);
+    stepResults.push({ label: d.label, status: 'running', step_index: d.step_index, elapsed: d.elapsed });
+    renderProgress();
+  });
+
+  es.addEventListener('step_done', e => {
+    const d = JSON.parse(e.data);
+    // 更新最後一筆 running
+    const last = stepResults.findLast(s => s.status === 'running');
+    if (last) {
+      last.status = 'done';
+      last.key = d.key;
+      last.output = d.output;
+      last.elapsed = d.elapsed;
+      last.step_index = d.step_index || last.step_index;
+    }
+    renderProgress();
+  });
+
+  es.addEventListener('step_error', e => {
+    const d = JSON.parse(e.data);
+    const last = stepResults.findLast(s => s.status === 'running');
+    if (last) {
+      last.status = 'error';
+      last.key = d.key;
+      last.error = d.error;
+      last.elapsed = d.elapsed;
+    }
+    renderProgress();
+  });
+
+  es.addEventListener('done', e => {
+    const d = JSON.parse(e.data);
+    es.close();
+    _cliEventSource = null;
+    btnFull.disabled = btnQuick.disabled = false;
+    target.textContent = origText;
+    // 加上完成提示
+    $('llm-result').insertAdjacentHTML('beforeend',
+      `<div class="bg-teal-900 bg-opacity-20 p-2 rounded mt-2 text-xs text-teal-300 text-center">分析完成，共 ${d.elapsed}s — 已儲存至歷史紀錄</div>`);
+    // 更新歷史分析面板
+    fetch(`/api/analysis/${encodeURIComponent(_currentSymbol)}?limit=5`)
+      .then(r=>r.json())
+      .then(r=>{ if (r.analyses && r.analyses.length) renderPastAnalysis(r.analyses); })
+      .catch(()=>{});
+  });
+
+  es.onerror = () => {
+    es.close();
+    _cliEventSource = null;
+    btnFull.disabled = btnQuick.disabled = false;
+    target.textContent = origText;
+    $('llm-result').insertAdjacentHTML('beforeend',
+      `<div class="bg-red-900 bg-opacity-30 p-2 rounded mt-2 text-xs text-red-300 text-center">串流連線中斷</div>`);
+  };
 }
 
 async function runLLM(mode) {
@@ -1215,6 +1560,74 @@ async function deletePosition(id) {
   loadAll();
 }
 
+// ─── Edit Position Modal ───
+let _editPosId = null;
+
+function editPosition(id, symbol, name, shares, cost, category, currency, target_profit, target_stop) {
+  _editPosId = id;
+  $('edit-pos-symbol-label').textContent = `${symbol} (${name})`;
+  $('edit-pos-shares').value = shares;
+  $('edit-pos-cost').value = cost;
+  $('edit-pos-name').value = name || '';
+  $('edit-pos-category').value = category || '';
+  $('edit-pos-currency').value = currency || 'TWD';
+  $('edit-pos-profit').value = target_profit || '';
+  $('edit-pos-stop').value = target_stop || '';
+  $('edit-pos-modal').classList.remove('hidden');
+}
+function closeEditPos() { $('edit-pos-modal').classList.add('hidden'); }
+
+async function submitEditPosition(e) {
+  e.preventDefault();
+  const body = {
+    shares: parseFloat($('edit-pos-shares').value),
+    cost_price: parseFloat($('edit-pos-cost').value),
+    name: $('edit-pos-name').value.trim(),
+    category: $('edit-pos-category').value.trim(),
+    currency: $('edit-pos-currency').value,
+    target_profit: $('edit-pos-profit').value ? parseFloat($('edit-pos-profit').value) : null,
+    target_stop: $('edit-pos-stop').value ? parseFloat($('edit-pos-stop').value) : null,
+  };
+  const r = await fetch(`/api/positions/${_editPosId}`, {
+    method: 'PUT', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  }).then(r=>r.json());
+  if (r.ok) {
+    closeEditPos();
+    loadAll();
+  } else {
+    alert('更新失敗');
+  }
+}
+
+async function sellPartialPosition() {
+  const sellShares = parseFloat(prompt('賣出多少股？'));
+  if (!sellShares || sellShares <= 0) return;
+  const currentShares = parseFloat($('edit-pos-shares').value);
+  if (sellShares >= currentShares) {
+    if (confirm(`賣出 ${sellShares} 股 ≥ 總持倉 ${currentShares} 股，將清倉刪除。確定？`)) {
+      await fetch(`/api/positions/${_editPosId}`, {method: 'DELETE'});
+      closeEditPos();
+      loadAll();
+    }
+  } else {
+    $('edit-pos-shares').value = currentShares - sellShares;
+  }
+}
+
+async function buyMorePosition() {
+  const addShares = parseFloat(prompt('加碼多少股？'));
+  if (!addShares || addShares <= 0) return;
+  const addCost = parseFloat(prompt('加碼成本價？'));
+  if (!addCost || addCost <= 0) return;
+  const oldShares = parseFloat($('edit-pos-shares').value);
+  const oldCost = parseFloat($('edit-pos-cost').value);
+  const newShares = oldShares + addShares;
+  const newCost = ((oldShares * oldCost) + (addShares * addCost)) / newShares;
+  $('edit-pos-shares').value = newShares;
+  $('edit-pos-cost').value = newCost.toFixed(2);
+}
+
 // ─── Add/Delete Watchlist ───
 function openAddWatch() { $('add-watch-modal').classList.remove('hidden'); }
 function closeAddWatch(){ $('add-watch-modal').classList.add('hidden'); }
@@ -1381,6 +1794,177 @@ function setupAutoRefresh() {
   }
 }
 $('auto-refresh').addEventListener('change', setupAutoRefresh);
+
+// ─── AI Batch Analysis functions ───
+let _batchSuggestions = {};
+
+function openBatchAnalyze() {
+  $('batch-analyze-modal').classList.remove('hidden');
+}
+
+function closeBatchAnalyze() {
+  $('batch-analyze-modal').classList.add('hidden');
+}
+
+function toggleSelectAllBatch(master) {
+  const checkboxes = document.querySelectorAll('.batch-item-select');
+  checkboxes.forEach(cb => cb.checked = master.checked);
+}
+
+async function startBatchAnalyze() {
+  const startBtn = $('batch-analyze-start-btn');
+  const progressDiv = $('batch-analyze-progress');
+  const progressBar = $('batch-progress-bar');
+  const progressText = $('batch-progress-text');
+  const progressPercent = $('batch-progress-percent');
+  const tbody = $('batch-analyze-tbody');
+  const applyBtn = $('batch-apply-btn');
+
+  startBtn.disabled = true;
+  startBtn.textContent = '分析中...';
+  applyBtn.disabled = true;
+
+  progressDiv.classList.remove('hidden');
+  progressBar.style.width = '20%';
+  progressPercent.textContent = '20%';
+  progressText.textContent = '收集清單與技術指標數據...';
+
+  tbody.innerHTML = `<tr><td colspan="7" class="px-3 py-12 text-center text-gray-400 font-medium">🤖 AI 正在評估個股指標並計算推薦進出場與止損點位，請稍候...</td></tr>`;
+
+  try {
+    progressBar.style.width = '50%';
+    progressPercent.textContent = '50%';
+    progressText.textContent = '分析師與投資委員會評估中...';
+
+    const r = await fetch('/api/batch-suggest-levels').then(res => res.json());
+    
+    progressBar.style.width = '90%';
+    progressPercent.textContent = '90%';
+    progressText.textContent = '整理與渲染點位調整建議...';
+
+    if (!r.ok) {
+      throw new Error(r.error || '未知錯誤');
+    }
+
+    _batchSuggestions = r.suggestions;
+    const symbols = Object.keys(_batchSuggestions);
+    
+    if (symbols.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="7" class="px-3 py-12 text-center text-gray-400">目前持倉與觀察清單中無有效個股。請先新增個股或刷新價格快取。</td></tr>`;
+      progressBar.style.width = '100%';
+      progressPercent.textContent = '100%';
+      progressText.textContent = '分析完成';
+      return;
+    }
+
+    tbody.innerHTML = symbols.map(sym => {
+      const sug = _batchSuggestions[sym];
+      const cleanSymId = sym.replace('.', '_');
+      return `<tr class="hover:bg-gray-800 transition">
+        <td class="px-3 py-3 text-center"><input type="checkbox" class="batch-item-select" checked data-symbol="${sym}"></td>
+        <td class="px-3 py-3">
+          <div class="font-bold text-gray-100 font-mono">${sym}</div>
+          <div class="text-xs text-gray-400">${sug.name || ''}</div>
+        </td>
+        <td class="px-3 py-3 text-right font-mono font-semibold text-gray-200">${fmt(sug.current_price)}</td>
+        <td class="px-3 py-3 text-right">
+          <input type="number" step="any" id="batch-entry-${cleanSymId}" class="bg-gray-700 w-24 px-2 py-1 rounded text-right text-xs" value="${sug.entry || ''}">
+        </td>
+        <td class="px-3 py-3 text-right">
+          <input type="number" step="any" id="batch-profit-${cleanSymId}" class="bg-gray-700 w-24 px-2 py-1 rounded text-right text-xs text-emerald-300 font-bold" value="${sug.profit || ''}">
+        </td>
+        <td class="px-3 py-3 text-right">
+          <input type="number" step="any" id="batch-stop-${cleanSymId}" class="bg-gray-700 w-24 px-2 py-1 rounded text-right text-xs text-red-300 font-bold" value="${sug.stop || ''}">
+        </td>
+        <td class="px-3 py-3 text-xs text-gray-300 leading-relaxed">${sug.reason || ''}</td>
+      </tr>`;
+    }).join('');
+
+    progressBar.style.width = '100%';
+    progressPercent.textContent = '100%';
+    progressText.textContent = '分析成功完成！';
+    applyBtn.disabled = false;
+
+  } catch (err) {
+    progressBar.style.width = '100%';
+    progressPercent.textContent = '100%';
+    progressText.textContent = '分析失敗';
+    tbody.innerHTML = `<tr><td colspan="7" class="px-3 py-12 text-center text-red-400 font-medium">❌ 分析失敗: ${err.message}</td></tr>`;
+  } finally {
+    startBtn.disabled = false;
+    startBtn.textContent = '重新批量分析';
+  }
+}
+
+async function applyBatchSuggestions() {
+  const checkboxes = document.querySelectorAll('.batch-item-select:checked');
+  if (checkboxes.length === 0) {
+    alert('請至少勾選一檔個股進行點位套用');
+    return;
+  }
+
+  const items = [];
+  checkboxes.forEach(cb => {
+    const sym = cb.dataset.symbol;
+    const cleanSymId = sym.replace('.', '_');
+    const entryEl = document.getElementById(`batch-entry-${cleanSymId}`);
+    const profitEl = document.getElementById(`batch-profit-${cleanSymId}`);
+    const stopEl = document.getElementById(`batch-stop-${cleanSymId}`);
+    
+    items.push({
+      symbol: sym,
+      entry: entryEl && entryEl.value ? parseFloat(entryEl.value) : null,
+      profit: profitEl && profitEl.value ? parseFloat(profitEl.value) : null,
+      stop: stopEl && stopEl.value ? parseFloat(stopEl.value) : null
+    });
+  });
+
+  const applyBtn = $('batch-apply-btn');
+  applyBtn.disabled = true;
+  applyBtn.textContent = '套用中...';
+
+  try {
+    const r = await fetch('/api/batch-update-levels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items })
+    }).then(res => res.json());
+
+    if (r.ok) {
+      alert(`已成功套用 ${items.length} 檔個股點位設定！`);
+      closeBatchAnalyze();
+      loadAll();
+    } else {
+      alert('套用失敗');
+    }
+  } catch (err) {
+    alert('套用失敗: ' + err.message);
+  } finally {
+    applyBtn.disabled = false;
+    applyBtn.textContent = '確認套用所選點位';
+  }
+}
+
+// ─── Alert Deletion functions ───
+async function deleteAlert(id) {
+  if (!confirm('確定刪除此警報？')) return;
+  const r = await fetch(`/api/alerts/${id}`, { method: 'DELETE' }).then(res => res.json());
+  if (r.ok) {
+    loadAlertsFiltered();
+  } else {
+    alert('刪除失敗');
+  }
+}
+
+async function clearAllAlerts() {
+  if (!confirm('確定刪除所有警報？此操作將永久清除警報庫！')) return;
+  const r = await fetch('/api/alerts/clear', { method: 'DELETE' }).then(res => res.json());
+  if (r.ok) {
+    loadAlertsFiltered();
+  } else {
+    alert('清除失敗');
+  }
+}
 
 loadAll();
 setupAutoRefresh();
