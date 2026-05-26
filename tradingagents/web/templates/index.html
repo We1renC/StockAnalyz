@@ -971,8 +971,11 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       loadBacktest();
     }
     if (btn.dataset.tab === 'portfolio') {
-      if (_trendChart && $('portfolio-trend-chart')) {
-        try { _trendChart.resize($('portfolio-trend-chart').clientWidth, 288); } catch(e){}
+      if (_twTrendChart && $('tw-portfolio-trend-chart')) {
+        try { _twTrendChart.resize($('tw-portfolio-trend-chart').clientWidth, 288); } catch(e){}
+      }
+      if (_usTrendChart && $('us-portfolio-trend-chart')) {
+        try { _usTrendChart.resize($('us-portfolio-trend-chart').clientWidth, 288); } catch(e){}
       }
     }
   });
