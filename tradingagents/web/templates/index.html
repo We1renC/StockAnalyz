@@ -2591,6 +2591,7 @@ async function startBatchAnalyze() {
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
     let finalResult = null;
+    let streamError = null;
 
     while (true) {
       const { value, done } = await reader.read();
@@ -2614,7 +2615,7 @@ async function startBatchAnalyze() {
               } else if (data.status === "done") {
                 finalResult = data;
               } else if (data.status === "error") {
-                throw new Error(data.error);
+                streamError = data.error;
               }
             } catch (jsonErr) {
               console.error("JSON 解析失敗:", jsonErr, line);
@@ -2631,11 +2632,18 @@ async function startBatchAnalyze() {
           const dataStr = line.substring(5).trim();
           try {
             const data = JSON.parse(dataStr);
-            if (data.status === "done") finalResult = data;
-            else if (data.status === "error") throw new Error(data.error);
+            if (data.status === "done") {
+              finalResult = data;
+            } else if (data.status === "error") {
+              streamError = data.error;
+            }
           } catch (e) {}
         }
       }
+    }
+
+    if (streamError) {
+      throw new Error(streamError);
     }
 
     if (!finalResult) {
