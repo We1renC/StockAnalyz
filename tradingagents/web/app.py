@@ -1242,18 +1242,50 @@ def api_portfolio_trend():
 
 
 @app.get("/api/watchlist")
-
 def api_watchlist():
     conn = get_db()
-    rows = conn.execute("""
+    watchlist_rows = conn.execute("""
         SELECT w.*, pc.price as current_price, pc.rsi, pc.change_1d, pc.ma20, pc.ma60, pc.beta
         FROM watchlist w
         LEFT JOIN price_cache pc ON w.symbol = pc.symbol
     """).fetchall()
+    positions_rows = conn.execute("""
+        SELECT p.id, p.symbol, p.name, p.category, p.currency, p.target_entry, p.target_profit, p.target_stop,
+               pc.price as current_price, pc.rsi, pc.change_1d, pc.ma20, pc.ma60, pc.beta
+        FROM positions p
+        LEFT JOIN price_cache pc ON p.symbol = pc.symbol
+    """).fetchall()
     conn.close()
-    out = []
-    for r in rows:
+
+    out_map = {}
+    # 1. 放入觀察清單的資料
+    for r in watchlist_rows:
         d = dict(r)
+        d["is_position"] = False
+        d["is_watchlist"] = True
+        out_map[d["symbol"]] = d
+
+    # 2. 合併持倉的資料
+    for r in positions_rows:
+        d = dict(r)
+        sym = d["symbol"]
+        if sym in out_map:
+            out_map[sym]["is_position"] = True
+            # 如果持倉有設定點位，且觀察清單沒有，用持倉點位補充
+            if d.get("target_entry") and not out_map[sym].get("target_entry"):
+                out_map[sym]["target_entry"] = d["target_entry"]
+            if d.get("target_profit") and not out_map[sym].get("target_profit"):
+                out_map[sym]["target_profit"] = d["target_profit"]
+            if d.get("target_stop") and not out_map[sym].get("target_stop"):
+                out_map[sym]["target_stop"] = d["target_stop"]
+        else:
+            d["is_position"] = True
+            d["is_watchlist"] = False
+            d["id"] = None
+            out_map[sym] = d
+
+    out = []
+    for d in out_map.values():
         cur = d.get("current_price")
         rsi = d.get("rsi") or 50
 
@@ -1297,8 +1329,11 @@ def api_watchlist():
             else:
                 d["status"] = "等待"
                 d["status_class"] = "text-orange-400"
-                # 距離越近分數越高
                 priority = max(20, 50 - abs(dist))
+        elif d.get("is_position"):
+            d["status"] = "已持倉"
+            d["status_class"] = "text-blue-400"
+            priority = 10
         else:
             d["status"] = "資料中"
             d["status_class"] = "text-gray-500"

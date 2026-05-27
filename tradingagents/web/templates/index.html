@@ -1468,11 +1468,16 @@ function renderWatchlist(items) {
       statusPill = 'pill-red';
     } else if (statusText.includes('超賣') || statusText.includes('警戒')) {
       statusPill = 'pill-amber';
+    } else if (statusText.includes('已持倉')) {
+      statusPill = 'pill-blue';
     }
 
     return `<tr>
       <td class="text-right"><span class="pill ${priPill} tabular-nums" style="font-size:11px">${Math.round(pri)}</span></td>
-      <td class="font-mono font-semibold text-slate-200">${w.symbol}</td>
+      <td class="font-mono font-semibold text-slate-200">
+        ${w.symbol}
+        ${w.is_position ? `<span class="pill pill-blue ml-1 text-[10px]" style="font-size:10px;padding:1px 4px">持倉</span>` : ''}
+      </td>
       <td class="text-slate-300">${w.name || ''}</td>
       <td class="text-xs"><span class="pill pill-blue" style="font-size:11px">${w.category}</span></td>
       <td class="text-right tabular-nums font-semibold">${fmt(w.current_price)}</td>
@@ -1485,7 +1490,7 @@ function renderWatchlist(items) {
       <td class="text-center text-sm"><span class="pill ${statusPill} text-[11px]">${statusText}</span></td>
       <td class="text-center whitespace-nowrap">
         <button onclick="diagnose('${w.symbol}','${(w.name||'').replace(/'/g,"\\\'")}')" class="btn-action" data-tip="分析">分析</button>
-        <button onclick="deleteWatch(${w.id})" class="btn-action-danger" data-tip="刪除">刪除</button>
+        ${w.is_watchlist ? `<button onclick="deleteWatch(${w.id})" class="btn-action-danger" data-tip="刪除">刪除</button>` : `<span class="text-xs text-slate-500 italic">持倉不可刪</span>`}
       </td>
     </tr>`;
   };
