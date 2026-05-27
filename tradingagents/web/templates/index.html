@@ -287,15 +287,39 @@ body { background: var(--bg-base); color: var(--text-primary); }
     <div id="portfolio-charts-container" class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6 hidden">
       <!-- 台股趨勢 -->
       <div id="tw-trend-card" class="glass-card p-4 flex flex-col relative">
-        <div class="flex justify-between items-center mb-2">
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-2">
           <div class="text-sm font-semibold text-slate-300">台股資產與投入成本趨勢 (TWD)</div>
+          <div class="flex gap-4 text-xs font-semibold">
+            <div class="flex items-center gap-1.5">
+              <span class="inline-block w-2 h-2 rounded-full" style="background-color: rgba(239, 68, 68, 0.95)"></span>
+              <span class="text-slate-400">市值:</span>
+              <span id="tw-legend-value" class="text-slate-200 tabular-nums">—</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <span class="inline-block w-2 h-2 rounded-full" style="background-color: rgba(250, 204, 21, 0.6)"></span>
+              <span class="text-slate-400">成本:</span>
+              <span id="tw-legend-cost" class="text-slate-200 tabular-nums">—</span>
+            </div>
+          </div>
         </div>
         <div id="tw-portfolio-trend-chart" class="w-full h-72"></div>
       </div>
       <!-- 美股趨勢 -->
       <div id="us-trend-card" class="glass-card p-4 flex flex-col relative">
-        <div class="flex justify-between items-center mb-2">
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-2">
           <div class="text-sm font-semibold text-slate-300">美股資產與投入成本趨勢 (USD)</div>
+          <div class="flex gap-4 text-xs font-semibold">
+            <div class="flex items-center gap-1.5">
+              <span class="inline-block w-2 h-2 rounded-full" style="background-color: rgba(59, 130, 246, 0.95)"></span>
+              <span class="text-slate-400">市值:</span>
+              <span id="us-legend-value" class="text-slate-200 tabular-nums">—</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <span class="inline-block w-2 h-2 rounded-full" style="background-color: rgba(250, 204, 21, 0.6)"></span>
+              <span class="text-slate-400">成本:</span>
+              <span id="us-legend-cost" class="text-slate-200 tabular-nums">—</span>
+            </div>
+          </div>
         </div>
         <div id="us-portfolio-trend-chart" class="w-full h-72"></div>
       </div>
@@ -1076,7 +1100,6 @@ function renderPortfolioTrend(trendObj) {
       topColor: 'rgba(239, 68, 68, 0.25)',
       bottomColor: 'rgba(239, 68, 68, 0.0)',
       lineWidth: 2.5,
-      title: '市值',
       priceLineVisible: false,
       priceFormat: {
         type: 'custom',
@@ -1089,7 +1112,6 @@ function renderPortfolioTrend(trendObj) {
       topColor: 'rgba(250, 204, 21, 0.1)',
       bottomColor: 'rgba(250, 204, 21, 0.0)',
       lineWidth: 2,
-      title: '成本',
       priceLineVisible: false,
       priceFormat: {
         type: 'custom',
@@ -1101,7 +1123,38 @@ function renderPortfolioTrend(trendObj) {
     costSeries.setData(twData.map(d => ({ time: d.time, value: d.total_cost })));
     _twTrendChart.timeScale().fitContent();
 
-    // Default Logarithmic scale - no toggle updates needed
+    // Helper to format TW numbers
+    const formatTW = (val) => 'NT$ ' + Math.round(val).toLocaleString();
+
+    // Helper to update TW Legend
+    const updateTWLegend = (valueVal, costVal) => {
+      $('tw-legend-value').textContent = valueVal !== null && valueVal !== undefined ? formatTW(valueVal) : '—';
+      $('tw-legend-cost').textContent = costVal !== null && costVal !== undefined ? formatTW(costVal) : '—';
+    };
+
+    // Initialize with latest data
+    const latestTw = twData[twData.length - 1];
+    if (latestTw) {
+      updateTWLegend(latestTw.total_value, latestTw.total_cost);
+    }
+
+    // Subscribe to crosshair move
+    _twTrendChart.subscribeCrosshairMove((param) => {
+      if (param.time) {
+        const vData = param.seriesData.get(valueSeries);
+        const cData = param.seriesData.get(costSeries);
+        const vVal = vData !== undefined ? (vData.value !== undefined ? vData.value : vData.close) : null;
+        const cVal = cData !== undefined ? (cData.value !== undefined ? cData.value : cData.close) : null;
+        updateTWLegend(vVal, cVal);
+      } else {
+        const latest = twData[twData.length - 1];
+        if (latest) {
+          updateTWLegend(latest.total_value, latest.total_cost);
+        } else {
+          updateTWLegend(null, null);
+        }
+      }
+    });
   } else {
     twCard.classList.add('hidden');
   }
@@ -1142,7 +1195,6 @@ function renderPortfolioTrend(trendObj) {
       topColor: 'rgba(59, 130, 246, 0.25)',
       bottomColor: 'rgba(59, 130, 246, 0.0)',
       lineWidth: 2.5,
-      title: '市值',
       priceLineVisible: false,
       priceFormat: {
         type: 'custom',
@@ -1155,7 +1207,6 @@ function renderPortfolioTrend(trendObj) {
       topColor: 'rgba(250, 204, 21, 0.1)',
       bottomColor: 'rgba(250, 204, 21, 0.0)',
       lineWidth: 2,
-      title: '成本',
       priceLineVisible: false,
       priceFormat: {
         type: 'custom',
@@ -1167,7 +1218,38 @@ function renderPortfolioTrend(trendObj) {
     costSeries.setData(usData.map(d => ({ time: d.time, value: d.total_cost })));
     _usTrendChart.timeScale().fitContent();
 
-    // Default Logarithmic scale - no toggle updates needed
+    // Helper to format US numbers
+    const formatUS = (val) => 'US$ ' + val.toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,');
+
+    // Helper to update US Legend
+    const updateUSLegend = (valueVal, costVal) => {
+      $('us-legend-value').textContent = valueVal !== null && valueVal !== undefined ? formatUS(valueVal) : '—';
+      $('us-legend-cost').textContent = costVal !== null && costVal !== undefined ? formatUS(costVal) : '—';
+    };
+
+    // Initialize with latest data
+    const latestUs = usData[usData.length - 1];
+    if (latestUs) {
+      updateUSLegend(latestUs.total_value, latestUs.total_cost);
+    }
+
+    // Subscribe to crosshair move
+    _usTrendChart.subscribeCrosshairMove((param) => {
+      if (param.time) {
+        const vData = param.seriesData.get(valueSeries);
+        const cData = param.seriesData.get(costSeries);
+        const vVal = vData !== undefined ? (vData.value !== undefined ? vData.value : vData.close) : null;
+        const cVal = cData !== undefined ? (cData.value !== undefined ? cData.value : cData.close) : null;
+        updateUSLegend(vVal, cVal);
+      } else {
+        const latest = usData[usData.length - 1];
+        if (latest) {
+          updateUSLegend(latest.total_value, latest.total_cost);
+        } else {
+          updateUSLegend(null, null);
+        }
+      }
+    });
   } else {
     usCard.classList.add('hidden');
   }
