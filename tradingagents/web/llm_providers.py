@@ -118,7 +118,12 @@ def _find_cli(cmd: str) -> str:
     if path:
         return path
     # 常見路徑備援
-    for p in ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.npm-global/bin")]:
+    for p in [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        os.path.expanduser("~/.local/bin"),
+        os.path.expanduser("~/.npm-global/bin")
+    ]:
         candidate = os.path.join(p, cmd)
         if os.path.isfile(candidate):
             return candidate
@@ -132,9 +137,11 @@ def call_cli(provider: str, model: str, prompt: str, timeout: int = 180) -> str:
         raise ValueError(f"{provider} 沒有對應的 CLI 工具")
 
     cli_path = _find_cli(tool)
-    # 確保 PATH 含 homebrew
+    # 確保 PATH 包含 homebrew 與使用者個人 bin 目錄
     env = os.environ.copy()
-    env["PATH"] = f"/opt/homebrew/bin:/usr/local/bin:{env.get('PATH','')}"
+    local_bin = os.path.expanduser("~/.local/bin")
+    npm_bin = os.path.expanduser("~/.npm-global/bin")
+    env["PATH"] = f"{local_bin}:{npm_bin}:/opt/homebrew/bin:/usr/local/bin:{env.get('PATH','')}"
 
     if provider == "anthropic":
         # Claude Code: claude -p "prompt" --model <model>
