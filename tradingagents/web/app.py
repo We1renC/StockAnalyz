@@ -2863,7 +2863,7 @@ Domain: {domain}
 
 Stock selection criteria:
 1. Distinguish "Frontier Technology" (early-stage, high-growth, higher risk) vs "Leading Technology" (established moat, steady compounding)
-2. Select 1-5 representative stocks per category — prefer Taiwan stocks (.TW), then US stocks
+2. Select 1-5 representative stocks per category. MUST include both Taiwan stocks (.TW) and US stocks in each category — at least 1 Taiwan stock and at least 1 US stock per category. Do not fill a category with only one market.
 
 Research depth required per stock (all text fields in English):
 
