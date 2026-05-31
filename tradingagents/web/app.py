@@ -2907,7 +2907,7 @@ Rules:
 - Flag uncertain or knowledge-cutoff-limited information with "(as of knowledge cutoff)"
 - Plain text only — no emoji, icons, or decorative symbols
 - No meta-commentary: never write phrases like "In conclusion", "Based on the above", "Revised analysis shows", "Core thesis is", or any language that reveals the analytical process. Present findings directly.
-- Use numbered lists (1. 2. 3.) for all enumerated content within each field. Each distinct fact, metric, or event should be its own numbered item.
+- Use numbered lists (1. 2. 3.) for all enumerated content within each field. Each distinct fact, metric, or event should be its own numbered item. Separate each item with \n (newline character within the JSON string value).
 - Output strictly in the JSON format below — no markdown fences (no ```json)
 
 {{
@@ -2998,11 +2998,12 @@ _DOMAIN_TRANSLATION_PROMPT = """你是專業金融翻譯員，擅長投資研究
 翻譯規則：
 1. 只翻譯文字欄位的內容（string values）
 2. 以下內容保持原文不翻譯：股票代碼（symbol）、公司名稱（name）、best_fit 欄位（陣列結構與其中的 "week"/"short"/"mid"/"long" 字串值全部保留原始英文不翻）、所有數字、百分比、日期、英文專有名詞（如 TSMC、NVIDIA、backlog、ASP、EV/EBITDA 等技術/財務術語）
-3. 保持 JSON 結構完全不變（所有 key 名稱維持英文）
+3. 保持 JSON 結構完全不變（所有 key 名稱維持英文），不得增減欄位
 4. 翻譯要自然流暢，符合台灣投資圈慣用語
 5. 純文字，不使用 emoji、icon 或裝飾性符號
-6. 翻譯時不得加入「綜上所述」「修訂後」「核心結論是」「基於以上分析」等透露分析過程的贅詞，直接呈現內容
-6. 嚴格只輸出 JSON，不含任何 markdown 包裹符號（不要 ```json）
+6. 不得加入「綜上所述」「修訂後」「核心結論是」「基於以上分析」等透露分析過程的贅詞，直接呈現內容
+7. 原文中的編號列表（1. 2. 3.）翻譯後必須保留編號，每個編號項目之間以 \n 換行（即 JSON 字串中的換行符號）
+8. 嚴格只輸出 JSON，不含任何 markdown 包裹符號（不要 ```json）
 
 [英文 JSON]
 {english_json}"""
@@ -3171,13 +3172,25 @@ def api_domain_research_stream(domain: str):
             "elapsed": round(_time.time() - t0, 1),
         })
 
-        english_data = final_analyst_data
-        english_json_str = json.dumps(
-            {"summary": summary, "frontier": enriched_frontier, "leading": enriched_leading},
-            ensure_ascii=False, indent=2
-        )
+        # Strip indicators before translation (they're numbers, not text — reduce payload size)
+        def _strip_ind(stocks):
+            return [{k: v for k, v in s.items() if k != "indicators"} for s in stocks]
+
+        def _merge_ind(translated_stocks, original_stocks):
+            """Re-attach indicators from original after translation."""
+            orig_by_sym = {s.get("symbol", ""): s.get("indicators", {}) for s in original_stocks}
+            for s in translated_stocks:
+                s["indicators"] = orig_by_sym.get(s.get("symbol", ""), {})
+            return translated_stocks
+
+        translation_payload = {
+            "summary": summary,
+            "frontier": _strip_ind(enriched_frontier),
+            "leading": _strip_ind(enriched_leading),
+        }
+        english_json_str = json.dumps(translation_payload, ensure_ascii=False, indent=2)
         translation_prompt = _DOMAIN_TRANSLATION_PROMPT.format(
-            english_json=english_json_str[:6000]
+            english_json=english_json_str  # no truncation
         )
         try:
             raw_translated = call_llm(
@@ -3190,8 +3203,12 @@ def api_domain_research_stream(domain: str):
             translated_data = _parse_analyst_json(raw_translated)
             if translated_data is not None:
                 summary = translated_data.get("summary", summary)
-                enriched_frontier = translated_data.get("frontier", enriched_frontier)
-                enriched_leading = translated_data.get("leading", enriched_leading)
+                trans_f = translated_data.get("frontier", [])
+                trans_l = translated_data.get("leading", [])
+                if trans_f:
+                    enriched_frontier = _merge_ind(trans_f, enriched_frontier)
+                if trans_l:
+                    enriched_leading = _merge_ind(trans_l, enriched_leading)
         except Exception:
             pass  # keep English output if translation fails
 
