@@ -3049,6 +3049,28 @@ def _safe_obsidian_name(value: str) -> str:
     return re.sub(r'[\\/*?"<>|]', "_", value or "")
 
 
+def _obsidian_portfolio_index_path(vault: Path) -> Path:
+    return vault / "Portfolio" / "持倉總覽.md"
+
+
+def _obsidian_watchlist_index_path(vault: Path) -> Path:
+    return vault / "Watchlist" / "觀察清單總覽.md"
+
+
+def _obsidian_alerts_index_path(vault: Path) -> Path:
+    return vault / "Alerts" / "警報總覽.md"
+
+
+def _obsidian_domain_latest_entry_path(vault: Path, domain: str) -> Path:
+    return vault / "Research" / _safe_obsidian_name(domain) / "研究入口.md"
+
+
+def _obsidian_domain_snapshot_path(vault: Path, domain: str, ts_value: str) -> Path:
+    research_dir = _obsidian_domain_dir(vault, domain, ts_value)
+    safe_domain = _safe_obsidian_name(domain)
+    return research_dir / f"{safe_domain} 研究快照.md"
+
+
 def _obsidian_bool(v) -> str:
     return "1" if v else "0"
 
@@ -3107,15 +3129,15 @@ updated: {date.today().isoformat()}
 <!-- 此處可自由填寫，不影響同步 -->
 
 ## 連結
-[[Portfolio/index|回到持倉總覽]]
+[[Portfolio/持倉總覽|回到持倉總覽]]
 [[Alerts/Symbols/{safe}|{sym} 警報中心]]
 """
     note.write_text(content, encoding="utf-8")
 
 
 def _obsidian_write_portfolio_index(vault: Path, positions: list) -> None:
-    """Rewrite the Portfolio/index.md overview."""
-    idx = vault / "Portfolio" / "index.md"
+    """Rewrite the Portfolio overview note."""
+    idx = _obsidian_portfolio_index_path(vault)
     idx.parent.mkdir(parents=True, exist_ok=True)
     def _pos_row(p):
         safe = _safe_obsidian_name(p.get("symbol", ""))
@@ -3167,15 +3189,15 @@ updated: {date.today().isoformat()}
 {watch.get('notes') or '<!-- 此處可填入觀察重點 -->'}
 
 ## 連結
-[[Watchlist/index|回到觀察清單]]
+[[Watchlist/觀察清單總覽|回到觀察清單]]
 [[Alerts/Symbols/{safe}|{sym} 警報中心]]
 """
     note.write_text(content, encoding="utf-8")
 
 
 def _obsidian_write_watchlist_index(vault: Path, items: list) -> None:
-    """Rewrite the Watchlist/index.md overview."""
-    idx = vault / "Watchlist" / "index.md"
+    """Rewrite the Watchlist overview note."""
+    idx = _obsidian_watchlist_index_path(vault)
     idx.parent.mkdir(parents=True, exist_ok=True)
     def _wl_row(w):
         safe = _safe_obsidian_name(w.get("symbol", ""))
@@ -3350,7 +3372,7 @@ def _obsidian_rebuild_alert_views(vault: Path) -> None:
         f"- [[Alerts/Symbols/{_safe_obsidian_name(symbol)}|{symbol}]] ({len(items)})"
         for symbol, items in sorted(by_symbol.items())
     ]
-    (alerts_root / "index.md").write_text(
+    _obsidian_alerts_index_path(vault).write_text(
         f"---\n"
         f"type: alerts-index\n"
         f"updated: {date.today().isoformat()}\n"
@@ -3440,25 +3462,31 @@ def _obsidian_domain_dir(vault: Path, domain: str, ts_value: str) -> Path:
 
 
 def _obsidian_domain_index_paths(vault: Path) -> list[Path]:
-    """Return canonical domain research index paths without counting latest mirrors twice."""
+    """Return canonical domain research paths without counting latest mirrors twice."""
     research_dir = vault / "Research"
     if not research_dir.is_dir():
         return []
 
     index_paths: list[Path] = []
     for domain_dir in sorted(p for p in research_dir.iterdir() if p.is_dir()):
-        timestamp_indexes = sorted(
-            subdir / "index.md"
-            for subdir in domain_dir.iterdir()
-            if subdir.is_dir() and (subdir / "index.md").is_file()
-        )
+        timestamp_indexes = []
+        for subdir in sorted(p for p in domain_dir.iterdir() if p.is_dir()):
+            for candidate in (
+                subdir / f"{domain_dir.name} 研究快照.md",
+                subdir / "研究快照.md",
+                subdir / "index.md",
+            ):
+                if candidate.is_file():
+                    timestamp_indexes.append(candidate)
+                    break
         if timestamp_indexes:
             index_paths.extend(timestamp_indexes)
             continue
 
-        root_index = domain_dir / "index.md"
-        if root_index.is_file():
-            index_paths.append(root_index)
+        for candidate in (domain_dir / "研究入口.md", domain_dir / "index.md"):
+            if candidate.is_file():
+                index_paths.append(candidate)
+                break
     return index_paths
 
 
@@ -4037,12 +4065,12 @@ best_fit: [{best_fit_yaml}]
                 else:
                     content += "\n（未取得即時資料）\n"
 
-                content += f"\n## 連結\n[[Research/{safe_domain}/index|回到 {domain} 總覽]]\n"
+                content += f"\n## 連結\n[[Research/{safe_domain}/研究入口|回到 {domain} 總覽]]\n"
                 note_path.write_text(content, encoding="utf-8")
                 links_list.append(f"[[{cat_label}/{safe_sym}|{name} ({sym})]]")
 
-        # Write index note
-        index_path = research_dir / "index.md"
+        # Write snapshot note
+        index_path = _obsidian_domain_snapshot_path(Path(vault_path), domain, ts)
         analyst_report = result.get("analyst_report", "")
         reviewer_report = result.get("reviewer_report", "")
 
@@ -4076,7 +4104,7 @@ analyzed: {ts}
 {reviewer_report}
 """
         index_path.write_text(index_content, encoding="utf-8")
-        latest_index = latest_dir / "index.md"
+        latest_index = _obsidian_domain_latest_entry_path(Path(vault_path), domain)
         latest_index.write_text(
             f"---\n"
             f"type: domain-research-latest\n"
@@ -4086,9 +4114,9 @@ analyzed: {ts}
             f"---\n\n"
             f"# {domain}\n\n"
             f"## 最新研究\n\n"
-            f"- [[{ts.replace(':', '-').replace(' ', '_')}/index|{ts} 研究快照]]\n\n"
+            f"- [[{ts.replace(':', '-').replace(' ', '_')}/{_safe_obsidian_name(domain)} 研究快照|{ts} 研究快照]]\n\n"
             f"## 歷史快照\n\n"
-            f"- [[{ts.replace(':', '-').replace(' ', '_')}/index|{ts}]]\n",
+            f"- [[{ts.replace(':', '-').replace(' ', '_')}/{_safe_obsidian_name(domain)} 研究快照|{ts}]]\n",
             encoding="utf-8",
         )
         return str(index_path)
