@@ -31,7 +31,7 @@ def test_domain_research_loads_modified_obsidian_notes_with_sqlite_metadata_fall
     index_path = app._save_obsidian_notes("AI基礎設施", result, str(tmp_path))
     assert index_path
 
-    note_path = tmp_path / "Research" / "AI基礎設施" / "前瞻技術" / "VRT.md"
+    note_path = tmp_path / "Research" / "AI基礎設施" / "2026-05-31_21-30" / "前瞻技術" / "VRT.md"
     note_text = note_path.read_text(encoding="utf-8")
     note_text = note_text.replace("原始論點", "Obsidian 手動修改論點")
     note_text = note_text.replace("best_fit: [short, mid]", "")

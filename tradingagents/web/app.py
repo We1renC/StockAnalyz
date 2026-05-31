@@ -3108,6 +3108,7 @@ updated: {date.today().isoformat()}
 
 ## 連結
 [[Portfolio/index|回到持倉總覽]]
+[[Alerts/Symbols/{safe}|{sym} 警報中心]]
 """
     note.write_text(content, encoding="utf-8")
 
@@ -3167,6 +3168,7 @@ updated: {date.today().isoformat()}
 
 ## 連結
 [[Watchlist/index|回到觀察清單]]
+[[Alerts/Symbols/{safe}|{sym} 警報中心]]
 """
     note.write_text(content, encoding="utf-8")
 
@@ -3208,10 +3210,35 @@ def _obsidian_alert_note_path(vault: Path, alert: dict) -> Path:
     return alert_dir / f"{safe_name or 'alert'}.md"
 
 
+def _obsidian_alert_symbol_index_path(vault: Path, symbol: str) -> Path:
+    return vault / "Alerts" / "Symbols" / f"{_safe_obsidian_name(symbol)}.md"
+
+
+def _obsidian_alert_day_index_path(vault: Path, day: str) -> Path:
+    return vault / "Alerts" / f"{day}.md"
+
+
+def _obsidian_related_symbol_links(vault: Path, symbol: str) -> list[str]:
+    links = []
+    safe_symbol = _safe_obsidian_name(symbol)
+    watch = vault / "Watchlist" / f"{safe_symbol}.md"
+    pos = vault / "Portfolio" / "Positions" / f"{safe_symbol}.md"
+    if watch.exists():
+        links.append(f"[[Watchlist/{safe_symbol}|觀察清單]]")
+    if pos.exists():
+        links.append(f"[[Portfolio/Positions/{safe_symbol}|持倉]]")
+    return links
+
+
 def _obsidian_write_alert(vault: Path, alert: dict) -> None:
     """Write/update a single alert note to Obsidian."""
     note = _obsidian_alert_note_path(vault, alert)
     note.parent.mkdir(parents=True, exist_ok=True)
+    day = (alert.get("ts", "") or "")[:10] or date.today().isoformat()
+    symbol = alert.get("symbol", "")
+    related_links = _obsidian_related_symbol_links(vault, symbol)
+    related_links.append(f"[[Alerts/Symbols/{_safe_obsidian_name(symbol)}|{symbol} 警報中心]]")
+    related_links.append(f"[[Alerts/{day}|{day} 警報日誌]]")
     content = f"""---
 type: alert
 symbol: {_fmt(alert.get('symbol'))}
@@ -3232,6 +3259,10 @@ updated: {date.today().isoformat()}
 ## 診斷
 
 {alert.get('diagnosis') or '—'}
+
+## 關聯
+
+{chr(10).join(f"- {link}" for link in related_links)}
 """
     note.write_text(content, encoding="utf-8")
 
@@ -3240,6 +3271,97 @@ def _obsidian_delete_alert(vault: Path, alert: dict) -> None:
     note = _obsidian_alert_note_path(vault, alert)
     if note.exists():
         note.unlink()
+
+
+def _obsidian_rebuild_alert_views(vault: Path) -> None:
+    entries_root = vault / "Alerts" / "Entries"
+    alerts_root = vault / "Alerts"
+    symbols_root = alerts_root / "Symbols"
+    alerts_root.mkdir(parents=True, exist_ok=True)
+    symbols_root.mkdir(parents=True, exist_ok=True)
+
+    by_day: dict[str, list[dict]] = {}
+    by_symbol: dict[str, list[dict]] = {}
+
+    for note_path in sorted(entries_root.rglob("*.md")) if entries_root.exists() else []:
+        parsed = _obsidian_parse_alert(note_path)
+        if not parsed:
+            continue
+        ts = parsed.get("ts", "")
+        day = ts[:10] if ts else note_path.parent.name
+        parsed["_path"] = note_path
+        by_day.setdefault(day, []).append(parsed)
+        by_symbol.setdefault(parsed["symbol"], []).append(parsed)
+
+    for day, items in by_day.items():
+        items.sort(key=lambda x: x.get("ts", ""), reverse=True)
+        lines = []
+        for item in items:
+            rel = item["_path"].relative_to(vault)
+            label = item.get("message") or item.get("type") or item.get("symbol")
+            lines.append(
+                f"- [[{rel.as_posix()}|{item['symbol']} {item.get('type','')}]]"
+                f" · {item.get('level','')} · {label}"
+            )
+        day_path = _obsidian_alert_day_index_path(vault, day)
+        day_path.write_text(
+            f"---\n"
+            f"type: alert-day-index\n"
+            f"day: {day}\n"
+            f"updated: {date.today().isoformat()}\n"
+            f"---\n\n"
+            f"# {day} 警報日誌\n\n"
+            f"{chr(10).join(lines) or '（無警報）'}\n",
+            encoding="utf-8",
+        )
+
+    for symbol, items in by_symbol.items():
+        items.sort(key=lambda x: x.get("ts", ""), reverse=True)
+        related_links = _obsidian_related_symbol_links(vault, symbol)
+        lines = []
+        for item in items:
+            rel = item["_path"].relative_to(vault)
+            day = item.get("ts", "")[:10]
+            lines.append(
+                f"- [[{rel.as_posix()}|{item.get('ts','')} {item.get('type','')}]]"
+                f" · [[Alerts/{day}|{day}]] · {item.get('message') or '—'}"
+            )
+        symbol_path = _obsidian_alert_symbol_index_path(vault, symbol)
+        symbol_path.parent.mkdir(parents=True, exist_ok=True)
+        symbol_path.write_text(
+            f"---\n"
+            f"type: alert-symbol-index\n"
+            f"symbol: {symbol}\n"
+            f"updated: {date.today().isoformat()}\n"
+            f"---\n\n"
+            f"# {symbol} 警報中心\n\n"
+            f"## 關聯標的\n\n"
+            f"{chr(10).join(f'- {link}' for link in related_links) or '（無）'}\n\n"
+            f"## 警報紀錄\n\n"
+            f"{chr(10).join(lines) or '（無警報）'}\n",
+            encoding="utf-8",
+        )
+
+    day_links = [
+        f"- [[Alerts/{day}|{day}]] ({len(items)})"
+        for day, items in sorted(by_day.items(), reverse=True)
+    ]
+    symbol_links = [
+        f"- [[Alerts/Symbols/{_safe_obsidian_name(symbol)}|{symbol}]] ({len(items)})"
+        for symbol, items in sorted(by_symbol.items())
+    ]
+    (alerts_root / "index.md").write_text(
+        f"---\n"
+        f"type: alerts-index\n"
+        f"updated: {date.today().isoformat()}\n"
+        f"---\n\n"
+        f"# 警報總覽\n\n"
+        f"## 依日期\n\n"
+        f"{chr(10).join(day_links) or '（無警報）'}\n\n"
+        f"## 依個股\n\n"
+        f"{chr(10).join(symbol_links) or '（無警報）'}\n",
+        encoding="utf-8",
+    )
 
 
 def _obsidian_write_position_snapshot(vault: Path, conn, symbol: str) -> None:
@@ -3315,6 +3437,29 @@ def _obsidian_domain_dir(vault: Path, domain: str, ts_value: str) -> Path:
     safe_domain = _safe_obsidian_name(domain)
     safe_ts = _safe_obsidian_name(ts_value.replace(":", "-").replace(" ", "_"))
     return vault / "Research" / safe_domain / safe_ts
+
+
+def _obsidian_domain_index_paths(vault: Path) -> list[Path]:
+    """Return canonical domain research index paths without counting latest mirrors twice."""
+    research_dir = vault / "Research"
+    if not research_dir.is_dir():
+        return []
+
+    index_paths: list[Path] = []
+    for domain_dir in sorted(p for p in research_dir.iterdir() if p.is_dir()):
+        timestamp_indexes = sorted(
+            subdir / "index.md"
+            for subdir in domain_dir.iterdir()
+            if subdir.is_dir() and (subdir / "index.md").is_file()
+        )
+        if timestamp_indexes:
+            index_paths.extend(timestamp_indexes)
+            continue
+
+        root_index = domain_dir / "index.md"
+        if root_index.is_file():
+            index_paths.append(root_index)
+    return index_paths
 
 
 def _obsidian_parse_position(note_path: Path) -> Optional[dict]:
@@ -3621,7 +3766,7 @@ def _obsidian_sync_domain_research(vault: Path) -> dict:
     errors = 0
     seen_paths = set()
     conn = get_db()
-    for index_path in research_dir.rglob("index.md"):
+    for index_path in _obsidian_domain_index_paths(vault):
         row = {
             "obsidian_path": str(index_path),
             "domain": index_path.parent.parent.name if index_path.parent.parent != research_dir else index_path.parent.name,
@@ -3696,6 +3841,8 @@ def _obsidian_post_write_sync(vault: Optional[Path], kinds: tuple[str, ...] = ("
     for kind in kinds:
         func = sync_map.get(kind)
         result[kind] = func(vault) if func else empty.copy()
+    if "alerts" in kinds:
+        _obsidian_rebuild_alert_views(vault)
     return result
 
 
@@ -3802,20 +3949,17 @@ def _save_obsidian_notes(domain: str, result: dict, vault_path: str) -> str:
         latest_dir = vault / "Research" / safe_domain
         frontier_dir = research_dir / "前瞻技術"
         leading_dir = research_dir / "龍頭技術"
-        latest_frontier_dir = latest_dir / "前瞻技術"
-        latest_leading_dir = latest_dir / "龍頭技術"
         frontier_dir.mkdir(parents=True, exist_ok=True)
         leading_dir.mkdir(parents=True, exist_ok=True)
-        latest_frontier_dir.mkdir(parents=True, exist_ok=True)
-        latest_leading_dir.mkdir(parents=True, exist_ok=True)
+        latest_dir.mkdir(parents=True, exist_ok=True)
 
         # Write individual stock notes
         all_frontier_links = []
         all_leading_links = []
 
-        for cat_key, target_dir, latest_target_dir, links_list in [
-            ("frontier", frontier_dir, latest_frontier_dir, all_frontier_links),
-            ("leading", leading_dir, latest_leading_dir, all_leading_links),
+        for cat_key, target_dir, links_list in [
+            ("frontier", frontier_dir, all_frontier_links),
+            ("leading", leading_dir, all_leading_links),
         ]:
             for stock in result.get(cat_key, []):
                 sym = stock.get("symbol", "UNKNOWN")
@@ -3893,9 +4037,8 @@ best_fit: [{best_fit_yaml}]
                 else:
                     content += "\n（未取得即時資料）\n"
 
-                content += f"\n## 連結\n[[{safe_domain}/index|回到 {domain} 總覽]]\n"
+                content += f"\n## 連結\n[[Research/{safe_domain}/index|回到 {domain} 總覽]]\n"
                 note_path.write_text(content, encoding="utf-8")
-                (latest_target_dir / f"{safe_sym}.md").write_text(content, encoding="utf-8")
                 links_list.append(f"[[{cat_label}/{safe_sym}|{name} ({sym})]]")
 
         # Write index note
@@ -3933,6 +4076,21 @@ analyzed: {ts}
 {reviewer_report}
 """
         index_path.write_text(index_content, encoding="utf-8")
+        latest_index = latest_dir / "index.md"
+        latest_index.write_text(
+            f"---\n"
+            f"type: domain-research-latest\n"
+            f"domain: {domain}\n"
+            f"latest_snapshot: {ts}\n"
+            f"updated: {date.today().isoformat()}\n"
+            f"---\n\n"
+            f"# {domain}\n\n"
+            f"## 最新研究\n\n"
+            f"- [[{ts.replace(':', '-').replace(' ', '_')}/index|{ts} 研究快照]]\n\n"
+            f"## 歷史快照\n\n"
+            f"- [[{ts.replace(':', '-').replace(' ', '_')}/index|{ts}]]\n",
+            encoding="utf-8",
+        )
         return str(index_path)
     except Exception as e:
         return ""
