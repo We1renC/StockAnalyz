@@ -2118,7 +2118,7 @@ _CLI_DEEP_STEPS = [
     {
         "key": "market_report",
         "label": "技術分析師",
-        "prompt": """你是專業的技術分析師。根據以下股票數據，產出**繁體中文**技術分析報告（markdown，400字內）：
+        "prompt": """你是專業的技術分析師。根據以下股票數據，產出**繁體中文**技術分析報告（markdown）：
 
 {context}
 
@@ -2132,7 +2132,7 @@ _CLI_DEEP_STEPS = [
     {
         "key": "fundamentals_report",
         "label": "基本面分析師",
-        "prompt": """你是專業的基本面分析師。根據以下股票數據，產出**繁體中文**基本面分析報告（markdown，400字內）：
+        "prompt": """你是專業的基本面分析師。根據以下股票數據，產出**繁體中文**基本面分析報告（markdown）：
 
 {context}
 
@@ -2146,7 +2146,7 @@ _CLI_DEEP_STEPS = [
     {
         "key": "news_report",
         "label": "新聞分析師",
-        "prompt": """你是專業的新聞分析師。根據以下股票數據，從產業趨勢與潛在新聞面角度產出**繁體中文**分析（markdown，300字內）：
+        "prompt": """你是專業的新聞分析師。根據以下股票數據，從產業趨勢與潛在新聞面角度產出**繁體中文**分析（markdown）：
 
 {context}
 
@@ -2159,7 +2159,7 @@ _CLI_DEEP_STEPS = [
     {
         "key": "sentiment_report",
         "label": "情緒分析師",
-        "prompt": """你是市場情緒分析師。根據以下數據判斷市場對該標的的情緒狀態，產出**繁體中文**分析（markdown，300字內）：
+        "prompt": """你是市場情緒分析師。根據以下數據判斷市場對該標的的情緒狀態，產出**繁體中文**分析（markdown）：
 
 {context}
 
@@ -2189,7 +2189,7 @@ _CLI_DEEP_STEPS = [
 [情緒分析報告]
 {sentiment_report}
 
-請以**繁體中文** markdown 格式回應（500字內）：
+請以**繁體中文** markdown 格式回應。禁止出現「綜上所述」「核心結論是」「修訂後」「基於以上分析」等贅詞，直接呈現內容。所有條列或序列內容強制用編號（1. 2. 3.）呈現：
 ## 多頭論點
 （整合分析師報告中的正面因素，給出 3 個最強看多理由）
 
@@ -2210,7 +2210,7 @@ _CLI_DEEP_STEPS = [
 [多空辯論]
 {investment_debate_state}
 
-請以**繁體中文** markdown 格式回應（400字內）：
+請以**繁體中文** markdown 格式回應。禁止出現「綜上所述」「核心結論是」「修訂後」「基於以上分析」等贅詞，直接呈現內容。所有條列或序列內容強制用編號（1. 2. 3.）呈現：
 ## 主要風險因素
 （列出 3 個最需要注意的風險）
 
@@ -2243,7 +2243,7 @@ _CLI_DEEP_STEPS = [
 [風險委員會]
 {risk_debate_state}
 
-請以**繁體中文** markdown 格式回應（500字內）：
+請以**繁體中文** markdown 格式回應。禁止出現「綜上所述」「核心結論是」「修訂後」「基於以上分析」等贅詞，直接呈現內容。所有條列或序列內容強制用編號（1. 2. 3.）呈現：
 ## 最終決策
 **買入 / 持有 / 賣出 / 觀望**（明確選一個）
 
@@ -2542,7 +2542,7 @@ def api_llm_analyze_stream(symbol: str, mode: str = "both"):
 
 {ctx["context"]}
 
-請依以下結構回應（markdown 格式，不超過 600 字）：
+請依以下結構回應（markdown 格式）。禁止出現「綜上所述」「核心結論是」「修訂後」「基於以上分析」等贅詞，直接呈現內容。所有條列或序列內容強制用編號（1. 2. 3.）呈現：
 
 ## 1. 技術面解讀
 （趨勢、動能、支撐壓力）
@@ -2603,7 +2603,7 @@ def api_llm_analyze_stream(symbol: str, mode: str = "both"):
 [分析師報告]
 {analyst_text}
 
-請以**繁體中文** markdown 格式給出**犀利但建設性**的審查意見，不超過 400 字：
+請以**繁體中文** markdown 格式給出**犀利但建設性**的審查意見。禁止出現「綜上所述」「核心結論是」「修訂後」「基於以上分析」等贅詞，直接呈現內容。所有條列或序列內容強制用編號（1. 2. 3.）呈現：
 
 ## 一、分析師說對的地方
 （簡述 1~2 點）
@@ -2765,6 +2765,9 @@ domain: {domain}
 
 ## 投資時框
 
+### 當沖至週線（1 週）
+{stock.get("week_term", "—")}
+
 ### 短線（3 個月）
 {stock.get("short_term", "—")}
 
@@ -2853,31 +2856,59 @@ def _enrich_stocks_with_indicators(stocks: list) -> list:
         return list(ex.map(_fetch, stocks))
 
 
-_DOMAIN_RESEARCH_PROMPT = """你是資深投資研究員，專精多元產業分析。
-請針對以下投資領域，進行結構化的股票篩選與研究報告。
+_DOMAIN_RESEARCH_PROMPT = """You are a senior investment researcher with deep industry-technology expertise and financial analysis skills.
+Conduct a thorough, structured deep-dive on the following investment domain. Output should serve directly as an investment memo.
 
-領域：{domain}
+Domain: {domain}
 
-要求：
-1. 區分「前瞻技術」（Frontier，潛力較高風險，早期佈局）與「龍頭技術」（Leading，護城河已建立，穩健成長）
-2. 每個類別選出 1~5 檔最具代表性個股（優先台股，次選美股）
-3. 每檔股票需提供以下資訊（用繁體中文）：
-   - symbol：股票代碼（台股格式如 2330.TW，美股如 NVDA）
-   - name：公司名稱（繁中）
-   - thesis：核心投資論點（100 字以內）
-   - fundamentals：基本面分析（營收成長、毛利率、負債比、本益比等，100 字以內）
-   - news：近期重要新聞與市場動態（100 字以內）
-   - technology：產業技術定位與競爭優勢（100 字以內）
-   - orders：已知訂單狀況、主要客戶、出貨能見度（100 字以內）
-   - short_term：短線觀點（3 個月內，50 字以內）
-   - mid_term：中線觀點（1 年，50 字以內）
-   - long_term：長線觀點（3 年以上，50 字以內）
-4. 另提供整體領域摘要 summary（200 字以內）
+Stock selection criteria:
+1. Distinguish "Frontier Technology" (early-stage, high-growth, higher risk) vs "Leading Technology" (established moat, steady compounding)
+2. Select 1-5 representative stocks per category — prefer Taiwan stocks (.TW), then US stocks
 
-注意：
-- 資訊盡量引用最新知識，但請在不確定時標注「截至知識截止日」
-- 不使用 emoji、icon 或裝飾性符號，純文字輸出
-- 嚴格以下列 JSON 格式輸出，不含任何 markdown 包裹符號（不要 ```json）
+Research depth required per stock (all text fields in English):
+
+- symbol: ticker (Taiwan format e.g. 2330.TW, US e.g. NVDA)
+- name: company name in English
+- thesis: core investment thesis — why this company has a unique edge in this domain and the primary reason for entry
+- fundamentals: deep fundamental analysis including:
+    * Revenue scale and YoY/QoQ growth rate for the past 1-2 years (give specific numbers)
+    * Gross margin, operating margin, net margin trends
+    * Capital structure: cash position, net debt, capex plans
+    * Valuation: P/E, EV/EBITDA, PEG vs historical averages
+    * Key highlights or red flags from the most recent earnings call or financial report
+- news: recent major events covering:
+    * Major contracts, strategic partnerships, or M&A news
+    * Analyst upgrades/downgrades and target price changes
+    * Important management statements or guidance revisions
+    * Potential risk events the market is watching
+- technology: in-depth technology analysis including:
+    * Core technology description (process node, architecture generation, key materials, IP moat — specific parameters)
+    * Quantified technology gap vs main competitors (e.g., yield rate, power consumption, performance figures)
+    * Certification barriers, switching costs, sole-source supply positions
+    * Technology roadmap: next-gen product specs and planned mass production timeline
+- orders: order book and shipment visibility including:
+    * Key customer names (be specific where possible; otherwise give proportions or regions)
+    * Backlog size or quarterly shipment volume trends
+    * ASP trends and product mix upgrades
+    * End-market breakdown (data center / EV / consumer electronics etc. by percentage)
+    * Visibility for the latest quarter or the next quarter
+- week_term: intraday-to-weekly trading view (within 1 week) — recent price momentum, key support/resistance, short-term news catalysts, suitability for day trading or short swing
+- short_term: 3-month view — specific catalyst timeline, technical support/resistance, near-term risks
+- mid_term: 1-year view — industry cycle position, order visibility, fair value range
+- long_term: 3-year+ structural view — industry penetration trend, competitive landscape evolution, potential TAM size
+- best_fit: JSON array of suitable trading timeframes for this stock based on its business model, earnings visibility, volatility, and technical setup. Each element must be one of: "week" (day-trade/weekly swing), "short" (3-month), "mid" (1-year), "long" (3-year+). A stock may belong to multiple timeframes. HARD REQUIREMENT: across all stocks in frontier + leading combined, every one of the four timeframes ("week", "short", "mid", "long") must appear at least twice. Adjust assignments or add stocks as needed to satisfy this.
+
+Also provide:
+- summary: domain-level investment theme — technology trends, policy environment, cycle positioning, competitive landscape across Taiwan/US/Japan/Korea
+
+Rules:
+- Numbers first: give specific percentages or dollar amounts wherever possible — never just say "growing"
+- Technology must be precise: never write "industry-leading" without explaining which specific area and by how much
+- Flag uncertain or knowledge-cutoff-limited information with "(as of knowledge cutoff)"
+- Plain text only — no emoji, icons, or decorative symbols
+- No meta-commentary: never write phrases like "In conclusion", "Based on the above", "Revised analysis shows", "Core thesis is", or any language that reveals the analytical process. Present findings directly.
+- Use numbered lists (1. 2. 3.) for all enumerated content within each field. Each distinct fact, metric, or event should be its own numbered item.
+- Output strictly in the JSON format below — no markdown fences (no ```json)
 
 {{
   "summary": "...",
@@ -2890,9 +2921,11 @@ _DOMAIN_RESEARCH_PROMPT = """你是資深投資研究員，專精多元產業分
       "news": "...",
       "technology": "...",
       "orders": "...",
+      "week_term": "...",
       "short_term": "...",
       "mid_term": "...",
-      "long_term": "..."
+      "long_term": "...",
+      "best_fit": ["short", "mid"]
     }}
   ],
   "leading": [
@@ -2904,42 +2937,105 @@ _DOMAIN_RESEARCH_PROMPT = """你是資深投資研究員，專精多元產業分
       "news": "...",
       "technology": "...",
       "orders": "...",
+      "week_term": "...",
       "short_term": "...",
       "mid_term": "...",
-      "long_term": "..."
+      "long_term": "...",
+      "best_fit": ["short", "mid"]
     }}
   ]
 }}"""
 
-_DOMAIN_REVIEWER_PROMPT = """你是嚴格的投資審查員，針對分析師的領域研究報告進行複核。
+_DOMAIN_REVIEWER_PROMPT = """You are a strict industry investment reviewer. Your only task is to identify information gaps and insufficient depth in the analyst's draft, and produce a "gap instruction list" for the analyst's second-pass refinement.
 
-領域：{domain}
+Domain: {domain}
 
-[分析師選股報告（JSON）]
+[Analyst draft (JSON)]
 {analyst_json}
 
-請審查以下面向（繁體中文，純文字無 emoji，300 字以內）：
+Review each stock one by one and flag gaps or shallow content in the following areas (plain text, bullet list, no scoring or praise):
 
-## 一、選股邏輯合理性
-（前瞻與龍頭的區分是否清晰、選股是否具代表性）
+1. fundamentals field: missing specific financial figures? Growth rates, margins, valuation — are they quantified? Is the earnings call content cited?
+2. technology field: does the description stay at a surface level? Is the gap vs competitors quantified? Are process/architecture/IP specifics concrete?
+3. orders field: are customer names too vague? Is backlog size given with numbers? Is ASP trend explained?
+4. news field: are there specific events with dates? Are analyst ratings cited?
+5. Stock selection completeness: are there obvious missing names in this domain? Is the Frontier vs Leading classification well-reasoned?
+6. Time horizons: do short/mid/long views have specific catalysts or numbers, or just directional statements?
 
-## 二、潛在盲點
-（遺漏的重要標的、被高估的風險、同質化問題）
+Output format (plain text bullet list, in English):
+[symbol]
+- Gap 1: ...
+- Gap 2: ...
 
-## 三、時間框架評估
-（各時框觀點是否合理，有無過度樂觀）
+[Overall]
+- Gap/suggestion: ..."""
 
-## 四、修正建議
-（針對最需要調整的 1~2 點給出具體建議）"""
+_DOMAIN_ANALYST_REFINEMENT_PROMPT = """You are a senior investment researcher doing a second-pass deep revision of your draft.
+
+Domain: {domain}
+
+[Your draft (JSON)]
+{analyst_json}
+
+[Reviewer gap instructions]
+{reviewer_gaps}
+
+Tasks:
+1. Address every gap instruction from the reviewer — add more specific, deeper content to the relevant fields
+2. Fields not flagged can also be improved opportunistically, but all flagged fields must show substantive improvement
+3. Numbers first: quantify wherever possible; flag uncertainty with "(as of knowledge cutoff)"
+4. Technology must be precise: "industry-leading" is not acceptable — state which specific area and by how much
+5. Output the exact same JSON structure as the draft (same fields), no additions or removals
+6. Plain text only — no emoji, icons, or decorative symbols
+7. No meta-commentary: never write phrases like "In conclusion", "Based on the above", "Revised analysis shows". Present findings directly.
+8. Use numbered lists (1. 2. 3.) for all enumerated content within each field. Each distinct fact, metric, or event should be its own numbered item.
+9. Output only JSON — no markdown fences (no ```json)"""
+
+_DOMAIN_TRANSLATION_PROMPT = """你是專業金融翻譯員，擅長投資研究報告的繁體中文翻譯。
+
+請將以下英文投資研究 JSON 翻譯成繁體中文。
+
+翻譯規則：
+1. 只翻譯文字欄位的內容（string values）
+2. 以下內容保持原文不翻譯：股票代碼（symbol）、公司名稱（name）、best_fit 欄位（陣列結構與其中的 "week"/"short"/"mid"/"long" 字串值全部保留原始英文不翻）、所有數字、百分比、日期、英文專有名詞（如 TSMC、NVIDIA、backlog、ASP、EV/EBITDA 等技術/財務術語）
+3. 保持 JSON 結構完全不變（所有 key 名稱維持英文）
+4. 翻譯要自然流暢，符合台灣投資圈慣用語
+5. 純文字，不使用 emoji、icon 或裝飾性符號
+6. 翻譯時不得加入「綜上所述」「修訂後」「核心結論是」「基於以上分析」等透露分析過程的贅詞，直接呈現內容
+6. 嚴格只輸出 JSON，不含任何 markdown 包裹符號（不要 ```json）
+
+[英文 JSON]
+{english_json}"""
 
 
 class DomainResearchRequest(BaseModel):
     domain: str
 
 
+def _parse_analyst_json(raw: str):
+    """Parse JSON from analyst LLM output, stripping markdown fences if present."""
+    import re as _re
+    clean = raw.strip()
+    if clean.startswith("```"):
+        lines = clean.split("\n")
+        clean = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
+    try:
+        return json.loads(clean)
+    except Exception:
+        m = _re.search(r'\{[\s\S]*\}', clean)
+        if m:
+            try:
+                return json.loads(m.group())
+            except Exception:
+                pass
+    return None
+
+
 @app.get("/api/domain-research-stream")
 def api_domain_research_stream(domain: str):
-    """SSE 串流端點：領域研究工作流（分析師選股 → yfinance 補強 → 審查員複核 → Obsidian 儲存）。"""
+    """SSE 串流端點：五步驟工作流
+    1. 分析師初稿 → 2. yfinance 指標補強 → 3. 審查員缺口清單（內部）→ 4. 分析師深化 → 5. 儲存
+    """
     import time as _time
 
     def event_stream():
@@ -2957,46 +3053,30 @@ def api_domain_research_stream(domain: str):
 
         yield emit("started", {"domain": domain})
 
-        # ── Step 1: 分析師選股 ──
+        # ── Step 1: 分析師初稿 ──
         yield emit("progress", {
-            "step": 1, "total": 4,
-            "message": f"分析師（{analyst['provider']}/{analyst['model']}）正在研究「{domain}」領域...",
+            "step": 1, "total": 6,
+            "message": f"分析師（{analyst['provider']}/{analyst['model']}）正在撰寫「{domain}」領域初稿...",
             "elapsed": round(_time.time() - t0, 1),
         })
 
         analyst_prompt = _DOMAIN_RESEARCH_PROMPT.format(domain=domain)
         try:
-            raw = call_llm(
+            raw_pass1 = call_llm(
                 analyst["provider"], analyst["model"],
                 analyst_prompt,
                 keys.get(analyst["provider"], ""),
                 mode=analyst.get("mode", "api"),
+                timeout=600,
             )
         except Exception as e:
-            yield emit("error", {"error": f"分析師呼叫失敗: {e}"})
+            yield emit("error", {"error": f"分析師初稿失敗: {e}"})
             return
 
-        # Parse JSON from analyst output
-        clean = raw.strip()
-        if clean.startswith("```"):
-            lines = clean.split("\n")
-            clean = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
-
-        try:
-            analyst_data = json.loads(clean)
-        except Exception:
-            # Try to extract JSON block
-            import re
-            m = re.search(r'\{[\s\S]*\}', clean)
-            if m:
-                try:
-                    analyst_data = json.loads(m.group())
-                except Exception:
-                    yield emit("error", {"error": "分析師輸出無法解析為 JSON，請重試"})
-                    return
-            else:
-                yield emit("error", {"error": "分析師輸出無法解析為 JSON，請重試"})
-                return
+        analyst_data = _parse_analyst_json(raw_pass1)
+        if analyst_data is None:
+            yield emit("error", {"error": "分析師初稿無法解析為 JSON，請重試"})
+            return
 
         frontier_stocks = analyst_data.get("frontier", [])
         leading_stocks = analyst_data.get("leading", [])
@@ -3009,10 +3089,10 @@ def api_domain_research_stream(domain: str):
             "elapsed": round(_time.time() - t0, 1),
         })
 
-        # ── Step 2: yfinance 補強基本面 ──
+        # ── Step 2: yfinance 指標補強 ──
         all_stocks = frontier_stocks + leading_stocks
         yield emit("progress", {
-            "step": 2, "total": 4,
+            "step": 2, "total": 6,
             "message": f"正在抓取 {len(all_stocks)} 檔個股即時指標（yfinance）...",
             "elapsed": round(_time.time() - t0, 1),
         })
@@ -3025,30 +3105,99 @@ def api_domain_research_stream(domain: str):
             "elapsed": round(_time.time() - t0, 1),
         })
 
-        # ── Step 3: 審查員複核 ──
+        # ── Step 3: 審查員產出缺口清單（英文，不顯示於 UI，僅作為回滾指令） ──
         yield emit("progress", {
-            "step": 3, "total": 4,
-            "message": f"審查員（{reviewer['provider']}/{reviewer['model']}）正在複核選股合理性...",
+            "step": 3, "total": 6,
+            "message": f"審查員（{reviewer['provider']}/{reviewer['model']}）審查初稿缺口...",
             "elapsed": round(_time.time() - t0, 1),
         })
 
         reviewer_prompt = _DOMAIN_REVIEWER_PROMPT.format(
             domain=domain,
-            analyst_json=json.dumps(analyst_data, ensure_ascii=False, indent=2)[:3000],
+            analyst_json=json.dumps(analyst_data, ensure_ascii=False, indent=2)[:4000],
         )
         try:
-            reviewer_text = call_llm(
+            reviewer_gaps = call_llm(
                 reviewer["provider"], reviewer["model"],
                 reviewer_prompt,
                 keys.get(reviewer["provider"], ""),
                 mode=reviewer.get("mode", "api"),
+                timeout=300,
             )
         except Exception as e:
-            reviewer_text = f"審查員呼叫失敗: {e}"
+            # Reviewer failure is non-fatal — skip pass 2 and use pass 1 output
+            reviewer_gaps = ""
 
-        # ── Step 4: 存 DB + Obsidian ──
+        # ── Step 4: 分析師深化（Pass 2，英文，以審查員缺口清單為指引） ──
         yield emit("progress", {
-            "step": 4, "total": 4,
+            "step": 4, "total": 6,
+            "message": f"分析師（{analyst['provider']}/{analyst['model']}）正在深化補強分析（英文）...",
+            "elapsed": round(_time.time() - t0, 1),
+        })
+
+        final_analyst_data = analyst_data  # fallback
+        raw_pass2 = ""
+        if reviewer_gaps:
+            refinement_prompt = _DOMAIN_ANALYST_REFINEMENT_PROMPT.format(
+                domain=domain,
+                analyst_json=json.dumps(analyst_data, ensure_ascii=False, indent=2)[:4000],
+                reviewer_gaps=reviewer_gaps[:2000],
+            )
+            try:
+                raw_pass2 = call_llm(
+                    analyst["provider"], analyst["model"],
+                    refinement_prompt,
+                    keys.get(analyst["provider"], ""),
+                    mode=analyst.get("mode", "api"),
+                    timeout=600,
+                )
+                parsed2 = _parse_analyst_json(raw_pass2)
+                if parsed2 is not None:
+                    final_analyst_data = parsed2
+                    enriched_frontier = _enrich_stocks_with_indicators(
+                        final_analyst_data.get("frontier", enriched_frontier)
+                    )
+                    enriched_leading = _enrich_stocks_with_indicators(
+                        final_analyst_data.get("leading", enriched_leading)
+                    )
+                    summary = final_analyst_data.get("summary", summary)
+            except Exception:
+                pass  # keep pass 1 output
+
+        # ── Step 5: 翻譯成繁體中文 ──
+        yield emit("progress", {
+            "step": 5, "total": 6,
+            "message": f"翻譯成繁體中文（{analyst['provider']}/{analyst['model']}）...",
+            "elapsed": round(_time.time() - t0, 1),
+        })
+
+        english_data = final_analyst_data
+        english_json_str = json.dumps(
+            {"summary": summary, "frontier": enriched_frontier, "leading": enriched_leading},
+            ensure_ascii=False, indent=2
+        )
+        translation_prompt = _DOMAIN_TRANSLATION_PROMPT.format(
+            english_json=english_json_str[:6000]
+        )
+        try:
+            raw_translated = call_llm(
+                analyst["provider"], analyst["model"],
+                translation_prompt,
+                keys.get(analyst["provider"], ""),
+                mode=analyst.get("mode", "api"),
+                timeout=600,
+            )
+            translated_data = _parse_analyst_json(raw_translated)
+            if translated_data is not None:
+                summary = translated_data.get("summary", summary)
+                enriched_frontier = translated_data.get("frontier", enriched_frontier)
+                enriched_leading = translated_data.get("leading", enriched_leading)
+        except Exception:
+            pass  # keep English output if translation fails
+
+        # ── Step 6: 存 DB + Obsidian ──
+        yield emit("progress", {
+            "step": 6, "total": 6,
             "message": "儲存研究結果...",
             "elapsed": round(_time.time() - t0, 1),
         })
@@ -3060,8 +3209,8 @@ def api_domain_research_stream(domain: str):
             "summary": summary,
             "frontier": enriched_frontier,
             "leading": enriched_leading,
-            "analyst_report": raw,
-            "reviewer_report": reviewer_text,
+            "analyst_report": raw_pass2 or raw_pass1,
+            "reviewer_report": reviewer_gaps,  # stored for audit, not shown in UI
         }
 
         obsidian_path = ""
@@ -3077,7 +3226,7 @@ def api_domain_research_stream(domain: str):
                 domain, ts_now,
                 json.dumps(enriched_frontier, ensure_ascii=False),
                 json.dumps(enriched_leading, ensure_ascii=False),
-                raw, reviewer_text, obsidian_path,
+                raw_pass2 or raw_pass1, reviewer_gaps, obsidian_path,
             )
         )
         rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -3091,7 +3240,6 @@ def api_domain_research_stream(domain: str):
             "summary": summary,
             "frontier": enriched_frontier,
             "leading": enriched_leading,
-            "reviewer_report": reviewer_text,
             "obsidian_path": obsidian_path,
             "elapsed": round(_time.time() - t0, 1),
         })
