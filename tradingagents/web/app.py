@@ -1904,11 +1904,13 @@ def api_get_settings():
         "roles": s["roles"],
         "available_models": AVAILABLE_MODELS,
         "cli_status": detect_cli_availability(),
+        "obsidian_vault_path": s.get("obsidian_vault_path", ""),
     }
 
 class SettingsUpdate(BaseModel):
-    api_keys: Optional[dict] = None  # {anthropic, openai, google} - 空字串 = 不更新
-    roles: Optional[dict] = None     # {analyst: {provider, model}, reviewer: {...}}
+    api_keys: Optional[dict] = None           # {anthropic, openai, google} - 空字串 = 不更新
+    roles: Optional[dict] = None              # {analyst: {provider, model}, reviewer: {...}}
+    obsidian_vault_path: Optional[str] = None # Obsidian vault 根目錄，None = 不更新
 
 @app.post("/api/settings")
 def api_save_settings(req: SettingsUpdate):
@@ -1923,6 +1925,8 @@ def api_save_settings(req: SettingsUpdate):
         for role_name, cfg in req.roles.items():
             if role_name in s["roles"]:
                 s["roles"][role_name].update(cfg)
+    if req.obsidian_vault_path is not None:
+        s["obsidian_vault_path"] = req.obsidian_vault_path
     save_settings(s)
     return {"ok": True}
 

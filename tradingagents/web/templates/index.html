@@ -755,6 +755,16 @@ body { background: var(--bg-base); color: var(--text-primary); }
       </div>
     </div>
 
+    <!-- Obsidian -->
+    <div class="mb-6">
+      <h3 class="text-lg font-semibold mb-3 border-b border-gray-700 pb-1">Obsidian 筆記</h3>
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Vault 根目錄路徑（留空不存筆記）</label>
+        <input id="obsidian-vault-path" type="text" class="input-field font-mono text-sm" placeholder="例如：~/Documents/MyVault">
+        <div class="text-xs text-gray-500 mt-1">領域研究結果會存至 <code class="bg-gray-900 px-1 rounded">{vault}/Research/{領域}/</code></div>
+      </div>
+    </div>
+
     <div class="flex gap-2 justify-end">
       <button onclick="closeSettings()" class="btn-secondary">取消</button>
       <button onclick="saveSettings()" class="btn-primary px-4 py-2 rounded font-semibold">儲存設定</button>
@@ -2271,6 +2281,9 @@ async function openSettings() {
   $('role-reviewer-model').value = r.roles.reviewer.model;
   $('role-reviewer-mode').value = r.roles.reviewer.mode || 'cli';
 
+  // Obsidian
+  $('obsidian-vault-path').value = r.obsidian_vault_path || '';
+
   updateLLMHint(r.roles);
 }
 
@@ -2308,6 +2321,7 @@ async function saveSettings() {
         mode: $('role-reviewer-mode').value,
       },
     },
+    obsidian_vault_path: $('obsidian-vault-path').value,
   };
   const r = await fetch('/api/settings', {
     method: 'POST', headers: {'Content-Type':'application/json'},
