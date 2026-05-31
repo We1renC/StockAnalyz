@@ -192,6 +192,17 @@ def _safe_float(value):
     except (TypeError, ValueError):
         return None
 
+
+def _is_test_symbol(symbol: str, name: str = "", category: str = "") -> bool:
+    symbol_upper = (symbol or "").strip().upper()
+    name_text = (name or "").strip()
+    category_text = (category or "").strip()
+    return (
+        symbol_upper.startswith("TEST")
+        or "測試" in name_text
+        or "測試" in category_text
+    )
+
 def _twse_channel(symbol: str) -> Optional[str]:
     if symbol.endswith(".TW"):
         return f"tse_{symbol[:-3]}.tw"
@@ -1240,7 +1251,11 @@ def api_backtest(months: int = 6):
     conn = get_db()
     rows = conn.execute("SELECT * FROM positions").fetchall()
     conn.close()
-    items = [_run_backtest_for_position(dict(r), months=months) for r in rows]
+    positions = [
+        dict(r) for r in rows
+        if not _is_test_symbol(r["symbol"], r["name"], r["category"])
+    ]
+    items = [_run_backtest_for_position(p, months=months) for p in positions]
     valid = [x for x in items if not x.get("error")]
     total_position_pnl = sum(x["position_pnl"] for x in valid)
     total_buy_hold_pnl = sum(x["buy_hold_pnl"] for x in valid)
