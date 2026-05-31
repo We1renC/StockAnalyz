@@ -163,11 +163,20 @@ def init_db():
     """)
     conn.commit()
 
-    # Migration for existing databases to add target columns to positions table
+    # Migration: positions target columns
     c = conn.cursor()
     for col in ("target_entry", "target_profit", "target_stop"):
         try:
             c.execute(f"ALTER TABLE positions ADD COLUMN {col} REAL")
+            conn.commit()
+        except Exception:
+            pass
+
+    # Migration: market_state extended indicators
+    for col in ("sox", "sox_ma60", "ndx", "ndx_ma20", "tnx", "dxy", "hsntech",
+                "twii_ma20", "twii_ma120", "spx_ma20", "spx_ma120"):
+        try:
+            c.execute(f"ALTER TABLE market_state ADD COLUMN {col} REAL")
             conn.commit()
         except Exception:
             pass
@@ -607,38 +616,72 @@ def store_price_cache(c, symbol: str, ind: dict):
     )
 
 def get_market_state():
-    """Pull VIX, TWII, SPX state."""
-    try:
-        vix = yf.Ticker("^VIX").history(period="1mo")["Close"]
-        twii = yf.Ticker("^TWII").history(period="6mo")["Close"]
-        spx = yf.Ticker("^GSPC").history(period="6mo")["Close"]
+    """Pull VIX, TWII, SPX, SOX, NDX, TNX, DXY, HSNTECH."""
+    def _last(series):
+        return float(series.iloc[-1]) if len(series) > 0 else None
 
-        vix_val = float(vix.iloc[-1])
-        twii_val = float(twii.iloc[-1])
-        twii_ma60 = float(twii.rolling(60).mean().iloc[-1]) if len(twii) >= 60 else twii_val
-        spx_val = float(spx.iloc[-1])
-        spx_ma60 = float(spx.rolling(60).mean().iloc[-1]) if len(spx) >= 60 else spx_val
+    def _ma(series, n):
+        return float(series.rolling(n).mean().iloc[-1]) if len(series) >= n else _last(series)
+
+    def _fetch(ticker, period="6mo"):
+        try:
+            return yf.Ticker(ticker).history(period=period)["Close"].dropna()
+        except Exception:
+            return None
+
+    try:
+        vix_s    = _fetch("^VIX", "1mo")
+        twii_s   = _fetch("^TWII")
+        spx_s    = _fetch("^GSPC")
+        sox_s    = _fetch("^SOX")
+        ndx_s    = _fetch("^NDX", "3mo")
+        tnx_s    = _fetch("^TNX", "1mo")
+        dxy_s    = _fetch("DX-Y.NYB", "3mo")
+
+        vix_val    = _last(vix_s)     if vix_s  is not None else None
+        twii_val   = _last(twii_s)    if twii_s is not None else None
+        twii_ma20  = _ma(twii_s, 20)  if twii_s is not None else None
+        twii_ma60  = _ma(twii_s, 60)  if twii_s is not None else None
+        twii_ma120 = _ma(twii_s, 120) if twii_s is not None else None
+        spx_val    = _last(spx_s)     if spx_s  is not None else None
+        spx_ma20   = _ma(spx_s, 20)   if spx_s  is not None else None
+        spx_ma60   = _ma(spx_s, 60)   if spx_s  is not None else None
+        spx_ma120  = _ma(spx_s, 120)  if spx_s  is not None else None
+        sox_val    = _last(sox_s)     if sox_s  is not None else None
+        sox_ma60   = _ma(sox_s, 60)   if sox_s  is not None else None
+        ndx_val    = _last(ndx_s)     if ndx_s  is not None else None
+        ndx_ma20   = _ma(ndx_s, 20)   if ndx_s  is not None else None
+        tnx_val    = _last(tnx_s)     if tnx_s  is not None else None
+        dxy_val    = _last(dxy_s)     if dxy_s  is not None else None
 
         warnings = 0
-        if vix_val > 25: warnings += 1
-        if twii_val < twii_ma60: warnings += 1
-        if spx_val < spx_ma60: warnings += 1
+        if vix_val   and vix_val > 25:                       warnings += 1
+        if twii_val  and twii_ma60  and twii_val < twii_ma60: warnings += 1
+        if spx_val   and spx_ma60   and spx_val < spx_ma60:   warnings += 1
+        if sox_val   and sox_ma60   and sox_val < sox_ma60:    warnings += 1  # semiconductor stress
 
-        if warnings >= 3:
-            level = "danger"
-        elif warnings >= 1:
-            level = "warning"
-        else:
-            level = "safe"
+        level = "danger" if warnings >= 3 else "warning" if warnings >= 1 else "safe"
+
+        def _r(v, d=2): return round(v, d) if v is not None else None
 
         return {
-            "ts": datetime.now().isoformat(timespec="seconds"),
-            "vix": round(vix_val, 2),
-            "twii": round(twii_val, 0),
-            "twii_ma60": round(twii_ma60, 0),
-            "spx": round(spx_val, 2),
-            "spx_ma60": round(spx_ma60, 2),
-            "risk_level": level,
+            "ts":           datetime.now().isoformat(timespec="seconds"),
+            "vix":          _r(vix_val),
+            "twii":         _r(twii_val, 0),
+            "twii_ma20":    _r(twii_ma20, 0),
+            "twii_ma60":    _r(twii_ma60, 0),
+            "twii_ma120":   _r(twii_ma120, 0),
+            "spx":          _r(spx_val),
+            "spx_ma20":     _r(spx_ma20),
+            "spx_ma60":     _r(spx_ma60),
+            "spx_ma120":    _r(spx_ma120),
+            "sox":          _r(sox_val, 0),
+            "sox_ma60":     _r(sox_ma60, 0),
+            "ndx":          _r(ndx_val, 0),
+            "ndx_ma20":     _r(ndx_ma20, 0),
+            "tnx":          _r(tnx_val),    # 10Y yield %
+            "dxy":          _r(dxy_val),    # USD index
+            "risk_level":   level,
             "warnings_count": warnings,
         }
     except Exception as e:
@@ -831,9 +874,22 @@ async def monitor_loop():
 
             conn = get_db()
             c = conn.cursor()
-            c.execute("INSERT OR REPLACE INTO market_state (id, ts, vix, twii, twii_ma60, spx, spx_ma60, risk_level, warnings_count) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)",
-                      (market.get("ts"), market.get("vix"), market.get("twii"), market.get("twii_ma60"),
-                       market.get("spx"), market.get("spx_ma60"), market.get("risk_level"), market.get("warnings_count")))
+            c.execute(
+                """INSERT OR REPLACE INTO market_state
+                   (id, ts, vix,
+                    twii, twii_ma20, twii_ma60, twii_ma120,
+                    spx,  spx_ma20,  spx_ma60,  spx_ma120,
+                    sox, sox_ma60, ndx, ndx_ma20, tnx, dxy,
+                    risk_level, warnings_count)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (market.get("ts"), market.get("vix"),
+                 market.get("twii"), market.get("twii_ma20"), market.get("twii_ma60"), market.get("twii_ma120"),
+                 market.get("spx"),  market.get("spx_ma20"),  market.get("spx_ma60"),  market.get("spx_ma120"),
+                 market.get("sox"), market.get("sox_ma60"),
+                 market.get("ndx"), market.get("ndx_ma20"),
+                 market.get("tnx"), market.get("dxy"),
+                 market.get("risk_level"), market.get("warnings_count"))
+            )
 
             # ── Phase 2: 收集所有需抓價格的標的 ──
             positions = [dict(row) for row in c.execute("SELECT * FROM positions").fetchall()]
