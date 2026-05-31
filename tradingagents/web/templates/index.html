@@ -144,6 +144,65 @@ body { background: var(--bg-base); color: var(--text-primary); }
 .data-table tbody tr { transition: all 0.15s ease; border-left: 2px solid transparent; }
 .data-table tbody tr:hover { background: var(--bg-hover); border-left-color: var(--accent); }
 .data-table tbody td { padding: 10px 12px; border-bottom: 1px solid rgba(148,163,184,0.04); vertical-align: middle; }
+.watchlist-table { table-layout: fixed; }
+.watchlist-table col.watch-col-priority { width: 5rem; }
+.watchlist-table col.watch-col-symbol { width: 7.5rem; }
+.watchlist-table col.watch-col-name { width: 10rem; }
+.watchlist-table col.watch-col-category { width: 8.5rem; }
+.watchlist-table col.watch-col-rsi { width: 6.5rem; }
+.watchlist-table col.watch-col-beta { width: 5.5rem; }
+.watchlist-table col.watch-col-profit { width: 6.5rem; }
+.watchlist-table col.watch-col-price { width: 13.5rem; }
+.watchlist-table col.watch-col-stop { width: 6.5rem; }
+.watchlist-table col.watch-col-alert { width: 10rem; }
+.watchlist-table col.watch-col-status { width: 8.5rem; }
+.watchlist-table col.watch-col-actions { width: 8.5rem; }
+.watchlist-table thead th,
+.watchlist-table tbody td { text-align: center; }
+.watchlist-table tbody td { padding: 10px 8px; }
+.watchlist-cell-ellipsis {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.watchlist-name-cell,
+.watchlist-category-cell,
+.watchlist-status-cell,
+.watchlist-alert-cell { max-width: 100%; }
+.watchlist-category-cell .pill,
+.watchlist-status-cell .pill {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.watchlist-alert-cell .alert-clear-host {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+.watchlist-alert-cell .alert-clear-host .pill,
+.watchlist-alert-cell .alert-clear-host .text-xs {
+  flex-shrink: 1;
+  min-width: 0;
+}
+.watchlist-price-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+}
+.watchlist-actions-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+}
 .watch-name-hover { cursor: crosshair; text-decoration: underline; text-decoration-style: dotted; text-decoration-color: rgba(148,163,184,0.45); text-underline-offset: 3px; }
 .watch-name-hover:hover { color: var(--text-primary); text-decoration-color: var(--accent-light); }
 .intraday-tooltip {
@@ -168,6 +227,37 @@ body { background: var(--bg-base); color: var(--text-primary); }
   display: none; position: absolute; right: 0; top: 100%; z-index: 30; padding-top: 4px;
 }
 .alert-header-host:hover .alert-header-menu { display: block; }
+.alert-help-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(148,163,184,0.22);
+  color: #94a3b8;
+  font-size: 10px;
+  line-height: 1;
+  cursor: help;
+}
+.alert-help-menu {
+  display: none;
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 6px);
+  transform: translateX(-50%);
+  z-index: 35;
+  min-width: 168px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(148,163,184,0.12);
+  background: rgba(2,6,23,0.96);
+  box-shadow: 0 18px 48px rgba(0,0,0,0.42);
+  text-align: left;
+  white-space: nowrap;
+}
+.alert-help-host:hover .alert-help-menu { display: block; }
 
 /* ── Pill Badges ── */
 .pill { padding: 2px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; display: inline-block; }
@@ -443,7 +533,21 @@ body { background: var(--bg-base); color: var(--text-primary); }
       </div>
     </div>
     <div class="glass-card overflow-hidden">
-      <table class="data-table">
+      <table class="data-table watchlist-table">
+        <colgroup>
+          <col class="watch-col-priority">
+          <col class="watch-col-symbol">
+          <col class="watch-col-name">
+          <col class="watch-col-category">
+          <col class="watch-col-rsi">
+          <col class="watch-col-beta">
+          <col class="watch-col-profit">
+          <col class="watch-col-price">
+          <col class="watch-col-stop">
+          <col class="watch-col-alert">
+          <col class="watch-col-status">
+          <col class="watch-col-actions">
+        </colgroup>
         <thead>
           <tr>
             <th class="text-center">優先</th>
@@ -458,6 +562,15 @@ body { background: var(--bg-base); color: var(--text-primary); }
             <th class="text-center">
               <div class="alert-header-host relative inline-flex items-center">
                 <span>警報</span>
+                <div class="alert-help-host relative inline-flex items-center">
+                  <span class="alert-help-trigger">?</span>
+                  <div class="alert-help-menu text-[11px] text-slate-300">
+                    <div class="font-semibold text-slate-100 mb-1">次數色階</div>
+                    <div>1 筆：灰藍</div>
+                    <div>3 筆：琥珀</div>
+                    <div>5+ 筆：紅色</div>
+                  </div>
+                </div>
                 <div class="alert-header-menu">
                   <button onclick="clearMarketAlerts('tw')" class="text-xs px-2 py-1 rounded-lg whitespace-nowrap" style="background:rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.2)">清除台股</button>
                 </div>
@@ -493,7 +606,21 @@ body { background: var(--bg-base); color: var(--text-primary); }
       </div>
     </div>
     <div class="glass-card overflow-hidden">
-      <table class="data-table">
+      <table class="data-table watchlist-table">
+        <colgroup>
+          <col class="watch-col-priority">
+          <col class="watch-col-symbol">
+          <col class="watch-col-name">
+          <col class="watch-col-category">
+          <col class="watch-col-rsi">
+          <col class="watch-col-beta">
+          <col class="watch-col-profit">
+          <col class="watch-col-price">
+          <col class="watch-col-stop">
+          <col class="watch-col-alert">
+          <col class="watch-col-status">
+          <col class="watch-col-actions">
+        </colgroup>
         <thead>
           <tr>
             <th class="text-center">優先</th>
@@ -508,6 +635,15 @@ body { background: var(--bg-base); color: var(--text-primary); }
             <th class="text-center">
               <div class="alert-header-host relative inline-flex items-center">
                 <span>警報</span>
+                <div class="alert-help-host relative inline-flex items-center">
+                  <span class="alert-help-trigger">?</span>
+                  <div class="alert-help-menu text-[11px] text-slate-300">
+                    <div class="font-semibold text-slate-100 mb-1">次數色階</div>
+                    <div>1 筆：灰藍</div>
+                    <div>3 筆：琥珀</div>
+                    <div>5+ 筆：紅色</div>
+                  </div>
+                </div>
                 <div class="alert-header-menu">
                   <button onclick="clearMarketAlerts('us')" class="text-xs px-2 py-1 rounded-lg whitespace-nowrap" style="background:rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.2)">清除美股</button>
                 </div>
@@ -1804,6 +1940,16 @@ function renderWatchlist(items) {
       return `<span class="text-xs text-slate-500">—</span>`;
     }
 
+    const getCountTone = (count) => {
+      if (count >= 5) {
+        return 'background:rgba(239,68,68,0.14);color:#fca5a5;border:1px solid rgba(239,68,68,0.24)';
+      }
+      if (count >= 3) {
+        return 'background:rgba(245,158,11,0.14);color:#fbbf24;border:1px solid rgba(245,158,11,0.24)';
+      }
+      return 'background:rgba(59,130,246,0.12);color:#93c5fd;border:1px solid rgba(59,130,246,0.22)';
+    };
+
     const counts = {};
     alerts.forEach(a => {
       const key = a.type || 'OTHER';
@@ -1820,8 +1966,7 @@ function renderWatchlist(items) {
       .sort((a, b) => b.priority - a.priority)
       .slice(0, 3)
       .map(item => {
-        const countText = item.count > 1 ? ` ${item.count}` : '';
-        return `<span class="pill" style="font-size:10px;background:rgba(20,184,166,0.12);color:#5eead4;border:1px solid rgba(20,184,166,0.24)">${item.label}${countText}</span>`;
+        return `<span class="pill" style="font-size:10px;${getCountTone(item.count)}">${item.label}</span>`;
       })
       .join('');
     return `<div class="alert-clear-host flex items-center justify-center gap-1 flex-wrap">
@@ -1885,21 +2030,23 @@ function renderWatchlist(items) {
     return `<tr>
       <td class="text-center"><span class="pill ${priPill} tabular-nums" style="font-size:11px">${Math.round(pri)}</span></td>
       <td class="text-center font-mono font-semibold text-slate-200">
-        ${w.symbol}
+        <span class="watchlist-cell-ellipsis">${w.symbol}</span>
         ${w.is_position ? `<span class="pill pill-blue ml-1 text-[10px]" style="font-size:10px;padding:1px 4px">持倉</span>` : ''}
       </td>
-      <td class="text-center text-slate-300"><span class="watch-name-hover" data-symbol="${w.symbol}">${w.name || ''}</span></td>
-      <td class="text-center text-xs">${makeCategoryCell(w.category)}</td>
+      <td class="text-center text-slate-300 watchlist-name-cell"><span class="watch-name-hover watchlist-cell-ellipsis" data-symbol="${w.symbol}" title="${(w.name || '').replace(/"/g, '&quot;')}">${w.name || ''}</span></td>
+      <td class="text-center text-xs watchlist-category-cell" title="${(w.category || '').replace(/"/g, '&quot;')}">${makeCategoryCell(w.category)}</td>
       <td class="text-center"><span class="tabular-nums text-xs ${rsiPct>=75?'text-red-400':rsiPct<=30?'text-amber-400':'text-slate-400'}">${fmt(w.rsi, 1)}</span><div class="rsi-bar"><div class="rsi-fill ${rsiColor}" style="width:${rsiPct}%"></div></div></td>
       <td class="text-center"><span class="pill ${betaPill} tabular-nums" style="font-size:11px">${fmt(w.beta, 2)}</span></td>
       <td class="text-center tabular-nums text-red-400">${fmt(w.target_profit)}</td>
-      <td class="text-center whitespace-nowrap">${entryCurrentHtml}</td>
+      <td class="text-center"><span class="watchlist-price-cell">${entryCurrentHtml}</span></td>
       <td class="text-center tabular-nums text-emerald-400">${fmt(w.target_stop)}</td>
-      <td class="text-center">${makeAlertCell(w.symbol)}</td>
-      <td class="text-center text-sm"><span class="pill ${statusPill} text-[11px]">${statusText}</span></td>
-      <td class="text-center whitespace-nowrap">
+      <td class="text-center watchlist-alert-cell">${makeAlertCell(w.symbol)}</td>
+      <td class="text-center text-sm watchlist-status-cell"><span class="pill ${statusPill} text-[11px] watchlist-cell-ellipsis" title="${statusText.replace(/"/g, '&quot;')}">${statusText}</span></td>
+      <td class="text-center">
+        <span class="watchlist-actions-cell">
         <button onclick="diagnose('${w.symbol}','${(w.name||'').replace(/'/g,"\\\'")}')" class="btn-action" data-tip="分析">分析</button>
         ${w.is_watchlist ? `<button onclick="deleteWatch(${w.id})" class="btn-action-danger" data-tip="刪除">刪除</button>` : `<span class="text-xs text-slate-500 italic">持倉不可刪</span>`}
+        </span>
       </td>
     </tr>`;
   };
