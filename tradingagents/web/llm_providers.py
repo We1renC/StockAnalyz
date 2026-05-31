@@ -218,10 +218,10 @@ def _clean_cli_output(provider: str, raw: str) -> str:
     return raw.strip()
 
 
-def call_llm(provider: str, model: str, prompt: str, api_key: str = "", mode: str = "api") -> str:
+def call_llm(provider: str, model: str, prompt: str, api_key: str = "", mode: str = "api", timeout: int = 180) -> str:
     """統一 LLM 呼叫介面。mode='api' 走 SDK 計費 / mode='cli' 走訂閱免費。"""
     if mode == "cli":
-        return call_cli(provider, model, prompt)
+        return call_cli(provider, model, prompt, timeout=timeout)
     # api mode
     if not api_key:
         # fallback to env
