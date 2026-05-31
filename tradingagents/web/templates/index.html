@@ -3510,7 +3510,7 @@ function drToggleCard(cardId, groupId) {
   }
 }
 
-function _drBuildStockCard(stock, category, currentBf) {
+function _drBuildStockCard(stock, category, currentBf, domain) {
   const ind = stock.indicators || {};
   const bf = currentBf || (Array.isArray(stock.best_fit) ? stock.best_fit[0] : stock.best_fit) || 'mid';
   const bfMeta = _DR_BESTFIT_META[bf] || _DR_BESTFIT_META.mid;
@@ -3544,8 +3544,14 @@ function _drBuildStockCard(stock, category, currentBf) {
         ${indBar}
       </div>
       <div class="flex items-center gap-2 flex-shrink-0">
-        <button onclick="event.stopPropagation();drAddToWatchlist(${JSON.stringify(stock.symbol)},${JSON.stringify(stock.name||stock.symbol)},${JSON.stringify(category)},${JSON.stringify(currency)},${JSON.stringify((stock.thesis||'').substring(0,200))},this)"
-          class="text-xs px-2 py-1 rounded border border-slate-600 text-slate-400 hover:text-emerald-400 hover:border-emerald-600 transition-colors">
+        <button class="dr-add-watch-btn text-xs px-2 py-1 rounded border border-slate-600 text-slate-400 hover:text-emerald-400 hover:border-emerald-600 transition-colors"
+          data-symbol="${stock.symbol}"
+          data-name="${(stock.name||stock.symbol).replace(/"/g,'&quot;')}"
+          data-category="${category}"
+          data-domain="${(domain||'').replace(/"/g,'&quot;')}"
+          data-currency="${currency}"
+          data-notes="${(stock.thesis||'').substring(0,200).replace(/"/g,'&quot;').replace(/\n/g,' ')}"
+          onclick="event.stopPropagation();drAddToWatchlistFromBtn(this)">
           加入觀察
         </button>
         <span class="dr-card-arrow text-slate-500 text-xs transition-transform duration-200">v</span>
@@ -3594,22 +3600,36 @@ function _drBuildStockCard(stock, category, currentBf) {
   </div>`;
 }
 
-async function drAddToWatchlist(symbol, name, category, currency, notes, btn) {
+function drAddToWatchlistFromBtn(btn) {
+  const sym      = btn.dataset.symbol   || '';
+  const name     = btn.dataset.name     || sym;
+  const category = btn.dataset.category || 'leading';
+  const domain   = btn.dataset.domain   || '';
+  const currency = btn.dataset.currency || 'TWD';
+  const notes    = btn.dataset.notes    || '';
+  drAddToWatchlist(sym, name, category, domain, currency, notes, btn);
+}
+
+async function drAddToWatchlist(symbol, name, category, domain, currency, notes, btn) {
+  if (!symbol) return;
   btn.disabled = true;
   btn.textContent = '加入中...';
+  // catLabel: 若有領域名稱則組合，例如「AI算力-前瞻」
+  const typeLabel = category === 'frontier' ? '前瞻' : '龍頭';
+  const catLabel  = domain ? `${domain}-${typeLabel}` : typeLabel;
   try {
-    const catLabel = category === 'frontier' ? '前瞻' : '龍頭';
     const resp = await fetch('/api/watchlist', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ symbol, name, category: catLabel, currency, notes }),
     });
-    if (resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok && data.ok) {
       btn.textContent = '已加入';
       btn.style.color = '#34d399';
       btn.style.borderColor = '#34d399';
     } else {
-      btn.textContent = '已存在';
+      btn.textContent = '失敗';
       btn.disabled = false;
     }
   } catch {
@@ -3643,7 +3663,7 @@ function _drRenderResults(data) {
         <span class="text-xs text-slate-500">${groups[bf].length} 檔</span>
       </div>
       <div class="space-y-3">
-        ${groups[bf].map(s => _drBuildStockCard(s, s._cat, bf)).join('')}
+        ${groups[bf].map(s => _drBuildStockCard(s, s._cat, bf, data.domain||'')).join('')}
       </div>
     </div>`;
   });
@@ -3801,6 +3821,7 @@ async function loadDomainResearchDetail(rid) {
   $('dr-summary-banner').classList.add('hidden');
   $('dr-obsidian-note').classList.add('hidden');
   _drRenderResults({
+    domain: data.domain || '',
     summary: data.summary || '',
     frontier: data.frontier_stocks || [],
     leading: data.leading_stocks || [],
