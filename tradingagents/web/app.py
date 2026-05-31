@@ -844,9 +844,14 @@ def insert_alerts(c, symbol: str, name: str, ind: dict, market: dict, position=N
             vault = _get_vault()
             if vault:
                 _obsidian_write_alert(vault, {
-                    "ts": ts_now, "symbol": symbol, "level": a["level"],
-                    "type": a["type"], "type_label": a.get("message", ""),
+                    "ts": ts_now,
+                    "symbol": symbol,
+                    "level": a["level"],
+                    "type": a["type"],
                     "message": a["message"],
+                    "price": a.get("price"),
+                    "diagnosis": diag_text,
+                    "acknowledged": 0,
                 })
         except Exception:
             pass
@@ -923,11 +928,13 @@ async def monitor_loop():
                         print(f"  [WARN] {sym} fetch failed: {e}")
 
             # ── Phase 4: 寫入快取 + 產生警報（循序寫 DB） ──
+            alerts_created = 0
             for d in positions:
                 ind = indicators.get(d["symbol"])
                 if ind:
                     store_price_cache(c, d["symbol"], ind)
                     created = insert_alerts(c, d["symbol"], d["name"], ind, market, position=d)
+                    alerts_created += created
                     if created:
                         print(f"  [ALERT] {d['symbol']}: {created} new alert(s)")
 
@@ -936,10 +943,14 @@ async def monitor_loop():
                 if ind:
                     store_price_cache(c, d["symbol"], ind)
                     created = insert_alerts(c, d["symbol"], d["name"], ind, market, watch=d)
+                    alerts_created += created
                     if created:
                         print(f"  [ALERT] {d['symbol']}: {created} new alert(s)")
 
             conn.commit()
+            vault = _get_vault()
+            if alerts_created and vault:
+                _obsidian_post_write_sync(vault, kinds=("alerts",))
             conn.close()
             elapsed = (datetime.now() - t0).total_seconds()
             print(f"[{datetime.now():%H:%M:%S}] Monitor cycle done. ({elapsed:.1f}s, {len(indicators)}/{len(all_symbols)} symbols)")
@@ -1580,8 +1591,15 @@ class AckRequest(BaseModel):
 @app.post("/api/alerts/ack")
 def api_ack_alert(req: AckRequest):
     conn = get_db()
+    row = conn.execute("SELECT * FROM alerts WHERE id=?", (req.id,)).fetchone()
     conn.execute("UPDATE alerts SET acknowledged=1 WHERE id=?", (req.id,))
     conn.commit()
+    vault = _get_vault()
+    if vault and row:
+        updated = dict(row)
+        updated["acknowledged"] = 1
+        _obsidian_write_alert(vault, updated)
+        _obsidian_post_write_sync(vault, kinds=("alerts",))
     conn.close()
     return {"ok": True}
 
@@ -1649,6 +1667,9 @@ async def api_refresh():
             alerts_created += insert_alerts(c, d["symbol"], d["name"], ind, market, watch=d)
 
     conn.commit()
+    vault = _get_vault()
+    if vault and alerts_created:
+        _obsidian_post_write_sync(vault, kinds=("alerts",))
     conn.close()
     elapsed = round(_time.time() - t0, 1)
     return {"refreshed": refreshed, "alerts_created": alerts_created, "market": market, "elapsed_seconds": elapsed}
@@ -1745,30 +1766,28 @@ def api_add_position(p: PositionCreate):
         (p.symbol, p.name, p.category, p.shares, p.cost_price, p.currency, p_date, p.target_entry, p.target_profit, p.target_stop)
     )
     conn.commit()
-    # Sync to Obsidian
     vault = _get_vault()
     if vault:
-        pos_dict = {"symbol": p.symbol, "name": p.name, "category": p.category,
-                    "shares": p.shares, "cost_price": p.cost_price, "currency": p.currency,
-                    "purchase_date": p_date, "target_entry": p.target_entry,
-                    "target_profit": p.target_profit, "target_stop": p.target_stop}
-        _obsidian_write_position(vault, pos_dict)
-        all_pos = [dict(r) for r in conn.execute("SELECT * FROM positions").fetchall()]
-        _obsidian_write_portfolio_index(vault, all_pos)
+        _obsidian_write_position_snapshot(vault, conn, p.symbol)
+        _obsidian_post_write_sync(vault, kinds=("positions",))
     conn.close()
     return {"ok": True}
 
 @app.delete("/api/positions/{pid}")
 def api_del_position(pid: int):
     conn = get_db()
-    pos = conn.execute("SELECT * FROM positions WHERE id=?", (pid,)).fetchone()
+    row = conn.execute("SELECT * FROM positions WHERE id=?", (pid,)).fetchone()
     conn.execute("DELETE FROM positions WHERE id=?", (pid,))
     conn.commit()
-    # Rewrite Obsidian index (don't delete the note — keep for reference)
     vault = _get_vault()
     if vault:
+        if row:
+            note = vault / "Portfolio" / "Positions" / f"{_safe_obsidian_name(row['symbol'])}.md"
+            if note.exists():
+                note.unlink()
         all_pos = [dict(r) for r in conn.execute("SELECT * FROM positions").fetchall()]
         _obsidian_write_portfolio_index(vault, all_pos)
+        _obsidian_post_write_sync(vault, kinds=("positions",))
     conn.close()
     return {"ok": True}
 
@@ -1803,13 +1822,10 @@ def api_update_position(pid: int, p: PositionUpdate):
         params.append(pid)
         conn.execute(f"UPDATE positions SET {', '.join(updates)} WHERE id=?", params)
         conn.commit()
-    # Sync updated position to Obsidian
     vault = _get_vault()
     if vault and updates:
-        updated = dict(conn.execute("SELECT * FROM positions WHERE id=?", (pid,)).fetchone())
-        _obsidian_write_position(vault, updated)
-        all_pos = [dict(r) for r in conn.execute("SELECT * FROM positions").fetchall()]
-        _obsidian_write_portfolio_index(vault, all_pos)
+        _obsidian_write_position_snapshot(vault, conn, existing["symbol"])
+        _obsidian_post_write_sync(vault, kinds=("positions",))
     conn.close()
     return {"ok": True}
 
@@ -1833,28 +1849,28 @@ def api_add_watch(w: WatchCreate):
         (w.symbol, w.name, w.category, w.currency, w.target_entry, w.target_add, w.target_profit, w.target_stop, w.notes)
     )
     conn.commit()
-    # Sync to Obsidian
     vault = _get_vault()
     if vault:
-        watch_dict = {"symbol": w.symbol, "name": w.name, "category": w.category,
-                      "currency": w.currency, "target_entry": w.target_entry,
-                      "target_add": w.target_add, "target_profit": w.target_profit,
-                      "target_stop": w.target_stop, "notes": w.notes}
-        _obsidian_write_watchlist_item(vault, watch_dict)
-        all_wl = [dict(r) for r in conn.execute("SELECT * FROM watchlist").fetchall()]
-        _obsidian_write_watchlist_index(vault, all_wl)
+        _obsidian_write_watchlist_snapshot(vault, conn, w.symbol)
+        _obsidian_post_write_sync(vault, kinds=("watchlist",))
     conn.close()
     return {"ok": True}
 
 @app.delete("/api/watchlist/{wid}")
 def api_del_watch(wid: int):
     conn = get_db()
+    row = conn.execute("SELECT * FROM watchlist WHERE id=?", (wid,)).fetchone()
     conn.execute("DELETE FROM watchlist WHERE id=?", (wid,))
     conn.commit()
     vault = _get_vault()
     if vault:
+        if row:
+            note = vault / "Watchlist" / f"{_safe_obsidian_name(row['symbol'])}.md"
+            if note.exists():
+                note.unlink()
         all_wl = [dict(r) for r in conn.execute("SELECT * FROM watchlist").fetchall()]
         _obsidian_write_watchlist_index(vault, all_wl)
+        _obsidian_post_write_sync(vault, kinds=("watchlist",))
     conn.close()
     return {"ok": True}
 
@@ -1892,6 +1908,17 @@ def api_alerts_search(
 def api_clear_alerts(days: Optional[int] = None, symbol: Optional[str] = None, market: Optional[str] = None):
     """清除警報。可依 symbol、market、days 篩選；都未提供則全清。"""
     conn = get_db()
+    to_delete = []
+    if symbol:
+        to_delete = [dict(r) for r in conn.execute("SELECT * FROM alerts WHERE symbol=?", (symbol,)).fetchall()]
+    elif market == "tw":
+        to_delete = [dict(r) for r in conn.execute("SELECT * FROM alerts WHERE symbol LIKE '%.TW'").fetchall()]
+    elif market == "us":
+        to_delete = [dict(r) for r in conn.execute("SELECT * FROM alerts WHERE symbol NOT LIKE '%.TW'").fetchall()]
+    elif days is None:
+        to_delete = [dict(r) for r in conn.execute("SELECT * FROM alerts").fetchall()]
+    else:
+        to_delete = [dict(r) for r in conn.execute("SELECT * FROM alerts WHERE date(ts) < date('now', ?)", (f"-{days} days",)).fetchall()]
     if symbol:
         conn.execute("DELETE FROM alerts WHERE symbol=?", (symbol,))
     elif market == "tw":
@@ -1903,6 +1930,12 @@ def api_clear_alerts(days: Optional[int] = None, symbol: Optional[str] = None, m
     else:
         conn.execute("DELETE FROM alerts WHERE date(ts) < date('now', ?)", (f"-{days} days",))
     conn.commit()
+    vault = _get_vault()
+    if vault:
+        for alert in to_delete:
+            _obsidian_delete_alert(vault, alert)
+        if to_delete:
+            _obsidian_post_write_sync(vault, kinds=("alerts",))
     conn.close()
     return {"ok": True}
 
@@ -1922,8 +1955,13 @@ class BatchUpdateRequests(BaseModel):
 def api_delete_alert(aid: int):
     """刪除單筆警報。"""
     conn = get_db()
+    row = conn.execute("SELECT * FROM alerts WHERE id=?", (aid,)).fetchone()
     conn.execute("DELETE FROM alerts WHERE id=?", (aid,))
     conn.commit()
+    vault = _get_vault()
+    if vault and row:
+        _obsidian_delete_alert(vault, dict(row))
+        _obsidian_post_write_sync(vault, kinds=("alerts",))
     conn.close()
     return {"ok": True}
 
@@ -2076,6 +2114,8 @@ def api_batch_suggest_levels():
 def api_batch_update_levels(req: BatchUpdateRequests):
     """批量套用微調後的進場、停損與停利點位。"""
     conn = get_db()
+    updated_watch_symbols = set()
+    updated_position_symbols = set()
     for item in req.items:
         # 更新觀察清單中的點位
         watch_row = conn.execute("SELECT id FROM watchlist WHERE symbol=?", (item.symbol,)).fetchone()
@@ -2094,6 +2134,7 @@ def api_batch_update_levels(req: BatchUpdateRequests):
             if updates:
                 params.append(watch_row["id"])
                 conn.execute(f"UPDATE watchlist SET {', '.join(updates)} WHERE id=?", params)
+                updated_watch_symbols.add(item.symbol)
 
         # 更新持倉中的點位
         pos_row = conn.execute("SELECT id FROM positions WHERE symbol=?", (item.symbol,)).fetchone()
@@ -2112,8 +2153,27 @@ def api_batch_update_levels(req: BatchUpdateRequests):
             if updates:
                 params.append(pos_row["id"])
                 conn.execute(f"UPDATE positions SET {', '.join(updates)} WHERE id=?", params)
+                updated_position_symbols.add(item.symbol)
                 
     conn.commit()
+    vault = _get_vault()
+    if vault:
+        for symbol in sorted(updated_watch_symbols):
+            _obsidian_write_watchlist_snapshot(vault, conn, symbol)
+        for symbol in sorted(updated_position_symbols):
+            _obsidian_write_position_snapshot(vault, conn, symbol)
+        if updated_watch_symbols or updated_position_symbols:
+            _obsidian_post_write_sync(
+                vault,
+                kinds=tuple(
+                    kind
+                    for kind, enabled in (
+                        ("watchlist", bool(updated_watch_symbols)),
+                        ("positions", bool(updated_position_symbols)),
+                    )
+                    if enabled
+                ),
+            )
     conn.close()
     return {"ok": True}
 
@@ -2610,6 +2670,9 @@ def api_tradingagents_cli_stream(symbol: str, mode: str = "full"):
                  decision_summary,
                  json.dumps(sections_to_save, ensure_ascii=False))
             )
+            analysis_ts = conn.execute(
+                "SELECT ts FROM analysis_results WHERE rowid = last_insert_rowid()"
+            ).fetchone()[0]
 
             # ── 從最終決策中解析進出場價位，回寫到 watchlist ──
             import re as _re
@@ -2642,6 +2705,7 @@ def api_tradingagents_cli_stream(symbol: str, mode: str = "full"):
                 return prices
 
             extracted = _extract_prices(ftd)
+            wrote_watchlist_levels = False
             if extracted:
                 watch_row = conn.execute("SELECT id, target_entry, target_stop, target_profit FROM watchlist WHERE symbol=?", (symbol,)).fetchone()
                 if watch_row:
@@ -2663,8 +2727,27 @@ def api_tradingagents_cli_stream(symbol: str, mode: str = "full"):
                     if updates:
                         params.append(wd["id"])
                         conn.execute(f"UPDATE watchlist SET {', '.join(updates)} WHERE id=?", params)
+                        wrote_watchlist_levels = True
 
             conn.commit()
+            vault = _get_vault()
+            if vault:
+                _obsidian_write_analysis(vault, {
+                    "symbol": symbol,
+                    "name": sym_name,
+                    "ts": analysis_ts,
+                    "mode": mode,
+                    "provider": provider,
+                    "model": model,
+                    "elapsed": round(_time.time() - t0, 1),
+                    "decision_summary": decision_summary,
+                    "sections": sections_to_save,
+                })
+                sync_kinds = ["analysis"]
+                if wrote_watchlist_levels:
+                    _obsidian_write_watchlist_snapshot(vault, conn, symbol)
+                    sync_kinds.append("watchlist")
+                _obsidian_post_write_sync(vault, kinds=tuple(sync_kinds))
             conn.close()
         except Exception:
             pass  # 儲存失敗不影響串流
@@ -2723,8 +2806,13 @@ def api_get_all_analysis(limit: int = 50):
 @app.delete("/api/analysis/{aid}")
 def api_delete_analysis(aid: int):
     conn = get_db()
+    row = conn.execute("SELECT * FROM analysis_results WHERE id=?", (aid,)).fetchone()
     conn.execute("DELETE FROM analysis_results WHERE id=?", (aid,))
     conn.commit()
+    vault = _get_vault()
+    if vault and row:
+        _obsidian_delete_analysis(vault, dict(row))
+        _obsidian_post_write_sync(vault, kinds=("analysis",))
     conn.close()
     return {"ok": True}
 
@@ -2942,12 +3030,34 @@ def _fmt(v) -> str:
     return str(v)
 
 
+def _safe_obsidian_name(value: str) -> str:
+    return re.sub(r'[\\/*?"<>|]', "_", value or "")
+
+
+def _obsidian_bool(v) -> str:
+    return "1" if v else "0"
+
+
+def _extract_json_codeblock(section: str):
+    section = (section or "").strip()
+    if not section:
+        return None
+    if section.startswith("```"):
+        lines = section.splitlines()
+        if len(lines) >= 3:
+            section = "\n".join(lines[1:-1]).strip()
+    try:
+        return json.loads(section)
+    except Exception:
+        return None
+
+
 def _obsidian_write_position(vault: Path, pos: dict) -> None:
     """Write/update a single position note to Obsidian."""
     sym = pos.get("symbol", "")
     if not sym:
         return
-    safe = re.sub(r'[\\/*?"<>|]', "_", sym)
+    safe = _safe_obsidian_name(sym)
     pos_dir = vault / "Portfolio" / "Positions"
     pos_dir.mkdir(parents=True, exist_ok=True)
     note = pos_dir / f"{safe}.md"
@@ -2992,7 +3102,7 @@ def _obsidian_write_portfolio_index(vault: Path, positions: list) -> None:
     idx = vault / "Portfolio" / "index.md"
     idx.parent.mkdir(parents=True, exist_ok=True)
     def _pos_row(p):
-        safe = re.sub(r'[\\/*?"<>|]', "_", p.get("symbol", ""))
+        safe = _safe_obsidian_name(p.get("symbol", ""))
         return (
             f"| [[Positions/{safe}|{p.get('name', p.get('symbol',''))}]] "
             f"| {p.get('symbol','')} | {p.get('shares','')} | {p.get('cost_price','')} | {p.get('currency','')} |"
@@ -3017,7 +3127,7 @@ def _obsidian_write_watchlist_item(vault: Path, watch: dict) -> None:
     sym = watch.get("symbol", "")
     if not sym:
         return
-    safe = re.sub(r'[\\/*?"<>|]', "_", sym)
+    safe = _safe_obsidian_name(sym)
     wl_dir = vault / "Watchlist"
     wl_dir.mkdir(parents=True, exist_ok=True)
     note = wl_dir / f"{safe}.md"
@@ -3051,7 +3161,7 @@ def _obsidian_write_watchlist_index(vault: Path, items: list) -> None:
     idx = vault / "Watchlist" / "index.md"
     idx.parent.mkdir(parents=True, exist_ok=True)
     def _wl_row(w):
-        safe = re.sub(r'[\\/*?"<>|]', "_", w.get("symbol", ""))
+        safe = _safe_obsidian_name(w.get("symbol", ""))
         return (
             f"| [[{safe}|{w.get('name', w.get('symbol',''))}]] "
             f"| {w.get('symbol','')} | {w.get('currency','')} | {_fmt(w.get('target_entry'))} | {_fmt(w.get('target_stop'))} |"
@@ -3071,22 +3181,125 @@ updated: {date.today().isoformat()}
     idx.write_text(content, encoding="utf-8")
 
 
-def _obsidian_write_alert(vault: Path, alert: dict) -> None:
-    """Append a single alert to the daily alert log."""
-    ts = alert.get("ts", "")
+def _obsidian_alert_note_path(vault: Path, alert: dict) -> Path:
+    ts = alert.get("ts", "") or datetime.now().isoformat(timespec="seconds")
     day = ts[:10] if ts else date.today().isoformat()
-    alert_dir = vault / "Alerts"
-    alert_dir.mkdir(parents=True, exist_ok=True)
-    log_path = alert_dir / f"{day}.md"
-    entry = (
-        f"\n- [{ts}] **{alert.get('symbol','')}** "
-        f"{alert.get('type_label') or alert.get('type','')} "
-        f"({alert.get('level','')}) — {alert.get('message','')}"
-    )
-    if not log_path.exists():
-        log_path.write_text(f"# 警報記錄 {day}\n", encoding="utf-8")
-    with log_path.open("a", encoding="utf-8") as f:
-        f.write(entry + "\n")
+    alert_dir = vault / "Alerts" / "Entries" / day
+    safe_name = "__".join([
+        _safe_obsidian_name(ts.replace(":", "-")),
+        _safe_obsidian_name(alert.get("symbol", "")),
+        _safe_obsidian_name(alert.get("type", "")),
+    ]).strip("_")
+    return alert_dir / f"{safe_name or 'alert'}.md"
+
+
+def _obsidian_write_alert(vault: Path, alert: dict) -> None:
+    """Write/update a single alert note to Obsidian."""
+    note = _obsidian_alert_note_path(vault, alert)
+    note.parent.mkdir(parents=True, exist_ok=True)
+    content = f"""---
+type: alert
+symbol: {_fmt(alert.get('symbol'))}
+ts: {_fmt(alert.get('ts'))}
+level: {_fmt(alert.get('level'))}
+alert_type: {_fmt(alert.get('type'))}
+price: {_fmt(alert.get('price'))}
+acknowledged: {_obsidian_bool(alert.get('acknowledged'))}
+updated: {date.today().isoformat()}
+---
+
+# {_fmt(alert.get('symbol'))} {_fmt(alert.get('type_label') or alert.get('type'))}
+
+## 訊息
+
+{alert.get('message') or '—'}
+
+## 診斷
+
+{alert.get('diagnosis') or '—'}
+"""
+    note.write_text(content, encoding="utf-8")
+
+
+def _obsidian_delete_alert(vault: Path, alert: dict) -> None:
+    note = _obsidian_alert_note_path(vault, alert)
+    if note.exists():
+        note.unlink()
+
+
+def _obsidian_write_position_snapshot(vault: Path, conn, symbol: str) -> None:
+    """Rewrite one position note plus the portfolio index from current DB state."""
+    row = conn.execute("SELECT * FROM positions WHERE symbol=?", (symbol,)).fetchone()
+    if row:
+        _obsidian_write_position(vault, dict(row))
+    all_pos = [dict(r) for r in conn.execute("SELECT * FROM positions").fetchall()]
+    _obsidian_write_portfolio_index(vault, all_pos)
+
+
+def _obsidian_write_watchlist_snapshot(vault: Path, conn, symbol: str) -> None:
+    """Rewrite one watchlist note plus the watchlist index from current DB state."""
+    row = conn.execute("SELECT * FROM watchlist WHERE symbol=?", (symbol,)).fetchone()
+    if row:
+        _obsidian_write_watchlist_item(vault, dict(row))
+    all_wl = [dict(r) for r in conn.execute("SELECT * FROM watchlist").fetchall()]
+    _obsidian_write_watchlist_index(vault, all_wl)
+
+
+def _obsidian_analysis_note_path(vault: Path, analysis: dict) -> Path:
+    symbol = _safe_obsidian_name(analysis.get("symbol", "UNKNOWN"))
+    ts = _safe_obsidian_name((analysis.get("ts") or "").replace(":", "-"))
+    analysis_dir = vault / "Analysis" / symbol
+    return analysis_dir / f"{ts or 'analysis'}.md"
+
+
+def _obsidian_write_analysis(vault: Path, analysis: dict) -> None:
+    note = _obsidian_analysis_note_path(vault, analysis)
+    note.parent.mkdir(parents=True, exist_ok=True)
+    sections = analysis.get("sections")
+    if isinstance(sections, str):
+        try:
+            sections = json.loads(sections)
+        except Exception:
+            sections = {}
+    sections_json = json.dumps(sections or {}, ensure_ascii=False, indent=2)
+    content = f"""---
+type: analysis-result
+symbol: {_fmt(analysis.get('symbol'))}
+name: {_fmt(analysis.get('name'))}
+ts: {_fmt(analysis.get('ts'))}
+mode: {_fmt(analysis.get('mode'))}
+provider: {_fmt(analysis.get('provider'))}
+model: {_fmt(analysis.get('model'))}
+elapsed: {_fmt(analysis.get('elapsed'))}
+decision_summary: {_fmt(analysis.get('decision_summary'))}
+updated: {date.today().isoformat()}
+---
+
+# {_fmt(analysis.get('name') or analysis.get('symbol'))} ({_fmt(analysis.get('symbol'))})
+
+## 決策摘要
+
+{analysis.get('decision_summary') or '—'}
+
+## Sections JSON
+
+```json
+{sections_json}
+```
+"""
+    note.write_text(content, encoding="utf-8")
+
+
+def _obsidian_delete_analysis(vault: Path, analysis: dict) -> None:
+    note = _obsidian_analysis_note_path(vault, analysis)
+    if note.exists():
+        note.unlink()
+
+
+def _obsidian_domain_dir(vault: Path, domain: str, ts_value: str) -> Path:
+    safe_domain = _safe_obsidian_name(domain)
+    safe_ts = _safe_obsidian_name(ts_value.replace(":", "-").replace(" ", "_"))
+    return vault / "Research" / safe_domain / safe_ts
 
 
 def _obsidian_parse_position(note_path: Path) -> Optional[dict]:
@@ -3137,6 +3350,48 @@ def _obsidian_parse_watchlist(note_path: Path) -> Optional[dict]:
         return None
 
 
+def _obsidian_parse_alert(note_path: Path) -> Optional[dict]:
+    try:
+        text = note_path.read_text(encoding="utf-8")
+        meta, body = _parse_obsidian_frontmatter(text)
+        if meta.get("type") != "alert" or not meta.get("symbol") or not meta.get("ts"):
+            return None
+        return {
+            "ts": meta.get("ts", ""),
+            "symbol": meta.get("symbol", ""),
+            "level": meta.get("level", ""),
+            "type": meta.get("alert_type", ""),
+            "message": _extract_md_section(body, "訊息") or "",
+            "price": _safe_float(meta.get("price")),
+            "diagnosis": _extract_md_section(body, "診斷") or "",
+            "acknowledged": 1 if str(meta.get("acknowledged", "0")).strip() in ("1", "true", "True", "yes") else 0,
+        }
+    except Exception:
+        return None
+
+
+def _obsidian_parse_analysis(note_path: Path) -> Optional[dict]:
+    try:
+        text = note_path.read_text(encoding="utf-8")
+        meta, body = _parse_obsidian_frontmatter(text)
+        if meta.get("type") != "analysis-result" or not meta.get("symbol") or not meta.get("ts"):
+            return None
+        sections = _extract_json_codeblock(_extract_md_section(body, "Sections JSON")) or {}
+        return {
+            "symbol": meta.get("symbol", ""),
+            "name": meta.get("name", ""),
+            "ts": meta.get("ts", ""),
+            "mode": meta.get("mode", ""),
+            "provider": meta.get("provider", ""),
+            "model": meta.get("model", ""),
+            "elapsed": _safe_float(meta.get("elapsed")),
+            "decision_summary": _extract_md_section(body, "決策摘要") or meta.get("decision_summary", ""),
+            "sections": json.dumps(sections, ensure_ascii=False),
+        }
+    except Exception:
+        return None
+
+
 def _obsidian_sync_positions(vault: Path) -> dict:
     """Read all position notes from Obsidian and upsert into SQLite."""
     pos_dir = vault / "Portfolio" / "Positions"
@@ -3144,11 +3399,13 @@ def _obsidian_sync_positions(vault: Path) -> dict:
         return {"synced": 0, "errors": 0}
     synced = 0
     errors = 0
+    seen_symbols = set()
     conn = get_db()
     for note_path in pos_dir.glob("*.md"):
         parsed = _obsidian_parse_position(note_path)
         if not parsed:
             continue
+        seen_symbols.add(parsed["symbol"])
         try:
             existing = conn.execute(
                 "SELECT id FROM positions WHERE symbol=?", (parsed["symbol"],)
@@ -3174,6 +3431,11 @@ def _obsidian_sync_positions(vault: Path) -> dict:
             synced += 1
         except Exception:
             errors += 1
+    existing_symbols = {
+        row["symbol"] for row in conn.execute("SELECT symbol FROM positions").fetchall()
+    }
+    for symbol in existing_symbols - seen_symbols:
+        conn.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
     conn.commit()
     conn.close()
     return {"synced": synced, "errors": errors}
@@ -3186,6 +3448,7 @@ def _obsidian_sync_watchlist(vault: Path) -> dict:
         return {"synced": 0, "errors": 0}
     synced = 0
     errors = 0
+    seen_symbols = set()
     conn = get_db()
     for note_path in wl_dir.glob("*.md"):
         if note_path.stem == "index":
@@ -3193,6 +3456,7 @@ def _obsidian_sync_watchlist(vault: Path) -> dict:
         parsed = _obsidian_parse_watchlist(note_path)
         if not parsed:
             continue
+        seen_symbols.add(parsed["symbol"])
         try:
             existing = conn.execute(
                 "SELECT id FROM watchlist WHERE symbol=?", (parsed["symbol"],)
@@ -3217,9 +3481,207 @@ def _obsidian_sync_watchlist(vault: Path) -> dict:
             synced += 1
         except Exception:
             errors += 1
+    existing_symbols = {
+        row["symbol"] for row in conn.execute("SELECT symbol FROM watchlist").fetchall()
+    }
+    for symbol in existing_symbols - seen_symbols:
+        conn.execute("DELETE FROM watchlist WHERE symbol=?", (symbol,))
     conn.commit()
     conn.close()
     return {"synced": synced, "errors": errors}
+
+
+def _obsidian_sync_alerts(vault: Path) -> dict:
+    alert_dir = vault / "Alerts" / "Entries"
+    if not alert_dir.is_dir():
+        return {"synced": 0, "errors": 0}
+    synced = 0
+    errors = 0
+    seen_keys = set()
+    conn = get_db()
+    for note_path in alert_dir.rglob("*.md"):
+        parsed = _obsidian_parse_alert(note_path)
+        if not parsed:
+            continue
+        key = (parsed["ts"], parsed["symbol"], parsed["type"])
+        seen_keys.add(key)
+        try:
+            existing = conn.execute(
+                "SELECT id FROM alerts WHERE ts=? AND symbol=? AND type=?",
+                key,
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE alerts
+                       SET level=?, message=?, price=?, diagnosis=?, acknowledged=?
+                       WHERE ts=? AND symbol=? AND type=?""",
+                    (
+                        parsed["level"], parsed["message"], parsed["price"],
+                        parsed["diagnosis"], parsed["acknowledged"],
+                        parsed["ts"], parsed["symbol"], parsed["type"],
+                    ),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO alerts
+                       (ts, symbol, level, type, message, price, diagnosis, acknowledged)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        parsed["ts"], parsed["symbol"], parsed["level"], parsed["type"],
+                        parsed["message"], parsed["price"], parsed["diagnosis"], parsed["acknowledged"],
+                    ),
+                )
+            synced += 1
+        except Exception:
+            errors += 1
+    existing_rows = conn.execute("SELECT id, ts, symbol, type FROM alerts").fetchall()
+    for row in existing_rows:
+        key = (row["ts"], row["symbol"], row["type"])
+        if key not in seen_keys:
+            conn.execute("DELETE FROM alerts WHERE id=?", (row["id"],))
+    conn.commit()
+    conn.close()
+    return {"synced": synced, "errors": errors}
+
+
+def _obsidian_sync_analysis(vault: Path) -> dict:
+    analysis_dir = vault / "Analysis"
+    if not analysis_dir.is_dir():
+        return {"synced": 0, "errors": 0}
+    synced = 0
+    errors = 0
+    seen_keys = set()
+    conn = get_db()
+    for note_path in analysis_dir.rglob("*.md"):
+        parsed = _obsidian_parse_analysis(note_path)
+        if not parsed:
+            continue
+        key = (parsed["symbol"], parsed["ts"])
+        seen_keys.add(key)
+        try:
+            existing = conn.execute(
+                "SELECT id FROM analysis_results WHERE symbol=? AND ts=?",
+                key,
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE analysis_results
+                       SET name=?, mode=?, provider=?, model=?, elapsed=?, decision_summary=?, sections=?
+                       WHERE symbol=? AND ts=?""",
+                    (
+                        parsed["name"], parsed["mode"], parsed["provider"], parsed["model"],
+                        parsed["elapsed"], parsed["decision_summary"], parsed["sections"],
+                        parsed["symbol"], parsed["ts"],
+                    ),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO analysis_results
+                       (symbol, name, ts, mode, provider, model, elapsed, decision_summary, sections)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        parsed["symbol"], parsed["name"], parsed["ts"], parsed["mode"],
+                        parsed["provider"], parsed["model"], parsed["elapsed"],
+                        parsed["decision_summary"], parsed["sections"],
+                    ),
+                )
+            synced += 1
+        except Exception:
+            errors += 1
+    existing_rows = conn.execute("SELECT id, symbol, ts FROM analysis_results").fetchall()
+    for row in existing_rows:
+        key = (row["symbol"], row["ts"])
+        if key not in seen_keys:
+            conn.execute("DELETE FROM analysis_results WHERE id=?", (row["id"],))
+    conn.commit()
+    conn.close()
+    return {"synced": synced, "errors": errors}
+
+
+def _obsidian_sync_domain_research(vault: Path) -> dict:
+    research_dir = vault / "Research"
+    if not research_dir.is_dir():
+        return {"synced": 0, "errors": 0}
+    synced = 0
+    errors = 0
+    seen_paths = set()
+    conn = get_db()
+    for index_path in research_dir.rglob("index.md"):
+        row = {
+            "obsidian_path": str(index_path),
+            "domain": index_path.parent.parent.name if index_path.parent.parent != research_dir else index_path.parent.name,
+            "frontier_stocks": "[]",
+            "leading_stocks": "[]",
+            "analyst_report": "",
+            "reviewer_report": "",
+        }
+        parsed = _load_domain_research_from_obsidian(row)
+        if not parsed or parsed.get("data_source") != "obsidian":
+            continue
+        obsidian_path = str(index_path)
+        seen_paths.add(obsidian_path)
+        try:
+            existing = conn.execute(
+                "SELECT id FROM domain_research WHERE obsidian_path=?",
+                (obsidian_path,),
+            ).fetchone()
+            frontier = json.dumps(parsed.get("frontier_stocks", []), ensure_ascii=False)
+            leading = json.dumps(parsed.get("leading_stocks", []), ensure_ascii=False)
+            if existing:
+                conn.execute(
+                    """UPDATE domain_research
+                       SET domain=?, ts=?, frontier_stocks=?, leading_stocks=?,
+                           analyst_report=?, reviewer_report=?
+                       WHERE obsidian_path=?""",
+                    (
+                        parsed.get("domain", ""), parsed.get("ts", ""),
+                        frontier, leading,
+                        parsed.get("analyst_report", ""), parsed.get("reviewer_report", ""),
+                        obsidian_path,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO domain_research
+                       (domain, ts, frontier_stocks, leading_stocks, analyst_report, reviewer_report, obsidian_path)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        parsed.get("domain", ""), parsed.get("ts", ""),
+                        frontier, leading,
+                        parsed.get("analyst_report", ""), parsed.get("reviewer_report", ""),
+                        obsidian_path,
+                    ),
+                )
+            synced += 1
+        except Exception:
+            errors += 1
+    existing_rows = conn.execute("SELECT id, obsidian_path FROM domain_research").fetchall()
+    for row in existing_rows:
+        if (row["obsidian_path"] or "") not in seen_paths:
+            conn.execute("DELETE FROM domain_research WHERE id=?", (row["id"],))
+    conn.commit()
+    conn.close()
+    return {"synced": synced, "errors": errors}
+
+
+def _obsidian_post_write_sync(vault: Optional[Path], kinds: tuple[str, ...] = ("positions", "watchlist")) -> dict:
+    """Best-effort sync-back after SQLite -> Obsidian writes."""
+    empty = {"synced": 0, "errors": 0}
+    if not vault:
+        return {"ok": False, **{kind: empty.copy() for kind in kinds}}
+
+    sync_map = {
+        "positions": _obsidian_sync_positions,
+        "watchlist": _obsidian_sync_watchlist,
+        "alerts": _obsidian_sync_alerts,
+        "analysis": _obsidian_sync_analysis,
+        "domain_research": _obsidian_sync_domain_research,
+    }
+    result = {"ok": True}
+    for kind in kinds:
+        func = sync_map.get(kind)
+        result[kind] = func(vault) if func else empty.copy()
+    return result
 
 
 @app.post("/api/obsidian-sync")
@@ -3230,16 +3692,22 @@ def api_obsidian_sync():
         raise HTTPException(400, "obsidian_vault_path 未設定或路徑不存在")
     pos_result = _obsidian_sync_positions(vault)
     wl_result = _obsidian_sync_watchlist(vault)
+    alert_result = _obsidian_sync_alerts(vault)
+    analysis_result = _obsidian_sync_analysis(vault)
+    domain_result = _obsidian_sync_domain_research(vault)
     return {
         "ok": True,
         "positions": pos_result,
         "watchlist": wl_result,
+        "alerts": alert_result,
+        "analysis": analysis_result,
+        "domain_research": domain_result,
     }
 
 
 @app.post("/api/obsidian-export")
 def api_obsidian_export():
-    """SQLite → Obsidian：將所有持倉與觀察清單匯出為 Obsidian .md。"""
+    """SQLite → Obsidian：將所有 UI 持久化資料匯出為 Obsidian .md。"""
     vault = _get_vault()
     if not vault:
         raise HTTPException(400, "obsidian_vault_path 未設定或路徑不存在")
@@ -3247,8 +3715,10 @@ def api_obsidian_export():
     positions = [dict(r) for r in conn.execute("SELECT * FROM positions").fetchall()]
     watchlist = [dict(r) for r in conn.execute("SELECT * FROM watchlist").fetchall()]
     alerts = [dict(r) for r in conn.execute(
-        "SELECT * FROM alerts ORDER BY ts DESC LIMIT 200"
+        "SELECT * FROM alerts ORDER BY ts DESC"
     ).fetchall()]
+    analyses = [dict(r) for r in conn.execute("SELECT * FROM analysis_results ORDER BY ts DESC").fetchall()]
+    research_rows = [dict(r) for r in conn.execute("SELECT * FROM domain_research ORDER BY ts DESC").fetchall()]
     conn.close()
 
     for pos in positions:
@@ -3262,13 +3732,42 @@ def api_obsidian_export():
     for alert in alerts:
         _obsidian_write_alert(vault, alert)
 
+    for analysis in analyses:
+        _obsidian_write_analysis(vault, analysis)
+
+    exported_research = 0
+    for row in research_rows:
+        try:
+            result = {
+                "domain": row.get("domain", ""),
+                "ts": row.get("ts", ""),
+                "summary": row.get("summary", ""),
+                "frontier": json.loads(row.get("frontier_stocks") or "[]"),
+                "leading": json.loads(row.get("leading_stocks") or "[]"),
+                "analyst_report": row.get("analyst_report", ""),
+                "reviewer_report": row.get("reviewer_report", ""),
+            }
+            path = _save_obsidian_notes(row.get("domain", ""), result, str(vault))
+            if path:
+                exported_research += 1
+        except Exception:
+            pass
+
+    sync_result = _obsidian_post_write_sync(
+        vault,
+        kinds=("positions", "watchlist", "alerts", "analysis", "domain_research"),
+    )
+
     return {
         "ok": True,
         "exported": {
             "positions": len(positions),
             "watchlist": len(watchlist),
             "alerts": len(alerts),
-        }
+            "analysis": len(analyses),
+            "domain_research": exported_research,
+        },
+        "sync": sync_result,
     }
 
 
@@ -3283,21 +3782,25 @@ def _save_obsidian_notes(domain: str, result: dict, vault_path: str) -> str:
     try:
         vault = Path(vault_path).expanduser()
         safe_domain = re.sub(r'[\\/*?"<>|]', "_", domain)
-        research_dir = vault / "Research" / safe_domain
+        ts = result.get("ts", datetime.now().strftime("%Y-%m-%d %H:%M"))
+        research_dir = _obsidian_domain_dir(vault, domain, ts)
+        latest_dir = vault / "Research" / safe_domain
         frontier_dir = research_dir / "前瞻技術"
         leading_dir = research_dir / "龍頭技術"
+        latest_frontier_dir = latest_dir / "前瞻技術"
+        latest_leading_dir = latest_dir / "龍頭技術"
         frontier_dir.mkdir(parents=True, exist_ok=True)
         leading_dir.mkdir(parents=True, exist_ok=True)
-
-        ts = result.get("ts", datetime.now().strftime("%Y-%m-%d"))
+        latest_frontier_dir.mkdir(parents=True, exist_ok=True)
+        latest_leading_dir.mkdir(parents=True, exist_ok=True)
 
         # Write individual stock notes
         all_frontier_links = []
         all_leading_links = []
 
-        for cat_key, target_dir, links_list in [
-            ("frontier", frontier_dir, all_frontier_links),
-            ("leading", leading_dir, all_leading_links),
+        for cat_key, target_dir, latest_target_dir, links_list in [
+            ("frontier", frontier_dir, latest_frontier_dir, all_frontier_links),
+            ("leading", leading_dir, latest_leading_dir, all_leading_links),
         ]:
             for stock in result.get(cat_key, []):
                 sym = stock.get("symbol", "UNKNOWN")
@@ -3377,6 +3880,7 @@ best_fit: [{best_fit_yaml}]
 
                 content += f"\n## 連結\n[[{safe_domain}/index|回到 {domain} 總覽]]\n"
                 note_path.write_text(content, encoding="utf-8")
+                (latest_target_dir / f"{safe_sym}.md").write_text(content, encoding="utf-8")
                 links_list.append(f"[[{cat_label}/{safe_sym}|{name} ({sym})]]")
 
         # Write index note
@@ -3385,6 +3889,7 @@ best_fit: [{best_fit_yaml}]
         reviewer_report = result.get("reviewer_report", "")
 
         index_content = f"""---
+type: domain-research
 tags: [research, {safe_domain}]
 domain: {domain}
 analyzed: {ts}
@@ -3544,8 +4049,16 @@ def _load_domain_research_from_obsidian(row: dict) -> dict | None:
                 return fallback_frontier if cat_key == "frontier" else fallback_leading
             stocks = []
             for note_path in sorted(group_dir.glob("*.md")):
+                parse_path = note_path
+                latest_mirror = research_dir.parent / folder / note_path.name
+                if latest_mirror.exists():
+                    try:
+                        if latest_mirror.stat().st_mtime >= note_path.stat().st_mtime:
+                            parse_path = latest_mirror
+                    except OSError:
+                        pass
                 parsed = _parse_obsidian_stock_note(
-                    note_path,
+                    parse_path,
                     cat_key,
                     fallback_by_symbol.get(note_path.stem),
                 )
@@ -3996,6 +4509,8 @@ def api_domain_research_stream(domain: str):
         )
         rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.commit()
+        if vault_path:
+            _obsidian_post_write_sync(_get_vault(), kinds=("domain_research",))
         conn.close()
 
         yield emit("done", {
@@ -4074,8 +4589,27 @@ def api_get_domain_research(rid: int):
 def api_delete_domain_research(rid: int):
     """刪除單筆領域研究。"""
     conn = get_db()
+    row = conn.execute("SELECT * FROM domain_research WHERE id=?", (rid,)).fetchone()
     conn.execute("DELETE FROM domain_research WHERE id=?", (rid,))
     conn.commit()
+    vault = _get_vault()
+    if vault and row and row["obsidian_path"]:
+        index_path = Path(row["obsidian_path"]).expanduser()
+        research_dir = index_path.parent
+        if research_dir.exists():
+            for child in sorted(research_dir.rglob("*"), reverse=True):
+                if child.is_file():
+                    child.unlink()
+                elif child.is_dir():
+                    try:
+                        child.rmdir()
+                    except OSError:
+                        pass
+            try:
+                research_dir.rmdir()
+            except OSError:
+                pass
+        _obsidian_post_write_sync(vault, kinds=("domain_research",))
     conn.close()
     return {"ok": True}
 
