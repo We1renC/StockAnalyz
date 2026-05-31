@@ -25,6 +25,7 @@ DEFAULT_SETTINGS = {
             "mode": "cli",
         },
     },
+    "obsidian_vault_path": "",        # 留空則不存 Obsidian 筆記
 }
 
 # 各 provider 的 CLI 工具

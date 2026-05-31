@@ -148,6 +148,17 @@ def init_db():
         sections TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_analysis_symbol_ts ON analysis_results(symbol, ts DESC);
+    CREATE TABLE IF NOT EXISTS domain_research (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        domain TEXT NOT NULL,
+        ts TEXT NOT NULL,
+        frontier_stocks TEXT,
+        leading_stocks TEXT,
+        analyst_report TEXT,
+        reviewer_report TEXT,
+        obsidian_path TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_domain_research_ts ON domain_research(ts DESC);
     """)
     conn.commit()
 
@@ -2683,6 +2694,457 @@ def api_diagnose(symbol: str):
     ind = json.loads(dict(cache).get("data") or "{}")
     diag = diagnose(symbol, name, ind, market, position=dict(pos) if pos else None)
     return sanitize_float_values({"symbol": symbol, "name": name, "diagnosis": diag, "indicators": ind})
+
+
+# ─────────────── 領域研究工作流 ───────────────
+
+def _save_obsidian_notes(domain: str, result: dict, vault_path: str) -> str:
+    """Save domain research as Obsidian-compatible markdown notes.
+
+    Returns the path of the index file created, or empty string on failure.
+    """
+    import re
+    try:
+        vault = Path(vault_path).expanduser()
+        safe_domain = re.sub(r'[\\/*?"<>|]', "_", domain)
+        research_dir = vault / "Research" / safe_domain
+        frontier_dir = research_dir / "前瞻技術"
+        leading_dir = research_dir / "龍頭技術"
+        frontier_dir.mkdir(parents=True, exist_ok=True)
+        leading_dir.mkdir(parents=True, exist_ok=True)
+
+        ts = result.get("ts", datetime.now().strftime("%Y-%m-%d"))
+
+        # Write individual stock notes
+        all_frontier_links = []
+        all_leading_links = []
+
+        for cat_key, target_dir, links_list in [
+            ("frontier", frontier_dir, all_frontier_links),
+            ("leading", leading_dir, all_leading_links),
+        ]:
+            for stock in result.get(cat_key, []):
+                sym = stock.get("symbol", "UNKNOWN")
+                name = stock.get("name", sym)
+                safe_sym = re.sub(r'[\\/*?"<>|]', "_", sym)
+                note_path = target_dir / f"{safe_sym}.md"
+                cat_label = "前瞻技術" if cat_key == "frontier" else "龍頭技術"
+
+                content = f"""---
+tags: [research, {safe_domain}, {cat_label}]
+symbol: {sym}
+name: {name}
+analyzed: {ts}
+category: {cat_label}
+domain: {domain}
+---
+
+# {name} ({sym})
+
+> 領域：{domain} | 類別：{cat_label} | 分析日：{ts}
+
+## 投資論點
+
+{stock.get("thesis", "—")}
+
+## 基本面
+
+{stock.get("fundamentals", "—")}
+
+## 新聞與媒體
+
+{stock.get("news", "—")}
+
+## 產業技術
+
+{stock.get("technology", "—")}
+
+## 訂單狀況
+
+{stock.get("orders", "—")}
+
+## 投資時框
+
+### 短線（3 個月）
+{stock.get("short_term", "—")}
+
+### 中線（1 年）
+{stock.get("mid_term", "—")}
+
+### 長線（3 年以上）
+{stock.get("long_term", "—")}
+
+## 技術指標（抓取時）
+"""
+                ind = stock.get("indicators", {})
+                if ind:
+                    content += f"""
+| 指標 | 數值 |
+|------|------|
+| 現價 | {ind.get("price", "—")} |
+| RSI | {ind.get("rsi", "—")} |
+| MA20 | {ind.get("ma20", "—")} |
+| MA60 | {ind.get("ma60", "—")} |
+| Beta | {ind.get("beta", "—")} |
+| 52週高/低 | {ind.get("high52", "—")} / {ind.get("low52", "—")} |
+"""
+                else:
+                    content += "\n（未取得即時資料）\n"
+
+                content += f"\n## 連結\n[[{safe_domain}/index|回到 {domain} 總覽]]\n"
+                note_path.write_text(content, encoding="utf-8")
+                links_list.append(f"[[{cat_label}/{safe_sym}|{name} ({sym})]]")
+
+        # Write index note
+        index_path = research_dir / "index.md"
+        analyst_report = result.get("analyst_report", "")
+        reviewer_report = result.get("reviewer_report", "")
+
+        index_content = f"""---
+tags: [research, {safe_domain}]
+domain: {domain}
+analyzed: {ts}
+---
+
+# {domain} — 領域研究總覽
+
+> 分析日：{ts}
+
+{result.get("summary", "")}
+
+## 前瞻技術標的
+
+{chr(10).join("- " + l for l in all_frontier_links) or "（無）"}
+
+## 龍頭技術標的
+
+{chr(10).join("- " + l for l in all_leading_links) or "（無）"}
+
+## 分析師報告
+
+{analyst_report}
+
+## 審查員複核
+
+{reviewer_report}
+"""
+        index_path.write_text(index_content, encoding="utf-8")
+        return str(index_path)
+    except Exception as e:
+        return ""
+
+
+def _enrich_stocks_with_indicators(stocks: list) -> list:
+    """Parallel-fetch yfinance indicators for a list of stocks."""
+    import concurrent.futures
+
+    def _fetch(stock):
+        sym = stock.get("symbol", "")
+        if not sym:
+            return stock
+        try:
+            ind = fetch_indicators(sym)
+            stock["indicators"] = sanitize_float_values(ind)
+        except Exception:
+            stock["indicators"] = {}
+        return stock
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+        return list(ex.map(_fetch, stocks))
+
+
+_DOMAIN_RESEARCH_PROMPT = """你是資深投資研究員，專精多元產業分析。
+請針對以下投資領域，進行結構化的股票篩選與研究報告。
+
+領域：{domain}
+
+要求：
+1. 區分「前瞻技術」（Frontier，潛力較高風險，早期佈局）與「龍頭技術」（Leading，護城河已建立，穩健成長）
+2. 每個類別選出 1~5 檔最具代表性個股（優先台股，次選美股）
+3. 每檔股票需提供以下資訊（用繁體中文）：
+   - symbol：股票代碼（台股格式如 2330.TW，美股如 NVDA）
+   - name：公司名稱（繁中）
+   - thesis：核心投資論點（100 字以內）
+   - fundamentals：基本面分析（營收成長、毛利率、負債比、本益比等，100 字以內）
+   - news：近期重要新聞與市場動態（100 字以內）
+   - technology：產業技術定位與競爭優勢（100 字以內）
+   - orders：已知訂單狀況、主要客戶、出貨能見度（100 字以內）
+   - short_term：短線觀點（3 個月內，50 字以內）
+   - mid_term：中線觀點（1 年，50 字以內）
+   - long_term：長線觀點（3 年以上，50 字以內）
+4. 另提供整體領域摘要 summary（200 字以內）
+
+注意：
+- 資訊盡量引用最新知識，但請在不確定時標注「截至知識截止日」
+- 不使用 emoji、icon 或裝飾性符號，純文字輸出
+- 嚴格以下列 JSON 格式輸出，不含任何 markdown 包裹符號（不要 ```json）
+
+{{
+  "summary": "...",
+  "frontier": [
+    {{
+      "symbol": "...",
+      "name": "...",
+      "thesis": "...",
+      "fundamentals": "...",
+      "news": "...",
+      "technology": "...",
+      "orders": "...",
+      "short_term": "...",
+      "mid_term": "...",
+      "long_term": "..."
+    }}
+  ],
+  "leading": [
+    {{
+      "symbol": "...",
+      "name": "...",
+      "thesis": "...",
+      "fundamentals": "...",
+      "news": "...",
+      "technology": "...",
+      "orders": "...",
+      "short_term": "...",
+      "mid_term": "...",
+      "long_term": "..."
+    }}
+  ]
+}}"""
+
+_DOMAIN_REVIEWER_PROMPT = """你是嚴格的投資審查員，針對分析師的領域研究報告進行複核。
+
+領域：{domain}
+
+[分析師選股報告（JSON）]
+{analyst_json}
+
+請審查以下面向（繁體中文，純文字無 emoji，300 字以內）：
+
+## 一、選股邏輯合理性
+（前瞻與龍頭的區分是否清晰、選股是否具代表性）
+
+## 二、潛在盲點
+（遺漏的重要標的、被高估的風險、同質化問題）
+
+## 三、時間框架評估
+（各時框觀點是否合理，有無過度樂觀）
+
+## 四、修正建議
+（針對最需要調整的 1~2 點給出具體建議）"""
+
+
+class DomainResearchRequest(BaseModel):
+    domain: str
+
+
+@app.get("/api/domain-research-stream")
+def api_domain_research_stream(domain: str):
+    """SSE 串流端點：領域研究工作流（分析師選股 → yfinance 補強 → 審查員複核 → Obsidian 儲存）。"""
+    import time as _time
+
+    def event_stream():
+        def emit(event_type: str, data: dict):
+            payload = json.dumps(data, ensure_ascii=False)
+            return f"event: {event_type}\ndata: {payload}\n\n"
+
+        t0 = _time.time()
+        settings = load_settings()
+        keys = settings["api_keys"]
+        roles = settings["roles"]
+        analyst = roles["analyst"]
+        reviewer = roles["reviewer"]
+        vault_path = settings.get("obsidian_vault_path", "")
+
+        yield emit("started", {"domain": domain})
+
+        # ── Step 1: 分析師選股 ──
+        yield emit("progress", {
+            "step": 1, "total": 4,
+            "message": f"分析師（{analyst['provider']}/{analyst['model']}）正在研究「{domain}」領域...",
+            "elapsed": round(_time.time() - t0, 1),
+        })
+
+        analyst_prompt = _DOMAIN_RESEARCH_PROMPT.format(domain=domain)
+        try:
+            raw = call_llm(
+                analyst["provider"], analyst["model"],
+                analyst_prompt,
+                keys.get(analyst["provider"], ""),
+                mode=analyst.get("mode", "api"),
+            )
+        except Exception as e:
+            yield emit("error", {"error": f"分析師呼叫失敗: {e}"})
+            return
+
+        # Parse JSON from analyst output
+        clean = raw.strip()
+        if clean.startswith("```"):
+            lines = clean.split("\n")
+            clean = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
+
+        try:
+            analyst_data = json.loads(clean)
+        except Exception:
+            # Try to extract JSON block
+            import re
+            m = re.search(r'\{[\s\S]*\}', clean)
+            if m:
+                try:
+                    analyst_data = json.loads(m.group())
+                except Exception:
+                    yield emit("error", {"error": "分析師輸出無法解析為 JSON，請重試"})
+                    return
+            else:
+                yield emit("error", {"error": "分析師輸出無法解析為 JSON，請重試"})
+                return
+
+        frontier_stocks = analyst_data.get("frontier", [])
+        leading_stocks = analyst_data.get("leading", [])
+        summary = analyst_data.get("summary", "")
+
+        yield emit("analyst_done", {
+            "summary": summary,
+            "frontier_count": len(frontier_stocks),
+            "leading_count": len(leading_stocks),
+            "elapsed": round(_time.time() - t0, 1),
+        })
+
+        # ── Step 2: yfinance 補強基本面 ──
+        all_stocks = frontier_stocks + leading_stocks
+        yield emit("progress", {
+            "step": 2, "total": 4,
+            "message": f"正在抓取 {len(all_stocks)} 檔個股即時指標（yfinance）...",
+            "elapsed": round(_time.time() - t0, 1),
+        })
+
+        enriched_frontier = _enrich_stocks_with_indicators(frontier_stocks)
+        enriched_leading = _enrich_stocks_with_indicators(leading_stocks)
+
+        yield emit("indicators_done", {
+            "message": "技術指標補強完成",
+            "elapsed": round(_time.time() - t0, 1),
+        })
+
+        # ── Step 3: 審查員複核 ──
+        yield emit("progress", {
+            "step": 3, "total": 4,
+            "message": f"審查員（{reviewer['provider']}/{reviewer['model']}）正在複核選股合理性...",
+            "elapsed": round(_time.time() - t0, 1),
+        })
+
+        reviewer_prompt = _DOMAIN_REVIEWER_PROMPT.format(
+            domain=domain,
+            analyst_json=json.dumps(analyst_data, ensure_ascii=False, indent=2)[:3000],
+        )
+        try:
+            reviewer_text = call_llm(
+                reviewer["provider"], reviewer["model"],
+                reviewer_prompt,
+                keys.get(reviewer["provider"], ""),
+                mode=reviewer.get("mode", "api"),
+            )
+        except Exception as e:
+            reviewer_text = f"審查員呼叫失敗: {e}"
+
+        # ── Step 4: 存 DB + Obsidian ──
+        yield emit("progress", {
+            "step": 4, "total": 4,
+            "message": "儲存研究結果...",
+            "elapsed": round(_time.time() - t0, 1),
+        })
+
+        ts_now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        result = {
+            "domain": domain,
+            "ts": ts_now,
+            "summary": summary,
+            "frontier": enriched_frontier,
+            "leading": enriched_leading,
+            "analyst_report": raw,
+            "reviewer_report": reviewer_text,
+        }
+
+        obsidian_path = ""
+        if vault_path:
+            obsidian_path = _save_obsidian_notes(domain, result, vault_path)
+
+        conn = get_db()
+        conn.execute(
+            """INSERT INTO domain_research
+               (domain, ts, frontier_stocks, leading_stocks, analyst_report, reviewer_report, obsidian_path)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                domain, ts_now,
+                json.dumps(enriched_frontier, ensure_ascii=False),
+                json.dumps(enriched_leading, ensure_ascii=False),
+                raw, reviewer_text, obsidian_path,
+            )
+        )
+        rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+        conn.close()
+
+        yield emit("done", {
+            "id": rid,
+            "domain": domain,
+            "ts": ts_now,
+            "summary": summary,
+            "frontier": enriched_frontier,
+            "leading": enriched_leading,
+            "reviewer_report": reviewer_text,
+            "obsidian_path": obsidian_path,
+            "elapsed": round(_time.time() - t0, 1),
+        })
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/api/domain-research")
+def api_list_domain_research(limit: int = 20):
+    """列出最近的領域研究記錄。"""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, domain, ts, obsidian_path FROM domain_research ORDER BY ts DESC LIMIT ?",
+        (limit,)
+    ).fetchall()
+    conn.close()
+    return {"records": [dict(r) for r in rows]}
+
+
+@app.get("/api/domain-research/{rid}")
+def api_get_domain_research(rid: int):
+    """取得單筆領域研究詳情。"""
+    conn = get_db()
+    row = conn.execute("SELECT * FROM domain_research WHERE id=?", (rid,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="not found")
+    d = dict(row)
+    try:
+        d["frontier_stocks"] = json.loads(d["frontier_stocks"] or "[]")
+        d["leading_stocks"] = json.loads(d["leading_stocks"] or "[]")
+    except Exception:
+        pass
+    return d
+
+
+@app.delete("/api/domain-research/{rid}")
+def api_delete_domain_research(rid: int):
+    """刪除單筆領域研究。"""
+    conn = get_db()
+    conn.execute("DELETE FROM domain_research WHERE id=?", (rid,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
 
 if __name__ == "__main__":
     import uvicorn

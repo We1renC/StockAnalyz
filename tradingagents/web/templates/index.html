@@ -270,6 +270,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
       <span id="alert-badge" class="hidden" style="background:#ef4444;color:white;font-size:10px;padding:1px 6px;border-radius:10px;font-weight:700;min-width:18px;text-align:center">0</span>
     </button>
     <button data-tab="backtest" class="tab-btn tab-item">回測</button>
+    <button data-tab="domain-research" class="tab-btn tab-item">領域研究</button>
   </nav>
 
   <!-- Market State Bar -->
@@ -532,6 +533,91 @@ body { background: var(--bg-base); color: var(--text-primary); }
         <tbody id="backtest-tbody"></tbody>
       </table>
     </div>
+  </div>
+
+  <!-- Domain Research Tab -->
+  <div id="tab-domain-research" class="tab-content hidden">
+
+    <!-- Input Section -->
+    <div class="glass-card-sm p-4 mb-4">
+      <div class="flex gap-2 items-center flex-wrap">
+        <input id="domain-input" type="text" placeholder="輸入投資領域，例如：AI算力、綠能儲能、半導體設備..." class="input-field flex-1" style="min-width:200px" onkeydown="if(event.key==='Enter') startDomainResearch()">
+        <button onclick="startDomainResearch()" id="domain-research-btn" class="btn-primary px-4 py-2 text-sm">分析</button>
+      </div>
+      <div class="mt-2 flex gap-2 flex-wrap" id="domain-presets">
+        <button onclick="setDomain('AI算力與電力')" class="filter-pill text-xs" style="padding:3px 10px">AI算力與電力</button>
+        <button onclick="setDomain('台灣半導體設備')" class="filter-pill text-xs" style="padding:3px 10px">台灣半導體設備</button>
+        <button onclick="setDomain('綠能儲能')" class="filter-pill text-xs" style="padding:3px 10px">綠能儲能</button>
+        <button onclick="setDomain('人形機器人')" class="filter-pill text-xs" style="padding:3px 10px">人形機器人</button>
+        <button onclick="setDomain('AI基礎設施')" class="filter-pill text-xs" style="padding:3px 10px">AI基礎設施</button>
+      </div>
+    </div>
+
+    <!-- Progress Section -->
+    <div id="dr-progress-section" class="hidden glass-card-sm p-4 mb-4">
+      <div class="flex items-center gap-3 mb-2">
+        <div id="dr-spinner" class="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full" style="animation:spin 0.8s linear infinite"></div>
+        <span id="dr-progress-msg" class="text-sm text-slate-300">初始化...</span>
+        <span id="dr-elapsed" class="text-xs text-slate-500 ml-auto"></span>
+      </div>
+      <div class="bg-slate-700 rounded-full h-1.5 overflow-hidden">
+        <div id="dr-progress-bar" class="h-full bg-emerald-500 transition-all duration-500" style="width:0%"></div>
+      </div>
+      <div class="grid grid-cols-4 gap-2 mt-3 text-xs text-slate-500">
+        <div id="dr-step-1" class="text-center">1. 分析師選股</div>
+        <div id="dr-step-2" class="text-center">2. 指標補強</div>
+        <div id="dr-step-3" class="text-center">3. 審查員複核</div>
+        <div id="dr-step-4" class="text-center">4. 儲存</div>
+      </div>
+    </div>
+
+    <!-- Summary Banner -->
+    <div id="dr-summary-banner" class="hidden glass-card-sm p-3 mb-4 text-sm text-slate-300 border-l-2 border-emerald-500"></div>
+
+    <!-- Results Section -->
+    <div id="dr-results" class="hidden">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+
+        <!-- Frontier Column -->
+        <div>
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-xs font-bold px-2 py-0.5 rounded" style="background:rgba(139,92,246,0.2);color:#a78bfa">前瞻技術</span>
+            <span class="text-xs text-slate-500">高成長潛力 / 早期佈局</span>
+          </div>
+          <div id="dr-frontier-cards" class="space-y-3"></div>
+        </div>
+
+        <!-- Leading Column -->
+        <div>
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-xs font-bold px-2 py-0.5 rounded" style="background:rgba(16,185,129,0.2);color:#34d399">龍頭技術</span>
+            <span class="text-xs text-slate-500">護城河穩健 / 中長線配置</span>
+          </div>
+          <div id="dr-leading-cards" class="space-y-3"></div>
+        </div>
+      </div>
+
+      <!-- Reviewer Report -->
+      <div id="dr-reviewer-section" class="hidden glass-card p-4 mb-4">
+        <div class="text-xs font-semibold text-slate-400 mb-2">審查員複核</div>
+        <div id="dr-reviewer-content" class="text-sm text-slate-300 whitespace-pre-wrap leading-relaxed"></div>
+      </div>
+
+      <!-- Obsidian Path -->
+      <div id="dr-obsidian-note" class="hidden text-xs text-slate-500 mb-4">
+        Obsidian 筆記已存至：<span id="dr-obsidian-path" class="text-slate-400"></span>
+      </div>
+    </div>
+
+    <!-- History Section -->
+    <div id="dr-history-section">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs text-slate-500 font-semibold">歷史研究記錄</span>
+        <button onclick="loadDomainHistory()" class="text-xs text-slate-500 hover:text-slate-300">重新整理</button>
+      </div>
+      <div id="dr-history-list" class="space-y-2"></div>
+    </div>
+
   </div>
 
 </div>
@@ -2803,6 +2889,252 @@ function switchTab(tabName) {
     btn.click();
   }
 }
+
+// ─────────────── 領域研究 ───────────────
+let _drEventSource = null;
+
+function setDomain(val) {
+  $('domain-input').value = val;
+}
+
+function _drStepActive(n) {
+  for (let i = 1; i <= 4; i++) {
+    const el = $(`dr-step-${i}`);
+    if (!el) continue;
+    if (i < n) {
+      el.style.color = '#34d399';
+    } else if (i === n) {
+      el.style.color = '#a3e635';
+      el.style.fontWeight = '600';
+    } else {
+      el.style.color = '';
+      el.style.fontWeight = '';
+    }
+  }
+}
+
+function _drIndicatorBadge(ind) {
+  if (!ind || !ind.price) return '';
+  const rsiColor = ind.rsi >= 70 ? '#ef4444' : ind.rsi <= 30 ? '#34d399' : '#94a3b8';
+  return `<div class="flex gap-3 flex-wrap text-xs mt-1 text-slate-400">
+    <span>現價 <span class="text-slate-200 tabular-nums">${ind.price ?? '—'}</span></span>
+    <span>RSI <span style="color:${rsiColor}" class="tabular-nums">${ind.rsi ? ind.rsi.toFixed(1) : '—'}</span></span>
+    <span>MA20 <span class="text-slate-200 tabular-nums">${ind.ma20 ? ind.ma20.toFixed(1) : '—'}</span></span>
+    <span>Beta <span class="text-slate-200 tabular-nums">${ind.beta ? ind.beta.toFixed(2) : '—'}</span></span>
+  </div>`;
+}
+
+function _drBuildStockCard(stock, catColor) {
+  const ind = stock.indicators || {};
+  return `<div class="glass-card-sm p-3">
+    <div class="flex items-start justify-between gap-2 mb-1">
+      <div>
+        <span class="font-semibold text-slate-100 text-sm">${stock.name || stock.symbol}</span>
+        <span class="text-xs text-slate-500 ml-1">${stock.symbol}</span>
+      </div>
+    </div>
+    ${_drIndicatorBadge(ind)}
+    <div class="mt-2 space-y-2 text-xs text-slate-400">
+      <details>
+        <summary class="cursor-pointer text-slate-300 font-medium">投資論點</summary>
+        <p class="mt-1 leading-relaxed">${stock.thesis || '—'}</p>
+      </details>
+      <details>
+        <summary class="cursor-pointer text-slate-300 font-medium">基本面</summary>
+        <p class="mt-1 leading-relaxed">${stock.fundamentals || '—'}</p>
+      </details>
+      <details>
+        <summary class="cursor-pointer text-slate-300 font-medium">新聞與媒體</summary>
+        <p class="mt-1 leading-relaxed">${stock.news || '—'}</p>
+      </details>
+      <details>
+        <summary class="cursor-pointer text-slate-300 font-medium">產業技術</summary>
+        <p class="mt-1 leading-relaxed">${stock.technology || '—'}</p>
+      </details>
+      <details>
+        <summary class="cursor-pointer text-slate-300 font-medium">訂單狀況</summary>
+        <p class="mt-1 leading-relaxed">${stock.orders || '—'}</p>
+      </details>
+      <div class="border-t border-slate-700 pt-2 grid grid-cols-3 gap-2">
+        <div><div class="text-slate-500 mb-0.5">短線(3M)</div><div>${stock.short_term || '—'}</div></div>
+        <div><div class="text-slate-500 mb-0.5">中線(1Y)</div><div>${stock.mid_term || '—'}</div></div>
+        <div><div class="text-slate-500 mb-0.5">長線(3Y+)</div><div>${stock.long_term || '—'}</div></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function _drRenderResults(data) {
+  const frontier = data.frontier || [];
+  const leading = data.leading || [];
+
+  $('dr-frontier-cards').innerHTML = frontier.length
+    ? frontier.map(s => _drBuildStockCard(s, 'purple')).join('')
+    : '<div class="text-xs text-slate-500 p-2">無前瞻技術標的</div>';
+
+  $('dr-leading-cards').innerHTML = leading.length
+    ? leading.map(s => _drBuildStockCard(s, 'green')).join('')
+    : '<div class="text-xs text-slate-500 p-2">無龍頭技術標的</div>';
+
+  if (data.summary) {
+    $('dr-summary-banner').textContent = data.summary;
+    $('dr-summary-banner').classList.remove('hidden');
+  }
+
+  if (data.reviewer_report) {
+    $('dr-reviewer-content').textContent = data.reviewer_report;
+    $('dr-reviewer-section').classList.remove('hidden');
+  }
+
+  if (data.obsidian_path) {
+    $('dr-obsidian-path').textContent = data.obsidian_path;
+    $('dr-obsidian-note').classList.remove('hidden');
+  }
+
+  $('dr-results').classList.remove('hidden');
+}
+
+function startDomainResearch() {
+  const domain = ($('domain-input').value || '').trim();
+  if (!domain) {
+    $('domain-input').focus();
+    return;
+  }
+  if (_drEventSource) {
+    _drEventSource.close();
+    _drEventSource = null;
+  }
+
+  // Reset UI
+  $('dr-results').classList.add('hidden');
+  $('dr-summary-banner').classList.add('hidden');
+  $('dr-reviewer-section').classList.add('hidden');
+  $('dr-obsidian-note').classList.add('hidden');
+  $('dr-frontier-cards').innerHTML = '';
+  $('dr-leading-cards').innerHTML = '';
+  $('dr-progress-section').classList.remove('hidden');
+  $('dr-progress-bar').style.width = '5%';
+  $('dr-progress-msg').textContent = '連線中...';
+  $('dr-elapsed').textContent = '';
+  $('domain-research-btn').disabled = true;
+  _drStepActive(1);
+
+  const stepPercent = { 1: 15, 2: 50, 3: 75, 4: 90 };
+
+  _drEventSource = new EventSource(`/api/domain-research-stream?domain=${encodeURIComponent(domain)}`);
+
+  _drEventSource.addEventListener('started', () => {
+    $('dr-progress-msg').textContent = `開始分析「${domain}」...`;
+    $('dr-progress-bar').style.width = '8%';
+  });
+
+  _drEventSource.addEventListener('progress', e => {
+    const d = JSON.parse(e.data);
+    $('dr-progress-msg').textContent = d.message || '';
+    $('dr-elapsed').textContent = d.elapsed ? `${d.elapsed}s` : '';
+    const pct = stepPercent[d.step] || 10;
+    $('dr-progress-bar').style.width = `${pct}%`;
+    _drStepActive(d.step || 1);
+  });
+
+  _drEventSource.addEventListener('analyst_done', e => {
+    const d = JSON.parse(e.data);
+    $('dr-progress-msg').textContent = `選出前瞻 ${d.frontier_count} 檔 / 龍頭 ${d.leading_count} 檔，抓取即時指標...`;
+    $('dr-elapsed').textContent = d.elapsed ? `${d.elapsed}s` : '';
+    $('dr-progress-bar').style.width = '45%';
+    _drStepActive(2);
+  });
+
+  _drEventSource.addEventListener('indicators_done', e => {
+    const d = JSON.parse(e.data);
+    $('dr-elapsed').textContent = d.elapsed ? `${d.elapsed}s` : '';
+    $('dr-progress-bar').style.width = '60%';
+    _drStepActive(3);
+  });
+
+  _drEventSource.addEventListener('done', e => {
+    const d = JSON.parse(e.data);
+    $('dr-progress-bar').style.width = '100%';
+    $('dr-progress-msg').textContent = `完成（${d.elapsed}s）`;
+    $('dr-elapsed').textContent = '';
+    _drStepActive(4);
+    setTimeout(() => {
+      $('dr-progress-section').classList.add('hidden');
+    }, 2000);
+    _drRenderResults(d);
+    $('domain-research-btn').disabled = false;
+    _drEventSource.close();
+    _drEventSource = null;
+    loadDomainHistory();
+  });
+
+  _drEventSource.addEventListener('error', e => {
+    try {
+      const d = JSON.parse(e.data);
+      $('dr-progress-msg').textContent = `錯誤: ${d.error}`;
+    } catch {
+      $('dr-progress-msg').textContent = '連線中斷，請重試';
+    }
+    $('dr-progress-bar').style.width = '0%';
+    $('domain-research-btn').disabled = false;
+    if (_drEventSource) { _drEventSource.close(); _drEventSource = null; }
+  });
+
+  _drEventSource.onerror = () => {
+    if (_drEventSource && _drEventSource.readyState === EventSource.CLOSED) {
+      $('dr-progress-msg').textContent = '連線中斷，請重試';
+      $('dr-progress-bar').style.width = '0%';
+      $('domain-research-btn').disabled = false;
+      _drEventSource = null;
+    }
+  };
+}
+
+async function loadDomainHistory() {
+  const data = await fetch('/api/domain-research?limit=10').then(r => r.json()).catch(() => ({ records: [] }));
+  const list = $('dr-history-list');
+  if (!data.records || data.records.length === 0) {
+    list.innerHTML = '<div class="text-xs text-slate-600 p-2">尚無歷史研究</div>';
+    return;
+  }
+  list.innerHTML = data.records.map(rec => `
+    <div class="glass-card-sm p-3 flex items-center justify-between gap-2">
+      <div>
+        <span class="text-sm text-slate-200 font-medium">${rec.domain}</span>
+        <span class="text-xs text-slate-500 ml-2">${rec.ts}</span>
+        ${rec.obsidian_path ? '<span class="text-xs text-emerald-600 ml-2">Obsidian 已存</span>' : ''}
+      </div>
+      <div class="flex gap-2">
+        <button onclick="loadDomainResearchDetail(${rec.id})" class="text-xs text-slate-400 hover:text-slate-200 px-2 py-1 rounded border border-slate-600">查看</button>
+        <button onclick="deleteDomainResearch(${rec.id})" class="text-xs text-slate-600 hover:text-red-400 px-2 py-1">刪除</button>
+      </div>
+    </div>`).join('');
+}
+
+async function loadDomainResearchDetail(rid) {
+  const data = await fetch(`/api/domain-research/${rid}`).then(r => r.json()).catch(() => null);
+  if (!data) return;
+  $('dr-results').classList.remove('hidden');
+  $('dr-summary-banner').classList.add('hidden');
+  $('dr-reviewer-section').classList.add('hidden');
+  $('dr-obsidian-note').classList.add('hidden');
+  _drRenderResults({
+    frontier: data.frontier_stocks || [],
+    leading: data.leading_stocks || [],
+    reviewer_report: data.reviewer_report || '',
+    obsidian_path: data.obsidian_path || '',
+  });
+}
+
+async function deleteDomainResearch(rid) {
+  await fetch(`/api/domain-research/${rid}`, { method: 'DELETE' });
+  loadDomainHistory();
+}
+
+// Load history when switching to domain-research tab
+document.querySelectorAll('.tab-btn[data-tab="domain-research"]').forEach(btn => {
+  btn.addEventListener('click', () => loadDomainHistory());
+});
 
 window.addEventListener('keydown', (e) => {
   // Ignore shortcuts when user is entering data
