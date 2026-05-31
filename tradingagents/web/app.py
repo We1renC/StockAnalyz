@@ -2730,6 +2730,10 @@ def _save_obsidian_notes(domain: str, result: dict, vault_path: str) -> str:
             for stock in result.get(cat_key, []):
                 sym = stock.get("symbol", "UNKNOWN")
                 name = stock.get("name", sym)
+                best_fit = stock.get("best_fit") or []
+                if isinstance(best_fit, str):
+                    best_fit = [best_fit]
+                best_fit_yaml = ", ".join(str(x) for x in best_fit)
                 safe_sym = re.sub(r'[\\/*?"<>|]', "_", sym)
                 note_path = target_dir / f"{safe_sym}.md"
                 cat_label = "前瞻技術" if cat_key == "frontier" else "龍頭技術"
@@ -2741,6 +2745,7 @@ name: {name}
 analyzed: {ts}
 category: {cat_label}
 domain: {domain}
+best_fit: [{best_fit_yaml}]
 ---
 
 # {name} ({sym})
@@ -2839,6 +2844,173 @@ analyzed: {ts}
         return str(index_path)
     except Exception as e:
         return ""
+
+
+def _parse_obsidian_frontmatter(text: str) -> tuple[dict, str]:
+    """Parse a small YAML-like frontmatter block from an Obsidian note."""
+    if not text.startswith("---"):
+        return {}, text
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return {}, text
+    meta = {}
+    for line in parts[1].splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if value.startswith("[") and value.endswith("]"):
+            items = [x.strip().strip("'\"") for x in value[1:-1].split(",") if x.strip()]
+            meta[key] = items
+        else:
+            meta[key] = value.strip("'\"")
+    return meta, parts[2].lstrip()
+
+
+def _extract_md_section(text: str, title: str) -> str:
+    """Extract text under a markdown ##/### heading until the next heading."""
+    import re as _re
+    pattern = _re.compile(rf"^###?\s+{_re.escape(title)}\s*$", _re.MULTILINE)
+    match = pattern.search(text)
+    if not match:
+        return ""
+    rest = text[match.end():]
+    next_heading = _re.search(r"^###?\s+", rest, _re.MULTILINE)
+    section = rest[:next_heading.start()] if next_heading else rest
+    return section.strip()
+
+
+def _parse_obsidian_indicators(section: str) -> dict:
+    indicators = {}
+    key_map = {
+        "現價": "price",
+        "RSI": "rsi",
+        "MA20": "ma20",
+        "MA60": "ma60",
+        "Beta": "beta",
+    }
+    for line in section.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) != 2 or cells[0] in ("指標", "------"):
+            continue
+        if cells[0] == "52週高/低":
+            high_low = [x.strip() for x in cells[1].split("/")]
+            if len(high_low) == 2:
+                indicators["high52"] = _safe_float(high_low[0])
+                indicators["low52"] = _safe_float(high_low[1])
+            continue
+        key = key_map.get(cells[0])
+        if key:
+            indicators[key] = _safe_float(cells[1])
+    return {k: v for k, v in indicators.items() if v is not None}
+
+
+def _parse_obsidian_stock_note(note_path: Path, cat_key: str, fallback: dict | None = None) -> dict:
+    text = note_path.read_text(encoding="utf-8")
+    meta, body = _parse_obsidian_frontmatter(text)
+    fallback = fallback or {}
+    stock = {
+        "symbol": meta.get("symbol") or fallback.get("symbol") or note_path.stem,
+        "name": meta.get("name") or fallback.get("name") or note_path.stem,
+        "thesis": _extract_md_section(body, "投資論點") or fallback.get("thesis", ""),
+        "fundamentals": _extract_md_section(body, "基本面") or fallback.get("fundamentals", ""),
+        "news": _extract_md_section(body, "新聞與媒體") or fallback.get("news", ""),
+        "technology": _extract_md_section(body, "產業技術") or fallback.get("technology", ""),
+        "orders": _extract_md_section(body, "訂單狀況") or fallback.get("orders", ""),
+        "week_term": _extract_md_section(body, "當沖至週線（1 週）") or fallback.get("week_term", ""),
+        "short_term": _extract_md_section(body, "短線（3 個月）") or fallback.get("short_term", ""),
+        "mid_term": _extract_md_section(body, "中線（1 年）") or fallback.get("mid_term", ""),
+        "long_term": _extract_md_section(body, "長線（3 年以上）") or fallback.get("long_term", ""),
+        "best_fit": meta.get("best_fit") or fallback.get("best_fit") or (["short"] if cat_key == "frontier" else ["mid", "long"]),
+        "indicators": _parse_obsidian_indicators(_extract_md_section(body, "技術指標（抓取時）"))
+            or fallback.get("indicators", {}),
+    }
+    return sanitize_float_values(stock)
+
+
+def _obsidian_file_status(path_value: str | None) -> dict:
+    if not path_value:
+        return {"obsidian_status": "none", "obsidian_error": ""}
+    try:
+        path = Path(path_value).expanduser()
+        if not path.exists():
+            return {"obsidian_status": "missing", "obsidian_error": "Obsidian 檔案不存在"}
+        if not path.is_file():
+            return {"obsidian_status": "invalid", "obsidian_error": "Obsidian 路徑不是檔案"}
+        if not path.stat().st_size:
+            return {"obsidian_status": "empty", "obsidian_error": "Obsidian 檔案是空的"}
+        return {"obsidian_status": "readable", "obsidian_error": ""}
+    except Exception as exc:
+        return {"obsidian_status": "error", "obsidian_error": str(exc)}
+
+
+def _load_domain_research_from_obsidian(row: dict) -> dict | None:
+    """Load domain research from Obsidian notes, using SQLite only as metadata fallback."""
+    obsidian_path = row.get("obsidian_path") or ""
+    status = _obsidian_file_status(obsidian_path)
+    if status["obsidian_status"] != "readable":
+        return None
+
+    try:
+        index_path = Path(obsidian_path).expanduser()
+        research_dir = index_path.parent
+        index_text = index_path.read_text(encoding="utf-8")
+        meta, index_body = _parse_obsidian_frontmatter(index_text)
+
+        fallback_frontier = json.loads(row.get("frontier_stocks") or "[]")
+        fallback_leading = json.loads(row.get("leading_stocks") or "[]")
+        fallback_by_symbol = {
+            s.get("symbol"): s
+            for s in fallback_frontier + fallback_leading
+            if isinstance(s, dict) and s.get("symbol")
+        }
+
+        def _load_group(folder: str, cat_key: str) -> list:
+            group_dir = research_dir / folder
+            if not group_dir.is_dir():
+                return fallback_frontier if cat_key == "frontier" else fallback_leading
+            stocks = []
+            for note_path in sorted(group_dir.glob("*.md")):
+                parsed = _parse_obsidian_stock_note(
+                    note_path,
+                    cat_key,
+                    fallback_by_symbol.get(note_path.stem),
+                )
+                stocks.append(parsed)
+            return stocks
+
+        summary = ""
+        marker = "> 分析日"
+        if marker in index_body:
+            after_marker = index_body.split(marker, 1)[1]
+            if "\n" in after_marker:
+                after_marker = after_marker.split("\n", 1)[1]
+            summary = after_marker.split("## 前瞻技術標的", 1)[0].strip()
+        if not summary:
+            summary = row.get("summary", "")
+
+        return {
+            **row,
+            "domain": meta.get("domain") or row.get("domain"),
+            "ts": meta.get("analyzed") or row.get("ts"),
+            "summary": summary,
+            "frontier_stocks": _load_group("前瞻技術", "frontier"),
+            "leading_stocks": _load_group("龍頭技術", "leading"),
+            "analyst_report": _extract_md_section(index_body, "分析師報告") or row.get("analyst_report", ""),
+            "reviewer_report": _extract_md_section(index_body, "審查員複核") or row.get("reviewer_report", ""),
+            "obsidian_loaded": True,
+            "data_source": "obsidian",
+            **status,
+        }
+    except Exception as exc:
+        return {
+            **row,
+            "obsidian_loaded": False,
+            "data_source": "sqlite",
+            "obsidian_status": "error",
+            "obsidian_error": str(exc),
+        }
 
 
 def _enrich_stocks_with_indicators(stocks: list) -> list:
@@ -3285,7 +3457,12 @@ def api_list_domain_research(limit: int = 20):
         (limit,)
     ).fetchall()
     conn.close()
-    return {"records": [dict(r) for r in rows]}
+    records = []
+    for r in rows:
+        d = dict(r)
+        d.update(_obsidian_file_status(d.get("obsidian_path")))
+        records.append(d)
+    return {"records": records}
 
 
 @app.get("/api/domain-research/{rid}")
@@ -3297,12 +3474,28 @@ def api_get_domain_research(rid: int):
     if not row:
         raise HTTPException(status_code=404, detail="not found")
     d = dict(row)
+    obsidian_data = _load_domain_research_from_obsidian(d)
+    if obsidian_data:
+        if obsidian_data.get("data_source") == "obsidian":
+            return sanitize_float_values(obsidian_data)
+        d.update({
+            "obsidian_loaded": False,
+            "data_source": "sqlite",
+            "obsidian_status": obsidian_data.get("obsidian_status", "error"),
+            "obsidian_error": obsidian_data.get("obsidian_error", ""),
+        })
+    else:
+        d.update({
+            "obsidian_loaded": False,
+            "data_source": "sqlite",
+            **_obsidian_file_status(d.get("obsidian_path")),
+        })
     try:
         d["frontier_stocks"] = json.loads(d["frontier_stocks"] or "[]")
         d["leading_stocks"] = json.loads(d["leading_stocks"] or "[]")
     except Exception:
         pass
-    return d
+    return sanitize_float_values(d)
 
 
 @app.delete("/api/domain-research/{rid}")
