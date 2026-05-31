@@ -249,7 +249,8 @@ body { background: var(--bg-base); color: var(--text-primary); }
       </button>
       <button onclick="openSettings()" class="btn-secondary text-xs" style="padding:8px 16px;height:36px;border-radius:10px" title="LLM 設定">設定</button>
       <button onclick="toggleShortcutsHelp()" class="btn-secondary text-xs" style="padding:8px 16px;height:36px;border-radius:10px" title="按 ? 鍵顯示快捷鍵說明">快捷鍵</button>
-      <button id="refresh-btn" class="btn-secondary text-xs" style="padding:8px 16px;height:36px;border-radius:10px" title="立即刷新"><span id="refresh-icon">刷新</span></button>
+      <button onclick="reloadFromDB(this)" class="btn-secondary text-xs" style="padding:8px 16px;height:36px;border-radius:10px" title="從資料庫重新載入（不抓報價）">重新載入</button>
+      <button id="refresh-btn" class="btn-secondary text-xs" style="padding:8px 16px;height:36px;border-radius:10px" title="立即刷新（重抓報價）"><span id="refresh-icon">刷新報價</span></button>
       <span id="refresh-badge" class="text-xs text-slate-500 min-w-[100px]"></span>
       <select id="auto-refresh" class="input-field" style="width:auto;padding:8px 12px;font-size:12px">
         <option value="0">手動</option>
@@ -1088,6 +1089,22 @@ document.querySelectorAll('.filter-pill').forEach(btn => {
     renderWatchlist(window._watchlist || []);
   });
 });
+
+async function reloadFromDB(btn) {
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '載入中...'; }
+  try {
+    await loadAll();
+    // Also reload domain research history if that tab is active
+    const drTab = $('tab-domain-research');
+    if (drTab && !drTab.classList.contains('hidden')) {
+      await loadDomainHistory();
+    }
+    $('last-update').textContent = '最後更新（DB）：' + new Date().toLocaleTimeString('zh-TW');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
+  }
+}
 
 async function loadAll() {
   const [m, p, w, a, t] = await Promise.all([
@@ -3216,16 +3233,24 @@ async function loadDomainHistory() {
   }
   list.innerHTML = data.records.map(rec => `
     <div class="glass-card-sm p-3 flex items-center justify-between gap-2">
-      <div>
+      <div class="min-w-0">
         <span class="text-sm text-slate-200 font-medium">${rec.domain}</span>
         <span class="text-xs text-slate-500 ml-2">${rec.ts}</span>
         ${rec.obsidian_path ? '<span class="text-xs text-emerald-600 ml-2">Obsidian 已存</span>' : ''}
       </div>
-      <div class="flex gap-2">
+      <div class="flex gap-2 flex-shrink-0">
         <button onclick="loadDomainResearchDetail(${rec.id})" class="text-xs text-slate-400 hover:text-slate-200 px-2 py-1 rounded border border-slate-600">查看</button>
+        <button onclick="reloadDomainResearchDetail(${rec.id}, this)" class="text-xs text-slate-500 hover:text-slate-300 px-2 py-1 rounded border border-slate-700">重新載入</button>
         <button onclick="deleteDomainResearch(${rec.id})" class="text-xs text-slate-600 hover:text-red-400 px-2 py-1">刪除</button>
       </div>
     </div>`).join('');
+}
+
+async function reloadDomainResearchDetail(rid, btn) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '載入中...';
+  await loadDomainResearchDetail(rid);
+  btn.disabled = false; btn.textContent = orig;
 }
 
 async function loadDomainResearchDetail(rid) {
