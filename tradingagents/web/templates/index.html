@@ -144,6 +144,30 @@ body { background: var(--bg-base); color: var(--text-primary); }
 .data-table tbody tr { transition: all 0.15s ease; border-left: 2px solid transparent; }
 .data-table tbody tr:hover { background: var(--bg-hover); border-left-color: var(--accent); }
 .data-table tbody td { padding: 10px 12px; border-bottom: 1px solid rgba(148,163,184,0.04); vertical-align: middle; }
+.watch-name-hover { cursor: crosshair; text-decoration: underline; text-decoration-style: dotted; text-decoration-color: rgba(148,163,184,0.45); text-underline-offset: 3px; }
+.watch-name-hover:hover { color: var(--text-primary); text-decoration-color: var(--accent-light); }
+.intraday-tooltip {
+  position: fixed; z-index: 80; width: 320px; height: 220px; pointer-events: none;
+  background: rgba(2,6,23,0.96); border: 1px solid rgba(148,163,184,0.18);
+  border-radius: 8px; box-shadow: 0 18px 48px rgba(0,0,0,0.42); padding: 10px;
+}
+.intraday-tooltip.hidden { display: none; }
+.intraday-chart { height: 150px; margin-top: 8px; }
+.market-chart-card { position: relative; overflow: hidden; }
+.market-card-content { position: relative; z-index: 2; }
+.market-mini-chart {
+  position: absolute; inset: 26px 8px 6px 8px; z-index: 1;
+  opacity: 0.28; pointer-events: none;
+}
+.market-session-label { position: relative; z-index: 2; min-height: 14px; }
+.alert-clear-action {
+  opacity: 0; transform: translateY(1px); transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.alert-clear-host:hover .alert-clear-action { opacity: 1; transform: translateY(0); }
+.alert-header-menu {
+  display: none; position: absolute; right: 0; top: 100%; z-index: 30; padding-top: 4px;
+}
+.alert-header-host:hover .alert-header-menu { display: block; }
 
 /* ── Pill Badges ── */
 .pill { padding: 2px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; display: inline-block; }
@@ -244,9 +268,6 @@ body { background: var(--bg-base); color: var(--text-primary); }
       </div>
     </div>
     <div class="flex items-center gap-2 flex-wrap">
-      <button onclick="openBatchAnalyze()" class="btn-ai" title="AI 智能點位調整">
-        <span style="position:relative;z-index:1">AI 智能分析</span>
-      </button>
       <button onclick="openSettings()" class="btn-secondary text-xs" style="padding:8px 16px;height:36px;border-radius:10px" title="LLM 設定">設定</button>
       <button onclick="toggleShortcutsHelp()" class="btn-secondary text-xs" style="padding:8px 16px;height:36px;border-radius:10px" title="按 ? 鍵顯示快捷鍵說明">快捷鍵</button>
       <button onclick="reloadFromDB(this)" class="btn-secondary text-xs" style="padding:8px 16px;height:36px;border-radius:10px" title="從資料庫重新載入（不抓報價）">重新載入</button>
@@ -272,12 +293,27 @@ body { background: var(--bg-base); color: var(--text-primary); }
 
   <!-- Market State Bar -->
   <div id="market-bar" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6"></div>
+  <div id="intraday-tooltip" class="intraday-tooltip hidden">
+    <div class="flex items-center justify-between gap-3">
+      <div class="min-w-0">
+        <div id="intraday-title" class="font-mono text-sm font-semibold text-slate-100 truncate"></div>
+        <div id="intraday-subtitle" class="text-xs text-slate-500 truncate">當日走勢</div>
+      </div>
+      <div id="intraday-change" class="text-xs tabular-nums"></div>
+    </div>
+    <div id="intraday-chart" class="intraday-chart"></div>
+  </div>
 
   <!-- Portfolio Tab -->
   <div id="tab-portfolio" class="tab-content">
     <div class="flex justify-between items-center mb-3">
       <div></div>
-      <button onclick="openAddPosition()" class="btn-primary text-sm px-4 py-1.5">新增持倉</button>
+      <div class="flex items-center gap-2">
+        <button onclick="openBatchAnalyze()" class="btn-ai text-sm px-4 py-1.5" title="AI 智能點位調整">
+          <span style="position:relative;z-index:1">AI 智能分析</span>
+        </button>
+        <button onclick="openAddPosition()" class="btn-primary text-sm px-4 py-1.5">新增持倉</button>
+      </div>
     </div>
     <div id="portfolio-summary" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"></div>
 
@@ -389,7 +425,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
   <!-- Taiwan Watchlist Tab -->
   <div id="tab-watchlist-tw" class="tab-content hidden">
     <div class="mb-3 flex gap-2 flex-wrap items-center justify-between">
-      <div class="flex gap-2 flex-wrap">
+      <div class="flex gap-2 flex-wrap watch-filter-bar" data-watch-market="tw">
         <button data-filter="all" class="filter-pill active">全部</button>
         <button data-filter="電力" class="filter-pill">電力</button>
         <button data-filter="潛力" class="filter-pill">潛力</button>
@@ -399,24 +435,34 @@ body { background: var(--bg-base); color: var(--text-primary); }
         <button data-filter="散熱" class="filter-pill">散熱</button>
         <button data-filter="電網" class="filter-pill">電網</button>
       </div>
-      <button onclick="openAddWatch()" class="btn-primary text-sm px-4 py-1.5">新增觀察</button>
+      <div class="flex items-center gap-2">
+        <button onclick="openBatchAnalyze()" class="btn-ai text-sm px-4 py-1.5" title="AI 智能點位調整">
+          <span style="position:relative;z-index:1">AI 智能分析</span>
+        </button>
+        <button onclick="openAddWatch()" class="btn-primary text-sm px-4 py-1.5">新增觀察</button>
+      </div>
     </div>
     <div class="glass-card overflow-hidden">
       <table class="data-table">
         <thead>
           <tr>
-            <th class="text-right">優先</th>
-            <th class="text-left">代號</th>
-            <th class="text-left">名稱</th>
-            <th class="text-left">類別</th>
-            <th class="text-right">現價</th>
-            <th class="text-right">RSI</th>
-            <th class="text-right">Beta</th>
-            <th class="text-right">進場價</th>
-            <th class="text-right">距離</th>
-            <th class="text-right">停利</th>
-            <th class="text-right">停損</th>
-            <th class="text-left">警報</th>
+            <th class="text-center">優先</th>
+            <th class="text-center">代號</th>
+            <th class="text-center">名稱</th>
+            <th class="text-center">類別</th>
+            <th class="text-center">RSI</th>
+            <th class="text-center">Beta</th>
+            <th class="text-center">停利</th>
+            <th class="text-center">進場價|現價(距離)</th>
+            <th class="text-center">停損</th>
+            <th class="text-center">
+              <div class="alert-header-host relative inline-flex items-center">
+                <span>警報</span>
+                <div class="alert-header-menu">
+                  <button onclick="clearMarketAlerts('tw')" class="text-xs px-2 py-1 rounded-lg whitespace-nowrap" style="background:rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.2)">清除台股</button>
+                </div>
+              </div>
+            </th>
             <th class="text-center">狀態</th>
             <th class="text-center">操作</th>
           </tr>
@@ -429,7 +475,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
   <!-- US Watchlist Tab -->
   <div id="tab-watchlist-us" class="tab-content hidden">
     <div class="mb-3 flex gap-2 flex-wrap items-center justify-between">
-      <div class="flex gap-2 flex-wrap">
+      <div class="flex gap-2 flex-wrap watch-filter-bar" data-watch-market="us">
         <button data-filter="all" class="filter-pill active">全部</button>
         <button data-filter="電力" class="filter-pill">電力</button>
         <button data-filter="潛力" class="filter-pill">潛力</button>
@@ -439,24 +485,34 @@ body { background: var(--bg-base); color: var(--text-primary); }
         <button data-filter="散熱" class="filter-pill">散熱</button>
         <button data-filter="電網" class="filter-pill">電網</button>
       </div>
-      <button onclick="openAddWatch()" class="btn-primary text-sm px-4 py-1.5">新增觀察</button>
+      <div class="flex items-center gap-2">
+        <button onclick="openBatchAnalyze()" class="btn-ai text-sm px-4 py-1.5" title="AI 智能點位調整">
+          <span style="position:relative;z-index:1">AI 智能分析</span>
+        </button>
+        <button onclick="openAddWatch()" class="btn-primary text-sm px-4 py-1.5">新增觀察</button>
+      </div>
     </div>
     <div class="glass-card overflow-hidden">
       <table class="data-table">
         <thead>
           <tr>
-            <th class="text-right">優先</th>
-            <th class="text-left">代號</th>
-            <th class="text-left">名稱</th>
-            <th class="text-left">類別</th>
-            <th class="text-right">現價</th>
-            <th class="text-right">RSI</th>
-            <th class="text-right">Beta</th>
-            <th class="text-right">進場價</th>
-            <th class="text-right">距離</th>
-            <th class="text-right">停利</th>
-            <th class="text-right">停損</th>
-            <th class="text-left">警報</th>
+            <th class="text-center">優先</th>
+            <th class="text-center">代號</th>
+            <th class="text-center">名稱</th>
+            <th class="text-center">類別</th>
+            <th class="text-center">RSI</th>
+            <th class="text-center">Beta</th>
+            <th class="text-center">停利</th>
+            <th class="text-center">進場價|現價(距離)</th>
+            <th class="text-center">停損</th>
+            <th class="text-center">
+              <div class="alert-header-host relative inline-flex items-center">
+                <span>警報</span>
+                <div class="alert-header-menu">
+                  <button onclick="clearMarketAlerts('us')" class="text-xs px-2 py-1 rounded-lg whitespace-nowrap" style="background:rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.2)">清除美股</button>
+                </div>
+              </div>
+            </th>
             <th class="text-center">狀態</th>
             <th class="text-center">操作</th>
           </tr>
@@ -756,11 +812,21 @@ body { background: var(--bg-base); color: var(--text-primary); }
 
     <!-- Obsidian -->
     <div class="mb-6">
-      <h3 class="text-lg font-semibold mb-3 border-b border-gray-700 pb-1">Obsidian 筆記</h3>
-      <div>
-        <label class="text-xs text-gray-400 block mb-1">Vault 根目錄路徑（留空不存筆記）</label>
+      <h3 class="text-lg font-semibold mb-3 border-b border-gray-700 pb-1">Obsidian 雙向同步</h3>
+      <div class="mb-3">
+        <label class="text-xs text-gray-400 block mb-1">Vault 根目錄路徑（留空不同步）</label>
         <input id="obsidian-vault-path" type="text" class="input-field font-mono text-sm" placeholder="例如：~/Documents/MyVault">
-        <div class="text-xs text-gray-500 mt-1">領域研究結果會存至 <code class="bg-gray-900 px-1 rounded">{vault}/Research/{領域}/</code></div>
+        <div class="text-xs text-gray-500 mt-1">
+          持倉 → <code class="bg-gray-900 px-1 rounded">Portfolio/Positions/</code>
+          觀察 → <code class="bg-gray-900 px-1 rounded">Watchlist/</code>
+          警報 → <code class="bg-gray-900 px-1 rounded">Alerts/</code>
+          研究 → <code class="bg-gray-900 px-1 rounded">Research/</code>
+        </div>
+      </div>
+      <div class="flex gap-2 flex-wrap">
+        <button onclick="obsidianExport(this)" class="btn-secondary text-xs px-3 py-1.5">匯出至 Obsidian</button>
+        <button onclick="obsidianSync(this)" class="btn-secondary text-xs px-3 py-1.5">從 Obsidian 同步</button>
+        <span id="obsidian-sync-result" class="text-xs text-slate-400 self-center"></span>
       </div>
     </div>
 
@@ -1078,12 +1144,16 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
 // Watchlist filter
 let currentFilter = 'all';
-document.querySelectorAll('.filter-pill').forEach(btn => {
+function syncWatchFilterButtons() {
+  document.querySelectorAll('.watch-filter-bar .filter-pill').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.filter === currentFilter);
+  });
+}
+
+document.querySelectorAll('.watch-filter-bar .filter-pill').forEach(btn => {
   btn.addEventListener('click', () => {
-    const parent = btn.closest('.flex');
-    parent.querySelectorAll('.filter-pill').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
     currentFilter = btn.dataset.filter;
+    syncWatchFilterButtons();
     renderWatchlist(window._watchlist || []);
   });
 });
@@ -1135,6 +1205,8 @@ async function loadAll() {
 
 let _twTrendChart = null;
 let _usTrendChart = null;
+let _twiiMarketChart = null;
+let _spxMarketChart = null;
 let _twChartScaleMode = 1; // Default directly to Logarithmic (1)
 let _usChartScaleMode = 1; // Default directly to Logarithmic (1)
 
@@ -1352,8 +1424,87 @@ window.addEventListener('resize', () => {
   if (_usTrendChart && $('us-portfolio-trend-chart')) {
     try { _usTrendChart.resize($('us-portfolio-trend-chart').clientWidth, 288); } catch(e){}
   }
+  if (_twiiMarketChart && $('market-chart-twii')) {
+    try { _twiiMarketChart.resize($('market-chart-twii').clientWidth, 58); } catch(e){}
+  }
+  if (_spxMarketChart && $('market-chart-spx')) {
+    try { _spxMarketChart.resize($('market-chart-spx').clientWidth, 58); } catch(e){}
+  }
 });
 
+function clearMarketChart(key) {
+  const chart = key === 'twii' ? _twiiMarketChart : _spxMarketChart;
+  if (chart) {
+    try { chart.remove(); } catch(e) {}
+  }
+  if (key === 'twii') _twiiMarketChart = null;
+  if (key === 'spx') _spxMarketChart = null;
+}
+
+function renderMarketMiniChart(key, data) {
+  const container = $(`market-chart-${key}`);
+  const label = $(`market-session-${key}`);
+  if (!container || !label) return;
+  clearMarketChart(key);
+  container.innerHTML = '';
+
+  if (!data || data.error) {
+    label.textContent = data?.error || '走勢資料暫缺';
+    container.innerHTML = '<div class="h-full flex items-center text-xs text-slate-600">無資料</div>';
+    return;
+  }
+
+  const statusText = data.status === 'preopen'
+    ? `${data.session_date} 開盤前`
+    : data.status === 'last_session'
+      ? `${data.session_date} 最後交易日`
+      : `${data.session_date} 當日`;
+  const change = data.change_pct;
+  label.textContent = change === null || change === undefined
+    ? statusText
+    : `${statusText} · ${change >= 0 ? '+' : ''}${fmt(change)}%`;
+
+  if (!data.points || data.points.length === 0) {
+    container.innerHTML = '<div class="h-full flex items-center text-xs text-slate-600">待開盤</div>';
+    return;
+  }
+
+  const rising = (change ?? 0) >= 0;
+  const chart = LightweightCharts.createChart(container, {
+    width: container.clientWidth || 180,
+    height: 58,
+    layout: { background: { color: 'transparent' }, textColor: '#64748b' },
+    grid: { vertLines: { visible: false }, horzLines: { visible: false } },
+    timeScale: { visible: false },
+    rightPriceScale: { visible: false },
+    crosshair: { mode: 0 },
+    handleScroll: false,
+    handleScale: false,
+  });
+  const series = chart.addAreaSeries({
+    lineColor: rising ? '#f87171' : '#34d399',
+    topColor: rising ? 'rgba(248,113,113,0.22)' : 'rgba(52,211,153,0.22)',
+    bottomColor: 'rgba(15,23,42,0)',
+    lineWidth: 2,
+    priceLineVisible: false,
+    lastValueVisible: false,
+  });
+  series.setData(data.points);
+  chart.timeScale().fitContent();
+  if (key === 'twii') _twiiMarketChart = chart;
+  if (key === 'spx') _spxMarketChart = chart;
+}
+
+async function loadMarketIntradayCharts() {
+  try {
+    const data = await fetch('/api/market/intraday?interval=5m').then(r => r.json());
+    renderMarketMiniChart('twii', data.twii);
+    renderMarketMiniChart('spx', data.spx);
+  } catch (e) {
+    renderMarketMiniChart('twii', { error: String(e) });
+    renderMarketMiniChart('spx', { error: String(e) });
+  }
+}
 
 function renderMarket(m) {
   if (m.error) {
@@ -1364,31 +1515,49 @@ function renderMarket(m) {
   const levelBg = m.risk_level === 'danger' ? 'from-red-900/30 to-red-950/20' : m.risk_level === 'warning' ? 'from-amber-900/30 to-amber-950/20' : 'from-emerald-900/30 to-emerald-950/20';
   const levelText = m.risk_level === 'danger' ? '危險' : m.risk_level === 'warning' ? '警戒' : '安全';
   const vixColor = m.vix > 25 ? 'text-red-400' : m.vix > 15 ? 'text-amber-400' : 'text-emerald-400';
+  const riskStages = [
+    { code: 'VIX', ok: m.vix <= 25, label: m.vix <= 25 ? 'OK' : 'HI' },
+    { code: 'TW', ok: m.twii >= m.twii_ma60, label: m.twii >= m.twii_ma60 ? 'OK' : 'BR' },
+    { code: 'SPX', ok: m.spx >= m.spx_ma60, label: m.spx >= m.spx_ma60 ? 'OK' : 'BR' },
+  ].map(stage => `
+    <span class="pill ${stage.ok ? 'pill-green' : 'pill-red'}" style="font-size:10px;padding:1px 6px">
+      ${stage.code}:${stage.label}
+    </span>`).join('');
   $('market-bar').innerHTML = `
     <div class="glass-card ${levelGlow} bg-gradient-to-br ${levelBg} p-4">
       <div class="text-xs text-slate-400 mb-1">市場狀態</div>
-      <div class="text-xl font-bold">${levelText}</div>
-      <div class="text-xs text-slate-500 mt-1">${m.warnings_count}/3 警示觸發</div>
+      <div class="flex items-center gap-2">
+        <div class="text-xl font-bold">${levelText}</div>
+        <div class="flex flex-col gap-1 ml-auto items-end">${riskStages}</div>
+      </div>
     </div>
     <div class="glass-card p-4">
       <div class="text-xs text-slate-400 mb-1">VIX 恐慌指數</div>
       <div class="text-2xl font-bold tabular-nums ${vixColor}">${fmt(m.vix)}</div>
       <div class="mt-1.5 h-1 rounded bg-slate-700"><div class="h-full rounded ${m.vix > 25 ? 'bg-red-500' : m.vix > 15 ? 'bg-amber-500' : 'bg-emerald-500'}" style="width:${Math.min(m.vix/40*100,100)}%"></div></div>
     </div>
-    <div class="glass-card p-4">
-      <div class="text-xs text-slate-400 mb-1">台股加權</div>
-      <div class="text-xl font-bold tabular-nums">${fmtInt(m.twii)}</div>
-      <div class="flex items-center gap-1 mt-1 text-xs ${m.twii > m.twii_ma60 ? 'text-red-400' : 'text-emerald-400'}">
-        <span>${m.twii > m.twii_ma60 ? '▲' : '▼'}</span><span>MA60: ${fmtInt(m.twii_ma60)}</span>
-        <span class="pill ${m.twii > m.twii_ma60 ? 'pill-red' : 'pill-green'} ml-1" style="font-size:10px;padding:1px 6px">${((m.twii/m.twii_ma60-1)*100).toFixed(1)}%</span>
+    <div class="glass-card p-4 market-chart-card">
+      <div id="market-chart-twii" class="market-mini-chart"></div>
+      <div class="market-card-content">
+        <div class="text-xs text-slate-400 mb-1">台股加權</div>
+        <div class="text-xl font-bold tabular-nums">${fmtInt(m.twii)}</div>
+        <div class="flex items-center gap-1 mt-1 text-xs ${m.twii > m.twii_ma60 ? 'text-red-400' : 'text-emerald-400'}">
+          <span>${m.twii > m.twii_ma60 ? '▲' : '▼'}</span><span>MA60: ${fmtInt(m.twii_ma60)}</span>
+          <span class="pill ${m.twii > m.twii_ma60 ? 'pill-red' : 'pill-green'} ml-1" style="font-size:10px;padding:1px 6px">${((m.twii/m.twii_ma60-1)*100).toFixed(1)}%</span>
+        </div>
+        <div id="market-session-twii" class="market-session-label text-[10px] text-slate-500 mt-1"></div>
       </div>
     </div>
-    <div class="glass-card p-4">
-      <div class="text-xs text-slate-400 mb-1">S&P 500</div>
-      <div class="text-xl font-bold tabular-nums">${fmt(m.spx)}</div>
-      <div class="flex items-center gap-1 mt-1 text-xs ${m.spx > m.spx_ma60 ? 'text-red-400' : 'text-emerald-400'}">
-        <span>${m.spx > m.spx_ma60 ? '▲' : '▼'}</span><span>MA60: ${fmt(m.spx_ma60)}</span>
-        <span class="pill ${m.spx > m.spx_ma60 ? 'pill-red' : 'pill-green'} ml-1" style="font-size:10px;padding:1px 6px">${((m.spx/m.spx_ma60-1)*100).toFixed(1)}%</span>
+    <div class="glass-card p-4 market-chart-card">
+      <div id="market-chart-spx" class="market-mini-chart"></div>
+      <div class="market-card-content">
+        <div class="text-xs text-slate-400 mb-1">S&P 500</div>
+        <div class="text-xl font-bold tabular-nums">${fmt(m.spx)}</div>
+        <div class="flex items-center gap-1 mt-1 text-xs ${m.spx > m.spx_ma60 ? 'text-red-400' : 'text-emerald-400'}">
+          <span>${m.spx > m.spx_ma60 ? '▲' : '▼'}</span><span>MA60: ${fmt(m.spx_ma60)}</span>
+          <span class="pill ${m.spx > m.spx_ma60 ? 'pill-red' : 'pill-green'} ml-1" style="font-size:10px;padding:1px 6px">${((m.spx/m.spx_ma60-1)*100).toFixed(1)}%</span>
+        </div>
+        <div id="market-session-spx" class="market-session-label text-[10px] text-slate-500 mt-1"></div>
       </div>
     </div>
     <div class="glass-card p-4">
@@ -1396,6 +1565,7 @@ function renderMarket(m) {
       <div class="text-lg font-medium tabular-nums">${(m.ts || '').split('T')[1]?.substring(0,8) || '—'}</div>
       <div class="text-xs text-slate-500 mt-1">${(m.ts || '').split('T')[0] || ''}</div>
     </div>`;
+  loadMarketIntradayCharts();
 }
 
 function renderPortfolio(data) {
@@ -1495,7 +1665,7 @@ function renderPortfolio(data) {
 
     return `<tr>
       <td class="font-mono font-semibold text-slate-200">${p.symbol}</td>
-      <td><div class="text-slate-300">${p.name||''}</div><div class="text-[10px] text-slate-600">${p.category||''}</div></td>
+      <td><div class="text-slate-300"><span class="watch-name-hover" data-symbol="${p.symbol}">${p.name||''}</span></div><div class="text-[10px] text-slate-600">${p.category||''}</div></td>
       <td class="text-right tabular-nums">${fmtInt(p.shares)}</td>
       <td class="text-right tabular-nums text-slate-400">${fmt(p.cost_price)}</td>
       <td class="text-right tabular-nums font-semibold">${fmt(p.current_price)}</td>
@@ -1527,14 +1697,15 @@ function renderPortfolio(data) {
 }
 
 function renderWatchlist(items) {
-  let filtered = items;
-  if (currentFilter !== 'all') {
-    filtered = items.filter(w => (w.category||'').includes(currentFilter));
-  }
+  syncWatchFilterButtons();
 
   // 分流台美股
-  const twItems = filtered.filter(w => w.symbol.endsWith('.TW'));
-  const usItems = filtered.filter(w => !w.symbol.endsWith('.TW'));
+  const twItems = items
+    .filter(w => w.symbol.endsWith('.TW'))
+    .filter(w => currentFilter === 'all' || (w.category||'').includes(currentFilter));
+  const usItems = items
+    .filter(w => !w.symbol.endsWith('.TW'))
+    .filter(w => currentFilter === 'all' || (w.category||'').includes(currentFilter));
 
   const makeAlertCell = (symbol) => {
     const alerts = (window._allAlerts || []).filter(a => a.symbol === symbol);
@@ -1562,7 +1733,30 @@ function renderWatchlist(items) {
         return `<span class="pill" style="font-size:10px;background:rgba(20,184,166,0.12);color:#5eead4;border:1px solid rgba(20,184,166,0.24)">${item.label}${countText}</span>`;
       })
       .join('');
-    return `<div class="flex items-center gap-1 flex-wrap">${typePills}</div>`;
+    return `<div class="alert-clear-host flex items-center justify-center gap-1 flex-wrap">
+      ${typePills}
+      <button data-clear-alert-symbol="${symbol}" class="alert-clear-action text-xs px-2 py-0.5 rounded-lg" style="background:rgba(239,68,68,0.12);color:#f87171;border:1px solid rgba(239,68,68,0.18)">清除</button>
+    </div>`;
+  };
+
+  const makeCategoryCell = (category) => {
+    const parts = String(category || '—')
+      .split(/[-/／,，]/)
+      .map(x => x.trim())
+      .filter(Boolean);
+    let main = parts[0] || '—';
+    let subParts = parts.slice(1);
+
+    // For "潛力-機器人" style labels, show the underlying theme first and keep 潛力 as helper.
+    if (parts[0] === '潛力' && parts[1] && !/^[A-Z]級$/.test(parts[1])) {
+      main = parts[1];
+      subParts = ['潛力', ...parts.slice(2)];
+    }
+
+    const sub = subParts.join(' ');
+    return `<span class="pill pill-blue" style="font-size:11px">
+      ${main}${sub ? `<span class="text-slate-400 ml-1">${sub}</span>` : ''}
+    </span>`;
   };
 
   const makeRowHtml = (w) => {
@@ -1577,6 +1771,12 @@ function renderWatchlist(items) {
     else if (pri >= 40) priPill = 'pill-blue';
     else if (pri < 20) priPill = 'pill-red';
     const betaPill = w.beta >= 1.3 ? 'pill-red' : w.beta <= 0.7 ? 'pill-green' : 'pill-gray';
+    const entryCurrentHtml = `
+      <span class="tabular-nums text-slate-500">${fmt(w.target_entry)}</span>
+      <span class="text-slate-600 mx-1">|</span>
+      <span class="tabular-nums text-slate-300">${fmt(w.current_price)}</span>
+      <span class="pill ${distPill} ml-1 tabular-nums" style="font-size:10px;padding:1px 5px">${dist == null ? '—' : (dist >= 0 ? '+' : '') + fmt(dist) + '%'}</span>
+    `;
 
     // 狀態膠囊無圖示化
     let statusPill = 'pill-gray';
@@ -1592,21 +1792,19 @@ function renderWatchlist(items) {
     }
 
     return `<tr>
-      <td class="text-right"><span class="pill ${priPill} tabular-nums" style="font-size:11px">${Math.round(pri)}</span></td>
-      <td class="font-mono font-semibold text-slate-200">
+      <td class="text-center"><span class="pill ${priPill} tabular-nums" style="font-size:11px">${Math.round(pri)}</span></td>
+      <td class="text-center font-mono font-semibold text-slate-200">
         ${w.symbol}
         ${w.is_position ? `<span class="pill pill-blue ml-1 text-[10px]" style="font-size:10px;padding:1px 4px">持倉</span>` : ''}
       </td>
-      <td class="text-slate-300">${w.name || ''}</td>
-      <td class="text-xs"><span class="pill pill-blue" style="font-size:11px">${w.category}</span></td>
-      <td class="text-right tabular-nums font-semibold">${fmt(w.current_price)}</td>
-      <td class="text-right"><span class="tabular-nums text-xs ${rsiPct>=75?'text-red-400':rsiPct<=30?'text-amber-400':'text-slate-400'}">${fmt(w.rsi, 1)}</span><div class="rsi-bar"><div class="rsi-fill ${rsiColor}" style="width:${rsiPct}%"></div></div></td>
-      <td class="text-right"><span class="pill ${betaPill} tabular-nums" style="font-size:11px">${fmt(w.beta, 2)}</span></td>
-      <td class="text-right tabular-nums">${fmt(w.target_entry)}</td>
-      <td class="text-right"><span class="pill ${distPill} tabular-nums" style="font-size:11px">${dist == null ? '—' : (dist >= 0 ? '+' : '') + fmt(dist) + '%'}</span></td>
-      <td class="text-right tabular-nums text-red-400">${fmt(w.target_profit)}</td>
-      <td class="text-right tabular-nums text-emerald-400">${fmt(w.target_stop)}</td>
-      <td>${makeAlertCell(w.symbol)}</td>
+      <td class="text-center text-slate-300"><span class="watch-name-hover" data-symbol="${w.symbol}">${w.name || ''}</span></td>
+      <td class="text-center text-xs">${makeCategoryCell(w.category)}</td>
+      <td class="text-center"><span class="tabular-nums text-xs ${rsiPct>=75?'text-red-400':rsiPct<=30?'text-amber-400':'text-slate-400'}">${fmt(w.rsi, 1)}</span><div class="rsi-bar"><div class="rsi-fill ${rsiColor}" style="width:${rsiPct}%"></div></div></td>
+      <td class="text-center"><span class="pill ${betaPill} tabular-nums" style="font-size:11px">${fmt(w.beta, 2)}</span></td>
+      <td class="text-center tabular-nums text-red-400">${fmt(w.target_profit)}</td>
+      <td class="text-center whitespace-nowrap">${entryCurrentHtml}</td>
+      <td class="text-center tabular-nums text-emerald-400">${fmt(w.target_stop)}</td>
+      <td class="text-center">${makeAlertCell(w.symbol)}</td>
       <td class="text-center text-sm"><span class="pill ${statusPill} text-[11px]">${statusText}</span></td>
       <td class="text-center whitespace-nowrap">
         <button onclick="diagnose('${w.symbol}','${(w.name||'').replace(/'/g,"\\\'")}')" class="btn-action" data-tip="分析">分析</button>
@@ -1619,13 +1817,13 @@ function renderWatchlist(items) {
   if (twItems.length > 0) {
     $('tw-watchlist-tbody').innerHTML = twItems.map(makeRowHtml).join('');
   } else {
-    $('tw-watchlist-tbody').innerHTML = `<tr><td colspan="14" class="text-center text-slate-500 py-6">無台股觀察資料</td></tr>`;
+    $('tw-watchlist-tbody').innerHTML = `<tr><td colspan="12" class="text-center text-slate-500 py-6">無台股觀察資料</td></tr>`;
   }
 
   if (usItems.length > 0) {
     $('us-watchlist-tbody').innerHTML = usItems.map(makeRowHtml).join('');
   } else {
-    $('us-watchlist-tbody').innerHTML = `<tr><td colspan="14" class="text-center text-slate-500 py-6">無美股觀察資料</td></tr>`;
+    $('us-watchlist-tbody').innerHTML = `<tr><td colspan="12" class="text-center text-slate-500 py-6">無美股觀察資料</td></tr>`;
   }
 }
 
@@ -1912,6 +2110,123 @@ function toggleAlertDetails(symbol) {
 
 let _currentSymbol = null;
 let _chart = null;
+let _intradayChart = null;
+let _intradaySeries = null;
+let _intradayHoverSymbol = null;
+let _intradayHoverTimer = null;
+const _intradayCache = {};
+
+function positionIntradayTooltip(event) {
+  const tooltip = $('intraday-tooltip');
+  if (!tooltip) return;
+  const margin = 16;
+  const width = tooltip.offsetWidth || 320;
+  const height = tooltip.offsetHeight || 220;
+  let left = event.clientX + 18;
+  let top = event.clientY + 18;
+  if (left + width + margin > window.innerWidth) left = event.clientX - width - 18;
+  if (top + height + margin > window.innerHeight) top = event.clientY - height - 18;
+  tooltip.style.left = Math.max(margin, left) + 'px';
+  tooltip.style.top = Math.max(margin, top) + 'px';
+}
+
+function clearIntradayChart() {
+  if (_intradayChart) {
+    try { _intradayChart.remove(); } catch(e) {}
+  }
+  _intradayChart = null;
+  _intradaySeries = null;
+}
+
+function renderIntradayTooltip(symbol, data) {
+  const chartEl = $('intraday-chart');
+  const changeEl = $('intraday-change');
+  $('intraday-title').textContent = symbol;
+
+  if (!data || data.error || !data.points || data.points.length === 0) {
+    $('intraday-subtitle').textContent = data?.error || '沒有當日走勢資料';
+    changeEl.textContent = '';
+    chartEl.innerHTML = '<div class="h-full flex items-center justify-center text-xs text-slate-500">無資料</div>';
+    clearIntradayChart();
+    return;
+  }
+
+  const change = data.change_pct ?? 0;
+  const changeClass = change >= 0 ? 'text-red-400' : 'text-emerald-400';
+  $('intraday-subtitle').textContent = `${data.interval || '5m'} · ${data.points.length} 筆`;
+  changeEl.className = `text-xs tabular-nums ${changeClass}`;
+  changeEl.textContent = `${change >= 0 ? '+' : ''}${fmt(change)}%`;
+
+  chartEl.innerHTML = '';
+  clearIntradayChart();
+  _intradayChart = LightweightCharts.createChart(chartEl, {
+    width: chartEl.clientWidth,
+    height: 150,
+    layout: { background: { color: 'transparent' }, textColor: '#64748b' },
+    grid: {
+      vertLines: { color: 'rgba(148,163,184,0.04)' },
+      horzLines: { color: 'rgba(148,163,184,0.05)' },
+    },
+    timeScale: { timeVisible: true, secondsVisible: false, borderVisible: false },
+    rightPriceScale: { borderVisible: false },
+    crosshair: { mode: 0 },
+  });
+  _intradaySeries = _intradayChart.addAreaSeries({
+    lineColor: change >= 0 ? '#f87171' : '#34d399',
+    topColor: change >= 0 ? 'rgba(248,113,113,0.22)' : 'rgba(52,211,153,0.22)',
+    bottomColor: 'rgba(15,23,42,0)',
+    lineWidth: 2,
+    priceLineVisible: false,
+  });
+  _intradaySeries.setData(data.points);
+  _intradayChart.timeScale().fitContent();
+}
+
+async function showIntradayTooltip(event, target) {
+  const symbol = target.dataset.symbol;
+  if (!symbol) return;
+  _intradayHoverSymbol = symbol;
+  positionIntradayTooltip(event);
+  const tooltip = $('intraday-tooltip');
+  tooltip.classList.remove('hidden');
+  $('intraday-title').textContent = symbol;
+  $('intraday-subtitle').textContent = '載入當日走勢...';
+  $('intraday-change').textContent = '';
+  $('intraday-chart').innerHTML = '<div class="h-full flex items-center justify-center text-xs text-slate-500">載入中...</div>';
+
+  const data = _intradayCache[symbol] || await fetch(`/api/intraday/${encodeURIComponent(symbol)}?interval=5m`).then(r => r.json()).catch(e => ({ error: String(e) }));
+  _intradayCache[symbol] = data;
+  if (_intradayHoverSymbol === symbol) renderIntradayTooltip(symbol, data);
+}
+
+function hideIntradayTooltip() {
+  _intradayHoverSymbol = null;
+  if (_intradayHoverTimer) {
+    clearTimeout(_intradayHoverTimer);
+    _intradayHoverTimer = null;
+  }
+  $('intraday-tooltip')?.classList.add('hidden');
+  clearIntradayChart();
+}
+
+document.addEventListener('mouseover', e => {
+  const target = e.target.closest?.('.watch-name-hover');
+  if (!target) return;
+  if (target.contains(e.relatedTarget)) return;
+  if (_intradayHoverTimer) clearTimeout(_intradayHoverTimer);
+  _intradayHoverTimer = setTimeout(() => showIntradayTooltip(e, target), 180);
+});
+
+document.addEventListener('mousemove', e => {
+  if (_intradayHoverSymbol) positionIntradayTooltip(e);
+});
+
+document.addEventListener('mouseout', e => {
+  const target = e.target.closest?.('.watch-name-hover');
+  if (!target) return;
+  if (target.contains(e.relatedTarget)) return;
+  hideIntradayTooltip();
+});
 
 async function diagnose(symbol, name) {
   _currentSymbol = symbol;
@@ -2692,6 +3007,32 @@ async function clearAlerts() {
   loadAlertsFiltered();
 }
 
+async function clearSymbolAlerts(event, symbol) {
+  event?.stopPropagation();
+  if (!confirm(`確認清除 ${symbol} 的所有警報？`)) return;
+  const r = await fetch(`/api/alerts/clear?symbol=${encodeURIComponent(symbol)}`, {method: 'DELETE'}).then(res => res.json());
+  if (r.ok) {
+    await loadAll();
+  } else {
+    alert('清除失敗');
+  }
+}
+
+async function clearMarketAlerts(market) {
+  const r = await fetch(`/api/alerts/clear?market=${encodeURIComponent(market)}`, {method: 'DELETE'}).then(res => res.json());
+  if (r.ok) {
+    await loadAll();
+  } else {
+    alert('清除失敗');
+  }
+}
+
+document.addEventListener('click', e => {
+  const btn = e.target.closest?.('[data-clear-alert-symbol]');
+  if (!btn) return;
+  clearSymbolAlerts(e, btn.dataset.clearAlertSymbol);
+});
+
 async function ackAlert(id) {
   await fetch('/api/alerts/ack', {
     method: 'POST',
@@ -3049,6 +3390,50 @@ function switchTab(tabName) {
   if (btn) {
     btn.click();
   }
+}
+
+// ─────────────── Obsidian 同步 ───────────────
+async function obsidianExport(btn) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '匯出中...';
+  try {
+    const r = await fetch('/api/obsidian-export', { method: 'POST' }).then(r => r.json());
+    if (r.ok) {
+      const e = r.exported;
+      $('obsidian-sync-result').textContent =
+        `匯出完成：持倉 ${e.positions} / 觀察 ${e.watchlist} / 警報 ${e.alerts}`;
+      $('obsidian-sync-result').style.color = '#34d399';
+    } else {
+      $('obsidian-sync-result').textContent = r.detail || '匯出失敗';
+      $('obsidian-sync-result').style.color = '#ef4444';
+    }
+  } catch(e) {
+    $('obsidian-sync-result').textContent = '連線失敗：' + e;
+    $('obsidian-sync-result').style.color = '#ef4444';
+  }
+  btn.disabled = false; btn.textContent = orig;
+}
+
+async function obsidianSync(btn) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '同步中...';
+  try {
+    const r = await fetch('/api/obsidian-sync', { method: 'POST' }).then(r => r.json());
+    if (r.ok) {
+      $('obsidian-sync-result').textContent =
+        `同步完成：持倉 ${r.positions.synced} 筆 / 觀察 ${r.watchlist.synced} 筆`;
+      $('obsidian-sync-result').style.color = '#34d399';
+      // Reload UI data
+      await loadAll();
+    } else {
+      $('obsidian-sync-result').textContent = r.detail || '同步失敗';
+      $('obsidian-sync-result').style.color = '#ef4444';
+    }
+  } catch(e) {
+    $('obsidian-sync-result').textContent = '連線失敗：' + e;
+    $('obsidian-sync-result').style.color = '#ef4444';
+  }
+  btn.disabled = false; btn.textContent = orig;
 }
 
 // ─────────────── 領域研究 ───────────────

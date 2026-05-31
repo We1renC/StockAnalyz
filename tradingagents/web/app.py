@@ -14,6 +14,7 @@ from typing import Optional
 from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 import certifi
 
@@ -790,18 +791,22 @@ def insert_alerts(c, symbol: str, name: str, ind: dict, market: dict, position=N
             continue
 
         diag_text = diagnose(symbol, name, ind, market, position=position)
+        ts_now = datetime.now().isoformat(timespec="seconds")
         c.execute(
             "INSERT INTO alerts (ts, symbol, level, type, message, price, diagnosis) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                datetime.now().isoformat(timespec="seconds"),
-                symbol,
-                a["level"],
-                a["type"],
-                a["message"],
-                a["price"],
-                diag_text,
-            ),
+            (ts_now, symbol, a["level"], a["type"], a["message"], a["price"], diag_text),
         )
+        # Async Obsidian write (best-effort, non-blocking)
+        try:
+            vault = _get_vault()
+            if vault:
+                _obsidian_write_alert(vault, {
+                    "ts": ts_now, "symbol": symbol, "level": a["level"],
+                    "type": a["type"], "type_label": a.get("message", ""),
+                    "message": a["message"],
+                })
+        except Exception:
+            pass
         created += 1
     return created
 
@@ -909,6 +914,95 @@ def api_market():
     row = conn.execute("SELECT * FROM market_state WHERE id=1").fetchone()
     conn.close()
     return dict(row) if row else {"error": "no data yet"}
+
+
+MARKET_INTRADAY_CONFIG = {
+    "twii": {
+        "symbol": "^TWII",
+        "label": "台股加權",
+        "timezone": "Asia/Taipei",
+        "open": (9, 0),
+        "close": (13, 30),
+    },
+    "spx": {
+        "symbol": "^GSPC",
+        "label": "S&P 500",
+        "timezone": "America/New_York",
+        "open": (9, 30),
+        "close": (16, 0),
+    },
+}
+
+
+def _market_intraday_session(key: str, interval: str = "5m") -> dict:
+    cfg = MARKET_INTRADAY_CONFIG.get(key)
+    if not cfg:
+        return {"error": "unknown market"}
+    allowed_intervals = {"1m", "2m", "5m", "15m", "30m", "60m"}
+    if interval not in allowed_intervals:
+        interval = "5m"
+
+    tz = ZoneInfo(cfg["timezone"])
+    now = datetime.now(tz)
+    open_dt = now.replace(hour=cfg["open"][0], minute=cfg["open"][1], second=0, microsecond=0)
+    close_dt = now.replace(hour=cfg["close"][0], minute=cfg["close"][1], second=0, microsecond=0)
+    preopen_dt = open_dt - timedelta(minutes=10)
+    is_business_day = now.weekday() < 5
+    prefer_today = is_business_day and now >= preopen_dt
+    is_preopen = prefer_today and now < open_dt
+
+    h = yf.Ticker(cfg["symbol"]).history(period="5d", interval=interval)
+    h = h.dropna(subset=["Close"])
+    if len(h) == 0:
+        return {"error": "no intraday data"}
+
+    if h.index.tz is None:
+        h.index = h.index.tz_localize("UTC").tz_convert(tz)
+    else:
+        h.index = h.index.tz_convert(tz)
+
+    available_dates = sorted(set(h.index.date))
+    today = now.date()
+    selected_date = today if prefer_today else available_dates[-1]
+    if selected_date not in available_dates and not is_preopen:
+        selected_date = available_dates[-1]
+
+    session = h[h.index.date == selected_date]
+    points = [
+        {"time": int(ts.timestamp()), "value": round(float(row["Close"]), 2)}
+        for ts, row in session.iterrows()
+    ]
+    first = points[0]["value"] if points else None
+    last = points[-1]["value"] if points else None
+    change_pct = round((last / first - 1) * 100, 2) if first and last else None
+    status = "preopen" if is_preopen and selected_date == today and not points else "intraday"
+    if selected_date != today:
+        status = "last_session"
+    elif now > close_dt:
+        status = "closed"
+
+    return sanitize_float_values({
+        "key": key,
+        "symbol": cfg["symbol"],
+        "label": cfg["label"],
+        "interval": interval,
+        "timezone": cfg["timezone"],
+        "session_date": selected_date.isoformat(),
+        "status": status,
+        "points": points,
+        "start": first,
+        "last": last,
+        "change_pct": change_pct,
+    })
+
+
+@app.get("/api/market/intraday")
+def api_market_intraday(interval: str = "5m"):
+    """大盤當日分時曲線；非營業日回最後交易日，開盤前 10 分鐘準備當日。"""
+    return {
+        "twii": _market_intraday_session("twii", interval=interval),
+        "spx": _market_intraday_session("spx", interval=interval),
+    }
 
 def _recommend_position(d: dict, market: dict | None) -> dict:
     """根據持倉指標 + 大盤狀態產生操作建議。
@@ -1542,6 +1636,37 @@ def api_history(symbol: str, period: str = "6mo"):
     except Exception as e:
         return {"error": str(e)}
 
+
+@app.get("/api/intraday/{symbol}")
+def api_intraday(symbol: str, interval: str = "5m"):
+    """當日分時收盤價，供觀察列表 hover 小圖使用。"""
+    allowed_intervals = {"1m", "2m", "5m", "15m", "30m", "60m"}
+    if interval not in allowed_intervals:
+        interval = "5m"
+    try:
+        h = yf.Ticker(symbol).history(period="1d", interval=interval)
+        h = h.dropna(subset=["Close"])
+        if len(h) == 0:
+            return {"error": "no intraday data"}
+        h.index = h.index.tz_localize(None)
+        points = [
+            {"time": int(ts.timestamp()), "value": round(float(row["Close"]), 2)}
+            for ts, row in h.iterrows()
+        ]
+        first = points[0]["value"]
+        last = points[-1]["value"]
+        change_pct = round((last / first - 1) * 100, 2) if first else None
+        return sanitize_float_values({
+            "symbol": symbol,
+            "interval": interval,
+            "points": points,
+            "start": first,
+            "last": last,
+            "change_pct": change_pct,
+        })
+    except Exception as e:
+        return {"error": str(e)}
+
 # ─────────────── Position CRUD ───────────────
 class PositionCreate(BaseModel):
     symbol: str
@@ -1564,14 +1689,30 @@ def api_add_position(p: PositionCreate):
         (p.symbol, p.name, p.category, p.shares, p.cost_price, p.currency, p_date, p.target_entry, p.target_profit, p.target_stop)
     )
     conn.commit()
+    # Sync to Obsidian
+    vault = _get_vault()
+    if vault:
+        pos_dict = {"symbol": p.symbol, "name": p.name, "category": p.category,
+                    "shares": p.shares, "cost_price": p.cost_price, "currency": p.currency,
+                    "purchase_date": p_date, "target_entry": p.target_entry,
+                    "target_profit": p.target_profit, "target_stop": p.target_stop}
+        _obsidian_write_position(vault, pos_dict)
+        all_pos = [dict(r) for r in conn.execute("SELECT * FROM positions").fetchall()]
+        _obsidian_write_portfolio_index(vault, all_pos)
     conn.close()
     return {"ok": True}
 
 @app.delete("/api/positions/{pid}")
 def api_del_position(pid: int):
     conn = get_db()
+    pos = conn.execute("SELECT * FROM positions WHERE id=?", (pid,)).fetchone()
     conn.execute("DELETE FROM positions WHERE id=?", (pid,))
     conn.commit()
+    # Rewrite Obsidian index (don't delete the note — keep for reference)
+    vault = _get_vault()
+    if vault:
+        all_pos = [dict(r) for r in conn.execute("SELECT * FROM positions").fetchall()]
+        _obsidian_write_portfolio_index(vault, all_pos)
     conn.close()
     return {"ok": True}
 
@@ -1606,6 +1747,13 @@ def api_update_position(pid: int, p: PositionUpdate):
         params.append(pid)
         conn.execute(f"UPDATE positions SET {', '.join(updates)} WHERE id=?", params)
         conn.commit()
+    # Sync updated position to Obsidian
+    vault = _get_vault()
+    if vault and updates:
+        updated = dict(conn.execute("SELECT * FROM positions WHERE id=?", (pid,)).fetchone())
+        _obsidian_write_position(vault, updated)
+        all_pos = [dict(r) for r in conn.execute("SELECT * FROM positions").fetchall()]
+        _obsidian_write_portfolio_index(vault, all_pos)
     conn.close()
     return {"ok": True}
 
@@ -1629,6 +1777,16 @@ def api_add_watch(w: WatchCreate):
         (w.symbol, w.name, w.category, w.currency, w.target_entry, w.target_add, w.target_profit, w.target_stop, w.notes)
     )
     conn.commit()
+    # Sync to Obsidian
+    vault = _get_vault()
+    if vault:
+        watch_dict = {"symbol": w.symbol, "name": w.name, "category": w.category,
+                      "currency": w.currency, "target_entry": w.target_entry,
+                      "target_add": w.target_add, "target_profit": w.target_profit,
+                      "target_stop": w.target_stop, "notes": w.notes}
+        _obsidian_write_watchlist_item(vault, watch_dict)
+        all_wl = [dict(r) for r in conn.execute("SELECT * FROM watchlist").fetchall()]
+        _obsidian_write_watchlist_index(vault, all_wl)
     conn.close()
     return {"ok": True}
 
@@ -1637,6 +1795,10 @@ def api_del_watch(wid: int):
     conn = get_db()
     conn.execute("DELETE FROM watchlist WHERE id=?", (wid,))
     conn.commit()
+    vault = _get_vault()
+    if vault:
+        all_wl = [dict(r) for r in conn.execute("SELECT * FROM watchlist").fetchall()]
+        _obsidian_write_watchlist_index(vault, all_wl)
     conn.close()
     return {"ok": True}
 
@@ -1671,10 +1833,16 @@ def api_alerts_search(
     }
 
 @app.delete("/api/alerts/clear")
-def api_clear_alerts(days: Optional[int] = None):
-    """清除警報。days=None 全清，否則清除 N 天前的。"""
+def api_clear_alerts(days: Optional[int] = None, symbol: Optional[str] = None, market: Optional[str] = None):
+    """清除警報。可依 symbol、market、days 篩選；都未提供則全清。"""
     conn = get_db()
-    if days is None:
+    if symbol:
+        conn.execute("DELETE FROM alerts WHERE symbol=?", (symbol,))
+    elif market == "tw":
+        conn.execute("DELETE FROM alerts WHERE symbol LIKE '%.TW'")
+    elif market == "us":
+        conn.execute("DELETE FROM alerts WHERE symbol NOT LIKE '%.TW'")
+    elif days is None:
         conn.execute("DELETE FROM alerts")
     else:
         conn.execute("DELETE FROM alerts WHERE date(ts) < date('now', ?)", (f"-{days} days",))
@@ -2698,6 +2866,354 @@ def api_diagnose(symbol: str):
     ind = json.loads(dict(cache).get("data") or "{}")
     diag = diagnose(symbol, name, ind, market, position=dict(pos) if pos else None)
     return sanitize_float_values({"symbol": symbol, "name": name, "diagnosis": diag, "indicators": ind})
+
+
+# ─────────────── Obsidian 雙向同步 ───────────────
+
+def _get_vault() -> Optional[Path]:
+    """Return expanded vault Path if configured, else None."""
+    vp = load_settings().get("obsidian_vault_path", "")
+    if not vp:
+        return None
+    p = Path(vp).expanduser()
+    return p if p.is_dir() else None
+
+
+def _fmt(v) -> str:
+    """Format a value for YAML frontmatter (None → empty string)."""
+    if v is None:
+        return ""
+    return str(v)
+
+
+def _obsidian_write_position(vault: Path, pos: dict) -> None:
+    """Write/update a single position note to Obsidian."""
+    sym = pos.get("symbol", "")
+    if not sym:
+        return
+    safe = re.sub(r'[\\/*?"<>|]', "_", sym)
+    pos_dir = vault / "Portfolio" / "Positions"
+    pos_dir.mkdir(parents=True, exist_ok=True)
+    note = pos_dir / f"{safe}.md"
+    content = f"""---
+type: position
+symbol: {sym}
+name: {_fmt(pos.get('name'))}
+category: {_fmt(pos.get('category'))}
+shares: {_fmt(pos.get('shares'))}
+cost_price: {_fmt(pos.get('cost_price'))}
+currency: {_fmt(pos.get('currency', 'TWD'))}
+purchase_date: {_fmt(pos.get('purchase_date'))}
+target_entry: {_fmt(pos.get('target_entry'))}
+target_profit: {_fmt(pos.get('target_profit'))}
+target_stop: {_fmt(pos.get('target_stop'))}
+updated: {date.today().isoformat()}
+---
+
+# {pos.get('name', sym)} ({sym})
+
+| 欄位 | 數值 |
+|------|------|
+| 股數 | {_fmt(pos.get('shares'))} |
+| 成本價 | {_fmt(pos.get('cost_price'))} {_fmt(pos.get('currency','TWD'))} |
+| 進場日 | {_fmt(pos.get('purchase_date'))} |
+| 目標進場 | {_fmt(pos.get('target_entry'))} |
+| 目標停利 | {_fmt(pos.get('target_profit'))} |
+| 目標停損 | {_fmt(pos.get('target_stop'))} |
+
+## 個人筆記
+
+<!-- 此處可自由填寫，不影響同步 -->
+
+## 連結
+[[Portfolio/index|回到持倉總覽]]
+"""
+    note.write_text(content, encoding="utf-8")
+
+
+def _obsidian_write_portfolio_index(vault: Path, positions: list) -> None:
+    """Rewrite the Portfolio/index.md overview."""
+    idx = vault / "Portfolio" / "index.md"
+    idx.parent.mkdir(parents=True, exist_ok=True)
+    def _pos_row(p):
+        safe = re.sub(r'[\\/*?"<>|]', "_", p.get("symbol", ""))
+        return (
+            f"| [[Positions/{safe}|{p.get('name', p.get('symbol',''))}]] "
+            f"| {p.get('symbol','')} | {p.get('shares','')} | {p.get('cost_price','')} | {p.get('currency','')} |"
+        )
+    rows = "\n".join(_pos_row(p) for p in positions)
+    content = f"""---
+type: portfolio-index
+updated: {date.today().isoformat()}
+---
+
+# 持倉總覽
+
+| 名稱 | 代號 | 股數 | 成本價 | 幣別 |
+|------|------|------|--------|------|
+{rows}
+"""
+    idx.write_text(content, encoding="utf-8")
+
+
+def _obsidian_write_watchlist_item(vault: Path, watch: dict) -> None:
+    """Write/update a single watchlist note to Obsidian."""
+    sym = watch.get("symbol", "")
+    if not sym:
+        return
+    safe = re.sub(r'[\\/*?"<>|]', "_", sym)
+    wl_dir = vault / "Watchlist"
+    wl_dir.mkdir(parents=True, exist_ok=True)
+    note = wl_dir / f"{safe}.md"
+    content = f"""---
+type: watchlist
+symbol: {sym}
+name: {_fmt(watch.get('name'))}
+category: {_fmt(watch.get('category'))}
+currency: {_fmt(watch.get('currency', 'TWD'))}
+target_entry: {_fmt(watch.get('target_entry'))}
+target_add: {_fmt(watch.get('target_add'))}
+target_profit: {_fmt(watch.get('target_profit'))}
+target_stop: {_fmt(watch.get('target_stop'))}
+updated: {date.today().isoformat()}
+---
+
+# {watch.get('name', sym)} ({sym})
+
+## 觀察重點
+
+{watch.get('notes') or '<!-- 此處可填入觀察重點 -->'}
+
+## 連結
+[[Watchlist/index|回到觀察清單]]
+"""
+    note.write_text(content, encoding="utf-8")
+
+
+def _obsidian_write_watchlist_index(vault: Path, items: list) -> None:
+    """Rewrite the Watchlist/index.md overview."""
+    idx = vault / "Watchlist" / "index.md"
+    idx.parent.mkdir(parents=True, exist_ok=True)
+    def _wl_row(w):
+        safe = re.sub(r'[\\/*?"<>|]', "_", w.get("symbol", ""))
+        return (
+            f"| [[{safe}|{w.get('name', w.get('symbol',''))}]] "
+            f"| {w.get('symbol','')} | {w.get('currency','')} | {_fmt(w.get('target_entry'))} | {_fmt(w.get('target_stop'))} |"
+        )
+    rows = "\n".join(_wl_row(w) for w in items)
+    content = f"""---
+type: watchlist-index
+updated: {date.today().isoformat()}
+---
+
+# 觀察清單總覽
+
+| 名稱 | 代號 | 幣別 | 目標進場 | 停損 |
+|------|------|------|----------|------|
+{rows}
+"""
+    idx.write_text(content, encoding="utf-8")
+
+
+def _obsidian_write_alert(vault: Path, alert: dict) -> None:
+    """Append a single alert to the daily alert log."""
+    ts = alert.get("ts", "")
+    day = ts[:10] if ts else date.today().isoformat()
+    alert_dir = vault / "Alerts"
+    alert_dir.mkdir(parents=True, exist_ok=True)
+    log_path = alert_dir / f"{day}.md"
+    entry = (
+        f"\n- [{ts}] **{alert.get('symbol','')}** "
+        f"{alert.get('type_label') or alert.get('type','')} "
+        f"({alert.get('level','')}) — {alert.get('message','')}"
+    )
+    if not log_path.exists():
+        log_path.write_text(f"# 警報記錄 {day}\n", encoding="utf-8")
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(entry + "\n")
+
+
+def _obsidian_parse_position(note_path: Path) -> Optional[dict]:
+    """Parse a position note's frontmatter into a dict."""
+    try:
+        text = note_path.read_text(encoding="utf-8")
+        meta, _ = _parse_obsidian_frontmatter(text)
+        if meta.get("type") != "position" or not meta.get("symbol"):
+            return None
+        return {
+            "symbol": meta["symbol"],
+            "name": meta.get("name", ""),
+            "category": meta.get("category", ""),
+            "shares": _safe_float(meta.get("shares")),
+            "cost_price": _safe_float(meta.get("cost_price")),
+            "currency": meta.get("currency", "TWD"),
+            "purchase_date": meta.get("purchase_date", ""),
+            "target_entry": _safe_float(meta.get("target_entry")),
+            "target_profit": _safe_float(meta.get("target_profit")),
+            "target_stop": _safe_float(meta.get("target_stop")),
+        }
+    except Exception:
+        return None
+
+
+def _obsidian_parse_watchlist(note_path: Path) -> Optional[dict]:
+    """Parse a watchlist note's frontmatter into a dict."""
+    try:
+        text = note_path.read_text(encoding="utf-8")
+        meta, body = _parse_obsidian_frontmatter(text)
+        if meta.get("type") != "watchlist" or not meta.get("symbol"):
+            return None
+        # Extract notes section
+        notes_section = _extract_md_section(body, "觀察重點")
+        notes = notes_section.replace("<!-- 此處可填入觀察重點 -->", "").strip()
+        return {
+            "symbol": meta["symbol"],
+            "name": meta.get("name", ""),
+            "category": meta.get("category", ""),
+            "currency": meta.get("currency", "TWD"),
+            "target_entry": _safe_float(meta.get("target_entry")),
+            "target_add": _safe_float(meta.get("target_add")),
+            "target_profit": _safe_float(meta.get("target_profit")),
+            "target_stop": _safe_float(meta.get("target_stop")),
+            "notes": notes,
+        }
+    except Exception:
+        return None
+
+
+def _obsidian_sync_positions(vault: Path) -> dict:
+    """Read all position notes from Obsidian and upsert into SQLite."""
+    pos_dir = vault / "Portfolio" / "Positions"
+    if not pos_dir.is_dir():
+        return {"synced": 0, "errors": 0}
+    synced = 0
+    errors = 0
+    conn = get_db()
+    for note_path in pos_dir.glob("*.md"):
+        parsed = _obsidian_parse_position(note_path)
+        if not parsed:
+            continue
+        try:
+            existing = conn.execute(
+                "SELECT id FROM positions WHERE symbol=?", (parsed["symbol"],)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE positions SET name=?, category=?, shares=?, cost_price=?,
+                       currency=?, purchase_date=?, target_entry=?, target_profit=?, target_stop=?
+                       WHERE symbol=?""",
+                    (parsed["name"], parsed["category"], parsed["shares"], parsed["cost_price"],
+                     parsed["currency"], parsed["purchase_date"], parsed["target_entry"],
+                     parsed["target_profit"], parsed["target_stop"], parsed["symbol"])
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO positions (symbol, name, category, shares, cost_price, currency,
+                       purchase_date, target_entry, target_profit, target_stop)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (parsed["symbol"], parsed["name"], parsed["category"], parsed["shares"],
+                     parsed["cost_price"], parsed["currency"], parsed["purchase_date"],
+                     parsed["target_entry"], parsed["target_profit"], parsed["target_stop"])
+                )
+            synced += 1
+        except Exception:
+            errors += 1
+    conn.commit()
+    conn.close()
+    return {"synced": synced, "errors": errors}
+
+
+def _obsidian_sync_watchlist(vault: Path) -> dict:
+    """Read all watchlist notes from Obsidian and upsert into SQLite."""
+    wl_dir = vault / "Watchlist"
+    if not wl_dir.is_dir():
+        return {"synced": 0, "errors": 0}
+    synced = 0
+    errors = 0
+    conn = get_db()
+    for note_path in wl_dir.glob("*.md"):
+        if note_path.stem == "index":
+            continue
+        parsed = _obsidian_parse_watchlist(note_path)
+        if not parsed:
+            continue
+        try:
+            existing = conn.execute(
+                "SELECT id FROM watchlist WHERE symbol=?", (parsed["symbol"],)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE watchlist SET name=?, category=?, currency=?, target_entry=?,
+                       target_add=?, target_profit=?, target_stop=?, notes=? WHERE symbol=?""",
+                    (parsed["name"], parsed["category"], parsed["currency"], parsed["target_entry"],
+                     parsed["target_add"], parsed["target_profit"], parsed["target_stop"],
+                     parsed["notes"], parsed["symbol"])
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO watchlist (symbol, name, category, currency, target_entry,
+                       target_add, target_profit, target_stop, notes)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (parsed["symbol"], parsed["name"], parsed["category"], parsed["currency"],
+                     parsed["target_entry"], parsed["target_add"], parsed["target_profit"],
+                     parsed["target_stop"], parsed["notes"])
+                )
+            synced += 1
+        except Exception:
+            errors += 1
+    conn.commit()
+    conn.close()
+    return {"synced": synced, "errors": errors}
+
+
+@app.post("/api/obsidian-sync")
+def api_obsidian_sync():
+    """Obsidian → SQLite：讀取 Obsidian .md，更新資料庫。"""
+    vault = _get_vault()
+    if not vault:
+        raise HTTPException(400, "obsidian_vault_path 未設定或路徑不存在")
+    pos_result = _obsidian_sync_positions(vault)
+    wl_result = _obsidian_sync_watchlist(vault)
+    return {
+        "ok": True,
+        "positions": pos_result,
+        "watchlist": wl_result,
+    }
+
+
+@app.post("/api/obsidian-export")
+def api_obsidian_export():
+    """SQLite → Obsidian：將所有持倉與觀察清單匯出為 Obsidian .md。"""
+    vault = _get_vault()
+    if not vault:
+        raise HTTPException(400, "obsidian_vault_path 未設定或路徑不存在")
+    conn = get_db()
+    positions = [dict(r) for r in conn.execute("SELECT * FROM positions").fetchall()]
+    watchlist = [dict(r) for r in conn.execute("SELECT * FROM watchlist").fetchall()]
+    alerts = [dict(r) for r in conn.execute(
+        "SELECT * FROM alerts ORDER BY ts DESC LIMIT 200"
+    ).fetchall()]
+    conn.close()
+
+    for pos in positions:
+        _obsidian_write_position(vault, pos)
+    _obsidian_write_portfolio_index(vault, positions)
+
+    for watch in watchlist:
+        _obsidian_write_watchlist_item(vault, watch)
+    _obsidian_write_watchlist_index(vault, watchlist)
+
+    for alert in alerts:
+        _obsidian_write_alert(vault, alert)
+
+    return {
+        "ok": True,
+        "exported": {
+            "positions": len(positions),
+            "watchlist": len(watchlist),
+            "alerts": len(alerts),
+        }
+    }
 
 
 # ─────────────── 領域研究工作流 ───────────────
