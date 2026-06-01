@@ -3508,9 +3508,9 @@ async function drawChart(symbol, period) {
         timeVisible: period === '1d' || period === '5d',
         secondsVisible: false,
         borderColor: 'rgba(148,163,184,0.1)',
-        rightOffset: 0,
+        rightOffset: 10,
         fixLeftEdge: true,
-        fixRightEdge: true,
+        fixRightEdge: false,
       },
       rightPriceScale: { borderColor: 'rgba(148,163,184,0.1)' },
       crosshair: {
@@ -3545,10 +3545,7 @@ async function drawChart(symbol, period) {
     });
     vol.setData(r.volumes);
     _chart.timeScale().fitContent();
-    const extraBars = period === '1d' ? 2 : (period === '5d' ? 1 : 0);
-    if (extraBars) {
-      _chart.timeScale().applyOptions({ rightOffset: extraBars });
-    }
+    _chart.timeScale().applyOptions({ rightOffset: 10 });
   } catch (e) {
     container.innerHTML = `<div class="text-red-400">圖表錯誤: ${e}</div>`;
     renderTechnicalMatrixPanel({ error: String(e) });
