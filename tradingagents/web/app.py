@@ -1516,6 +1516,10 @@ async def monitor_loop():
         except Exception as e:
             print(f"Monitor error: {e}")
 
+        # Same yfinance FD leak workaround as in api_refresh — drop stranded
+        # tkr-tz SQLite handles before sleeping.
+        import gc
+        gc.collect()
         await asyncio.sleep(300)  # 5 minutes
 
 # ─────────────── FastAPI lifecycle ───────────────
@@ -2228,16 +2232,15 @@ def _run_api_refresh_sync(t0: float) -> dict:
     """Synchronous body of the manual refresh, held under _refresh_lock."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import time as _time
+    import gc
 
     # Phase 1 + 3 重疊：market state / benchmark fetch 在背景跑時，
     # 主執行緒直接讀 DB 並提早派發 31 個標的的 indicator fetch。
     # benchmark 只用於 beta 計算（指標表的次要欄位），手動刷新的場景
     # 接受 beta 暫時為 None；monitor_loop 仍會帶 benchmark 補回 beta。
-    bg_ex = ThreadPoolExecutor(max_workers=3)
-    f_twii = bg_ex.submit(fetch_benchmark_close, "^TWII")
-    f_spx = bg_ex.submit(fetch_benchmark_close, "^GSPC")
-    f_market = bg_ex.submit(get_market_state)
-
+    # 兩個 executor 都用 `with` 包起來；先前 try/finally + shutdown(wait=False)
+    # 不會 join worker thread，連續刷新會在 process 內累積 FD/thread 直到
+    # "Too many open files" 把 server 打死。
     conn = get_db()
     c = conn.cursor()
 
@@ -2256,18 +2259,21 @@ def _run_api_refresh_sync(t0: float) -> dict:
     for d in watchlist_rows:
         all_symbols.setdefault(d["symbol"], {})
 
-    # Phase 3 — kick off all indicator fetches concurrently with market state.
-    indicators: dict = {}
     def _fetch_one(symbol):
         return symbol, fetch_indicators(symbol, None)
-    indicator_ex = ThreadPoolExecutor(max_workers=16)
-    try:
+
+    indicators: dict = {}
+    with ThreadPoolExecutor(max_workers=3) as bg_ex, \
+         ThreadPoolExecutor(max_workers=16) as indicator_ex:
+        f_twii = bg_ex.submit(fetch_benchmark_close, "^TWII")
+        f_spx = bg_ex.submit(fetch_benchmark_close, "^GSPC")
+        f_market = bg_ex.submit(get_market_state)
+        # Phase 3 — kick off all indicator fetches concurrently with market state.
         futures = [indicator_ex.submit(_fetch_one, sym) for sym in all_symbols]
         # Wait for market state result in the foreground; indicator fetches run alongside.
         twii = f_twii.result()
         spx = f_spx.result()
         market = f_market.result()
-        bg_ex.shutdown(wait=False)
         c.execute("INSERT OR REPLACE INTO market_state (id, ts, vix, twii, twii_ma60, spx, spx_ma60, risk_level, warnings_count) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)",
                   (market.get("ts"), market.get("vix"), market.get("twii"), market.get("twii_ma60"),
                    market.get("spx"), market.get("spx_ma60"), market.get("risk_level"), market.get("warnings_count")))
@@ -2278,8 +2284,6 @@ def _run_api_refresh_sync(t0: float) -> dict:
                     indicators[sym] = ind
             except Exception:
                 pass
-    finally:
-        indicator_ex.shutdown(wait=False)
 
     # Phase 4: 寫入 DB
     refreshed = 0
@@ -2302,6 +2306,11 @@ def _run_api_refresh_sync(t0: float) -> dict:
     if vault and alerts_created:
         _obsidian_post_write_sync(vault, kinds=("alerts",))
     conn.close()
+    # yfinance >= 0.2 leaks SQLite FDs from its per-Ticker timezone cache
+    # (~10 stranded `tkr-tz` FDs per refresh). The connections only release
+    # when the Ticker objects are garbage-collected; a forced full GC after
+    # each refresh keeps the process from hitting ulimit -n.
+    gc.collect()
     elapsed = round(_time.time() - t0, 1)
     return {"refreshed": refreshed, "alerts_created": alerts_created, "market": market, "elapsed_seconds": elapsed}
 
