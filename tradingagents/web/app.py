@@ -969,10 +969,27 @@ def _indicators_from_history(h: pd.DataFrame, bench_close=None, source: str = ""
         "source": source or h.attrs.get("source") or "history",
     })
 
+_YF_HISTORY_CACHE: dict[tuple[str, str], tuple[float, "pd.DataFrame"]] = {}
+_YF_HISTORY_TTL = 60  # daily bars only refresh intraday by minutes; 60s is safe
+
+
+def _cached_yf_history(symbol: str, period: str = "1y") -> "pd.DataFrame":
+    key = (symbol, period)
+    entry = _YF_HISTORY_CACHE.get(key)
+    if entry and time.time() < entry[0]:
+        return entry[1]
+    try:
+        h = yf.Ticker(symbol).history(period=period)
+    except Exception:
+        return pd.DataFrame()
+    _YF_HISTORY_CACHE[key] = (time.time() + _YF_HISTORY_TTL, h)
+    return h
+
+
 def fetch_yfinance_indicators(symbol: str, bench_close=None) -> dict:
     """Full indicator source backed by Yahoo Finance history."""
     try:
-        h = yf.Ticker(symbol).history(period="1y")
+        h = _cached_yf_history(symbol, period="1y")
         if len(h) < 1:
             return {}
         h = _normalize_history_index(h)
@@ -994,23 +1011,47 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
     Strategy: 永遠取 yfinance 的歷史指標（RSI/MA/Beta/52週高低），
     台股額外用 TWSE/TPEX 即時 quote 覆蓋 price/change_1d 提升即時性。
     這樣可避免「全走 TWSE 導致技術指標凍結」的問題。
+    Implementation note: the three potential network calls
+    (yfinance history, yfinance .info, TWSE realtime) all hit different
+    services so we issue them concurrently and assemble the result after
+    everything returns. TW symbols skip yfinance.info entirely because the
+    TWSE realtime quote already provides price/change_1d at lower latency.
     """
-    yf_ind = fetch_yfinance_indicators(symbol, bench_close) or {}
-    if not yf_ind and _twse_channel(symbol):
-        yf_ind = fetch_official_tw_indicators(symbol, bench_close) or {}
+    from concurrent.futures import ThreadPoolExecutor
 
-    # 用 yfinance info.regularMarketPrice 補充盤中即時價
-    if yf_ind:
+    is_tw = bool(_twse_channel(symbol))
+
+    def _yf_history_job():
+        return fetch_yfinance_indicators(symbol, bench_close)
+
+    def _yf_info_job():
+        if is_tw:
+            return None  # TWSE realtime supersedes; .info is the slowest call
         try:
             info = yf.Ticker(symbol).info or {}
             rmp = info.get("regularMarketPrice") or info.get("currentPrice")
-            if rmp and rmp > 0:
-                yf_ind["_yf_realtime"] = float(rmp)
+            return float(rmp) if rmp and rmp > 0 else None
         except Exception:
-            pass
+            return None
 
-    if _twse_channel(symbol):
-        official = fetch_tw_realtime_quote(symbol)
+    def _tw_realtime_job():
+        return fetch_tw_realtime_quote(symbol) if is_tw else None
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_hist = ex.submit(_yf_history_job)
+        f_info = ex.submit(_yf_info_job)
+        f_tw = ex.submit(_tw_realtime_job)
+        yf_ind = f_hist.result() or {}
+        yf_realtime = f_info.result()
+        official = f_tw.result()
+
+    if not yf_ind and is_tw:
+        yf_ind = fetch_official_tw_indicators(symbol, bench_close) or {}
+
+    if yf_ind and yf_realtime is not None:
+        yf_ind["_yf_realtime"] = yf_realtime
+
+    if is_tw:
         if official:
             if not yf_ind:
                 # yfinance 失敗：直接回 TWSE 完整 schema（含 rsi=None 等）
@@ -1089,13 +1130,26 @@ def get_market_state():
             return None
 
     try:
-        vix_s    = _fetch("^VIX", "1mo")
-        twii_s   = _fetch("^TWII")
-        spx_s    = _fetch("^GSPC")
-        sox_s    = _fetch("^SOX")
-        ndx_s    = _fetch("^NDX", "3mo")
-        tnx_s    = _fetch("^TNX", "1mo")
-        dxy_s    = _fetch("DX-Y.NYB", "3mo")
+        # 7 yfinance calls were serial (~3s total). Parallelise — they target
+        # distinct tickers so there is no upstream contention.
+        from concurrent.futures import ThreadPoolExecutor
+        tasks = [
+            ("vix", "^VIX", "1mo"),
+            ("twii", "^TWII", "6mo"),
+            ("spx", "^GSPC", "6mo"),
+            ("sox", "^SOX", "6mo"),
+            ("ndx", "^NDX", "3mo"),
+            ("tnx", "^TNX", "1mo"),
+            ("dxy", "DX-Y.NYB", "3mo"),
+        ]
+        results: dict = {}
+        with ThreadPoolExecutor(max_workers=len(tasks)) as ex:
+            for label, series in ex.map(lambda t: (t[0], _fetch(t[1], t[2])), tasks):
+                results[label] = series
+        vix_s, twii_s, spx_s, sox_s, ndx_s, tnx_s, dxy_s = (
+            results["vix"], results["twii"], results["spx"], results["sox"],
+            results["ndx"], results["tnx"], results["dxy"],
+        )
 
         vix_val    = _last(vix_s)     if vix_s  is not None else None
         twii_val   = _last(twii_s)    if twii_s is not None else None
