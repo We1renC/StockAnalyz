@@ -972,6 +972,8 @@ body { background: var(--bg-base); color: var(--text-primary); }
               <div class="diag-chart-title">走勢圖</div>
             </div>
             <select id="chart-period" class="input-field diag-chart-period" style="width:auto;padding:4px 8px;font-size:12px">
+            <option value="1h">1小時</option>
+            <option value="4h">4小時</option>
             <option value="1d">1日</option>
             <option value="5d">5日</option>
             <option value="1mo">1月</option>
@@ -2547,6 +2549,10 @@ function toggleAlertDetails(symbol) {
 let _currentSymbol = null;
 let _chart = null;
 let _chartCandleSeries = null;
+let _chartMa20Series = null;
+let _chartMa60Series = null;
+let _chartVolSeries = null;
+let _diagRefreshTimer = null;
 let _technicalMatrix = null;
 let _technicalMarkerFilter = 'all';
 let _chartLastPeriod = '6mo';
@@ -2676,6 +2682,7 @@ async function diagnose(symbol, name) {
   $('past-analysis').classList.add('hidden');
   $('diag-modal').classList.remove('hidden');
   populateMarkerGlossary();
+  startDiagRefresh();
 
   // 並行載入診斷+K線+歷史分析
   const [diagR, , pastR] = await Promise.all([
@@ -3468,18 +3475,22 @@ async function saveTechnicalMatrixSnapshot(btn) {
   }
 }
 
-async function drawChart(symbol, period) {
-  // 清除舊圖
-  const container = $('chart-container');
-  container.innerHTML = '<div class="flex items-center justify-center h-full text-gray-400">載入 K 線中...</div>';
-  _chartLastPeriod = period;
-  _technicalMatrix = null;
-  _chartCandleSeries = null;
-  _technicalMarkerFilter = 'all';
-  renderTechnicalMatrixPanel(null);
-  if (_chart) {
-    try { _chart.remove(); } catch(e) {}
-    _chart = null;
+async function drawChart(symbol, period, isRefresh = false) {
+  if (!isRefresh) {
+    const container = $('chart-container');
+    container.innerHTML = '<div class="flex items-center justify-center h-full text-gray-400">載入 K 線中...</div>';
+    _chartLastPeriod = period;
+    _technicalMatrix = null;
+    _chartCandleSeries = null;
+    _chartMa20Series = null;
+    _chartMa60Series = null;
+    _chartVolSeries = null;
+    _technicalMarkerFilter = 'all';
+    renderTechnicalMatrixPanel(null);
+    if (_chart) {
+      try { _chart.remove(); } catch(e) {}
+      _chart = null;
+    }
   }
   try {
     const matrixPeriod = matrixPeriodForChartPeriod(period);
@@ -3488,43 +3499,58 @@ async function drawChart(symbol, period) {
       fetch(`/api/technical-matrix/${encodeURIComponent(symbol)}?period=${matrixPeriod}`).then(r=>r.json()).catch(() => null),
     ]);
     if (r.error) {
-      container.innerHTML = `<div class="flex items-center justify-center h-full text-red-400">錯誤: ${r.error}</div>`;
+      if (!isRefresh) {
+        const container = $('chart-container');
+        container.innerHTML = `<div class="flex items-center justify-center h-full text-red-400">錯誤: ${r.error}</div>`;
+      }
       return;
     }
-    container.innerHTML = '';
-    const chartHeight = container.clientHeight || 440;
-    _chart = LightweightCharts.createChart(container, {
-      width: container.clientWidth,
-      height: chartHeight,
-      layout: {
-        background: { color: '#0a0f1a' },
-        textColor: '#64748b',
-      },
-      grid: {
-        vertLines: { color: 'rgba(148,163,184,0.06)' },
-        horzLines: { color: 'rgba(148,163,184,0.06)' },
-      },
-      timeScale: {
-        timeVisible: period === '1d' || period === '5d',
-        secondsVisible: false,
-        borderColor: 'rgba(148,163,184,0.1)',
-        rightOffset: 10,
-        fixLeftEdge: true,
-        fixRightEdge: false,
-      },
-      rightPriceScale: { borderColor: 'rgba(148,163,184,0.1)' },
-      crosshair: {
-        vertLine: { color: 'rgba(148,163,184,0.18)' },
-        horzLine: { color: 'rgba(148,163,184,0.18)' },
-      },
-    });
-    const candle = _chart.addCandlestickSeries({
-      upColor: '#ef4444', downColor: '#10b981',
-      borderUpColor: '#ef4444', borderDownColor: '#10b981',
-      wickUpColor: '#ef4444', wickDownColor: '#10b981',
-    });
-    candle.setData(r.candles);
-    _chartCandleSeries = candle;
+    if (!isRefresh || !_chart) {
+      const container = $('chart-container');
+      container.innerHTML = '';
+      const chartHeight = container.clientHeight || 440;
+      _chart = LightweightCharts.createChart(container, {
+        width: container.clientWidth,
+        height: chartHeight,
+        layout: {
+          background: { color: '#0a0f1a' },
+          textColor: '#64748b',
+        },
+        grid: {
+          vertLines: { color: 'rgba(148,163,184,0.06)' },
+          horzLines: { color: 'rgba(148,163,184,0.06)' },
+        },
+        timeScale: {
+          timeVisible: ['1h', '4h', '1d', '5d'].includes(period),
+          secondsVisible: false,
+          borderColor: 'rgba(148,163,184,0.1)',
+          rightOffset: 10,
+          fixLeftEdge: true,
+          fixRightEdge: false,
+        },
+        rightPriceScale: { borderColor: 'rgba(148,163,184,0.1)' },
+        crosshair: {
+          vertLine: { color: 'rgba(148,163,184,0.18)' },
+          horzLine: { color: 'rgba(148,163,184,0.18)' },
+        },
+      });
+      _chartCandleSeries = _chart.addCandlestickSeries({
+        upColor: '#ef4444', downColor: '#10b981',
+        borderUpColor: '#ef4444', borderDownColor: '#10b981',
+        wickUpColor: '#ef4444', wickDownColor: '#10b981',
+      });
+      _chartMa20Series = _chart.addLineSeries({ color: '#facc15', lineWidth: 1, priceLineVisible: false });
+      _chartMa60Series = _chart.addLineSeries({ color: '#22d3ee', lineWidth: 1, priceLineVisible: false });
+      _chartVolSeries = _chart.addHistogramSeries({
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+        scaleMargins: { top: 0.85, bottom: 0 },
+      });
+    }
+    _chartCandleSeries.setData(r.candles);
+    _chartMa20Series.setData(r.ma20);
+    _chartMa60Series.setData(r.ma60);
+    _chartVolSeries.setData(r.volumes);
     if (matrix && !matrix.error && !matrix.detail && Array.isArray(matrix.markers)) {
       _technicalMatrix = matrix;
       renderTechnicalMatrixPanel(matrix);
@@ -3534,38 +3560,80 @@ async function drawChart(symbol, period) {
     } else {
       renderTechnicalMatrixPanel({ error: '未取得 17D 矩陣資料' });
     }
-    const ma20 = _chart.addLineSeries({ color: '#facc15', lineWidth: 1, priceLineVisible: false });
-    ma20.setData(r.ma20);
-    const ma60 = _chart.addLineSeries({ color: '#22d3ee', lineWidth: 1, priceLineVisible: false });
-    ma60.setData(r.ma60);
-    const vol = _chart.addHistogramSeries({
-      priceFormat: { type: 'volume' },
-      priceScaleId: '',
-      scaleMargins: { top: 0.85, bottom: 0 },
-    });
-    vol.setData(r.volumes);
-    _chart.timeScale().fitContent();
-    const dynamicOffset = Math.min(10, Math.max(2, Math.floor(r.candles.length * 0.08)));
-    _chart.timeScale().applyOptions({ rightOffset: dynamicOffset });
+    if (!isRefresh) {
+      _chart.timeScale().fitContent();
+      const dynamicOffset = Math.min(10, Math.max(2, Math.floor(r.candles.length * 0.08)));
+      _chart.timeScale().applyOptions({ rightOffset: dynamicOffset });
+    }
   } catch (e) {
-    container.innerHTML = `<div class="text-red-400">圖表錯誤: ${e}</div>`;
-    renderTechnicalMatrixPanel({ error: String(e) });
+    if (!isRefresh) {
+      const container = $('chart-container');
+      container.innerHTML = `<div class="text-red-400">圖表錯誤: ${e}</div>`;
+      renderTechnicalMatrixPanel({ error: String(e) });
+    }
   }
 }
 
 $('chart-period').addEventListener('change', () => {
-  if (_currentSymbol) drawChart(_currentSymbol, $('chart-period').value);
+  if (_currentSymbol) {
+    drawChart(_currentSymbol, $('chart-period').value);
+    startDiagRefresh();
+  }
 });
 
 function closeDiag() {
   $('diag-modal').classList.add('hidden');
+  stopDiagRefresh();
   if (_chart) {
     try { _chart.remove(); } catch(e) {}
     _chart = null;
   }
   _chartCandleSeries = null;
+  _chartMa20Series = null;
+  _chartMa60Series = null;
+  _chartVolSeries = null;
   _technicalMatrix = null;
   _technicalMarkerFilter = 'all';
+}
+
+function startDiagRefresh() {
+  stopDiagRefresh();
+  const period = $('chart-period').value;
+  if (['1h', '4h', '1d'].includes(period)) {
+    _diagRefreshTimer = setInterval(async () => {
+      // 確保畫面為顯示狀態且 Modal 未隱藏，避免背景消耗算力
+      if (document.hidden || $('diag-modal').classList.contains('hidden')) return;
+      if (_currentSymbol) {
+        drawChart(_currentSymbol, period, true);
+        try {
+          const diagR = await fetch(`/api/diagnose/${encodeURIComponent(_currentSymbol)}`).then(r => r.json());
+          if (!diagR.error && !$('diag-modal').classList.contains('hidden')) {
+            const ind = diagR.indicators || {};
+            const stats = document.querySelectorAll('.diag-summary-grid .diag-stat-value');
+            if (stats.length >= 6) {
+              stats[0].textContent = fmt(ind.price);
+              stats[1].textContent = fmt(ind.rsi, 1);
+              stats[1].className = `diag-stat-value tabular-nums ${ind.rsi >=75?'text-red-400':ind.rsi<=30?'text-amber-400':'text-slate-100'}`;
+              stats[2].textContent = `${ind.change_1d >= 0 ? '+' : ''}${fmt(ind.change_1d)}%`;
+              stats[2].className = `diag-stat-value tabular-nums ${ind.change_1d>=0?'text-red-400':'text-emerald-400'}`;
+              stats[3].textContent = `${fmt(ind.ma20)} / ${fmt(ind.ma60)}`;
+              stats[4].textContent = `${fmt(ind.beta, 2)} / ${ind.change_1m >= 0 ? '+' : ''}${fmt(ind.change_1m, 1)}%`;
+              stats[5].textContent = `${fmt(ind.low52)} ~ ${fmt(ind.high52)}`;
+            }
+            const ruleText = document.querySelector('.diag-rule-text');
+            if (ruleText) ruleText.textContent = diagR.diagnosis;
+          }
+        } catch(e) {}
+      }
+    }, 15000);
+  }
+}
+
+function stopDiagRefresh() {
+  if (_diagRefreshTimer) {
+    clearInterval(_diagRefreshTimer);
+    _diagRefreshTimer = null;
+  }
 }
 
 let _llmEventSource = null;
