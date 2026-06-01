@@ -449,7 +449,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
 .dim-help-popover.pop-right { left: 0; transform: none; }
 .dim-help-popover.pop-left  { left: auto; right: 0; transform: none; }
 .dim-help-popover.pop-up    { top: auto; bottom: calc(100% + 6px); }
-.dim-help-popover.pop-wide  { max-width: 420px; max-height: 360px; overflow-y: auto; pointer-events: auto; }
+.dim-help-popover.pop-wide  { max-width: min(640px, 85vw); max-height: 360px; overflow-y: auto; pointer-events: auto; }
 @keyframes dim-help-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 @media (max-width: 1180px) {
   .diag-workspace {
@@ -3253,11 +3253,11 @@ function populateMarkerGlossary() {
     'Gartley 諧波','Bat 諧波','Butterfly 諧波',
     '+2σ','-2σ','+3σ','-3σ',
   ];
-  el.innerHTML = '<strong>17D 圖表標記詞彙表</strong>' +
+  el.innerHTML = '<strong style="display:block; margin-bottom:6px; border-bottom:1px solid rgba(148,163,184,0.1); padding-bottom:4px">17D 圖表標記詞彙表</strong>' +
     labels.map(l => {
       const d = technicalMarkerDescription(l);
-      return d ? `<div style="margin-top:4px"><span style="color:#a78bfa">${escHtml(l)}</span>：${escHtml(d)}</div>` : '';
-    }).join('');
+      return d ? `<span style="display:inline-block; margin-bottom:4px"><span style="color:#a78bfa">${escHtml(l)}</span>：${escHtml(d)}</span>` : '';
+    }).filter(Boolean).join(' <span class="text-slate-600">|</span> ');
   el.dataset.populated = '1';
 }
 
@@ -3356,7 +3356,7 @@ function renderTechnicalMatrixPanel(matrix) {
       ${renderPlanGroup('停損', plan.stops, '無停損候選', 'text-emerald-300')}
       ${renderPlanGroup('停利', plan.targets, '無目標候選', 'text-red-300')}
     </div>
-    <div class="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-1.5 max-h-72 overflow-y-auto scrollbar-thin">
+    <div class="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-1.5">
       ${dimButtons}
     </div>
     <div id="technical-matrix-save-status" class="mt-2 text-[11px] text-slate-500"></div>`;
