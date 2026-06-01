@@ -463,24 +463,44 @@ INTERMARKET_REFERENCES_TW = {
 }
 
 
+_INTERMARKET_CACHE: dict[str, tuple[float, dict]] = {}
+_INTERMARKET_TTL = 900  # 15 minutes — benchmarks change with the broader market, not per-symbol
+
+
 def fetch_intermarket_benchmarks(symbol: str) -> dict[str, pd.Series]:
     """Pull a small basket of intermarket reference series.
 
     Returns {label: close-series}. Empty series for any failed download — the
-    consumer must tolerate missing labels.
+    consumer must tolerate missing labels. Results are cached per-market (TW
+    vs US) with a 15-minute TTL because they do not depend on the symbol.
+    Internal yfinance pulls run in parallel to amortise latency.
     """
-    refs = INTERMARKET_REFERENCES_TW if _twse_channel(symbol) else INTERMARKET_REFERENCES_US
-    out: dict[str, pd.Series] = {}
-    for label, ticker in refs.items():
+    from concurrent.futures import ThreadPoolExecutor
+
+    market_key = "tw" if _twse_channel(symbol) else "us"
+    entry = _INTERMARKET_CACHE.get(market_key)
+    if entry and time.time() < entry[0]:
+        return entry[1]
+    refs = INTERMARKET_REFERENCES_TW if market_key == "tw" else INTERMARKET_REFERENCES_US
+
+    def _pull(label_ticker: tuple[str, str]) -> tuple[str, Optional[pd.Series]]:
+        label, ticker = label_ticker
         try:
             h = yf.Ticker(ticker).history(period="1y")
             if len(h) == 0:
-                continue
+                return label, None
             close = h["Close"]
             close.index = close.index.tz_localize(None)
-            out[label] = close
+            return label, close
         except Exception:
-            continue
+            return label, None
+
+    out: dict[str, pd.Series] = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(refs))) as ex:
+        for label, close in ex.map(_pull, list(refs.items())):
+            if close is not None:
+                out[label] = close
+    _INTERMARKET_CACHE[market_key] = (time.time() + _INTERMARKET_TTL, out)
     return out
 
 
@@ -504,16 +524,25 @@ _TW_BREADTH_CACHE: dict[str, tuple[float, dict]] = {}
 _TW_BREADTH_TTL = 3600  # breadth updates once per trading day
 
 
+_EARNINGS_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_EARNINGS_TTL = 3600  # earnings dates rarely shift within an hour
+
+
 def fetch_earnings_events(symbol: str) -> list[dict]:
     """Return upcoming/recent earnings dates as event-calendar payloads.
 
     yfinance exposes them per ticker for both US listings (AAPL/MSFT etc.) and
     most TW listings (.TW / .TWO). Failure returns an empty list so the
-    XVII dimension still falls back to its whipsaw heuristic.
+    XVII dimension still falls back to its whipsaw heuristic. Cached for an
+    hour so successive matrix builds skip the yfinance round-trip.
     """
+    entry = _EARNINGS_CACHE.get(symbol)
+    if entry and time.time() < entry[0]:
+        return entry[1]
     try:
         cal = yf.Ticker(symbol).calendar or {}
     except Exception:
+        _EARNINGS_CACHE[symbol] = (time.time() + _EARNINGS_TTL, [])
         return []
     earnings_dates = cal.get("Earnings Date") or []
     if not isinstance(earnings_dates, list):
@@ -539,6 +568,7 @@ def fetch_earnings_events(symbol: str) -> list[dict]:
             })
         except Exception:
             pass
+    _EARNINGS_CACHE[symbol] = (time.time() + _EARNINGS_TTL, events)
     return events
 
 
@@ -2341,36 +2371,74 @@ def _build_technical_matrix_payload(
     cfg = _chart_period_config(period)
     interval = cfg["interval"]
     yf_period = cfg["period"]
-    if interval == "1d":
-        h, source = fetch_history(symbol, period=yf_period)
+    context_period = "2y" if period == "2y" else "1y"
+    is_tw = bool(_twse_channel(symbol))
+
+    # Network-bound fetches all run in parallel. They are independent and the
+    # vast majority of total latency is I/O — sequential calls were 5–10s, the
+    # parallel fan-out collapses that to the slowest single call (~1s).
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _primary():
+        if interval == "1d":
+            return ("primary", fetch_history(symbol, period=yf_period))
+        return ("primary", (fetch_intraday_history(symbol, period=yf_period, interval=interval), "yfinance_intraday"))
+
+    def _context():
+        # Skip when primary fetch is already covering the same daily-period.
+        # We still issue the call when the primary is intraday (it has no
+        # multi-year span). When yf_period and context_period match we just
+        # alias the primary result later.
+        if interval == "1d" and yf_period == context_period:
+            return ("context", None)
+        return ("context", fetch_history(symbol, period=context_period))
+
+    jobs: dict = {
+        "primary": _primary,
+        "context": _context,
+        "benchmarks": lambda: ("benchmarks", fetch_intermarket_benchmarks(symbol)),
+        "intraday_1h": lambda: ("intraday_1h", fetch_intraday_history(symbol, period="30d", interval="1h")),
+        "intraday_15m": lambda: ("intraday_15m", fetch_intraday_history(symbol, period="14d", interval="15m")),
+        "intraday_5m": lambda: ("intraday_5m", fetch_intraday_history(symbol, period="1d", interval="5m")),
+        "events": lambda: ("events", fetch_earnings_events(symbol)),
+    }
+    # Market-specific feeds: skip the irrelevant side to avoid wasted network.
+    if is_tw:
+        jobs["breadth"] = lambda: ("breadth", fetch_tw_breadth())
+        jobs["order_book"] = lambda: ("order_book", fetch_tw_order_book_snapshot(symbol))
     else:
-        h = fetch_intraday_history(symbol, period=yf_period, interval=interval)
-        source = "yfinance_intraday"
+        jobs["options_profile"] = lambda: ("options_profile", fetch_us_options_profile(symbol))
+
+    results: dict = {}
+    with ThreadPoolExecutor(max_workers=min(10, len(jobs))) as ex:
+        for label, value in ex.map(lambda fn: fn(), jobs.values()):
+            results[label] = value
+
+    primary = results.get("primary")
+    if isinstance(primary, tuple) and len(primary) == 2:
+        h, source = primary
+    else:
+        h, source = pd.DataFrame(), ""
     if len(h) == 0:
         raise ValueError("no data")
-    context_period = "2y" if period == "2y" else "1y"
-    context_h, context_source = fetch_history(symbol, period=context_period)
-    if len(context_h) == 0:
-        context_h = h
-        context_source = source
-    benchmarks = fetch_intermarket_benchmarks(symbol)
-    primary_label = "twii" if _twse_channel(symbol) else "spx"
+    ctx_result = results.get("context")
+    if ctx_result is None:
+        context_h, context_source = h, source
+    else:
+        context_h, context_source = ctx_result
+        if len(context_h) == 0:
+            context_h, context_source = h, source
+
+    benchmarks = results.get("benchmarks") or {}
+    primary_label = "twii" if is_tw else "spx"
     benchmark = benchmarks.get(primary_label, pd.Series(dtype=float))
-    # Intraday pulls are best-effort; failures keep XI Opening Range and
-    # XVII Whipsaw on the unavailable path with explicit data_gaps.
-    intraday_1h = fetch_intraday_history(symbol, period="30d", interval="1h")
-    intraday_15m = fetch_intraday_history(symbol, period="14d", interval="15m")
-    intraday_5m_today = fetch_intraday_history(symbol, period="1d", interval="5m")
-    # TW-specific free payloads: breadth from MI_INDEX and 5-level order book
-    # snapshot from mis.twse. US symbols stay on the unavailable path because
-    # we have no comparable free feed.
-    breadth = fetch_tw_breadth() if _twse_channel(symbol) else None
-    order_book = fetch_tw_order_book_snapshot(symbol) if _twse_channel(symbol) else None
-    # US options chain via yfinance; TW listings rarely have public chains so
-    # we skip them to avoid pointless network calls.
-    options_profile = fetch_us_options_profile(symbol) if not _twse_channel(symbol) else None
-    # Earnings catalyst from yfinance.calendar — works for both TW and US.
-    events = fetch_earnings_events(symbol)
+    intraday_1h = results.get("intraday_1h")
+    intraday_15m = results.get("intraday_15m")
+    intraday_5m_today = results.get("intraday_5m")
+    breadth = results.get("breadth")
+    order_book = results.get("order_book")
+    options_profile = results.get("options_profile")
+    events = results.get("events") or []
     payload = build_technical_matrix(
         symbol,
         h,
