@@ -31,6 +31,7 @@ from llm_providers import (
     run_workflow, AVAILABLE_MODELS, detect_cli_availability,
     call_llm, call_cli,
 )
+from technical_matrix import build_technical_matrix
 
 warnings.filterwarnings("ignore")
 
@@ -1088,6 +1089,48 @@ def api_market_intraday(interval: str = "5m"):
         "spx": _market_intraday_session("spx", interval=interval),
     }
 
+def _recommend_watch_levels(ind: dict, market: dict | None = None) -> Optional[dict]:
+    """根據技術指標推算觀察清單的建議目標價位。
+
+    回傳 {target_entry, target_add, target_profit, target_stop}；資料不足回 None。
+    保守邏輯：
+      - entry 取 MA20 與 現價*0.97 較低者（等小回再進）；大盤危險時再下修 2%
+      - add 為 entry 再下 5%
+      - profit 若 52 週高至少高於 entry 10%，取 high52，否則 entry*1.25
+      - stop 取 MA60 與 entry*0.90 中較大者（確保低於 entry），避免過深
+    """
+    price = ind.get("price")
+    if not price:
+        return None
+    ma20 = ind.get("ma20")
+    ma60 = ind.get("ma60")
+    high52 = ind.get("high52")
+    market_risk = (market or {}).get("risk_level", "safe")
+
+    entry_candidates = [v for v in (ma20, price * 0.97) if v]
+    entry = min(entry_candidates) if entry_candidates else price * 0.97
+    if market_risk == "danger":
+        entry *= 0.98  # 大盤危險再退一步
+    entry = round(entry, 2)
+
+    add = round(entry * 0.95, 2)
+
+    if high52 and high52 > entry * 1.10:
+        profit = round(high52, 2)
+    else:
+        profit = round(entry * 1.25, 2)
+
+    stop_candidates = [v for v in (ma60, entry * 0.90) if v and v < entry]
+    stop = round(max(stop_candidates), 2) if stop_candidates else round(entry * 0.90, 2)
+
+    return {
+        "target_entry": entry,
+        "target_add": add,
+        "target_profit": profit,
+        "target_stop": stop,
+    }
+
+
 def _recommend_position(d: dict, market: dict | None) -> dict:
     """根據持倉指標 + 大盤狀態產生操作建議。
 
@@ -1741,6 +1784,49 @@ def api_history(symbol: str, period: str = "6mo"):
         return {"error": str(e)}
 
 
+@app.get("/api/technical-matrix/{symbol}")
+def api_technical_matrix(symbol: str, period: str = "1y"):
+    """17-dimensional technical matrix with chart markers."""
+    try:
+        matrix = _build_technical_matrix_payload(symbol, period)
+        return sanitize_float_values(matrix)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/technical-matrix/{symbol}/snapshot")
+def api_technical_matrix_snapshot(symbol: str, period: str = "1y"):
+    """Build and save a 17-dimensional technical matrix snapshot to Obsidian."""
+    vault = _get_vault()
+    if not vault:
+        raise HTTPException(400, "obsidian_vault_path 未設定或路徑不存在")
+    try:
+        matrix = _build_technical_matrix_payload(symbol, period)
+        note_path = _obsidian_write_technical_matrix(vault, matrix)
+        return sanitize_float_values({
+            "ok": True,
+            "symbol": symbol,
+            "obsidian_path": str(note_path),
+            "matrix": matrix,
+        })
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _build_technical_matrix_payload(symbol: str, period: str) -> dict:
+    h, source = fetch_history(symbol, period=period)
+    if len(h) == 0:
+        raise ValueError("no data")
+    benchmark_symbol = "^TWII" if _twse_channel(symbol) else "^GSPC"
+    benchmark = fetch_benchmark_close(benchmark_symbol)
+    return build_technical_matrix(
+        symbol,
+        h,
+        benchmark_close=benchmark,
+        source=source or "history",
+    )
+
+
 @app.get("/api/intraday/{symbol}")
 def api_intraday(symbol: str, interval: str = "5m"):
     """當日分時收盤價，供觀察列表 hover 小圖使用。"""
@@ -1882,6 +1968,44 @@ def api_add_watch(w: WatchCreate):
         _obsidian_post_write_sync(vault, kinds=("watchlist",))
     conn.close()
     return {"ok": True}
+
+class WatchUpdate(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    currency: Optional[str] = None
+    target_entry: Optional[float] = None
+    target_add: Optional[float] = None
+    target_profit: Optional[float] = None
+    target_stop: Optional[float] = None
+    notes: Optional[str] = None
+
+
+@app.put("/api/watchlist/{wid}")
+def api_update_watch(wid: int, w: WatchUpdate):
+    conn = get_db()
+    existing = conn.execute("SELECT * FROM watchlist WHERE id=?", (wid,)).fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(404, "Watchlist item not found")
+    updates = []
+    params = []
+    set_fields = w.dict(exclude_unset=True)
+    for field in ("name", "category", "currency", "target_entry", "target_add",
+                  "target_profit", "target_stop", "notes"):
+        if field in set_fields:
+            updates.append(f"{field}=?")
+            params.append(set_fields[field])
+    if updates:
+        params.append(wid)
+        conn.execute(f"UPDATE watchlist SET {', '.join(updates)} WHERE id=?", params)
+        conn.commit()
+    vault = _get_vault()
+    if vault and updates:
+        _obsidian_write_watchlist_snapshot(vault, conn, existing["symbol"])
+        _obsidian_post_write_sync(vault, kinds=("watchlist",))
+    conn.close()
+    return {"ok": True}
+
 
 @app.delete("/api/watchlist/{wid}")
 def api_del_watch(wid: int):
@@ -3036,7 +3160,16 @@ def api_diagnose(symbol: str):
         return {"error": "no price cache for symbol"}
     ind = json.loads(dict(cache).get("data") or "{}")
     diag = diagnose(symbol, name, ind, market, position=dict(pos) if pos else None)
-    return sanitize_float_values({"symbol": symbol, "name": name, "diagnosis": diag, "indicators": ind})
+    watch_recommendation = _recommend_watch_levels(ind, market) if watch else None
+    watch_id = dict(watch)["id"] if watch else None
+    return sanitize_float_values({
+        "symbol": symbol,
+        "name": name,
+        "diagnosis": diag,
+        "indicators": ind,
+        "watch_id": watch_id,
+        "watch_recommendation": watch_recommendation,
+    })
 
 
 # ─────────────── Obsidian 雙向同步 ───────────────
@@ -3459,6 +3592,177 @@ updated: {date.today().isoformat()}
 ```
 """
     note.write_text(content, encoding="utf-8")
+
+
+def _obsidian_technical_matrix_symbol_dir(vault: Path, symbol: str) -> Path:
+    return vault / "TechnicalAnalysis" / "Symbols" / _safe_obsidian_name(symbol)
+
+
+def _obsidian_technical_matrix_snapshot_path(vault: Path, matrix: dict) -> Path:
+    symbol = matrix.get("symbol", "UNKNOWN")
+    ts = _safe_obsidian_name((matrix.get("generated_at") or datetime.now().isoformat(timespec="seconds")).replace(":", "-"))
+    return _obsidian_technical_matrix_symbol_dir(vault, symbol) / "Snapshots" / f"{ts} 17D矩陣.md"
+
+
+def _obsidian_technical_matrix_index_path(vault: Path, symbol: str) -> Path:
+    return _obsidian_technical_matrix_symbol_dir(vault, symbol) / "技術矩陣入口.md"
+
+
+def _obsidian_technical_matrix_root_index_path(vault: Path) -> Path:
+    return vault / "TechnicalAnalysis" / "技術矩陣總覽.md"
+
+
+def _technical_matrix_markdown_table(rows: list[dict]) -> str:
+    if not rows:
+        return "（無）"
+    lines = ["| 類型 | 價格 | 來源 | 邏輯 |", "|---|---:|---|---|"]
+    for row in rows:
+        lines.append(
+            f"| {_fmt(row.get('type'))} | {_fmt(row.get('price'))} | "
+            f"{_fmt(row.get('dimension') or row.get('source'))} | {_fmt(row.get('logic') or row.get('label'))} |"
+        )
+    return "\n".join(lines)
+
+
+def _obsidian_write_technical_matrix(vault: Path, matrix: dict) -> Path:
+    """Write one 17D matrix snapshot plus symbol/root indexes."""
+    note = _obsidian_technical_matrix_snapshot_path(vault, matrix)
+    note.parent.mkdir(parents=True, exist_ok=True)
+    symbol = matrix.get("symbol", "UNKNOWN")
+    summary = matrix.get("summary") or {}
+    plan = matrix.get("execution_plan") or {}
+    marker_summary = matrix.get("marker_summary") or {}
+    dimensions = matrix.get("dimensions") or []
+    confluence = matrix.get("confluence_zones") or []
+    interactions = matrix.get("interactions") or []
+    matrix_json = json.dumps(sanitize_float_values(matrix), ensure_ascii=False, indent=2)
+
+    dimension_sections = []
+    for dim in dimensions:
+        observations = "\n".join(f"- {item}" for item in dim.get("observations", [])) or "- （無）"
+        signals = "\n".join(
+            f"- {sig.get('label')} · {sig.get('direction')} · strength {sig.get('strength')} · {sig.get('evidence', '')}"
+            for sig in dim.get("signals", [])
+        ) or "- （無）"
+        gaps = "\n".join(f"- {gap}" for gap in dim.get("data_gaps", [])) or "- （無）"
+        dimension_sections.append(
+            f"### {dim.get('name')} ({dim.get('id')})\n\n"
+            f"- 狀態：{dim.get('status')}\n"
+            f"- 偏向：{dim.get('bias')} / score {dim.get('score')} / confidence {dim.get('confidence')}\n"
+            f"- 風險：{dim.get('severity')}\n\n"
+            f"觀察：\n{observations}\n\n"
+            f"訊號：\n{signals}\n\n"
+            f"資料缺口：\n{gaps}\n"
+        )
+
+    interaction_lines = "\n".join(
+        f"- **{item.get('name')}**：{item.get('status')}。{item.get('logic')}"
+        for item in interactions
+    ) or "（無）"
+    confluence_lines = "\n".join(
+        f"- {zone.get('center')} · score {zone.get('score')} · "
+        f"{', '.join(sorted({src.get('dimension', '') for src in zone.get('sources', [])}))}"
+        for zone in confluence
+    ) or "（無）"
+
+    content = f"""---
+type: technical-matrix-snapshot
+symbol: {_fmt(symbol)}
+generated_at: {_fmt(matrix.get('generated_at'))}
+source: {_fmt(matrix.get('source'))}
+bias: {_fmt(summary.get('bias'))}
+net_score: {_fmt(summary.get('net_score'))}
+risk_level: {_fmt(summary.get('risk_level'))}
+confidence: {_fmt(summary.get('confidence'))}
+updated: {date.today().isoformat()}
+---
+
+# {symbol} 17D 技術矩陣
+
+## 總結
+
+- 偏向：{summary.get('bias')} / net score {summary.get('net_score')}
+- 風險：{summary.get('risk_level')} / risk score {summary.get('risk_score')}
+- 信心：{summary.get('confidence')}
+- 維度：computed {summary.get('computed_count')} / partial {summary.get('partial_count')} / unavailable {summary.get('unavailable_count')}
+- 最新價：{summary.get('latest_price')}
+- 標記：{marker_summary.get('total', 0)} 筆，高信念 {len(marker_summary.get('high_conviction', []))} 筆
+
+## 執行計畫
+
+### Entries
+
+{_technical_matrix_markdown_table(plan.get('entries') or [])}
+
+### Stops
+
+{_technical_matrix_markdown_table(plan.get('stops') or [])}
+
+### Targets
+
+{_technical_matrix_markdown_table(plan.get('targets') or [])}
+
+### Risk Notes
+
+{chr(10).join(f"- {item}" for item in plan.get('risk_notes', [])) or "（無）"}
+
+## 交互關聯
+
+{interaction_lines}
+
+## Confluence Zones
+
+{confluence_lines}
+
+## 17 維明細
+
+{chr(10).join(dimension_sections)}
+
+## Matrix JSON
+
+```json
+{matrix_json}
+```
+"""
+    note.write_text(content, encoding="utf-8")
+
+    index_path = _obsidian_technical_matrix_index_path(vault, symbol)
+    rel_note = note.relative_to(vault).as_posix()
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(
+        f"---\n"
+        f"type: technical-matrix-symbol-index\n"
+        f"symbol: {_fmt(symbol)}\n"
+        f"updated: {date.today().isoformat()}\n"
+        f"---\n\n"
+        f"# {symbol} 技術矩陣入口\n\n"
+        f"- 最新快照：[[{rel_note}|{matrix.get('generated_at')} 17D矩陣]]\n"
+        f"- 偏向：{summary.get('bias')} / net score {summary.get('net_score')}\n"
+        f"- 風險：{summary.get('risk_level')} / confidence {summary.get('confidence')}\n"
+        f"- 維度狀態：computed {summary.get('computed_count')} / partial {summary.get('partial_count')} / unavailable {summary.get('unavailable_count')}\n\n"
+        f"## 關聯\n\n"
+        f"- [[TechnicalAnalysis/17維全景技術分析建置規劃|方法建置規劃]]\n"
+        f"- [[TechnicalAnalysis/技術矩陣總覽|技術矩陣總覽]]\n",
+        encoding="utf-8",
+    )
+
+    root_index = _obsidian_technical_matrix_root_index_path(vault)
+    root_index.parent.mkdir(parents=True, exist_ok=True)
+    symbol_indexes = sorted((vault / "TechnicalAnalysis" / "Symbols").glob("*/技術矩陣入口.md"))
+    links = []
+    for path in symbol_indexes:
+        rel = path.relative_to(vault).as_posix()
+        links.append(f"- [[{rel}|{path.parent.name}]]")
+    root_index.write_text(
+        f"---\n"
+        f"type: technical-matrix-root-index\n"
+        f"updated: {date.today().isoformat()}\n"
+        f"---\n\n"
+        f"# 技術矩陣總覽\n\n"
+        f"{chr(10).join(links) or '（無）'}\n",
+        encoding="utf-8",
+    )
+    return note
 
 
 def _obsidian_delete_analysis(vault: Path, analysis: dict) -> None:

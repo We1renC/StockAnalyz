@@ -223,6 +223,20 @@ body { background: var(--bg-base); color: var(--text-primary); }
   opacity: 0; transform: translateY(1px); transition: opacity 0.15s ease, transform 0.15s ease;
 }
 .alert-clear-host:hover .alert-clear-action { opacity: 1; transform: translateY(0); }
+.status-analyze-host {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  width: 100%; min-width: 0;
+}
+.status-analyze-host .pill { flex-shrink: 1; min-width: 0; }
+.status-analyze-action {
+  opacity: 0; transform: translateY(1px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  pointer-events: none;
+}
+.watchlist-status-cell:hover .status-analyze-action,
+.status-analyze-host:hover .status-analyze-action {
+  opacity: 1; transform: translateY(0); pointer-events: auto;
+}
 .alert-header-menu {
   display: none; position: absolute; right: 0; top: 100%; z-index: 30; padding-top: 4px;
 }
@@ -814,7 +828,9 @@ body { background: var(--bg-base); color: var(--text-primary); }
         <div class="text-xs text-gray-400 mt-1 flex gap-3">
           <span><span class="inline-block w-3 h-1 bg-yellow-400 align-middle"></span> MA20</span>
           <span><span class="inline-block w-3 h-1 bg-cyan-400 align-middle"></span> MA60</span>
+          <span><span class="inline-block w-2 h-2 rounded-full bg-fuchsia-400 align-middle"></span> 17D 標記</span>
         </div>
+        <div id="technical-matrix-panel" class="mt-3 glass-card-sm p-3 text-xs text-slate-300"></div>
       </div>
       <div id="diag-body" class="text-sm space-y-3"></div>
     </div>
@@ -1256,6 +1272,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
 const $ = id => document.getElementById(id);
 const fmt = (n, d=2) => n == null ? '—' : Number(n).toLocaleString('en', {minimumFractionDigits:d, maximumFractionDigits:d});
 const fmtInt = n => n == null ? '—' : Math.round(n).toLocaleString();
+const escHtml = v => String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 
 // Tab switching
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -2041,7 +2058,12 @@ function renderWatchlist(items) {
       <td class="text-center"><span class="watchlist-price-cell">${entryCurrentHtml}</span></td>
       <td class="text-center tabular-nums text-emerald-400">${fmt(w.target_stop)}</td>
       <td class="text-center watchlist-alert-cell">${makeAlertCell(w.symbol)}</td>
-      <td class="text-center text-sm watchlist-status-cell"><span class="pill ${statusPill} text-[11px] watchlist-cell-ellipsis" title="${statusText.replace(/"/g, '&quot;')}">${statusText}</span></td>
+      <td class="text-center text-sm watchlist-status-cell">
+        <span class="status-analyze-host">
+          <span class="pill ${statusPill} text-[11px] watchlist-cell-ellipsis" title="${statusText.replace(/"/g, '&quot;')}">${statusText}</span>
+          <button type="button" onclick="diagnose('${w.symbol}','${(w.name||'').replace(/'/g,"\\\'")}')" class="btn-action status-analyze-action" data-tip="分析此股">分析</button>
+        </span>
+      </td>
       <td class="text-center">
         <span class="watchlist-actions-cell">
         <button onclick="diagnose('${w.symbol}','${(w.name||'').replace(/'/g,"\\\'")}')" class="btn-action" data-tip="分析">分析</button>
@@ -2348,6 +2370,9 @@ function toggleAlertDetails(symbol) {
 
 let _currentSymbol = null;
 let _chart = null;
+let _chartCandleSeries = null;
+let _technicalMatrix = null;
+let _technicalMarkerFilter = 'all';
 let _intradayChart = null;
 let _intradaySeries = null;
 let _intradayHoverSymbol = null;
@@ -2508,7 +2533,52 @@ async function diagnose(symbol, name) {
       <div class="text-sm font-semibold mb-1 text-emerald-400">規則引擎診斷</div>
       <div class="text-sm">${diagR.diagnosis}</div>
     </div>
+    ${renderWatchRecommendation(diagR)}
    `;
+}
+
+function renderWatchRecommendation(diagR) {
+  const rec = diagR.watch_recommendation;
+  const wid = diagR.watch_id;
+  if (!rec || !wid) return '';
+  const fmtCell = (v) => v == null ? '—' : Number(v).toFixed(2);
+  return `
+    <div class="glass-card-sm p-3" style="border-color:var(--border-glow)" id="watch-rec-card">
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-sm font-semibold text-emerald-400">觀察清單建議價位</div>
+        <button onclick="applyWatchRecommendation(${wid}, ${JSON.stringify(rec).replace(/"/g, '&quot;')})"
+                class="btn-secondary text-xs px-3 py-1">套用至觀察清單</button>
+      </div>
+      <div class="grid grid-cols-4 gap-2 text-sm">
+        <div><div class="text-xs text-slate-400">目標進場</div><div class="font-bold tabular-nums">${fmtCell(rec.target_entry)}</div></div>
+        <div><div class="text-xs text-slate-400">加碼點</div><div class="font-bold tabular-nums">${fmtCell(rec.target_add)}</div></div>
+        <div><div class="text-xs text-slate-400">停利目標</div><div class="font-bold tabular-nums text-red-400">${fmtCell(rec.target_profit)}</div></div>
+        <div><div class="text-xs text-slate-400">停損</div><div class="font-bold tabular-nums text-emerald-400">${fmtCell(rec.target_stop)}</div></div>
+      </div>
+      <div id="watch-rec-status" class="text-xs text-slate-500 mt-2"></div>
+    </div>`;
+}
+
+async function applyWatchRecommendation(wid, rec) {
+  const status = $('watch-rec-status');
+  if (status) { status.textContent = '套用中...'; status.style.color = '#94a3b8'; }
+  try {
+    const r = await fetch(`/api/watchlist/${wid}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rec),
+    }).then(r => r.json());
+    if (r.ok) {
+      if (status) { status.textContent = '已套用，觀察清單已更新'; status.style.color = '#34d399'; }
+      const w = await fetch('/api/watchlist').then(r => r.json());
+      window._watchlist = w.watchlist;
+      renderWatchlist(w.watchlist);
+    } else {
+      if (status) { status.textContent = r.detail || '套用失敗'; status.style.color = '#ef4444'; }
+    }
+  } catch (e) {
+    if (status) { status.textContent = '連線失敗：' + e; status.style.color = '#ef4444'; }
+  }
 }
 
 function renderPastAnalysis(analyses) {
@@ -2577,16 +2647,166 @@ async function deletePastAnalysis(id) {
   }
 }
 
+function technicalBiasLabel(bias) {
+  return {
+    strong_bullish: '強多',
+    bullish: '偏多',
+    neutral: '中性',
+    bearish: '偏空',
+    strong_bearish: '強空',
+  }[bias] || '中性';
+}
+
+function technicalBiasClass(bias) {
+  if (bias === 'strong_bullish' || bias === 'bullish') return 'text-red-400';
+  if (bias === 'strong_bearish' || bias === 'bearish') return 'text-emerald-400';
+  return 'text-slate-300';
+}
+
+function technicalStatusClass(status) {
+  if (status === 'computed') return 'text-emerald-300';
+  if (status === 'partial') return 'text-amber-300';
+  return 'text-slate-500';
+}
+
+function applyTechnicalMarkers() {
+  if (!_chartCandleSeries || !_technicalMatrix || !_technicalMatrix.markers) return;
+  const markers = (_technicalMatrix.markers || [])
+    .filter(m => _technicalMarkerFilter === 'all' || m.dimension === _technicalMarkerFilter)
+    .map(m => ({
+      time: m.time,
+      position: m.position || 'inBar',
+      color: m.color || '#a78bfa',
+      shape: m.shape || 'circle',
+      text: m.text || '',
+    }));
+  _chartCandleSeries.setMarkers(markers);
+}
+
+function setTechnicalMarkerFilter(dimId) {
+  _technicalMarkerFilter = dimId;
+  applyTechnicalMarkers();
+  renderTechnicalMatrixPanel(_technicalMatrix);
+}
+
+function renderPlanItems(items, emptyText) {
+  if (!items || !items.length) return `<span class="text-slate-500">${emptyText}</span>`;
+  return items.slice(0, 3).map(item => `
+    <span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-900/70 border border-slate-700 tabular-nums">
+      <span class="text-slate-500">${escHtml(item.type)}</span>
+      <span>${fmt(item.price)}</span>
+    </span>`).join('');
+}
+
+function renderTechnicalMatrixPanel(matrix) {
+  const panel = $('technical-matrix-panel');
+  if (!panel) return;
+  if (!matrix) {
+    panel.innerHTML = '<div class="text-slate-500">17D 矩陣載入中...</div>';
+    return;
+  }
+  if (matrix.error) {
+    panel.innerHTML = `<div class="text-red-400">17D 矩陣錯誤：${escHtml(matrix.error)}</div>`;
+    return;
+  }
+  const summary = matrix.summary || {};
+  const plan = matrix.execution_plan || {};
+  const dims = matrix.dimensions || [];
+  const markerSummary = matrix.marker_summary || {};
+  const dimButtons = dims.map((dim, idx) => {
+    const active = _technicalMarkerFilter === dim.id;
+    const obs = (dim.observations || [])[0] || '';
+    return `
+      <button type="button" onclick="setTechnicalMarkerFilter('${dim.id}')"
+              class="text-left rounded border px-2 py-1.5 ${active ? 'border-emerald-500 bg-emerald-500/10' : 'border-slate-800 bg-slate-950/40 hover:border-slate-600'}">
+        <div class="flex items-center gap-1 min-w-0">
+          <span class="text-slate-500 tabular-nums">${String(idx + 1).padStart(2, '0')}</span>
+          <span class="font-semibold truncate">${escHtml(dim.name)}</span>
+          <span class="ml-auto ${technicalStatusClass(dim.status)}">${dim.status}</span>
+        </div>
+        <div class="mt-1 flex items-center gap-2 text-[11px]">
+          <span class="${technicalBiasClass(dim.bias)}">${technicalBiasLabel(dim.bias)}</span>
+          <span class="text-slate-500 tabular-nums">S ${fmt(dim.score, 1)}</span>
+          <span class="text-slate-500 tabular-nums">C ${fmt(dim.confidence, 2)}</span>
+          <span class="text-slate-500">R ${escHtml(dim.severity)}</span>
+        </div>
+        <div class="mt-1 text-[11px] text-slate-500 truncate">${escHtml(obs)}</div>
+      </button>`;
+  }).join('');
+
+  panel.innerHTML = `
+    <div class="flex items-center gap-2 flex-wrap">
+      <div class="font-semibold text-emerald-300">17D 全景矩陣</div>
+      <span class="${technicalBiasClass(summary.bias)} font-semibold">${technicalBiasLabel(summary.bias)}</span>
+      <span class="text-slate-500 tabular-nums">Score ${fmt(summary.net_score, 2)}</span>
+      <span class="text-slate-500 tabular-nums">Risk ${escHtml(summary.risk_level || '—')}</span>
+      <span class="text-slate-500 tabular-nums">C ${fmt(summary.confidence, 2)}</span>
+      <button onclick="setTechnicalMarkerFilter('all')" class="btn-secondary text-xs ml-auto" style="padding:2px 8px">全部標記</button>
+      <button onclick="saveTechnicalMatrixSnapshot(this)" class="btn-secondary text-xs" style="padding:2px 8px">保存快照</button>
+    </div>
+    <div class="mt-2 grid grid-cols-3 gap-2 text-[11px] text-slate-400">
+      <div>維度 <span class="tabular-nums text-slate-200">${summary.computed_count || 0}/${summary.dimension_count || 17}</span></div>
+      <div>Partial <span class="tabular-nums text-amber-300">${summary.partial_count || 0}</span></div>
+      <div>標記 <span class="tabular-nums text-fuchsia-300">${markerSummary.total || 0}</span></div>
+    </div>
+    <div class="mt-2 flex flex-wrap gap-1.5">
+      ${renderPlanItems(plan.entries, '無進場候選')}
+      ${renderPlanItems(plan.stops, '無停損候選')}
+      ${renderPlanItems(plan.targets, '無目標候選')}
+    </div>
+    <div class="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-60 overflow-y-auto scrollbar-thin">
+      ${dimButtons}
+    </div>
+    <div id="technical-matrix-save-status" class="mt-2 text-[11px] text-slate-500"></div>`;
+}
+
+async function saveTechnicalMatrixSnapshot(btn) {
+  if (!_currentSymbol) return;
+  const status = $('technical-matrix-save-status');
+  const original = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '保存中'; }
+  if (status) status.textContent = '寫入 Obsidian 中...';
+  try {
+    const period = $('chart-period').value;
+    const r = await fetch(`/api/technical-matrix/${encodeURIComponent(_currentSymbol)}/snapshot?period=${period}`, { method: 'POST' }).then(r => r.json());
+    if (r.ok) {
+      if (status) {
+        status.textContent = `已保存：${r.obsidian_path}`;
+        status.style.color = '#34d399';
+      }
+    } else {
+      if (status) {
+        status.textContent = r.error || r.detail || '保存失敗';
+        status.style.color = '#ef4444';
+      }
+    }
+  } catch (e) {
+    if (status) {
+      status.textContent = '保存失敗：' + e;
+      status.style.color = '#ef4444';
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
+}
+
 async function drawChart(symbol, period) {
   // 清除舊圖
   const container = $('chart-container');
   container.innerHTML = '<div class="flex items-center justify-center h-full text-gray-400">載入 K 線中...</div>';
+  _technicalMatrix = null;
+  _chartCandleSeries = null;
+  _technicalMarkerFilter = 'all';
+  renderTechnicalMatrixPanel(null);
   if (_chart) {
     try { _chart.remove(); } catch(e) {}
     _chart = null;
   }
   try {
-    const r = await fetch(`/api/history/${encodeURIComponent(symbol)}?period=${period}`).then(r=>r.json());
+    const [r, matrix] = await Promise.all([
+      fetch(`/api/history/${encodeURIComponent(symbol)}?period=${period}`).then(r=>r.json()),
+      fetch(`/api/technical-matrix/${encodeURIComponent(symbol)}?period=${period}`).then(r=>r.json()).catch(() => null),
+    ]);
     if (r.error) {
       container.innerHTML = `<div class="flex items-center justify-center h-full text-red-400">錯誤: ${r.error}</div>`;
       return;
@@ -2612,6 +2832,16 @@ async function drawChart(symbol, period) {
       wickUpColor: '#ef4444', wickDownColor: '#10b981',
     });
     candle.setData(r.candles);
+    _chartCandleSeries = candle;
+    if (matrix && !matrix.error && Array.isArray(matrix.markers)) {
+      _technicalMatrix = matrix;
+      renderTechnicalMatrixPanel(matrix);
+      applyTechnicalMarkers();
+    } else if (matrix && matrix.error) {
+      renderTechnicalMatrixPanel(matrix);
+    } else {
+      renderTechnicalMatrixPanel({ error: '未取得 17D 矩陣資料' });
+    }
     const ma20 = _chart.addLineSeries({ color: '#facc15', lineWidth: 1, priceLineVisible: false });
     ma20.setData(r.ma20);
     const ma60 = _chart.addLineSeries({ color: '#22d3ee', lineWidth: 1, priceLineVisible: false });
@@ -2624,6 +2854,7 @@ async function drawChart(symbol, period) {
     vol.setData(r.volumes);
   } catch (e) {
     container.innerHTML = `<div class="text-red-400">圖表錯誤: ${e}</div>`;
+    renderTechnicalMatrixPanel({ error: String(e) });
   }
 }
 
@@ -2637,6 +2868,9 @@ function closeDiag() {
     try { _chart.remove(); } catch(e) {}
     _chart = null;
   }
+  _chartCandleSeries = null;
+  _technicalMatrix = null;
+  _technicalMarkerFilter = 'all';
 }
 
 let _llmEventSource = null;
