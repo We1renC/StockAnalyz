@@ -1822,19 +1822,59 @@ def api_history(symbol: str, period: str = "6mo"):
     try:
         cfg = _chart_period_config(period)
         interval = cfg["interval"]
-        yf_period = cfg["period"]
+        
+        # 決定拉取較大的歷史區間，以提供 MA20 / MA60 足夠的 warm-up 緩衝
+        calc_periods = {
+            "1d": "5d",
+            "5d": "1mo",
+            "1mo": "6mo",
+            "3mo": "1y",
+            "6mo": "1y",
+            "1y": "2y",
+            "2y": "5y",
+        }
+        calc_period = calc_periods.get(period, "1y")
+
         if interval == "1d":
-            h, source = fetch_history(symbol, period=yf_period)
+            h, source = fetch_history(symbol, period=calc_period)
         else:
-            h = fetch_intraday_history(symbol, period=yf_period, interval=interval)
+            h = fetch_intraday_history(symbol, period=calc_period, interval=interval)
             source = "yfinance_intraday"
+            
         h = h.dropna(subset=["Open", "High", "Low", "Close"])
         if len(h) == 0:
             return {"error": "no data"}
+            
+        # 統一將 index 轉為 naive datetime
+        h = h.copy()
         h.index = h.index.tz_localize(None)
+        
+        # 在完整歷史上計算滾動平均線
+        close = h["Close"]
+        ma20_series = close.rolling(20).mean()
+        ma60_series = close.rolling(60).mean()
+        
+        # 依據資料最後一個時間點，向前裁切出用戶實際請求的週期區間
+        import datetime
+        latest_ts = h.index[-1]
+        period_days = {
+            "1d": 1,
+            "5d": 5,
+            "1mo": 31,
+            "3mo": 92,
+            "6mo": 183,
+            "1y": 366,
+            "2y": 731,
+        }.get(period, 183)
+        cutoff_date = latest_ts - datetime.timedelta(days=period_days)
+        
+        h_sliced = h[h.index >= cutoff_date]
+        if len(h_sliced) == 0:
+            h_sliced = h
+            
         candles = []
         volumes = []
-        for ts, row in h.iterrows():
+        for ts, row in h_sliced.iterrows():
             t = int(ts.timestamp())
             candles.append({
                 "time": t,
@@ -1848,16 +1888,18 @@ def api_history(symbol: str, period: str = "6mo"):
                 "value": int(row["Volume"]),
                 "color": "rgba(239,68,68,0.6)" if row["Close"] >= row["Open"] else "rgba(16,185,129,0.6)",
             })
-        # MA 線
-        close = h["Close"]
+            
         ma20 = []
         ma60 = []
-        ma20_series = close.rolling(20).mean()
-        ma60_series = close.rolling(60).mean()
+        sliced_timestamps = set(h_sliced.index)
+        
         for ts, val in ma20_series.dropna().items():
-            ma20.append({"time": int(ts.timestamp()), "value": round(float(val), 2)})
+            if ts in sliced_timestamps:
+                ma20.append({"time": int(ts.timestamp()), "value": round(float(val), 2)})
         for ts, val in ma60_series.dropna().items():
-            ma60.append({"time": int(ts.timestamp()), "value": round(float(val), 2)})
+            if ts in sliced_timestamps:
+                ma60.append({"time": int(ts.timestamp()), "value": round(float(val), 2)})
+                
         return sanitize_float_values({
             "symbol": symbol,
             "period": period,
