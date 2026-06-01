@@ -908,8 +908,14 @@ async def monitor_loop():
             )
 
             # ── Phase 2: 收集所有需抓價格的標的 ──
-            positions = [dict(row) for row in c.execute("SELECT * FROM positions").fetchall()]
-            watchlist = [dict(row) for row in c.execute("SELECT * FROM watchlist").fetchall()]
+            positions = [
+                dict(row) for row in c.execute("SELECT * FROM positions").fetchall()
+                if not _is_test_symbol(row["symbol"], row["name"], row["category"])
+            ]
+            watchlist = [
+                dict(row) for row in c.execute("SELECT * FROM watchlist").fetchall()
+                if not _is_test_symbol(row["symbol"], row["name"], row["category"])
+            ]
 
             # 去重：同一個 symbol 只抓一次
             all_symbols = {}
@@ -1641,8 +1647,14 @@ async def api_refresh():
                market.get("spx"), market.get("spx_ma60"), market.get("risk_level"), market.get("warnings_count")))
 
     # Phase 2: 收集標的 + 去重
-    positions = [dict(row) for row in c.execute("SELECT * FROM positions").fetchall()]
-    watchlist_rows = [dict(row) for row in c.execute("SELECT * FROM watchlist").fetchall()]
+    positions = [
+        dict(row) for row in c.execute("SELECT * FROM positions").fetchall()
+        if not _is_test_symbol(row["symbol"], row["name"], row["category"])
+    ]
+    watchlist_rows = [
+        dict(row) for row in c.execute("SELECT * FROM watchlist").fetchall()
+        if not _is_test_symbol(row["symbol"], row["name"], row["category"])
+    ]
 
     all_symbols = {}
     for d in positions:
