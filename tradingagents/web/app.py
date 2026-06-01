@@ -1403,107 +1403,116 @@ def insert_alerts(c, symbol: str, name: str, ind: dict, market: dict, position=N
     return created
 
 # ─────────────── Background Monitor ───────────────
+# Serialize monitor_loop and api_refresh: if both fire concurrently they
+# spawn 40+ yfinance threads against the same process, which makes Yahoo
+# silently drop a chunk of requests (the US history calls were the visible
+# casualty — manual refresh appeared to do nothing because those fetches
+# returned empty dicts).
+_refresh_lock = asyncio.Lock()
+
+
 async def monitor_loop():
     """Background task: refresh prices + evaluate alerts every 5 minutes."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     while True:
         try:
-            t0 = datetime.now()
-            print(f"[{t0:%H:%M:%S}] Monitor cycle started...")
+            async with _refresh_lock:
+                t0 = datetime.now()
+                print(f"[{t0:%H:%M:%S}] Monitor cycle started...")
 
-            # ── Phase 1: 平行抓大盤指數 + 市場狀態 ──
-            with ThreadPoolExecutor(max_workers=3) as ex:
-                f_twii = ex.submit(fetch_benchmark_close, "^TWII")
-                f_spx = ex.submit(fetch_benchmark_close, "^GSPC")
-                f_market = ex.submit(get_market_state)
-                twii = f_twii.result()
-                spx = f_spx.result()
-                market = f_market.result()
+                # ── Phase 1: 平行抓大盤指數 + 市場狀態 ──
+                with ThreadPoolExecutor(max_workers=3) as ex:
+                    f_twii = ex.submit(fetch_benchmark_close, "^TWII")
+                    f_spx = ex.submit(fetch_benchmark_close, "^GSPC")
+                    f_market = ex.submit(get_market_state)
+                    twii = f_twii.result()
+                    spx = f_spx.result()
+                    market = f_market.result()
 
-            conn = get_db()
-            c = conn.cursor()
-            c.execute(
-                """INSERT OR REPLACE INTO market_state
-                   (id, ts, vix,
-                    twii, twii_ma20, twii_ma60, twii_ma120,
-                    spx,  spx_ma20,  spx_ma60,  spx_ma120,
-                    sox, sox_ma60, ndx, ndx_ma20, tnx, dxy,
-                    risk_level, warnings_count)
-                   VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (market.get("ts"), market.get("vix"),
-                 market.get("twii"), market.get("twii_ma20"), market.get("twii_ma60"), market.get("twii_ma120"),
-                 market.get("spx"),  market.get("spx_ma20"),  market.get("spx_ma60"),  market.get("spx_ma120"),
-                 market.get("sox"), market.get("sox_ma60"),
-                 market.get("ndx"), market.get("ndx_ma20"),
-                 market.get("tnx"), market.get("dxy"),
-                 market.get("risk_level"), market.get("warnings_count"))
-            )
+                conn = get_db()
+                c = conn.cursor()
+                c.execute(
+                    """INSERT OR REPLACE INTO market_state
+                       (id, ts, vix,
+                        twii, twii_ma20, twii_ma60, twii_ma120,
+                        spx,  spx_ma20,  spx_ma60,  spx_ma120,
+                        sox, sox_ma60, ndx, ndx_ma20, tnx, dxy,
+                        risk_level, warnings_count)
+                       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (market.get("ts"), market.get("vix"),
+                     market.get("twii"), market.get("twii_ma20"), market.get("twii_ma60"), market.get("twii_ma120"),
+                     market.get("spx"),  market.get("spx_ma20"),  market.get("spx_ma60"),  market.get("spx_ma120"),
+                     market.get("sox"), market.get("sox_ma60"),
+                     market.get("ndx"), market.get("ndx_ma20"),
+                     market.get("tnx"), market.get("dxy"),
+                     market.get("risk_level"), market.get("warnings_count"))
+                )
 
-            # ── Phase 2: 收集所有需抓價格的標的 ──
-            positions = [
-                dict(row) for row in c.execute("SELECT * FROM positions").fetchall()
-                if not _is_test_symbol(row["symbol"], row["name"], row["category"])
-            ]
-            watchlist = [
-                dict(row) for row in c.execute("SELECT * FROM watchlist").fetchall()
-                if not _is_test_symbol(row["symbol"], row["name"], row["category"])
-            ]
+                # ── Phase 2: 收集所有需抓價格的標的 ──
+                positions = [
+                    dict(row) for row in c.execute("SELECT * FROM positions").fetchall()
+                    if not _is_test_symbol(row["symbol"], row["name"], row["category"])
+                ]
+                watchlist = [
+                    dict(row) for row in c.execute("SELECT * FROM watchlist").fetchall()
+                    if not _is_test_symbol(row["symbol"], row["name"], row["category"])
+                ]
 
-            # 去重：同一個 symbol 只抓一次
-            all_symbols = {}
-            for d in positions:
-                all_symbols[d["symbol"]] = {"bench": twii if ".TW" in d["symbol"] else spx}
-            for d in watchlist:
-                all_symbols.setdefault(d["symbol"], {"bench": twii if ".TW" in d["symbol"] else spx})
+                # 去重：同一個 symbol 只抓一次
+                all_symbols = {}
+                for d in positions:
+                    all_symbols[d["symbol"]] = {"bench": twii if ".TW" in d["symbol"] else spx}
+                for d in watchlist:
+                    all_symbols.setdefault(d["symbol"], {"bench": twii if ".TW" in d["symbol"] else spx})
 
-            # ── Phase 3: 平行抓所有標的的即時指標 ──
-            indicators = {}  # symbol -> ind dict
+                # ── Phase 3: 平行抓所有標的的即時指標 ──
+                indicators = {}  # symbol -> ind dict
 
-            def _fetch_one(symbol, bench):
-                return symbol, fetch_indicators(symbol, bench)
+                def _fetch_one(symbol, bench):
+                    return symbol, fetch_indicators(symbol, bench)
 
-            with ThreadPoolExecutor(max_workers=8) as ex:
-                futures = {
-                    ex.submit(_fetch_one, sym, info["bench"]): sym
-                    for sym, info in all_symbols.items()
-                }
-                for future in as_completed(futures):
-                    try:
-                        sym, ind = future.result()
-                        if ind and "price" in ind:
-                            indicators[sym] = ind
-                    except Exception as e:
-                        sym = futures[future]
-                        print(f"  [WARN] {sym} fetch failed: {e}")
+                with ThreadPoolExecutor(max_workers=8) as ex:
+                    futures = {
+                        ex.submit(_fetch_one, sym, info["bench"]): sym
+                        for sym, info in all_symbols.items()
+                    }
+                    for future in as_completed(futures):
+                        try:
+                            sym, ind = future.result()
+                            if ind and "price" in ind:
+                                indicators[sym] = ind
+                        except Exception as e:
+                            sym = futures[future]
+                            print(f"  [WARN] {sym} fetch failed: {e}")
 
-            # ── Phase 4: 寫入快取 + 產生警報（循序寫 DB） ──
-            alerts_created = 0
-            for d in positions:
-                ind = indicators.get(d["symbol"])
-                if ind:
-                    store_price_cache(c, d["symbol"], ind)
-                    created = insert_alerts(c, d["symbol"], d["name"], ind, market, position=d)
-                    alerts_created += created
-                    if created:
-                        print(f"  [ALERT] {d['symbol']}: {created} new alert(s)")
+                # ── Phase 4: 寫入快取 + 產生警報（循序寫 DB） ──
+                alerts_created = 0
+                for d in positions:
+                    ind = indicators.get(d["symbol"])
+                    if ind:
+                        store_price_cache(c, d["symbol"], ind)
+                        created = insert_alerts(c, d["symbol"], d["name"], ind, market, position=d)
+                        alerts_created += created
+                        if created:
+                            print(f"  [ALERT] {d['symbol']}: {created} new alert(s)")
 
-            for d in watchlist:
-                ind = indicators.get(d["symbol"])
-                if ind:
-                    store_price_cache(c, d["symbol"], ind)
-                    created = insert_alerts(c, d["symbol"], d["name"], ind, market, watch=d)
-                    alerts_created += created
-                    if created:
-                        print(f"  [ALERT] {d['symbol']}: {created} new alert(s)")
+                for d in watchlist:
+                    ind = indicators.get(d["symbol"])
+                    if ind:
+                        store_price_cache(c, d["symbol"], ind)
+                        created = insert_alerts(c, d["symbol"], d["name"], ind, market, watch=d)
+                        alerts_created += created
+                        if created:
+                            print(f"  [ALERT] {d['symbol']}: {created} new alert(s)")
 
-            conn.commit()
-            vault = _get_vault()
-            if alerts_created and vault:
-                _obsidian_post_write_sync(vault, kinds=("alerts",))
-            conn.close()
-            elapsed = (datetime.now() - t0).total_seconds()
-            print(f"[{datetime.now():%H:%M:%S}] Monitor cycle done. ({elapsed:.1f}s, {len(indicators)}/{len(all_symbols)} symbols)")
+                conn.commit()
+                vault = _get_vault()
+                if alerts_created and vault:
+                    _obsidian_post_write_sync(vault, kinds=("alerts",))
+                conn.close()
+                elapsed = (datetime.now() - t0).total_seconds()
+                print(f"[{datetime.now():%H:%M:%S}] Monitor cycle done. ({elapsed:.1f}s, {len(indicators)}/{len(all_symbols)} symbols)")
         except Exception as e:
             print(f"Monitor error: {e}")
 
@@ -2205,6 +2214,20 @@ async def api_refresh():
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import time as _time
     t0 = _time.time()
+
+    # Acquire the shared refresh lock so we never race monitor_loop. Without
+    # this two refresh cycles compete for the yfinance connection pool, which
+    # makes Yahoo silently drop a fraction of the requests (the US history
+    # calls in particular came back empty, so manual refresh appeared to do
+    # nothing for US positions).
+    async with _refresh_lock:
+        return await asyncio.to_thread(_run_api_refresh_sync, t0)
+
+
+def _run_api_refresh_sync(t0: float) -> dict:
+    """Synchronous body of the manual refresh, held under _refresh_lock."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time as _time
 
     # Phase 1 + 3 重疊：market state / benchmark fetch 在背景跑時，
     # 主執行緒直接讀 DB 並提早派發 31 個標的的 indicator fetch。
