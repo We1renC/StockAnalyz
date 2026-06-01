@@ -933,7 +933,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
         <div class="diag-chart-shell">
           <div class="diag-chart-head">
             <div>
-              <div class="diag-chart-meta">Price Action Workspace</div>
+              <div class="diag-chart-meta">技術分析工作區</div>
               <div class="diag-chart-title">走勢圖</div>
             </div>
             <select id="chart-period" class="input-field diag-chart-period" style="width:auto;padding:4px 8px;font-size:12px">
@@ -2807,10 +2807,142 @@ function technicalBiasClass(bias) {
   return 'text-slate-300';
 }
 
+function technicalStatusLabel(status) {
+  return {
+    computed: '完成',
+    partial: '部分',
+    unavailable: '缺資料',
+  }[status] || status || '—';
+}
+
 function technicalStatusClass(status) {
   if (status === 'computed') return 'text-emerald-300';
   if (status === 'partial') return 'text-amber-300';
   return 'text-slate-500';
+}
+
+function technicalSeverityLabel(severity) {
+  return {
+    low: '低',
+    medium: '中',
+    high: '高',
+  }[severity] || severity || '—';
+}
+
+function technicalDimensionLabel(name, id) {
+  const map = {
+    price_action: '價格行為與 K 棒',
+    trend_ma: '趨勢與均線系統',
+    volume_profile: '量能與市場輪廓',
+    momentum: '動能與震盪指標',
+    structure_geometry: '市場結構與幾何',
+    volatility_risk: '波動與風險管理',
+    mtf_derivatives: '多週期與衍生品',
+    microstructure_orderflow: '微結構與訂單流',
+    intermarket_correlation: '跨市場與相關性',
+    breadth_internals: '市場廣度與內部結構',
+    time_cyclical: '時間與週期分析',
+    advanced_geometries: '進階結構與諧波',
+    options_gex: '選擇權與 GEX',
+    order_book: '深度與委託簿',
+    statistical_reversion: '統計與均值回歸',
+    macro_wave: '宏觀循環與波浪',
+    event_calendar: '事件時間軸',
+  };
+  return map[id] || name || id;
+}
+
+function technicalPlanTypeLabel(type) {
+  const map = {
+    pullback_to_confluence: '回踩共振區',
+    pullback_to_support: '回踩支撐',
+    breakout_confirmation: '突破確認',
+    relief_to_resistance: '反彈至壓力',
+    breakdown_confirmation: '跌破確認',
+    range_low_response: '區間低點反應',
+    range_high_response: '區間高點反應',
+    resistance_or_extension: '壓力/延伸目標',
+    support_or_reversion: '支撐/回歸目標',
+    stop_2atr_long: '多單 2ATR 停損',
+    stop_3atr_long: '多單 3ATR 停損',
+    stop_2atr_short: '空單 2ATR 停損',
+    stop_3atr_short: '空單 3ATR 停損',
+  };
+  return map[type] || type || '—';
+}
+
+function technicalMarkerTextLabel(text) {
+  const map = {
+    'Bull Engulf': '多方吞噬',
+    'Bear Engulf': '空方吞噬',
+    'Gap Up': '跳空上',
+    'Gap Down': '跳空下',
+    'Rejection': '反轉拒絕',
+    'Sweep': '流動性掃單',
+    'Inside': '內包',
+    'Bull Trap': '多頭陷阱',
+    'Bear Trap': '空頭陷阱',
+    'Squeeze': '擠壓',
+    'GC 5/20': '黃金交叉 5/20',
+    'GC 20/60': '黃金交叉 20/60',
+    'GC 60/200': '黃金交叉 60/200',
+    'DC 5/20': '死亡交叉 5/20',
+    'DC 20/60': '死亡交叉 20/60',
+    'DC 60/200': '死亡交叉 60/200',
+    'Vol Spike': '量能放大',
+    'Absorb': '吸收',
+    'Climax': '高潮',
+    'RSI Div': 'RSI 背離',
+    'Hidden Div': '隱性背離',
+    'Zero Reject': '零軸反彈',
+    'BOS': '結構突破',
+    'ChoCh': '結構轉向',
+    'Golden Pocket': '黃金口袋',
+    'AVWAP': '錨定 VWAP',
+    'FVG': '價值缺口',
+    'Spring': 'Spring',
+    'UTAD': 'UTAD',
+    '+2σ': '+2σ',
+    '-2σ': '-2σ',
+  };
+  return map[text] || text || '';
+}
+
+function technicalObservationPreview(obs, dimId) {
+  const text = String(obs || '').trim();
+  if (!text) return '尚無摘要';
+  const directMap = {
+    'No major single-candle reversal, gap, or sweep signal on the latest bar.': '最新一根 K 棒沒有明確反轉、跳空或掃流動性訊號。',
+    'Short-term MA stack is available but macro alignment is mixed or incomplete.': '短期均線可判讀，但中長期排列仍偏混合。',
+    'Volume is near recent average; no standalone institutional effort signal.': '量能接近近期平均，未見單獨成立的主力發力訊號。',
+    'Momentum signals are neutral or insufficient for divergence classification.': '動能大致中性，暫無明確背離分類。',
+    'Structure levels are mapped; no latest-bar BOS or golden-pocket trigger.': '結構位已完成標記，最新一棒未觸發突破或黃金口袋。',
+    'ATR is near its recent volatility baseline.': 'ATR 接近近期波動基準。',
+  };
+  if (directMap[text]) return directMap[text];
+  if (/[A-Za-z]/.test(text)) {
+    const fallback = {
+      price_action: '已產生價格行為摘要。',
+      trend_ma: '已產生趨勢與均線摘要。',
+      volume_profile: '已產生量能與輪廓摘要。',
+      momentum: '已產生動能摘要。',
+      structure_geometry: '已產生結構摘要。',
+      volatility_risk: '已產生波動與風險摘要。',
+      mtf_derivatives: '已產生多週期摘要。',
+      microstructure_orderflow: '已產生訂單流摘要。',
+      intermarket_correlation: '已產生跨市場摘要。',
+      breadth_internals: '已產生市場廣度摘要。',
+      time_cyclical: '已產生時間週期摘要。',
+      advanced_geometries: '已產生進階結構摘要。',
+      options_gex: '已產生選擇權摘要。',
+      order_book: '已產生委託簿摘要。',
+      statistical_reversion: '已產生統計摘要。',
+      macro_wave: '已產生宏觀循環摘要。',
+      event_calendar: '已產生事件摘要。',
+    };
+    return fallback[dimId] || '已產生維度摘要。';
+  }
+  return text;
 }
 
 function applyTechnicalMarkers() {
@@ -2822,7 +2954,7 @@ function applyTechnicalMarkers() {
       position: m.position || 'inBar',
       color: m.color || '#a78bfa',
       shape: m.shape || 'circle',
-      text: m.text || '',
+      text: technicalMarkerTextLabel(m.text || ''),
     }));
   _chartCandleSeries.setMarkers(markers);
 }
@@ -2837,7 +2969,7 @@ function renderPlanItems(items, emptyText, accentClass) {
   if (!items || !items.length) return `<span class="text-slate-500 text-[11px]">${emptyText}</span>`;
   return items.slice(0, 3).map(item => `
     <span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-900/70 border border-slate-700 tabular-nums">
-      <span class="text-slate-500">${escHtml(item.type)}</span>
+      <span class="text-slate-500">${escHtml(technicalPlanTypeLabel(item.type))}</span>
       <span class="${accentClass || ''}">${fmt(item.price)}</span>
     </span>`).join('');
 }
@@ -2871,20 +3003,20 @@ function renderTechnicalMatrixPanel(matrix) {
   const markerSummary = matrix.marker_summary || {};
   const dimButtons = dims.map((dim, idx) => {
     const active = _technicalMarkerFilter === dim.id;
-    const obs = (dim.observations || [])[0] || '';
+    const obs = technicalObservationPreview((dim.observations || [])[0] || '', dim.id);
     return `
       <button type="button" onclick="setTechnicalMarkerFilter('${dim.id}')"
               class="text-left rounded border px-2 py-1.5 ${active ? 'border-emerald-500 bg-emerald-500/10' : 'border-slate-800 bg-slate-950/40 hover:border-slate-600'}">
         <div class="flex items-center gap-1 min-w-0">
           <span class="text-slate-500 tabular-nums">${String(idx + 1).padStart(2, '0')}</span>
-          <span class="font-semibold truncate">${escHtml(dim.name)}</span>
-          <span class="ml-auto ${technicalStatusClass(dim.status)}">${dim.status}</span>
+          <span class="font-semibold truncate">${escHtml(technicalDimensionLabel(dim.name, dim.id))}</span>
+          <span class="ml-auto ${technicalStatusClass(dim.status)}">${technicalStatusLabel(dim.status)}</span>
         </div>
         <div class="mt-1 flex items-center gap-2 text-[11px]">
           <span class="${technicalBiasClass(dim.bias)}">${technicalBiasLabel(dim.bias)}</span>
-          <span class="text-slate-500 tabular-nums">S ${fmt(dim.score, 1)}</span>
-          <span class="text-slate-500 tabular-nums">C ${fmt(dim.confidence, 2)}</span>
-          <span class="text-slate-500">R ${escHtml(dim.severity)}</span>
+          <span class="text-slate-500 tabular-nums">分數 ${fmt(dim.score, 1)}</span>
+          <span class="text-slate-500 tabular-nums">信心 ${fmt(dim.confidence, 2)}</span>
+          <span class="text-slate-500">風險 ${escHtml(technicalSeverityLabel(dim.severity))}</span>
         </div>
         <div class="mt-1 text-[11px] text-slate-500 truncate">${escHtml(obs)}</div>
       </button>`;
@@ -2894,19 +3026,19 @@ function renderTechnicalMatrixPanel(matrix) {
     <div class="flex items-center gap-2 flex-wrap">
       <div class="font-semibold text-emerald-300">17D 全景矩陣</div>
       <span class="${technicalBiasClass(summary.bias)} font-semibold">${technicalBiasLabel(summary.bias)}</span>
-      <span class="text-slate-500 tabular-nums">Score ${fmt(summary.net_score, 2)}</span>
-      <span class="text-slate-500 tabular-nums">Risk ${escHtml(summary.risk_level || '—')}</span>
-      <span class="text-slate-500 tabular-nums">C ${fmt(summary.confidence, 2)}</span>
+      <span class="text-slate-500 tabular-nums">分數 ${fmt(summary.net_score, 2)}</span>
+      <span class="text-slate-500 tabular-nums">風險 ${escHtml(technicalSeverityLabel(summary.risk_level || '—'))}</span>
+      <span class="text-slate-500 tabular-nums">信心 ${fmt(summary.confidence, 2)}</span>
       <button onclick="setTechnicalMarkerFilter('all')" class="btn-secondary text-xs ml-auto" style="padding:2px 8px">全部標記</button>
       <button onclick="saveTechnicalMatrixSnapshot(this)" class="btn-secondary text-xs" style="padding:2px 8px">保存快照</button>
     </div>
     <div class="mt-2 grid grid-cols-3 md:grid-cols-6 gap-2 text-[11px] text-slate-400">
       <div>維度 <span class="tabular-nums text-slate-200">${summary.computed_count || 0}/${summary.dimension_count || 17}</span></div>
-      <div>Partial <span class="tabular-nums text-amber-300">${summary.partial_count || 0}</span></div>
+      <div>部分 <span class="tabular-nums text-amber-300">${summary.partial_count || 0}</span></div>
       <div>標記 <span class="tabular-nums text-fuchsia-300">${markerSummary.total || 0}</span></div>
-      <div>Bias <span class="${technicalBiasClass(summary.bias)}">${technicalBiasLabel(summary.bias)}</span></div>
-      <div>Score <span class="tabular-nums text-slate-200">${fmt(summary.net_score, 2)}</span></div>
-      <div>Risk <span class="tabular-nums text-slate-200">${escHtml(summary.risk_level || '—')}</span></div>
+      <div>方向 <span class="${technicalBiasClass(summary.bias)}">${technicalBiasLabel(summary.bias)}</span></div>
+      <div>分數 <span class="tabular-nums text-slate-200">${fmt(summary.net_score, 2)}</span></div>
+      <div>風險 <span class="tabular-nums text-slate-200">${escHtml(technicalSeverityLabel(summary.risk_level || '—'))}</span></div>
     </div>
     <div class="mt-2 space-y-1.5">
       ${renderPlanGroup('進場', plan.entries, '無進場候選', 'text-sky-300')}
