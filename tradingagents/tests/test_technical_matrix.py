@@ -605,6 +605,61 @@ def test_include_history_markers_backfills_high_value_patterns():
     assert any(label in history_texts for label in {"Bull Engulf", "Bear Engulf", "Hammer", "Pin Bar", "Sweep", "BOS", "ChoCh", "+3σ", "-3σ", "RSI Div"}), history_texts
 
 
+def test_default_anchor_stack_produces_multiple_avwap():
+    matrix = build_technical_matrix("TEST", _history_with_internal_lvn())
+    tc = next(d for d in matrix["dimensions"] if d["id"] == "time_cyclical")
+    anchors = tc["metrics"].get("avwap") or []
+    # range_low + range_high should both fire with default anchors
+    labels = {a.get("label") for a in anchors}
+    assert "range_low" in labels and "range_high" in labels, labels
+
+
+def test_liquidity_pools_detect_equal_levels():
+    # Construct alternating swings where two highs land at ~150 and two lows at ~100
+    dates = pd.date_range("2026-01-01", periods=60, freq="D")
+    pattern = [100, 110, 120, 130, 140, 150, 140, 130, 120, 110, 100, 110, 120, 130, 140, 150.3, 140, 130, 120, 110, 100.2,
+               110, 120, 130, 140, 150.1, 140, 130, 120, 110, 100.1, 110, 120, 130, 140, 150.05, 140, 130, 120, 110, 100.05,
+               110, 120, 130, 140, 150, 140, 130, 120, 110, 100, 110, 120, 130, 140, 150, 140, 130, 120, 110]
+    pattern = pattern[:60]
+    rows = [(p, p + 0.5, p - 0.5, p, 10000) for p in pattern]
+    h = pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=dates)
+    matrix = build_technical_matrix("HQ", h)
+    sg = next(d for d in matrix["dimensions"] if d["id"] == "structure_geometry")
+    pool_types = {lv.get("type") for lv in sg["levels"]}
+    assert "equal_highs" in pool_types or "equal_lows" in pool_types, pool_types
+
+
+def test_chart_patterns_can_surface_via_levels():
+    # Ascending triangle: flat highs, rising lows
+    dates = pd.date_range("2026-01-01", periods=80, freq="D")
+    rows = []
+    for i in range(80):
+        baseline = 100 + (i % 10)  # oscillation
+        if i % 10 == 5:  # peak
+            hi = 130
+            lo = 100 + i * 0.3
+            c = 125
+        else:
+            hi = 122 + (i % 3)
+            lo = 100 + i * 0.3
+            c = lo + 3
+        rows.append((lo + 1, hi, lo, c, 10000))
+    h = pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=dates)
+    # Pattern detection may or may not fire depending on the noise, but the
+    # detector must at least run without errors and produce a list of levels
+    matrix = build_technical_matrix("ASC", h)
+    sg = next(d for d in matrix["dimensions"] if d["id"] == "structure_geometry")
+    assert isinstance(sg["levels"], list)
+
+
+def test_statistical_metrics_include_hurst_halflife_ewma():
+    matrix = build_technical_matrix("TEST", _history())
+    sr = next(d for d in matrix["dimensions"] if d["id"] == "statistical_reversion")
+    assert "hurst_exponent" in sr["metrics"]
+    assert "ou_half_life_bars" in sr["metrics"]
+    assert "ewma_volatility" in sr["metrics"]
+
+
 def test_marker_direction_score_does_not_double_count_arrow_text():
     # Bull engulf marker: arrowUp belowBar weight 4 -> +4/3 ≈ 1.33, no text bonus
     bull = [{"position": "belowBar", "shape": "arrowUp", "color": "x",

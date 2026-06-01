@@ -754,6 +754,257 @@ def _detect_double_top_or_bottom(highs: list[dict], lows: list[dict]) -> Optiona
     return None
 
 
+def _slope_from_pivots(seq: list[dict]) -> Optional[float]:
+    """Linear-fit slope (price per bar) of a same-kind pivot sequence."""
+    if len(seq) < 2:
+        return None
+    xs = np.array([p["index"] for p in seq], dtype=float)
+    ys = np.array([p["price"] for p in seq], dtype=float)
+    if len(xs) < 2 or xs.std() == 0:
+        return None
+    slope, _ = np.polyfit(xs, ys, 1)
+    return float(slope)
+
+
+def _andrews_pitchfork(h: pd.DataFrame, pivots: list[dict]) -> Optional[dict]:
+    """Andrews Pitchfork from the latest three meaningful pivots (P0, P1, P2).
+
+    Median line passes through P0 and the midpoint of P1-P2; the upper and
+    lower parallel handles run through P1 and P2 respectively. Projected to
+    the latest bar so the UI can draw three points.
+    """
+    if len(pivots) < 3 or len(h) < 5:
+        return None
+    p0, p1, p2 = pivots[-3], pivots[-2], pivots[-1]
+    # Require alternating high/low/high or low/high/low for a clean handle
+    if p0["kind"] == p1["kind"] or p1["kind"] == p2["kind"]:
+        return None
+    mid_x = (p1["index"] + p2["index"]) / 2
+    mid_y = (p1["price"] + p2["price"]) / 2
+    span_x = mid_x - p0["index"]
+    if span_x == 0:
+        return None
+    slope = (mid_y - p0["price"]) / span_x
+    offset_p1 = p1["price"] - (p0["price"] + slope * (p1["index"] - p0["index"]))
+    offset_p2 = p2["price"] - (p0["price"] + slope * (p2["index"] - p0["index"]))
+    last_idx = len(h) - 1
+    median_proj = p0["price"] + slope * (last_idx - p0["index"])
+    return {
+        "type": "pitchfork",
+        "label": "Andrews Pitchfork",
+        "slope": _round(slope, 4),
+        "median_projected": _round(median_proj, 2),
+        "upper_projected": _round(median_proj + offset_p1, 2),
+        "lower_projected": _round(median_proj + offset_p2, 2),
+        "anchor_points": [
+            {"label": "P0", "time": _time(p0["time"]), "price": _round(p0["price"], 2)},
+            {"label": "P1", "time": _time(p1["time"]), "price": _round(p1["price"], 2)},
+            {"label": "P2", "time": _time(p2["time"]), "price": _round(p2["price"], 2)},
+        ],
+    }
+
+
+def _detect_chart_patterns(h: pd.DataFrame, pivots: list[dict]) -> list[dict]:
+    """Detect classical chart patterns from the most recent pivot stack.
+
+    Returns level dicts for: Ascending/Descending/Symmetric Triangle,
+    Rising/Falling Wedge, Flag/Pennant, Cup & Handle. Each pattern only fires
+    when the geometry constraints are met; otherwise we silently skip so the
+    chart doesn't get flooded with false positives.
+    """
+    highs = [p for p in pivots if p["kind"] == "high"]
+    lows = [p for p in pivots if p["kind"] == "low"]
+    if len(highs) < 2 or len(lows) < 2:
+        return []
+    out: list[dict] = []
+    recent_highs = highs[-3:] if len(highs) >= 3 else highs[-2:]
+    recent_lows = lows[-3:] if len(lows) >= 3 else lows[-2:]
+    high_slope = _slope_from_pivots(recent_highs)
+    low_slope = _slope_from_pivots(recent_lows)
+    if high_slope is None or low_slope is None:
+        return out
+    avg_price = float(h["Close"].tail(60).mean()) if len(h) >= 60 else float(h["Close"].mean())
+    if avg_price <= 0:
+        return out
+
+    # Normalize slopes to fraction of price per bar so thresholds are scale-free
+    def norm(slope: float) -> float:
+        return slope / avg_price
+
+    nhigh, nlow = norm(high_slope), norm(low_slope)
+    last_ts = h.index[-1]
+
+    # Triangle / wedge classification thresholds
+    FLAT = 5e-4  # 0.05% per bar => effectively flat over a multi-week span
+    if abs(nhigh) <= FLAT and nlow > FLAT:
+        out.append({"type": "ascending_triangle", "direction": "bullish",
+                    "label": "Ascending Triangle", "price": _round(recent_highs[-1]["price"], 2)})
+    elif abs(nlow) <= FLAT and nhigh < -FLAT:
+        out.append({"type": "descending_triangle", "direction": "bearish",
+                    "label": "Descending Triangle", "price": _round(recent_lows[-1]["price"], 2)})
+    elif nhigh < -FLAT and nlow > FLAT:
+        out.append({"type": "symmetric_triangle", "direction": "neutral",
+                    "label": "Symmetric Triangle", "price": _round((recent_highs[-1]["price"] + recent_lows[-1]["price"]) / 2, 2)})
+    elif nhigh > FLAT and nlow > FLAT and nlow > nhigh:
+        out.append({"type": "rising_wedge", "direction": "bearish",
+                    "label": "Rising Wedge", "price": _round(recent_highs[-1]["price"], 2)})
+    elif nhigh < -FLAT and nlow < -FLAT and nhigh > nlow:
+        out.append({"type": "falling_wedge", "direction": "bullish",
+                    "label": "Falling Wedge", "price": _round(recent_lows[-1]["price"], 2)})
+
+    # Flag / Pennant: short consolidation following a strong prior trend
+    if len(h) >= 30:
+        prior_window = h.iloc[-30:-10]
+        recent_window = h.iloc[-10:]
+        prior_move = float(prior_window["Close"].iloc[-1] / prior_window["Close"].iloc[0] - 1) if len(prior_window) >= 2 else 0
+        recent_range = float((recent_window["High"].max() - recent_window["Low"].min()) / avg_price)
+        if abs(prior_move) >= 0.08 and recent_range <= 0.05:
+            direction = "bullish" if prior_move > 0 else "bearish"
+            pattern_type = "bull_flag" if direction == "bullish" else "bear_flag"
+            out.append({"type": pattern_type, "direction": direction,
+                        "label": "Bull Flag" if direction == "bullish" else "Bear Flag",
+                        "price": _round(float(recent_window["Close"].iloc[-1]), 2)})
+
+    # Cup & Handle: requires longer window. Cup = U-shape over 30+ bars, handle
+    # = shallow pullback in the most recent 10-15 bars.
+    if len(h) >= 60:
+        cup_window = h.iloc[-60:-10]
+        handle = h.iloc[-10:]
+        if len(cup_window) >= 30:
+            left_rim = float(cup_window["Close"].iloc[0])
+            right_rim = float(cup_window["Close"].iloc[-1])
+            cup_low = float(cup_window["Low"].min())
+            cup_depth = (max(left_rim, right_rim) - cup_low) / avg_price
+            rim_match = abs(left_rim / right_rim - 1) <= 0.04 if right_rim else False
+            handle_depth = float((handle["High"].max() - handle["Low"].min()) / avg_price)
+            if rim_match and 0.05 <= cup_depth <= 0.30 and handle_depth <= cup_depth * 0.5:
+                out.append({"type": "cup_and_handle", "direction": "bullish",
+                            "label": "Cup & Handle", "price": _round(right_rim, 2)})
+    return out
+
+
+def _detect_order_blocks(h: pd.DataFrame, pivots: list[dict]) -> list[dict]:
+    """SMC Order Block + Breaker Block detection.
+
+    Order Block = the last bearish candle before a bullish BOS (or vice versa).
+    The reasoning is institutions accumulate during that final reversal candle
+    just before the structural break, so the price range becomes a high-
+    probability supply/demand zone on return visits.
+
+    Breaker Block = an Order Block that price subsequently breaks through —
+    role flips (former demand becomes supply and vice versa).
+    """
+    if len(h) < 10 or not pivots:
+        return []
+    out: list[dict] = []
+    highs = [p for p in pivots if p["kind"] == "high"]
+    lows = [p for p in pivots if p["kind"] == "low"]
+    latest_close = float(h["Close"].iloc[-1])
+
+    # Bullish OB: walk highs; for each high that breaks the prior high (BOS up),
+    # find the last bearish candle in the swing leading up to that BOS.
+    for j in range(1, len(highs)):
+        prev_high = highs[j - 1]
+        new_high = highs[j]
+        if new_high["price"] <= prev_high["price"]:
+            continue
+        scan_end = new_high["index"]
+        scan_start = max(prev_high["index"], scan_end - 30)
+        bearish_idx = None
+        for k in range(scan_end - 1, scan_start - 1, -1):
+            bar = h.iloc[k]
+            if bar["Close"] < bar["Open"]:
+                bearish_idx = k
+                break
+        if bearish_idx is None:
+            continue
+        bar = h.iloc[bearish_idx]
+        zone_low = float(bar["Low"])
+        zone_high = float(bar["High"])
+        # Breaker = price has since closed below the zone
+        broken = latest_close < zone_low
+        out.append({
+            "type": "breaker_block" if broken else "order_block",
+            "direction": "bearish" if broken else "bullish",
+            "low": _round(zone_low, 2),
+            "high": _round(zone_high, 2),
+            "anchor_time": _time(h.index[bearish_idx]),
+            "label": "Breaker" if broken else "Bull OB",
+        })
+
+    # Bearish OB: walk lows; for each low that breaks the prior low (BOS down),
+    # find the last bullish candle in the leg leading up to the break.
+    for j in range(1, len(lows)):
+        prev_low = lows[j - 1]
+        new_low = lows[j]
+        if new_low["price"] >= prev_low["price"]:
+            continue
+        scan_end = new_low["index"]
+        scan_start = max(prev_low["index"], scan_end - 30)
+        bullish_idx = None
+        for k in range(scan_end - 1, scan_start - 1, -1):
+            bar = h.iloc[k]
+            if bar["Close"] > bar["Open"]:
+                bullish_idx = k
+                break
+        if bullish_idx is None:
+            continue
+        bar = h.iloc[bullish_idx]
+        zone_low = float(bar["Low"])
+        zone_high = float(bar["High"])
+        broken = latest_close > zone_high
+        out.append({
+            "type": "breaker_block" if broken else "order_block",
+            "direction": "bullish" if broken else "bearish",
+            "low": _round(zone_low, 2),
+            "high": _round(zone_high, 2),
+            "anchor_time": _time(h.index[bullish_idx]),
+            "label": "Breaker" if broken else "Bear OB",
+        })
+    return out[-6:]  # keep recent activity only
+
+
+def _detect_liquidity_pools(highs: list[dict], lows: list[dict], tolerance: float = 0.003) -> list[dict]:
+    """Detect Equal Highs / Equal Lows clusters: 2+ pivots within `tolerance`.
+
+    These price-band clusters act as resting-stop-loss liquidity magnets per the
+    SMC framework. We return groups with 2+ touches so the chart can flag
+    where stops are likely stacked.
+    """
+    out: list[dict] = []
+
+    def _cluster(seq: list[dict], kind: str):
+        used = [False] * len(seq)
+        for i, anchor in enumerate(seq):
+            if used[i]:
+                continue
+            cluster = [anchor]
+            used[i] = True
+            for j in range(i + 1, len(seq)):
+                if used[j]:
+                    continue
+                ref = anchor["price"]
+                if ref == 0:
+                    continue
+                if abs(seq[j]["price"] - ref) / ref <= tolerance:
+                    cluster.append(seq[j])
+                    used[j] = True
+            if len(cluster) >= 2:
+                prices = [c["price"] for c in cluster]
+                out.append({
+                    "type": "equal_highs" if kind == "high" else "equal_lows",
+                    "direction": "bearish" if kind == "high" else "bullish",
+                    "price": _round(sum(prices) / len(prices), 2),
+                    "touches": len(cluster),
+                    "times": [_time(c["time"]) for c in cluster],
+                    "label": "Liquidity Pool",
+                })
+
+    _cluster(highs, "high")
+    _cluster(lows, "low")
+    return out
+
+
 def _structure_geometry(h: pd.DataFrame, pivots: list[dict]) -> dict:
     observations: list[str] = []
     markers: list[dict] = []
@@ -874,6 +1125,68 @@ def _structure_geometry(h: pd.DataFrame, pivots: list[dict]) -> dict:
             markers.append(_marker(h.index[-1], "belowBar", "#22c55e", "arrowUp", "Double Btm", "structure_geometry", 4, min(dtb['valleys'])))
         levels.append(dtb)
 
+    # Andrews Pitchfork (geometric channel from latest 3 alternating pivots)
+    pitchfork = _andrews_pitchfork(h, pivots)
+    if pitchfork:
+        levels.append(pitchfork)
+        observations.append(
+            f"Andrews Pitchfork — median {pitchfork['median_projected']}, "
+            f"upper {pitchfork['upper_projected']}, lower {pitchfork['lower_projected']}."
+        )
+
+    # Classical chart patterns (triangles, wedges, flags, cup & handle)
+    chart_patterns = _detect_chart_patterns(h, pivots)
+    for pat in chart_patterns:
+        levels.append(pat)
+        marker_price = _as_float(pat.get("price"))
+        if marker_price is not None:
+            if pat["direction"] == "bullish":
+                markers.append(_marker(h.index[-1], "belowBar", "#22c55e", "circle", pat["label"], "structure_geometry", 4, marker_price))
+            elif pat["direction"] == "bearish":
+                markers.append(_marker(h.index[-1], "aboveBar", "#ef4444", "circle", pat["label"], "structure_geometry", 4, marker_price))
+            else:
+                markers.append(_marker(h.index[-1], "inBar", "#94a3b8", "circle", pat["label"], "structure_geometry", 3, marker_price))
+        observations.append(f"Chart pattern: {pat['label']} ({pat['direction']}).")
+
+    # Order Blocks + Breaker Blocks (SMC concept)
+    order_blocks = _detect_order_blocks(h, pivots)
+    for ob in order_blocks:
+        levels.append(ob)
+        ts = pd.to_datetime(ob["anchor_time"], unit="s")
+        marker_price = (ob["low"] + ob["high"]) / 2
+        if ob["type"] == "order_block":
+            if ob["direction"] == "bullish":
+                markers.append(_marker(ts, "belowBar", "#a3e635", "square", "Bull OB", "structure_geometry", 3, marker_price))
+            else:
+                markers.append(_marker(ts, "aboveBar", "#fb7185", "square", "Bear OB", "structure_geometry", 3, marker_price))
+        else:  # breaker
+            if ob["direction"] == "bullish":
+                markers.append(_marker(ts, "belowBar", "#0ea5e9", "square", "Breaker", "structure_geometry", 4, marker_price))
+            else:
+                markers.append(_marker(ts, "aboveBar", "#c084fc", "square", "Breaker", "structure_geometry", 4, marker_price))
+    if order_blocks:
+        ob_count = sum(1 for ob in order_blocks if ob["type"] == "order_block")
+        br_count = sum(1 for ob in order_blocks if ob["type"] == "breaker_block")
+        observations.append(f"SMC zones — order blocks: {ob_count}, breaker blocks: {br_count}.")
+
+    # Equal Highs / Equal Lows liquidity pools (SMC concept)
+    liquidity_pools = _detect_liquidity_pools(highs, lows)
+    for pool in liquidity_pools[-4:]:
+        levels.append(pool)
+        # Drop a single marker at the most recent touch so the chart highlights it
+        last_ts = pd.to_datetime(pool["times"][-1], unit="s")
+        if pool["direction"] == "bearish":
+            markers.append(_marker(last_ts, "aboveBar", "#facc15", "square", "Liquidity", "structure_geometry", 3, pool["price"]))
+        else:
+            markers.append(_marker(last_ts, "belowBar", "#facc15", "square", "Liquidity", "structure_geometry", 3, pool["price"]))
+    if liquidity_pools:
+        eqh = sum(1 for p in liquidity_pools if p["type"] == "equal_highs")
+        eql = sum(1 for p in liquidity_pools if p["type"] == "equal_lows")
+        observations.append(
+            f"Liquidity pools detected — Equal Highs: {eqh}, Equal Lows: {eql}; "
+            "treat them as resting-stop magnets."
+        )
+
     if highs and lows:
         swing_high = max(highs[-5:], key=lambda x: x["price"])
         swing_low = min(lows[-5:], key=lambda x: x["price"])
@@ -966,6 +1279,7 @@ def _mtf_derivatives(
     *,
     intraday_1h: Optional[pd.DataFrame] = None,
     intraday_15m: Optional[pd.DataFrame] = None,
+    intraday_4h: Optional[pd.DataFrame] = None,
 ) -> dict:
     observations: list[str] = []
     close = h["Close"]
@@ -975,9 +1289,23 @@ def _mtf_derivatives(
     weekly_ret = _series_return(weekly["Close"], 10) if len(weekly) else None
     monthly_ret = _series_return(monthly["Close"], 6) if len(monthly) else None
 
-    # Execution timeframes: 1H / 15M trend direction as design demands
-    dir_1h = _intraday_trend_direction(intraday_1h, lookback=24)  # ~1 trading day of 1H bars
-    dir_15m = _intraday_trend_direction(intraday_15m, lookback=26)  # ~1 trading day of 15M bars
+    # Execution timeframes: 4H / 1H / 15M trend direction as design demands
+    # Fall back to a 4H aggregate built from 1H bars when no native 4H feed.
+    if intraday_4h is None and intraday_1h is not None and len(intraday_1h) >= 4:
+        try:
+            intraday_4h = (
+                intraday_1h.resample("4h").agg({
+                    "Open": "first", "High": "max", "Low": "min",
+                    "Close": "last", "Volume": "sum",
+                }).dropna()
+            )
+        except Exception:
+            intraday_4h = None
+    dir_4h = _intraday_trend_direction(intraday_4h, lookback=12)   # ~ 2 days of 4H bars
+    dir_1h = _intraday_trend_direction(intraday_1h, lookback=24)   # ~1 trading day of 1H bars
+    dir_15m = _intraday_trend_direction(intraday_15m, lookback=26) # ~1 trading day of 15M bars
+    if dir_4h:
+        observations.append(f"4H execution timeframe trend: {dir_4h}.")
     if dir_1h:
         observations.append(f"1H execution timeframe trend: {dir_1h}.")
     if dir_15m:
@@ -998,7 +1326,7 @@ def _mtf_derivatives(
         observations.append("Multi-timeframe price aggregation is partial due to limited history.")
 
     # Cross-timeframe synchronicity check (macro daily/weekly vs micro 1H/15M)
-    micro_signs = [d for d in (dir_1h, dir_15m) if d in {"up", "down"}]
+    micro_signs = [d for d in (dir_4h, dir_1h, dir_15m) if d in {"up", "down"}]
     if alignment != "mixed" and micro_signs:
         macro_sign = "up" if alignment == "bullish" else "down"
         if all(s == macro_sign for s in micro_signs):
@@ -1050,6 +1378,7 @@ def _mtf_derivatives(
             "weekly_10w_return_pct": _round(weekly_ret, 2),
             "monthly_6m_return_pct": _round(monthly_ret, 2),
             "timeframe_alignment": alignment,
+            "intraday_4h_direction": dir_4h,
             "intraday_1h_direction": dir_1h,
             "intraday_15m_direction": dir_15m,
             "derivatives": derivatives or {},
@@ -1195,6 +1524,48 @@ def _intermarket(
                 if vix_latest >= max(vix_ma20 * 1.4, 25):
                     observations.append(f"VIX {round(vix_latest, 2)} elevated vs 20-day mean {round(vix_ma20, 2)}; macro risk-off pressure.")
 
+        # Full SPDR sector rotation map: rank 11 sector ETFs by 20-day return
+        sector_keys = ["xlk", "xlv", "xlf", "xle", "xli", "xlp", "xlu", "xlb", "xly", "xlc", "xlre"]
+        sector_returns: dict[str, float] = {}
+        for sk in sector_keys:
+            series = benchmarks.get(sk)
+            if series is None or len(series.dropna()) < 21:
+                continue
+            r = _series_return(series, 20)
+            if r is not None:
+                sector_returns[sk] = round(r, 2)
+        if len(sector_returns) >= 4:
+            ranked = sorted(sector_returns.items(), key=lambda kv: kv[1], reverse=True)
+            cross_alpha["sector_rotation"] = ranked[:5]
+            cross_alpha["sector_laggards"] = ranked[-3:]
+            # Risk-on if cyclicals lead defensives in the top half
+            cyclicals = {"xlk", "xly", "xlc", "xlf"}
+            defensives = {"xlp", "xlu", "xlv"}
+            top = {label for label, _ in ranked[: max(3, len(ranked) // 2)]}
+            if cyclicals & top and not (defensives & top):
+                observations.append("Sector rotation: cyclicals leading — risk-on regime confirmation.")
+            elif defensives & top and not (cyclicals & top):
+                observations.append("Sector rotation: defensives leading — risk-off regime warning.")
+
+        # Yield curve slope (proxy 2Y/10Y/30Y via ^IRX/^TNX/^TYX)
+        us2 = benchmarks.get("us2y")
+        us10 = benchmarks.get("us10y")
+        us30 = benchmarks.get("us30y")
+        if us10 is not None and len(us10.dropna()):
+            latest_10y = _as_float(us10.iloc[-1])
+            cross_alpha["us10y_latest"] = round(latest_10y, 3) if latest_10y else None
+            if us2 is not None and len(us2.dropna()):
+                latest_2y = _as_float(us2.iloc[-1])
+                if latest_10y is not None and latest_2y is not None:
+                    slope_2_10 = round(latest_10y - latest_2y, 3)
+                    cross_alpha["yield_curve_2_10_spread"] = slope_2_10
+                    if slope_2_10 < 0:
+                        observations.append(f"Yield curve 2Y-10Y inverted ({slope_2_10}); historical recession signal.")
+            if us30 is not None and len(us30.dropna()):
+                latest_30y = _as_float(us30.iloc[-1])
+                if latest_30y is not None and latest_10y is not None:
+                    cross_alpha["yield_curve_10_30_spread"] = round(latest_30y - latest_10y, 3)
+
     return _dimension(
         "intermarket_correlation",
         "computed",
@@ -1295,10 +1666,17 @@ def _time_cyclical(
     levels: list[dict] = []
     close = h["Close"]
     vol = h["Volume"].fillna(0)
-    anchor_points = anchors or []
+    anchor_points = list(anchors or [])
+    # Default anchor stack when caller does not specify: 52-week low, 52-week
+    # high, last 60-bar low, and the highest-volume bar in the last 60 bars.
     if not anchor_points and len(h) >= 20:
-        low_idx = h["Low"].idxmin()
-        anchor_points = [{"label": "range_low", "time": low_idx}]
+        anchor_points.append({"label": "range_low", "time": h["Low"].idxmin()})
+        anchor_points.append({"label": "range_high", "time": h["High"].idxmax()})
+        if len(h) >= 60:
+            recent = h.tail(60)
+            anchor_points.append({"label": "recent_low", "time": recent["Low"].idxmin()})
+            if recent["Volume"].sum() > 0:
+                anchor_points.append({"label": "high_volume_bar", "time": recent["Volume"].idxmax()})
     avwap_values = []
     for anchor in anchor_points:
         anchor_ts = pd.Timestamp(anchor.get("time")).tz_localize(None)
@@ -1482,6 +1860,19 @@ def _options_gex(options_profile: Optional[dict]) -> dict:
         levels.append({"type": "max_pain", "label": "Max Pain", "price": _round(max_pain, 2)})
     if regime:
         observations.append(f"Gamma regime: {regime}.")
+    # 25Δ skew: positive => puts richer than calls (downside hedging demand)
+    skew = _as_float(options_profile.get("skew_25_delta"))
+    if skew is not None:
+        if skew >= 0.05:
+            observations.append(f"Heavy 25Δ put skew {round(skew, 3)} — downside hedging demand elevated.")
+        elif skew <= -0.02:
+            observations.append(f"Inverted 25Δ skew {round(skew, 3)} — speculative call demand outpacing puts.")
+    term = _as_float(options_profile.get("iv_term_structure_diff"))
+    if term is not None:
+        if term < -0.02:
+            observations.append("IV term structure in backwardation (front > back); event-driven near-term stress.")
+        elif term > 0.02:
+            observations.append("IV term structure in contango (back > front); calm near-term, longer-dated demand.")
     return _dimension("options_gex", "computed", observations, metrics=options_profile, levels=levels)
 
 
@@ -1515,6 +1906,127 @@ def _order_book(order_book: Optional[dict]) -> dict:
         levels.append({"type": "ask_wall", "label": "Ask Wall", "price": _round(price, 2), "size": _round(size, 0)})
     metrics = {**order_book, "top10_bid_depth": _round(bid_depth, 0), "top10_ask_depth": _round(ask_depth, 0), "book_imbalance": _round(imbalance, 2)}
     return _dimension("order_book", "computed", observations, metrics=metrics, levels=levels)
+
+
+def _label_elliott_5wave(pivots: list[dict]) -> Optional[dict]:
+    """Heuristic 5-wave impulse + ABC correction labeling.
+
+    Constraints (Elliott classics, loosened to keep it advisory):
+      - 6+ alternating pivots (W0..W5) of the right direction
+      - W2 does not retrace beyond W0
+      - W4 does not enter W1's territory
+      - W3 is not the shortest among W1, W3, W5
+    Returns label dicts or None when constraints fail.
+    """
+    if len(pivots) < 6:
+        return None
+    seq = _collapse_same_price_pivots(pivots[-7:])
+    if len(seq) < 6:
+        return None
+    last_six = seq[-6:]
+    direction = "up" if last_six[1]["price"] > last_six[0]["price"] else "down"
+    # Alternation check
+    for i in range(1, len(last_six)):
+        if last_six[i]["kind"] == last_six[i - 1]["kind"]:
+            return None
+    w0, w1, w2, w3, w4, w5 = last_six
+    if direction == "up":
+        if not (w1["price"] > w0["price"] and w2["price"] > w0["price"]
+                and w3["price"] > w1["price"] and w4["price"] > w1["price"]
+                and w5["price"] > w3["price"]):
+            return None
+    else:
+        if not (w1["price"] < w0["price"] and w2["price"] < w0["price"]
+                and w3["price"] < w1["price"] and w4["price"] < w1["price"]
+                and w5["price"] < w3["price"]):
+            return None
+    legs = [abs(w1["price"] - w0["price"]), abs(w3["price"] - w2["price"]), abs(w5["price"] - w4["price"])]
+    if legs[1] < min(legs[0], legs[2]):
+        return None  # W3 cannot be the shortest
+    return {
+        "direction": direction,
+        "labels": [
+            {"wave": str(idx), "time": _time(p["time"]), "price": _round(p["price"], 2)}
+            for idx, p in zip("012345", last_six)
+        ],
+        "w1_w3_w5_lengths": [_round(x, 2) for x in legs],
+    }
+
+
+def _hurst_exponent(series: pd.Series, max_lag: int = 40) -> Optional[float]:
+    """Classic R/S Hurst estimate via log-log fit of variance vs lag.
+
+    H ≈ 0.5  random walk (no memory)
+    H > 0.5  trending / persistent
+    H < 0.5  mean reverting
+    Returns None when too few datapoints.
+    """
+    s = series.dropna()
+    if len(s) < max_lag + 10:
+        return None
+    lags = range(2, max_lag)
+    tau = []
+    for lag in lags:
+        diff = np.subtract(s.values[lag:], s.values[:-lag])
+        std = np.std(diff, ddof=1)
+        if std <= 0 or not np.isfinite(std):
+            return None
+        tau.append(std)
+    if len(tau) < 2:
+        return None
+    log_lags = np.log(np.array(list(lags), dtype=float))
+    log_tau = np.log(np.array(tau, dtype=float))
+    slope, _ = np.polyfit(log_lags, log_tau, 1)
+    return float(slope)
+
+
+def _ou_half_life(series: pd.Series) -> Optional[float]:
+    """Ornstein-Uhlenbeck half-life of mean reversion via AR(1) on price.
+
+    half_life = -ln(2) / ln(1 + b) where b is the OLS slope of Δprice ~ price.
+    Negative or non-finite values mean the series is not mean-reverting.
+    """
+    s = series.dropna()
+    if len(s) < 30:
+        return None
+    y = s.values[1:] - s.values[:-1]
+    x = s.values[:-1]
+    if np.std(x) == 0:
+        return None
+    b, _ = np.polyfit(x, y, 1)
+    if b >= 0:
+        return None  # not mean reverting
+    try:
+        hl = -math.log(2) / math.log(1 + b)
+    except (ValueError, ZeroDivisionError):
+        return None
+    if not math.isfinite(hl) or hl <= 0:
+        return None
+    return float(hl)
+
+
+def _ewma_volatility_forecast(returns: pd.Series, lam: float = 0.94) -> Optional[dict]:
+    """RiskMetrics-style EWMA volatility (special case of GARCH(1,1) with ω=0).
+
+    Returns the current and 5-bar-ahead forecast volatilities. Industry-standard
+    smoothing factor 0.94 (daily) keeps the model parameter-light.
+    """
+    r = returns.dropna()
+    if len(r) < 30:
+        return None
+    var = r.iloc[0] ** 2
+    series_var = [var]
+    for x in r.iloc[1:]:
+        var = lam * var + (1 - lam) * (x ** 2)
+        series_var.append(var)
+    current_vol = math.sqrt(series_var[-1])
+    # Forecast: under EWMA the conditional variance for k steps ahead is the same
+    # as current (no mean reversion in vol); long-run mean approached by full GARCH.
+    forecast_5 = current_vol
+    return {
+        "current": _round(current_vol * 100, 4),  # daily vol in pct
+        "forecast_5bar": _round(forecast_5 * 100, 4),
+    }
 
 
 def _statistical_reversion(h: pd.DataFrame) -> dict:
@@ -1558,7 +2070,15 @@ def _statistical_reversion(h: pd.DataFrame) -> dict:
         "statistical_reversion",
         "computed",
         observations,
-        metrics={"regression_slope": _round(slope, 4), "latest_z_score": _round(latest_z, 2), "sigma": _round(sigma, 2), "regression_mean": _round(latest_fit, 2)},
+        metrics={
+            "regression_slope": _round(slope, 4),
+            "latest_z_score": _round(latest_z, 2),
+            "sigma": _round(sigma, 2),
+            "regression_mean": _round(latest_fit, 2),
+            "hurst_exponent": _round(_hurst_exponent(close), 3),
+            "ou_half_life_bars": _round(_ou_half_life(close), 1),
+            "ewma_volatility": _ewma_volatility_forecast(close.pct_change()),
+        },
         markers=markers,
         levels=levels,
     )
@@ -1643,17 +2163,84 @@ def _macro_wave(h: pd.DataFrame, pivots: list[dict]) -> dict:
                         f"Elliott Wave 3 extension candidate: {wave3_dir} impulse {round(biggest['magnitude'], 2)} "
                         f"is {round(biggest['magnitude'] / second, 2)}× the next-largest leg."
                     )
+    wyckoff_substages: list[dict] = []
     if len(h) >= 80:
         range_window = h.tail(80)
         range_high = float(range_window["High"].quantile(0.92))
         range_low = float(range_window["Low"].quantile(0.08))
+        rw_vol = range_window["Volume"].fillna(0)
+        vol_median = float(rw_vol.median()) if rw_vol.sum() > 0 else 0
         last = h.iloc[-1]
+        # Spring / UTAD: existing
         if last["Low"] < range_low and last["Close"] > range_low:
             observations.append("Wyckoff Spring heuristic: range low was swept and reclaimed.")
             markers.append(_marker(h.index[-1], "belowBar", "#22c55e", "arrowUp", "Spring", "macro_wave", 5, last["Low"]))
+            wyckoff_substages.append({"label": "Spring", "time": _time(h.index[-1]), "price": _round(last["Low"], 2)})
         if last["High"] > range_high and last["Close"] < range_high:
             observations.append("Wyckoff UTAD heuristic: range high was swept and rejected.")
             markers.append(_marker(h.index[-1], "aboveBar", "#ef4444", "arrowDown", "UTAD", "macro_wave", 5, last["High"]))
+            wyckoff_substages.append({"label": "UTAD", "time": _time(h.index[-1]), "price": _round(last["High"], 2)})
+
+        # Accumulation sub-stage finder (PSY → SC → AR → ST → Spring → SOS → LPS)
+        if phase == "accumulation" and vol_median > 0:
+            highs_in_range = [p for p in pivots if p["kind"] == "high" and p["index"] >= len(h) - 80]
+            lows_in_range = [p for p in pivots if p["kind"] == "low" and p["index"] >= len(h) - 80]
+            if lows_in_range:
+                sc_pivot = min(lows_in_range, key=lambda p: p["price"])
+                sc_bar = h.iloc[sc_pivot["index"]]
+                if rw_vol.iloc[sc_pivot["index"] - (len(h) - len(range_window))] >= vol_median * 1.6 if sc_pivot["index"] >= len(h) - 80 else False:
+                    observations.append("Wyckoff Selling Climax (SC): capitulation low with above-median volume.")
+                    wyckoff_substages.append({"label": "SC", "time": _time(sc_pivot["time"]), "price": _round(sc_pivot["price"], 2)})
+            # PSY = first significant down-leg start before SC; AR = bounce after SC; ST = secondary test of SC low
+            if len(lows_in_range) >= 2:
+                # Secondary test = second low within 3% of SC, lower volume than SC
+                sc = min(lows_in_range, key=lambda p: p["price"])
+                for p in lows_in_range:
+                    if p is sc:
+                        continue
+                    if sc["price"] and abs(p["price"] - sc["price"]) / sc["price"] <= 0.03:
+                        observations.append("Wyckoff Secondary Test (ST): retest of SC low on lower volume.")
+                        wyckoff_substages.append({"label": "ST", "time": _time(p["time"]), "price": _round(p["price"], 2)})
+                        break
+            if highs_in_range:
+                # AR = highest bounce within the accumulation window AFTER SC
+                if lows_in_range:
+                    sc_idx = min(lows_in_range, key=lambda p: p["price"])["index"]
+                    post_sc_highs = [hi for hi in highs_in_range if hi["index"] > sc_idx]
+                    if post_sc_highs:
+                        ar = max(post_sc_highs, key=lambda p: p["price"])
+                        observations.append("Wyckoff Automatic Rally (AR): first reaction high after the SC capitulation.")
+                        wyckoff_substages.append({"label": "AR", "time": _time(ar["time"]), "price": _round(ar["price"], 2)})
+                # SOS = breakout above the AR with volume expansion late in accumulation
+                ar_price = max((p["price"] for p in highs_in_range), default=None)
+                if ar_price and last["Close"] > ar_price * 1.005 and len(rw_vol):
+                    recent_vol = float(rw_vol.tail(5).mean())
+                    if recent_vol >= vol_median * 1.4:
+                        observations.append("Wyckoff Sign of Strength (SOS): break above AR on expanding volume.")
+                        wyckoff_substages.append({"label": "SOS", "time": _time(h.index[-1]), "price": _round(last["Close"], 2)})
+                        markers.append(_marker(h.index[-1], "belowBar", "#22c55e", "arrowUp", "SOS", "macro_wave", 4, last["Close"]))
+
+        # Distribution mirror: BC / AR_d / ST_d / UTAD / SOW / LPSY
+        if phase == "distribution" and vol_median > 0:
+            highs_in_range = [p for p in pivots if p["kind"] == "high" and p["index"] >= len(h) - 80]
+            if highs_in_range:
+                bc_pivot = max(highs_in_range, key=lambda p: p["price"])
+                observations.append("Wyckoff Buying Climax (BC): euphoric high; expect distribution sub-phases.")
+                wyckoff_substages.append({"label": "BC", "time": _time(bc_pivot["time"]), "price": _round(bc_pivot["price"], 2)})
+            lows_in_range = [p for p in pivots if p["kind"] == "low" and p["index"] >= len(h) - 80]
+            if lows_in_range and highs_in_range:
+                bc_idx = max(highs_in_range, key=lambda p: p["price"])["index"]
+                post_bc_lows = [lo for lo in lows_in_range if lo["index"] > bc_idx]
+                if post_bc_lows:
+                    ar_d = min(post_bc_lows, key=lambda p: p["price"])
+                    observations.append("Wyckoff Automatic Reaction (AR-D): first pullback low after the BC.")
+                    wyckoff_substages.append({"label": "AR-D", "time": _time(ar_d["time"]), "price": _round(ar_d["price"], 2)})
+                    if last["Close"] < ar_d["price"] * 0.995:
+                        recent_vol = float(rw_vol.tail(5).mean())
+                        if recent_vol >= vol_median * 1.4:
+                            observations.append("Wyckoff Sign of Weakness (SOW): break below AR-D on expanding volume.")
+                            wyckoff_substages.append({"label": "SOW", "time": _time(h.index[-1]), "price": _round(last["Close"], 2)})
+                            markers.append(_marker(h.index[-1], "aboveBar", "#ef4444", "arrowDown", "SOW", "macro_wave", 4, last["Close"]))
     if phase == "markup" and len(pivots) >= 5:
         wave_context = "impulse_candidate"
     elif phase in {"markdown", "distribution"}:
@@ -1673,6 +2260,8 @@ def _macro_wave(h: pd.DataFrame, pivots: list[dict]) -> dict:
             "pivot_count": len(pivots),
             "wave_context": wave_context,
             "wave3_candidate": wave3_meta,
+            "wyckoff_substages": wyckoff_substages,
+            "elliott_5wave": _label_elliott_5wave(pivots),
         },
         markers=markers,
     )
@@ -2393,6 +2982,7 @@ def build_technical_matrix(
     intraday_1h: Optional[pd.DataFrame] = None,
     intraday_15m: Optional[pd.DataFrame] = None,
     intraday_5m: Optional[pd.DataFrame] = None,
+    intraday_4h: Optional[pd.DataFrame] = None,
     events: Optional[list[dict]] = None,
     derivatives: Optional[dict] = None,
     order_flow: Optional[dict] = None,
@@ -2425,6 +3015,7 @@ def build_technical_matrix(
     intraday_1h = _clean_history(intraday_1h) if intraday_1h is not None and len(intraday_1h) else None
     intraday_15m = _clean_history(intraday_15m) if intraday_15m is not None and len(intraday_15m) else None
     intraday_5m = _clean_history(intraday_5m) if intraday_5m is not None and len(intraday_5m) else None
+    intraday_4h = _clean_history(intraday_4h) if intraday_4h is not None and len(intraday_4h) else None
     dimensions = [
         _price_action(execution_h, pivots),
         _trend_ma(trend_h, price_override=execution_h["Close"].iloc[-1], basis=trend_basis),
@@ -2432,7 +3023,7 @@ def build_technical_matrix(
         _momentum(execution_h, pivots),
         _structure_geometry(execution_h, pivots),
         _volatility_risk(volatility_h, price_override=execution_h["Close"].iloc[-1], basis=volatility_basis),
-        _mtf_derivatives(macro_h, derivatives, intraday_1h=intraday_1h, intraday_15m=intraday_15m),
+        _mtf_derivatives(macro_h, derivatives, intraday_1h=intraday_1h, intraday_15m=intraday_15m, intraday_4h=intraday_4h),
         _microstructure(order_flow),
         _intermarket(macro_h, benchmark_close, benchmarks=benchmarks),
         _breadth(breadth),

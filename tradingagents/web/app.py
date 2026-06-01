@@ -435,10 +435,22 @@ def fetch_benchmark_close(symbol: str) -> pd.Series:
 INTERMARKET_REFERENCES_US = {
     "spx": "^GSPC",
     "dxy": "DX-Y.NYB",
+    "us2y": "^IRX",   # 13-week proxy; real 2Y not on yfinance
     "us10y": "^TNX",
+    "us30y": "^TYX",
     "vix": "^VIX",
-    "xlk": "XLK",  # tech ETF
-    "xlv": "XLV",  # healthcare ETF (defensive)
+    # Full SPDR sector basket for rotation map
+    "xlk": "XLK",   # tech
+    "xlv": "XLV",   # healthcare (defensive)
+    "xlf": "XLF",   # financials
+    "xle": "XLE",   # energy
+    "xli": "XLI",   # industrials
+    "xlp": "XLP",   # consumer staples (defensive)
+    "xlu": "XLU",   # utilities (defensive)
+    "xlb": "XLB",   # materials
+    "xly": "XLY",   # consumer discretionary (cyclical)
+    "xlc": "XLC",   # communication services
+    "xlre": "XLRE", # real estate
 }
 
 INTERMARKET_REFERENCES_TW = {
@@ -446,6 +458,7 @@ INTERMARKET_REFERENCES_TW = {
     "spx": "^GSPC",
     "dxy": "DX-Y.NYB",
     "us10y": "^TNX",
+    "us30y": "^TYX",
     "vix": "^VIX",
 }
 
@@ -489,6 +502,44 @@ def fetch_intraday_history(symbol: str, period: str, interval: str) -> pd.DataFr
 
 _TW_BREADTH_CACHE: dict[str, tuple[float, dict]] = {}
 _TW_BREADTH_TTL = 3600  # breadth updates once per trading day
+
+
+def fetch_earnings_events(symbol: str) -> list[dict]:
+    """Return upcoming/recent earnings dates as event-calendar payloads.
+
+    yfinance exposes them per ticker for both US listings (AAPL/MSFT etc.) and
+    most TW listings (.TW / .TWO). Failure returns an empty list so the
+    XVII dimension still falls back to its whipsaw heuristic.
+    """
+    try:
+        cal = yf.Ticker(symbol).calendar or {}
+    except Exception:
+        return []
+    earnings_dates = cal.get("Earnings Date") or []
+    if not isinstance(earnings_dates, list):
+        earnings_dates = [earnings_dates]
+    events: list[dict] = []
+    for d in earnings_dates:
+        try:
+            ts = pd.Timestamp(d).normalize()
+        except Exception:
+            continue
+        events.append({
+            "time": ts.isoformat(),
+            "label": "Earnings",
+            "source": "yfinance_calendar",
+        })
+    dividend_date = cal.get("Dividend Date")
+    if dividend_date:
+        try:
+            events.append({
+                "time": pd.Timestamp(dividend_date).normalize().isoformat(),
+                "label": "Dividend",
+                "source": "yfinance_calendar",
+            })
+        except Exception:
+            pass
+    return events
 
 
 def _bs_gamma(spot: float, strike: float, iv: float, days_to_expiry: float, rate: float = 0.045) -> float:
@@ -597,6 +648,44 @@ def fetch_us_options_profile(symbol: str) -> Optional[dict]:
         max_pain = min(pain_by_strike, key=pain_by_strike.get) if pain_by_strike else None
         total_net = sum(g for _, g in net_gex_by_strike)
         regime = "positive" if total_net >= 0 else "negative"
+
+        # IV skew: 25-delta put IV minus 25-delta call IV. Use moneyness as
+        # a proxy: 25Δ put ≈ 0.90 × spot, 25Δ call ≈ 1.10 × spot.
+        def _closest_iv(df, target_strike: float) -> Optional[float]:
+            if df is None or df.empty:
+                return None
+            df2 = df.copy()
+            df2["_dist"] = (df2["strike"] - target_strike).abs()
+            row = df2.sort_values("_dist").iloc[0]
+            return _safe_float(row.get("impliedVolatility"))
+
+        skew_25d = None
+        put_25d_iv = _closest_iv(puts, spot * 0.90)
+        call_25d_iv = _closest_iv(calls, spot * 1.10)
+        if put_25d_iv is not None and call_25d_iv is not None:
+            skew_25d = round(put_25d_iv - call_25d_iv, 4)
+
+        # IV term structure: front-month ATM IV vs next-month ATM IV
+        front_atm_iv = _closest_iv(calls, spot)
+        term_structure_diff = None
+        far_exp = None
+        for exp_far in expirations:
+            try:
+                far_date = datetime.strptime(exp_far, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if (far_date - today).days >= days_to_expiry + 14:
+                far_exp = exp_far
+                break
+        if far_exp:
+            try:
+                far_chain = ticker.option_chain(far_exp)
+                far_atm_iv = _closest_iv(far_chain.calls, spot)
+                if front_atm_iv is not None and far_atm_iv is not None:
+                    term_structure_diff = round(far_atm_iv - front_atm_iv, 4)
+            except Exception:
+                pass
+
         return {
             "spot": round(spot, 2),
             "expiration": exp_str,
@@ -606,6 +695,10 @@ def fetch_us_options_profile(symbol: str) -> Optional[dict]:
             "max_pain": round(max_pain, 2) if max_pain else None,
             "gamma_regime": regime,
             "net_gex_total": round(total_net, 2),
+            "skew_25_delta": skew_25d,
+            "atm_iv_front": round(front_atm_iv, 4) if front_atm_iv else None,
+            "iv_term_structure_diff": term_structure_diff,
+            "far_expiration": far_exp,
             "source": "yfinance_option_chain",
         }
     except Exception:
@@ -2276,6 +2369,8 @@ def _build_technical_matrix_payload(
     # US options chain via yfinance; TW listings rarely have public chains so
     # we skip them to avoid pointless network calls.
     options_profile = fetch_us_options_profile(symbol) if not _twse_channel(symbol) else None
+    # Earnings catalyst from yfinance.calendar — works for both TW and US.
+    events = fetch_earnings_events(symbol)
     payload = build_technical_matrix(
         symbol,
         h,
@@ -2288,6 +2383,7 @@ def _build_technical_matrix_payload(
         breadth=breadth,
         order_book=order_book,
         options_profile=options_profile,
+        events=events,
         include_history_markers=include_history_markers,
         source=source or "history",
     )
