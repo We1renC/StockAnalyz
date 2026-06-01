@@ -3241,59 +3241,73 @@ function populateMarkerGlossary() {
   
   const categories = [
     {
-      title: '均線與趨勢',
-      color: '#38bdf8',
+      title: '多頭趨勢與反轉（支撐訊號）',
+      color: '#ef4444',
       items: [
         '黃金交叉 5/20','黃金交叉 20/60','黃金交叉 60/200',
-        '死亡交叉 5/20','死亡交叉 20/60','死亡交叉 60/200'
+        '多方吞噬','錘頭','倒頭肩底','雙重底','Spring 彈簧',
+        '零軸反彈','黃金口袋'
       ]
     },
     {
-      title: 'K 線與價格行為',
-      color: '#f43f5e',
+      title: '空頭趨勢與反轉（壓力訊號）',
+      color: '#10b981',
       items: [
-        '多方吞噬','空方吞噬','錘頭','上吊線','反轉拒絕','流動性掃單','內包',
-        '多頭陷阱','空頭陷阱'
+        '死亡交叉 5/20','死亡交叉 20/60','死亡交叉 60/200',
+        '空方吞噬','上吊線','頭肩頂','雙重頂','UTAD 末端上沖'
       ]
     },
     {
-      title: '波動與缺口',
+      title: '假突破與流動性清洗（陷阱行為）',
       color: '#fbbf24',
       items: [
-        '擠壓','跳空上','跳空下','突破缺口','逃逸缺口','竭盡缺口'
+        '流動性掃單','多頭陷阱','空頭陷阱'
       ]
     },
     {
-      title: '量能分析',
-      color: '#10b981',
+      title: '價格突破與結構改變',
+      color: '#38bdf8',
+      items: [
+        '結構突破','結構轉向','跳空上','跳空下','突破缺口'
+      ]
+    },
+    {
+      title: '趨勢延續與價格真空',
+      color: '#a855f7',
+      items: [
+        '逃逸缺口','價值缺口','缺口回補','錨定 VWAP'
+      ]
+    },
+    {
+      title: '動能衰竭與反轉預警',
+      color: '#ec4899',
+      items: [
+        'RSI 背離','隱性背離','竭盡缺口','反轉拒絕'
+      ]
+    },
+    {
+      title: '籌碼交換與量能異常',
+      color: '#f97316',
       items: [
         '量能放大','吸收','高潮'
       ]
     },
     {
-      title: '動能與背離',
-      color: '#a855f7',
+      title: '波動收縮與盤整等待',
+      color: '#06b6d4',
       items: [
-        'RSI 背離','隱性背離','零軸反彈'
+        '擠壓','內包'
       ]
     },
     {
-      title: '結構與幾何',
-      color: '#f97316',
+      title: '諧波型態（潛在反轉區）',
+      color: '#14b8a6',
       items: [
-        '結構突破','結構轉向','黃金口袋','錨定 VWAP','價值缺口','缺口回補',
-        '頭肩頂','倒頭肩底','雙重頂','雙重底'
+        'Gartley 諧波','Bat 諧波','Butterfly 諧波'
       ]
     },
     {
-      title: '威科夫與諧波',
-      color: '#ec4899',
-      items: [
-        'Spring 彈簧','UTAD 末端上沖','Gartley 諧波','Bat 諧波','Butterfly 諧波'
-      ]
-    },
-    {
-      title: '統計通道',
+      title: '統計極端與回歸預警',
       color: '#94a3b8',
       items: [
         '+2σ','-2σ','+3σ','-3σ'
@@ -3301,18 +3315,20 @@ function populateMarkerGlossary() {
     }
   ];
 
-  let html = '<strong style="display:block; margin-bottom:8px; border-bottom:1px solid rgba(148,163,184,0.1); padding-bottom:6px">17D 圖表標記詞彙表</strong>';
+  let html = '<strong style="display:block; margin-bottom:10px; border-bottom:1px solid rgba(148,163,184,0.15); padding-bottom:6px; font-size:12px">17D 圖表標記現象詞彙表</strong>';
   
   html += categories.map(cat => {
     const listHtml = cat.items.map(l => {
       const d = technicalMarkerDescription(l);
-      return d ? `<span style="display:inline-block; margin-bottom:4px"><span style="color:#a78bfa">${escHtml(l)}</span>：${escHtml(d)}</span>` : '';
-    }).filter(Boolean).join(' <span class="text-slate-600">|</span> ');
+      return d ? `<div style="font-size:11px; line-height:1.4"><span style="color:#a78bfa; font-weight:500">${escHtml(l)}</span>：<span style="color:#cbd5e1">${escHtml(d)}</span></div>` : '';
+    }).filter(Boolean).join('');
     
     if (!listHtml) return '';
-    return `<div style="margin-bottom:8px; line-height:1.75">
-      <span style="color:${cat.color}; font-weight:600; margin-right:8px; display:inline-block">[${escHtml(cat.title)}]</span>
-      ${listHtml}
+    return `<div style="margin-bottom:12px">
+      <div style="color:${cat.color}; font-weight:600; border-bottom:1px solid rgba(255,255,255,0.06); padding-bottom:3px; margin-bottom:6px; font-size:11.5px">[${escHtml(cat.title)}]</div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:6px 16px">
+        ${listHtml}
+      </div>
     </div>`;
   }).filter(Boolean).join('');
 
