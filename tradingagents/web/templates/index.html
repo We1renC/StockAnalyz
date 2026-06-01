@@ -317,6 +317,122 @@ body { background: var(--bg-base); color: var(--text-primary); }
 }
 @keyframes modal-in { from { opacity: 0; transform: scale(0.95) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
 
+.diag-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.9fr);
+  gap: 18px;
+  align-items: start;
+}
+.diag-main-stage {
+  min-width: 0;
+}
+.diag-side-stage {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.diag-chart-shell {
+  background: linear-gradient(180deg, rgba(8,12,24,0.92), rgba(9,14,28,0.78));
+  border: 1px solid rgba(148,163,184,0.1);
+  border-radius: 16px;
+  padding: 16px;
+}
+.diag-chart-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.diag-chart-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #e2e8f0;
+}
+.diag-chart-meta {
+  font-size: 11px;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.diag-chart-period {
+  margin-left: auto;
+}
+.diag-chart-container {
+  height: 440px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #0a0f1a;
+  border: 1px solid rgba(148,163,184,0.08);
+}
+.diag-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+.diag-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.diag-stat-card {
+  background: rgba(15,23,42,0.78);
+  border: 1px solid rgba(148,163,184,0.08);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+.diag-stat-label {
+  font-size: 11px;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.diag-stat-value {
+  margin-top: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+.diag-highlight-card {
+  background: linear-gradient(180deg, rgba(15,23,42,0.92), rgba(15,23,42,0.76));
+  border: 1px solid rgba(16,185,129,0.2);
+  border-radius: 16px;
+  padding: 16px 18px;
+}
+.diag-highlight-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #34d399;
+  margin-bottom: 10px;
+}
+.diag-rule-text {
+  font-size: 16px;
+  line-height: 1.65;
+  color: #e2e8f0;
+}
+.diag-matrix-stage {
+  grid-column: 1 / -1;
+}
+@media (max-width: 1180px) {
+  .diag-workspace {
+    grid-template-columns: 1fr;
+  }
+  .diag-chart-container {
+    height: 390px;
+  }
+}
+@media (max-width: 640px) {
+  .diag-summary-grid {
+    grid-template-columns: 1fr;
+  }
+  .diag-chart-container {
+    height: 320px;
+  }
+}
+
 /* ── Form Inputs ── */
 .input-field {
   width: 100%; background: rgba(30,41,59,0.6); border: 1px solid var(--border-subtle);
@@ -807,16 +923,20 @@ body { background: var(--bg-base); color: var(--text-primary); }
 
 <!-- Diagnosis Modal -->
 <div id="diag-modal" class="modal-backdrop hidden">
-  <div class="modal-content p-6 max-w-5xl w-full max-h-[90vh] overflow-y-auto">
+  <div class="modal-content p-6 w-full max-h-[92vh] overflow-y-auto" style="max-width:min(96vw,1760px)">
     <div class="flex justify-between items-center mb-4">
       <h2 class="text-xl font-bold text-emerald-400" id="diag-title">診斷報告</h2>
       <button onclick="closeDiag()" class="text-gray-400 hover:text-white text-2xl">×</button>
     </div>
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <div>
-        <div class="flex gap-2 mb-2 items-center">
-          <span class="text-sm font-semibold">走勢圖</span>
-          <select id="chart-period" class="input-field" style="width:auto;padding:4px 8px;font-size:12px;margin-left:auto">
+    <div class="diag-workspace">
+      <div class="diag-main-stage">
+        <div class="diag-chart-shell">
+          <div class="diag-chart-head">
+            <div>
+              <div class="diag-chart-meta">Price Action Workspace</div>
+              <div class="diag-chart-title">走勢圖</div>
+            </div>
+            <select id="chart-period" class="input-field diag-chart-period" style="width:auto;padding:4px 8px;font-size:12px">
             <option value="1d">1日</option>
             <option value="5d">5日</option>
             <option value="1mo">1月</option>
@@ -824,17 +944,18 @@ body { background: var(--bg-base); color: var(--text-primary); }
             <option value="6mo" selected>6月</option>
             <option value="1y">1年</option>
             <option value="2y">2年</option>
-          </select>
+            </select>
+          </div>
+          <div id="chart-container" class="diag-chart-container"></div>
+          <div class="diag-chart-legend">
+            <span><span class="inline-block w-3 h-1 bg-yellow-400 align-middle"></span> MA20</span>
+            <span><span class="inline-block w-3 h-1 bg-cyan-400 align-middle"></span> MA60</span>
+            <span><span class="inline-block w-2 h-2 rounded-full bg-fuchsia-400 align-middle"></span> 17D 標記</span>
+          </div>
         </div>
-        <div id="chart-container" class="bg-gray-900 rounded" style="height: 350px;"></div>
-        <div class="text-xs text-gray-400 mt-1 flex gap-3">
-          <span><span class="inline-block w-3 h-1 bg-yellow-400 align-middle"></span> MA20</span>
-          <span><span class="inline-block w-3 h-1 bg-cyan-400 align-middle"></span> MA60</span>
-          <span><span class="inline-block w-2 h-2 rounded-full bg-fuchsia-400 align-middle"></span> 17D 標記</span>
-        </div>
-        <div id="technical-matrix-panel" class="mt-3 glass-card-sm p-3 text-xs text-slate-300"></div>
       </div>
-      <div id="diag-body" class="text-sm space-y-3"></div>
+      <div id="diag-body" class="diag-side-stage text-sm"></div>
+      <div id="technical-matrix-panel" class="diag-matrix-stage glass-card-sm p-3 text-xs text-slate-300"></div>
     </div>
     <div class="mt-4 pt-4 border-t border-gray-700">
       <div class="flex gap-2 items-center flex-wrap">
@@ -1587,7 +1708,7 @@ window.addEventListener('resize', () => {
   }
   if (_chart && $('chart-container')) {
     try {
-      _chart.resize($('chart-container').clientWidth, 350);
+      _chart.resize($('chart-container').clientWidth, $('chart-container').clientHeight || 440);
       _chart.timeScale().fitContent();
     } catch(e) {}
   }
@@ -2526,21 +2647,35 @@ async function diagnose(symbol, name) {
   }
   const ind = diagR.indicators || {};
   $('diag-body').innerHTML = `
-    <div class="glass-card-sm p-3">
-      <div class="text-sm font-semibold mb-2">技術指標</div>
-      <div class="grid grid-cols-3 gap-3 text-sm">
-        <div><div class="text-xs text-slate-400">現價</div><div class="font-bold text-lg tabular-nums">${fmt(ind.price)}</div></div>
-        <div><div class="text-xs text-slate-400">RSI</div><div class="font-bold text-lg tabular-nums ${ind.rsi >=75?'text-red-400':ind.rsi<=30?'text-amber-400':'text-slate-100'}">${fmt(ind.rsi,1)}</div></div>
-        <div><div class="text-xs text-slate-400">日漲跌</div><div class="font-bold text-lg tabular-nums ${ind.change_1d>=0?'text-red-400':'text-emerald-400'}">${ind.change_1d >= 0 ? '+' : ''}${fmt(ind.change_1d)}%</div></div>
-        <div><div class="text-xs text-slate-400">MA20</div><div class="tabular-nums">${fmt(ind.ma20)}</div></div>
-        <div><div class="text-xs text-slate-400">MA60</div><div class="tabular-nums">${fmt(ind.ma60)}</div></div>
-        <div><div class="text-xs text-slate-400">β / 1月%</div><div class="text-xs tabular-nums">${fmt(ind.beta,2)} / ${ind.change_1m>=0?'+':''}${fmt(ind.change_1m,1)}%</div></div>
-        <div class="col-span-3"><div class="text-xs text-slate-400">52週區間</div><div class="text-sm tabular-nums">${fmt(ind.low52)} ~ ${fmt(ind.high52)}</div></div>
+    <div class="diag-summary-grid">
+      <div class="diag-stat-card">
+        <div class="diag-stat-label">現價</div>
+        <div class="diag-stat-value tabular-nums">${fmt(ind.price)}</div>
+      </div>
+      <div class="diag-stat-card">
+        <div class="diag-stat-label">RSI</div>
+        <div class="diag-stat-value tabular-nums ${ind.rsi >=75?'text-red-400':ind.rsi<=30?'text-amber-400':'text-slate-100'}">${fmt(ind.rsi,1)}</div>
+      </div>
+      <div class="diag-stat-card">
+        <div class="diag-stat-label">日漲跌</div>
+        <div class="diag-stat-value tabular-nums ${ind.change_1d>=0?'text-red-400':'text-emerald-400'}">${ind.change_1d >= 0 ? '+' : ''}${fmt(ind.change_1d)}%</div>
+      </div>
+      <div class="diag-stat-card">
+        <div class="diag-stat-label">MA20 / MA60</div>
+        <div class="diag-stat-value tabular-nums">${fmt(ind.ma20)} <span class="text-slate-500">/</span> ${fmt(ind.ma60)}</div>
+      </div>
+      <div class="diag-stat-card">
+        <div class="diag-stat-label">β / 1月%</div>
+        <div class="diag-stat-value tabular-nums">${fmt(ind.beta,2)} <span class="text-slate-500">/</span> ${ind.change_1m>=0?'+':''}${fmt(ind.change_1m,1)}%</div>
+      </div>
+      <div class="diag-stat-card">
+        <div class="diag-stat-label">52週區間</div>
+        <div class="diag-stat-value tabular-nums">${fmt(ind.low52)} <span class="text-slate-500">~</span> ${fmt(ind.high52)}</div>
       </div>
     </div>
-    <div class="glass-card-sm p-3" style="border-color:var(--border-glow)">
-      <div class="text-sm font-semibold mb-1 text-emerald-400">規則引擎診斷</div>
-      <div class="text-sm">${diagR.diagnosis}</div>
+    <div class="diag-highlight-card">
+      <div class="diag-highlight-title">規則引擎診斷</div>
+      <div class="diag-rule-text">${diagR.diagnosis}</div>
     </div>
     ${renderWatchRecommendation(diagR)}
    `;
@@ -2552,17 +2687,17 @@ function renderWatchRecommendation(diagR) {
   if (!rec || !wid) return '';
   const fmtCell = (v) => v == null ? '—' : Number(v).toFixed(2);
   return `
-    <div class="glass-card-sm p-3" style="border-color:var(--border-glow)" id="watch-rec-card">
+    <div class="diag-highlight-card" id="watch-rec-card">
       <div class="flex items-center justify-between mb-2">
-        <div class="text-sm font-semibold text-emerald-400">觀察清單建議價位</div>
+        <div class="diag-highlight-title !mb-0">觀察清單建議價位</div>
         <button onclick="applyWatchRecommendation(${wid}, ${JSON.stringify(rec).replace(/"/g, '&quot;')})"
                 class="btn-secondary text-xs px-3 py-1">套用至觀察清單</button>
       </div>
-      <div class="grid grid-cols-4 gap-2 text-sm">
-        <div><div class="text-xs text-slate-400">目標進場</div><div class="font-bold tabular-nums">${fmtCell(rec.target_entry)}</div></div>
-        <div><div class="text-xs text-slate-400">加碼點</div><div class="font-bold tabular-nums">${fmtCell(rec.target_add)}</div></div>
-        <div><div class="text-xs text-slate-400">停利目標</div><div class="font-bold tabular-nums text-red-400">${fmtCell(rec.target_profit)}</div></div>
-        <div><div class="text-xs text-slate-400">停損</div><div class="font-bold tabular-nums text-emerald-400">${fmtCell(rec.target_stop)}</div></div>
+      <div class="diag-summary-grid">
+        <div class="diag-stat-card"><div class="diag-stat-label">目標進場</div><div class="diag-stat-value tabular-nums">${fmtCell(rec.target_entry)}</div></div>
+        <div class="diag-stat-card"><div class="diag-stat-label">加碼點</div><div class="diag-stat-value tabular-nums">${fmtCell(rec.target_add)}</div></div>
+        <div class="diag-stat-card"><div class="diag-stat-label">停利目標</div><div class="diag-stat-value tabular-nums text-red-400">${fmtCell(rec.target_profit)}</div></div>
+        <div class="diag-stat-card"><div class="diag-stat-label">停損</div><div class="diag-stat-value tabular-nums text-emerald-400">${fmtCell(rec.target_stop)}</div></div>
       </div>
       <div id="watch-rec-status" class="text-xs text-slate-500 mt-2"></div>
     </div>`;
@@ -2765,17 +2900,20 @@ function renderTechnicalMatrixPanel(matrix) {
       <button onclick="setTechnicalMarkerFilter('all')" class="btn-secondary text-xs ml-auto" style="padding:2px 8px">全部標記</button>
       <button onclick="saveTechnicalMatrixSnapshot(this)" class="btn-secondary text-xs" style="padding:2px 8px">保存快照</button>
     </div>
-    <div class="mt-2 grid grid-cols-3 gap-2 text-[11px] text-slate-400">
+    <div class="mt-2 grid grid-cols-3 md:grid-cols-6 gap-2 text-[11px] text-slate-400">
       <div>維度 <span class="tabular-nums text-slate-200">${summary.computed_count || 0}/${summary.dimension_count || 17}</span></div>
       <div>Partial <span class="tabular-nums text-amber-300">${summary.partial_count || 0}</span></div>
       <div>標記 <span class="tabular-nums text-fuchsia-300">${markerSummary.total || 0}</span></div>
+      <div>Bias <span class="${technicalBiasClass(summary.bias)}">${technicalBiasLabel(summary.bias)}</span></div>
+      <div>Score <span class="tabular-nums text-slate-200">${fmt(summary.net_score, 2)}</span></div>
+      <div>Risk <span class="tabular-nums text-slate-200">${escHtml(summary.risk_level || '—')}</span></div>
     </div>
     <div class="mt-2 space-y-1.5">
       ${renderPlanGroup('進場', plan.entries, '無進場候選', 'text-sky-300')}
       ${renderPlanGroup('停損', plan.stops, '無停損候選', 'text-emerald-300')}
       ${renderPlanGroup('停利', plan.targets, '無目標候選', 'text-red-300')}
     </div>
-    <div class="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-60 overflow-y-auto scrollbar-thin">
+    <div class="mt-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-1.5 max-h-72 overflow-y-auto scrollbar-thin">
       ${dimButtons}
     </div>
     <div id="technical-matrix-save-status" class="mt-2 text-[11px] text-slate-500"></div>`;
@@ -2836,9 +2974,10 @@ async function drawChart(symbol, period) {
       return;
     }
     container.innerHTML = '';
+    const chartHeight = container.clientHeight || 440;
     _chart = LightweightCharts.createChart(container, {
       width: container.clientWidth,
-      height: 350,
+      height: chartHeight,
       layout: {
         background: { color: '#0a0f1a' },
         textColor: '#64748b',
