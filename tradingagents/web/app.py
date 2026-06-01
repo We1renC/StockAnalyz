@@ -512,6 +512,19 @@ def fetch_history(symbol: str, period: str = "1y") -> tuple[pd.DataFrame, str]:
             return h, h.attrs.get("source", "official_tw_daily")
     return pd.DataFrame(), ""
 
+
+def _chart_period_config(period: str) -> dict[str, str]:
+    configs = {
+        "1d": {"period": "1d", "interval": "15m"},
+        "5d": {"period": "5d", "interval": "30m"},
+        "1mo": {"period": "1mo", "interval": "1d"},
+        "3mo": {"period": "3mo", "interval": "1d"},
+        "6mo": {"period": "6mo", "interval": "1d"},
+        "1y": {"period": "1y", "interval": "1d"},
+        "2y": {"period": "2y", "interval": "1d"},
+    }
+    return configs.get(period, configs["6mo"])
+
 def _indicators_from_history(h: pd.DataFrame, bench_close=None, source: str = "") -> dict:
     """Compute partial indicator schema from any OHLCV history DataFrame.
 
@@ -1807,7 +1820,14 @@ async def api_refresh():
 def api_history(symbol: str, period: str = "6mo"):
     """歷史 OHLC 數據 (給 K 線圖使用)。"""
     try:
-        h = yf.Ticker(symbol).history(period=period)
+        cfg = _chart_period_config(period)
+        interval = cfg["interval"]
+        yf_period = cfg["period"]
+        if interval == "1d":
+            h, source = fetch_history(symbol, period=yf_period)
+        else:
+            h = fetch_intraday_history(symbol, period=yf_period, interval=interval)
+            source = "yfinance_intraday"
         h = h.dropna(subset=["Open", "High", "Low", "Close"])
         if len(h) == 0:
             return {"error": "no data"}
@@ -1838,7 +1858,16 @@ def api_history(symbol: str, period: str = "6mo"):
             ma20.append({"time": int(ts.timestamp()), "value": round(float(val), 2)})
         for ts, val in ma60_series.dropna().items():
             ma60.append({"time": int(ts.timestamp()), "value": round(float(val), 2)})
-        return sanitize_float_values({"symbol": symbol, "candles": candles, "volumes": volumes, "ma20": ma20, "ma60": ma60})
+        return sanitize_float_values({
+            "symbol": symbol,
+            "period": period,
+            "interval": interval,
+            "source": source,
+            "candles": candles,
+            "volumes": volumes,
+            "ma20": ma20,
+            "ma60": ma60,
+        })
     except Exception as e:
         return {"error": str(e)}
 
@@ -1905,9 +1934,21 @@ def _build_technical_matrix_payload(symbol: str, period: str, *, use_cache: bool
         cached = _tech_matrix_cache_get(key)
         if cached is not None:
             return cached
-    h, source = fetch_history(symbol, period=period)
+    cfg = _chart_period_config(period)
+    interval = cfg["interval"]
+    yf_period = cfg["period"]
+    if interval == "1d":
+        h, source = fetch_history(symbol, period=yf_period)
+    else:
+        h = fetch_intraday_history(symbol, period=yf_period, interval=interval)
+        source = "yfinance_intraday"
     if len(h) == 0:
         raise ValueError("no data")
+    context_period = "2y" if period == "2y" else "1y"
+    context_h, context_source = fetch_history(symbol, period=context_period)
+    if len(context_h) == 0:
+        context_h = h
+        context_source = source
     benchmarks = fetch_intermarket_benchmarks(symbol)
     primary_label = "twii" if _twse_channel(symbol) else "spx"
     benchmark = benchmarks.get(primary_label, pd.Series(dtype=float))
@@ -1919,6 +1960,7 @@ def _build_technical_matrix_payload(symbol: str, period: str, *, use_cache: bool
     payload = build_technical_matrix(
         symbol,
         h,
+        context_history=context_h,
         benchmark_close=benchmark,
         benchmarks=benchmarks,
         intraday_1h=intraday_1h,
@@ -1926,6 +1968,9 @@ def _build_technical_matrix_payload(symbol: str, period: str, *, use_cache: bool
         intraday_5m=intraday_5m_today,
         source=source or "history",
     )
+    payload["analysis_context"]["context_source"] = context_source or source or "history"
+    payload["analysis_context"]["requested_period"] = period
+    payload["analysis_context"]["requested_interval"] = interval
     _tech_matrix_cache_set(key, payload)
     return payload
 

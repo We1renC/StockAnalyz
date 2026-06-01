@@ -817,6 +817,8 @@ body { background: var(--bg-base); color: var(--text-primary); }
         <div class="flex gap-2 mb-2 items-center">
           <span class="text-sm font-semibold">走勢圖</span>
           <select id="chart-period" class="input-field" style="width:auto;padding:4px 8px;font-size:12px;margin-left:auto">
+            <option value="1d">1日</option>
+            <option value="5d">5日</option>
             <option value="1mo">1月</option>
             <option value="3mo">3月</option>
             <option value="6mo" selected>6月</option>
@@ -1582,6 +1584,12 @@ window.addEventListener('resize', () => {
   }
   if (_spxMarketChart && $('market-chart-spx')) {
     try { _spxMarketChart.resize($('market-chart-spx').clientWidth, 58); } catch(e){}
+  }
+  if (_chart && $('chart-container')) {
+    try {
+      _chart.resize($('chart-container').clientWidth, 350);
+      _chart.timeScale().fitContent();
+    } catch(e) {}
   }
 });
 
@@ -2373,6 +2381,7 @@ let _chart = null;
 let _chartCandleSeries = null;
 let _technicalMatrix = null;
 let _technicalMarkerFilter = 'all';
+let _chartLastPeriod = '6mo';
 let _intradayChart = null;
 let _intradaySeries = null;
 let _intradayHoverSymbol = null;
@@ -2706,6 +2715,10 @@ function renderPlanGroup(label, items, emptyText, accentClass) {
     </div>`;
 }
 
+function matrixPeriodForChartPeriod(period) {
+  return period;
+}
+
 function renderTechnicalMatrixPanel(matrix) {
   const panel = $('technical-matrix-panel');
   if (!panel) return;
@@ -2775,7 +2788,8 @@ async function saveTechnicalMatrixSnapshot(btn) {
   if (btn) { btn.disabled = true; btn.textContent = '保存中'; }
   if (status) status.textContent = '寫入 Obsidian 中...';
   try {
-    const period = $('chart-period').value;
+    const chartPeriod = $('chart-period').value;
+    const period = matrixPeriodForChartPeriod(chartPeriod);
     const r = await fetch(`/api/technical-matrix/${encodeURIComponent(_currentSymbol)}/snapshot?period=${period}`, { method: 'POST' }).then(r => r.json());
     if (r.ok) {
       if (status) {
@@ -2802,6 +2816,7 @@ async function drawChart(symbol, period) {
   // 清除舊圖
   const container = $('chart-container');
   container.innerHTML = '<div class="flex items-center justify-center h-full text-gray-400">載入 K 線中...</div>';
+  _chartLastPeriod = period;
   _technicalMatrix = null;
   _chartCandleSeries = null;
   _technicalMarkerFilter = 'all';
@@ -2811,9 +2826,10 @@ async function drawChart(symbol, period) {
     _chart = null;
   }
   try {
+    const matrixPeriod = matrixPeriodForChartPeriod(period);
     const [r, matrix] = await Promise.all([
       fetch(`/api/history/${encodeURIComponent(symbol)}?period=${period}`).then(r=>r.json()),
-      fetch(`/api/technical-matrix/${encodeURIComponent(symbol)}?period=${period}`).then(r=>r.json()).catch(() => null),
+      fetch(`/api/technical-matrix/${encodeURIComponent(symbol)}?period=${matrixPeriod}`).then(r=>r.json()).catch(() => null),
     ]);
     if (r.error) {
       container.innerHTML = `<div class="flex items-center justify-center h-full text-red-400">錯誤: ${r.error}</div>`;
@@ -2831,8 +2847,19 @@ async function drawChart(symbol, period) {
         vertLines: { color: 'rgba(148,163,184,0.06)' },
         horzLines: { color: 'rgba(148,163,184,0.06)' },
       },
-      timeScale: { timeVisible: false, borderColor: 'rgba(148,163,184,0.1)' },
+      timeScale: {
+        timeVisible: period === '1d' || period === '5d',
+        secondsVisible: false,
+        borderColor: 'rgba(148,163,184,0.1)',
+        rightOffset: 0,
+        fixLeftEdge: true,
+        fixRightEdge: true,
+      },
       rightPriceScale: { borderColor: 'rgba(148,163,184,0.1)' },
+      crosshair: {
+        vertLine: { color: 'rgba(148,163,184,0.18)' },
+        horzLine: { color: 'rgba(148,163,184,0.18)' },
+      },
     });
     const candle = _chart.addCandlestickSeries({
       upColor: '#ef4444', downColor: '#10b981',
@@ -2860,6 +2887,11 @@ async function drawChart(symbol, period) {
       scaleMargins: { top: 0.85, bottom: 0 },
     });
     vol.setData(r.volumes);
+    _chart.timeScale().fitContent();
+    const extraBars = period === '1d' ? 2 : (period === '5d' ? 1 : 0);
+    if (extraBars) {
+      _chart.timeScale().applyOptions({ rightOffset: extraBars });
+    }
   } catch (e) {
     container.innerHTML = `<div class="text-red-400">圖表錯誤: ${e}</div>`;
     renderTechnicalMatrixPanel({ error: String(e) });

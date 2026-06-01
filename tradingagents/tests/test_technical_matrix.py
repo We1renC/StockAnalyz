@@ -32,6 +32,20 @@ def _history() -> pd.DataFrame:
     return h
 
 
+def _intraday_history() -> pd.DataFrame:
+    dates = pd.date_range("2026-03-31 09:30", periods=30, freq="15min")
+    rows = []
+    for i, _ in enumerate(dates):
+        base = 100 + i * 0.18
+        open_ = base
+        close = base + (0.22 if i % 3 else -0.11)
+        high = max(open_, close) + 0.18
+        low = min(open_, close) - 0.16
+        volume = 1200 + i * 15
+        rows.append((open_, high, low, close, volume))
+    return pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=dates)
+
+
 def test_build_technical_matrix_preserves_all_17_dimensions():
     matrix = build_technical_matrix("TEST", _history(), benchmark_close=_history()["Close"] * 1.01, source="unit")
 
@@ -56,6 +70,24 @@ def test_each_dimension_has_institutional_decision_fields():
         assert {"score", "bias", "confidence", "severity", "signals"}.issubset(dim)
         assert dim["bias"] in {"strong_bullish", "bullish", "neutral", "bearish", "strong_bearish"}
         assert 0 <= dim["confidence"] <= 1
+
+
+def test_intraday_matrix_uses_daily_context_for_macro_layers():
+    matrix = build_technical_matrix(
+        "TEST",
+        _intraday_history(),
+        context_history=_history(),
+        intraday_1h=_intraday_history().resample("1h").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}).dropna(),
+        intraday_15m=_intraday_history(),
+        intraday_5m=_intraday_history().resample("5min").ffill().dropna(),
+    )
+
+    assert matrix["history"]["granularity"] == "intraday"
+    assert matrix["analysis_context"]["macro_basis"] == "context_daily"
+    trend = next(d for d in matrix["dimensions"] if d["id"] == "trend_ma")
+    volatility = next(d for d in matrix["dimensions"] if d["id"] == "volatility_risk")
+    assert trend["metrics"]["analysis_basis"] == "context_daily"
+    assert volatility["metrics"]["analysis_basis"] == "context_daily"
 
 
 def test_external_payload_dimensions_become_computed():

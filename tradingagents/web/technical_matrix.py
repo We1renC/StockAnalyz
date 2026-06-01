@@ -67,6 +67,14 @@ def _clean_history(history: pd.DataFrame) -> pd.DataFrame:
     return h.sort_index()
 
 
+def _is_intraday_history(history: Optional[pd.DataFrame]) -> bool:
+    if history is None or len(history.index) < 2:
+        return False
+    diffs = pd.Series(history.index[1:] - history.index[:-1])
+    median = diffs.median()
+    return pd.notna(median) and median < pd.Timedelta(days=1)
+
+
 def _time(ts: Any) -> int:
     return int(pd.Timestamp(ts).timestamp())
 
@@ -358,7 +366,7 @@ def _price_action(h: pd.DataFrame, pivots: list[dict]) -> dict:
     )
 
 
-def _trend_ma(h: pd.DataFrame) -> dict:
+def _trend_ma(h: pd.DataFrame, *, price_override: Any = None, basis: str = "primary") -> dict:
     close = h["Close"]
     markers: list[dict] = []
     observations: list[str] = []
@@ -372,7 +380,9 @@ def _trend_ma(h: pd.DataFrame) -> dict:
     ema = {f"ema{p}": close.ewm(span=p, adjust=False).mean() for p in ema_periods}
     latest = {key: _round(series.iloc[-1], 2) if series.notna().any() else None for key, series in ma.items()}
     latest_ema = {key: _round(series.iloc[-1], 2) if series.notna().any() else None for key, series in ema.items()}
-    price = close.iloc[-1]
+    price = _as_float(price_override)
+    if price is None:
+        price = float(close.iloc[-1])
 
     available_short = [latest.get("ma5"), latest.get("ma10"), latest.get("ma20")]
     available_struct = [latest.get("ma20"), latest.get("ma60"), latest.get("ma200")]
@@ -453,6 +463,7 @@ def _trend_ma(h: pd.DataFrame) -> dict:
             observations.append("EMA12 above EMA26 with price above the faster line; momentum bias up.")
         elif ema_fast < ema_slow and price < ema_fast:
             observations.append("EMA12 below EMA26 with price below the faster line; momentum bias down.")
+    metrics["analysis_basis"] = basis
     return _dimension("trend_ma", "computed", observations, metrics=metrics, markers=markers, levels=levels)
 
 
@@ -890,7 +901,7 @@ def _structure_geometry(h: pd.DataFrame, pivots: list[dict]) -> dict:
     return _dimension("structure_geometry", "computed", observations, levels=levels, markers=markers)
 
 
-def _volatility_risk(h: pd.DataFrame) -> dict:
+def _volatility_risk(h: pd.DataFrame, *, price_override: Any = None, basis: str = "primary") -> dict:
     atr = _atr(h)
     close = h["Close"]
     latest_atr = _as_float(atr.iloc[-1]) if atr.notna().any() else None
@@ -898,7 +909,9 @@ def _volatility_risk(h: pd.DataFrame) -> dict:
     metrics: dict[str, Any] = {"atr14": _round(latest_atr, 2)}
     if latest_atr is None:
         return _dimension("volatility_risk", "partial", ["Insufficient history for ATR."], metrics=metrics)
-    price = close.iloc[-1]
+    price = _as_float(price_override)
+    if price is None:
+        price = float(close.iloc[-1])
     atr_pct = latest_atr / price * 100 if price else None
     atr_ma20 = atr.rolling(20).mean().iloc[-1]
     atr_percentile = None
@@ -918,6 +931,7 @@ def _volatility_risk(h: pd.DataFrame) -> dict:
         "stop_3atr_long": _round(price - 3 * latest_atr, 2),
         "stop_2atr_short": _round(price + 2 * latest_atr, 2),
         "stop_3atr_short": _round(price + 3 * latest_atr, 2),
+        "analysis_basis": basis,
     })
     levels = [
         {"type": "atr_stop", "label": "2ATR Long Stop", "price": metrics["stop_2atr_long"]},
@@ -2201,6 +2215,7 @@ def build_technical_matrix(
     symbol: str,
     history: pd.DataFrame,
     *,
+    context_history: Optional[pd.DataFrame] = None,
     benchmark_close: Optional[pd.Series] = None,
     benchmarks: Optional[dict] = None,
     intraday_1h: Optional[pd.DataFrame] = None,
@@ -2216,47 +2231,70 @@ def build_technical_matrix(
     source: str = "",
 ) -> dict:
     """Build the full 17-dimensional matrix and chart marker payload."""
-    h = _clean_history(history)
-    if len(h) < 2:
+    execution_h = _clean_history(history)
+    if len(execution_h) < 2:
         raise ValueError("not enough OHLC history")
-    pivots = _find_pivots(h)
+    context_h = (
+        _clean_history(context_history)
+        if context_history is not None and len(context_history)
+        else execution_h
+    )
+    use_context_for_macro = _is_intraday_history(execution_h) or len(execution_h) < 60
+    macro_h = context_h if use_context_for_macro and len(context_h) >= 20 else execution_h
+    trend_h = context_h if use_context_for_macro and len(context_h) >= 20 else execution_h
+    volatility_h = context_h if use_context_for_macro and len(context_h) >= 20 else execution_h
+    macro_basis = "context_daily" if macro_h is context_h and macro_h is not execution_h else "primary"
+    trend_basis = "context_daily" if trend_h is context_h and trend_h is not execution_h else "primary"
+    volatility_basis = "context_daily" if volatility_h is context_h and volatility_h is not execution_h else "primary"
+
+    pivots = _find_pivots(execution_h)
+    macro_pivots = _find_pivots(macro_h)
     intraday_1h = _clean_history(intraday_1h) if intraday_1h is not None and len(intraday_1h) else None
     intraday_15m = _clean_history(intraday_15m) if intraday_15m is not None and len(intraday_15m) else None
     intraday_5m = _clean_history(intraday_5m) if intraday_5m is not None and len(intraday_5m) else None
     dimensions = [
-        _price_action(h, pivots),
-        _trend_ma(h),
-        _volume_profile(h),
-        _momentum(h, pivots),
-        _structure_geometry(h, pivots),
-        _volatility_risk(h),
-        _mtf_derivatives(h, derivatives, intraday_1h=intraday_1h, intraday_15m=intraday_15m),
+        _price_action(execution_h, pivots),
+        _trend_ma(trend_h, price_override=execution_h["Close"].iloc[-1], basis=trend_basis),
+        _volume_profile(execution_h),
+        _momentum(execution_h, pivots),
+        _structure_geometry(execution_h, pivots),
+        _volatility_risk(volatility_h, price_override=execution_h["Close"].iloc[-1], basis=volatility_basis),
+        _mtf_derivatives(macro_h, derivatives, intraday_1h=intraday_1h, intraday_15m=intraday_15m),
         _microstructure(order_flow),
-        _intermarket(h, benchmark_close, benchmarks=benchmarks),
+        _intermarket(macro_h, benchmark_close, benchmarks=benchmarks),
         _breadth(breadth),
-        _time_cyclical(h, anchors, intraday_5m=intraday_5m),
-        _advanced_geometries(h, pivots),
+        _time_cyclical(execution_h, anchors, intraday_5m=intraday_5m),
+        _advanced_geometries(execution_h, pivots),
         _options_gex(options_profile),
         _order_book(order_book),
-        _statistical_reversion(h),
-        _macro_wave(h, pivots),
-        _event_calendar(events, h.index[-1], h, intraday_5m=intraday_5m),
+        _statistical_reversion(execution_h),
+        _macro_wave(macro_h, macro_pivots),
+        _event_calendar(events, execution_h.index[-1], macro_h, intraday_5m=intraday_5m),
     ]
     dimensions = [_enrich_dimension(dim) for dim in dimensions]
     markers = [marker for dim in dimensions for marker in dim.get("markers", [])]
     markers = sorted(markers, key=lambda m: (m["time"], m.get("weight", 1)))
-    latest_price = float(h["Close"].iloc[-1])
+    latest_price = float(execution_h["Close"].iloc[-1])
     confluence = _confluence_zones(dimensions, latest_price)
     summary = _matrix_summary(dimensions, latest_price)
     return {
         "symbol": symbol,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "source": source or h.attrs.get("source", ""),
+        "source": source or execution_h.attrs.get("source", ""),
         "history": {
-            "first": h.index[0].date().isoformat(),
-            "last": h.index[-1].date().isoformat(),
-            "bars": len(h),
+            "first": execution_h.index[0].date().isoformat(),
+            "last": execution_h.index[-1].date().isoformat(),
+            "bars": len(execution_h),
             "latest_close": _round(latest_price, 2),
+            "granularity": "intraday" if _is_intraday_history(execution_h) else "daily",
+        },
+        "analysis_context": {
+            "execution_bars": len(execution_h),
+            "context_bars": len(context_h),
+            "execution_granularity": "intraday" if _is_intraday_history(execution_h) else "daily",
+            "macro_basis": macro_basis,
+            "trend_basis": trend_basis,
+            "volatility_basis": volatility_basis,
         },
         "workflow": [dimension_id for dimension_id, _ in DIMENSION_DEFS],
         "dimensions": dimensions,
