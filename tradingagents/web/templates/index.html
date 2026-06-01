@@ -2689,13 +2689,21 @@ function setTechnicalMarkerFilter(dimId) {
   renderTechnicalMatrixPanel(_technicalMatrix);
 }
 
-function renderPlanItems(items, emptyText) {
-  if (!items || !items.length) return `<span class="text-slate-500">${emptyText}</span>`;
+function renderPlanItems(items, emptyText, accentClass) {
+  if (!items || !items.length) return `<span class="text-slate-500 text-[11px]">${emptyText}</span>`;
   return items.slice(0, 3).map(item => `
     <span class="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-900/70 border border-slate-700 tabular-nums">
       <span class="text-slate-500">${escHtml(item.type)}</span>
-      <span>${fmt(item.price)}</span>
+      <span class="${accentClass || ''}">${fmt(item.price)}</span>
     </span>`).join('');
+}
+
+function renderPlanGroup(label, items, emptyText, accentClass) {
+  return `
+    <div class="flex items-start gap-2 flex-wrap">
+      <span class="text-[11px] text-slate-400 mt-1 shrink-0">${label}</span>
+      <div class="flex flex-wrap gap-1.5">${renderPlanItems(items, emptyText, accentClass)}</div>
+    </div>`;
 }
 
 function renderTechnicalMatrixPanel(matrix) {
@@ -2749,10 +2757,10 @@ function renderTechnicalMatrixPanel(matrix) {
       <div>Partial <span class="tabular-nums text-amber-300">${summary.partial_count || 0}</span></div>
       <div>標記 <span class="tabular-nums text-fuchsia-300">${markerSummary.total || 0}</span></div>
     </div>
-    <div class="mt-2 flex flex-wrap gap-1.5">
-      ${renderPlanItems(plan.entries, '無進場候選')}
-      ${renderPlanItems(plan.stops, '無停損候選')}
-      ${renderPlanItems(plan.targets, '無目標候選')}
+    <div class="mt-2 space-y-1.5">
+      ${renderPlanGroup('進場', plan.entries, '無進場候選', 'text-sky-300')}
+      ${renderPlanGroup('停損', plan.stops, '無停損候選', 'text-emerald-300')}
+      ${renderPlanGroup('停利', plan.targets, '無目標候選', 'text-red-300')}
     </div>
     <div class="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-60 overflow-y-auto scrollbar-thin">
       ${dimButtons}
@@ -2833,12 +2841,12 @@ async function drawChart(symbol, period) {
     });
     candle.setData(r.candles);
     _chartCandleSeries = candle;
-    if (matrix && !matrix.error && Array.isArray(matrix.markers)) {
+    if (matrix && !matrix.error && !matrix.detail && Array.isArray(matrix.markers)) {
       _technicalMatrix = matrix;
       renderTechnicalMatrixPanel(matrix);
       applyTechnicalMarkers();
-    } else if (matrix && matrix.error) {
-      renderTechnicalMatrixPanel(matrix);
+    } else if (matrix && (matrix.error || matrix.detail)) {
+      renderTechnicalMatrixPanel({ error: matrix.error || matrix.detail });
     } else {
       renderTechnicalMatrixPanel({ error: '未取得 17D 矩陣資料' });
     }

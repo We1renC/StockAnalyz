@@ -31,6 +31,10 @@ tradingagents/.agent-handoff.md
 .claude/cache/
 .claude/projects/
 .claude/sessions/
+.playwright-cli/
+
+# 本地研究原稿（由 Obsidian/外部文件管理，不進 repo）
+Institutional-Grade Technical Analysis: The 17-Dimensional Panoramic Observation & Interpretation Matrix.md
 
 # ─────────── 執行時產生 ───────────
 __pycache__/

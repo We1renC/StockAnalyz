@@ -6,6 +6,7 @@ import json
 import math
 import sqlite3
 import ssl
+import time
 import warnings
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
@@ -426,6 +427,64 @@ def fetch_benchmark_close(symbol: str) -> pd.Series:
         return close
     except Exception:
         return pd.Series(dtype=float)
+
+
+# Intermarket reference universe per market. Tickers chosen for free yfinance
+# availability and design-doc relevance: index + DXY + 10Y yield + VIX, plus
+# the two sector ETFs the design names for Risk-On/Risk-Off ratio analysis.
+INTERMARKET_REFERENCES_US = {
+    "spx": "^GSPC",
+    "dxy": "DX-Y.NYB",
+    "us10y": "^TNX",
+    "vix": "^VIX",
+    "xlk": "XLK",  # tech ETF
+    "xlv": "XLV",  # healthcare ETF (defensive)
+}
+
+INTERMARKET_REFERENCES_TW = {
+    "twii": "^TWII",
+    "spx": "^GSPC",
+    "dxy": "DX-Y.NYB",
+    "us10y": "^TNX",
+    "vix": "^VIX",
+}
+
+
+def fetch_intermarket_benchmarks(symbol: str) -> dict[str, pd.Series]:
+    """Pull a small basket of intermarket reference series.
+
+    Returns {label: close-series}. Empty series for any failed download — the
+    consumer must tolerate missing labels.
+    """
+    refs = INTERMARKET_REFERENCES_TW if _twse_channel(symbol) else INTERMARKET_REFERENCES_US
+    out: dict[str, pd.Series] = {}
+    for label, ticker in refs.items():
+        try:
+            h = yf.Ticker(ticker).history(period="1y")
+            if len(h) == 0:
+                continue
+            close = h["Close"]
+            close.index = close.index.tz_localize(None)
+            out[label] = close
+        except Exception:
+            continue
+    return out
+
+
+def fetch_intraday_history(symbol: str, period: str, interval: str) -> pd.DataFrame:
+    """Best-effort intraday OHLCV pull for execution-timeframe MTF analysis.
+
+    yfinance interval limits: 1m=7d, 5m/15m=60d, 1h=730d. Returns empty
+    DataFrame on failure so callers can degrade gracefully.
+    """
+    try:
+        h = yf.Ticker(symbol).history(period=period, interval=interval)
+        if len(h) == 0:
+            return pd.DataFrame()
+        h.index = h.index.tz_localize(None)
+        return h
+    except Exception:
+        return pd.DataFrame()
 
 def _normalize_history_index(h: pd.DataFrame) -> pd.DataFrame:
     if len(h) == 0:
@@ -1784,14 +1843,38 @@ def api_history(symbol: str, period: str = "6mo"):
         return {"error": str(e)}
 
 
+# In-process TTL cache for technical matrix payloads. fetch_history +
+# fetch_benchmark_close are the slow part; reusing for 5 minutes mirrors the
+# monitor loop cadence so UI re-opens during a single cycle are near-instant.
+_TECH_MATRIX_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+_TECH_MATRIX_TTL_SECONDS = 300
+
+
+def _tech_matrix_cache_get(key: tuple[str, str]) -> Optional[dict]:
+    entry = _TECH_MATRIX_CACHE.get(key)
+    if not entry:
+        return None
+    expires_at, payload = entry
+    if time.time() >= expires_at:
+        _TECH_MATRIX_CACHE.pop(key, None)
+        return None
+    return payload
+
+
+def _tech_matrix_cache_set(key: tuple[str, str], payload: dict) -> None:
+    _TECH_MATRIX_CACHE[(key)] = (time.time() + _TECH_MATRIX_TTL_SECONDS, payload)
+
+
 @app.get("/api/technical-matrix/{symbol}")
 def api_technical_matrix(symbol: str, period: str = "1y"):
     """17-dimensional technical matrix with chart markers."""
     try:
         matrix = _build_technical_matrix_payload(symbol, period)
         return sanitize_float_values(matrix)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(500, str(e))
 
 
 @app.post("/api/technical-matrix/{symbol}/snapshot")
@@ -1801,7 +1884,8 @@ def api_technical_matrix_snapshot(symbol: str, period: str = "1y"):
     if not vault:
         raise HTTPException(400, "obsidian_vault_path 未設定或路徑不存在")
     try:
-        matrix = _build_technical_matrix_payload(symbol, period)
+        # Snapshot writes a fresh matrix to disk; bypass cache for accuracy.
+        matrix = _build_technical_matrix_payload(symbol, period, use_cache=False)
         note_path = _obsidian_write_technical_matrix(vault, matrix)
         return sanitize_float_values({
             "ok": True,
@@ -1809,22 +1893,41 @@ def api_technical_matrix_snapshot(symbol: str, period: str = "1y"):
             "obsidian_path": str(note_path),
             "matrix": matrix,
         })
+    except ValueError as e:
+        raise HTTPException(404, str(e))
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        raise HTTPException(500, str(e))
 
 
-def _build_technical_matrix_payload(symbol: str, period: str) -> dict:
+def _build_technical_matrix_payload(symbol: str, period: str, *, use_cache: bool = True) -> dict:
+    key = (symbol, period)
+    if use_cache:
+        cached = _tech_matrix_cache_get(key)
+        if cached is not None:
+            return cached
     h, source = fetch_history(symbol, period=period)
     if len(h) == 0:
         raise ValueError("no data")
-    benchmark_symbol = "^TWII" if _twse_channel(symbol) else "^GSPC"
-    benchmark = fetch_benchmark_close(benchmark_symbol)
-    return build_technical_matrix(
+    benchmarks = fetch_intermarket_benchmarks(symbol)
+    primary_label = "twii" if _twse_channel(symbol) else "spx"
+    benchmark = benchmarks.get(primary_label, pd.Series(dtype=float))
+    # Intraday pulls are best-effort; failures keep XI Opening Range and
+    # XVII Whipsaw on the unavailable path with explicit data_gaps.
+    intraday_1h = fetch_intraday_history(symbol, period="30d", interval="1h")
+    intraday_15m = fetch_intraday_history(symbol, period="14d", interval="15m")
+    intraday_5m_today = fetch_intraday_history(symbol, period="1d", interval="5m")
+    payload = build_technical_matrix(
         symbol,
         h,
         benchmark_close=benchmark,
+        benchmarks=benchmarks,
+        intraday_1h=intraday_1h,
+        intraday_15m=intraday_15m,
+        intraday_5m=intraday_5m_today,
         source=source or "history",
     )
+    _tech_matrix_cache_set(key, payload)
+    return payload
 
 
 @app.get("/api/intraday/{symbol}")

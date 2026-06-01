@@ -229,6 +229,37 @@ def _series_return(close: pd.Series, periods: int) -> Optional[float]:
     return float((close.iloc[-1] / base - 1) * 100)
 
 
+def _classify_gap(
+    direction: str,
+    h: pd.DataFrame,
+    vol_ratio: Optional[float],
+) -> tuple[str, str]:
+    """Classify a gap as breakaway / runaway / exhaustion per Wyckoff context.
+
+    Returns (label, observation).
+    """
+    close = h["Close"]
+    last_close = close.iloc[-1]
+    # Position within the recent 60-bar range; tail-of-trend = exhaustion candidate
+    window = close.tail(60)
+    if len(window) >= 20 and window.max() > window.min():
+        rank = (window <= last_close).mean()
+    else:
+        rank = 0.5
+    high_vol = vol_ratio is not None and vol_ratio >= 1.6
+    if direction == "up":
+        if rank >= 0.9 and high_vol:
+            return "Exhaustion Gap", "Upside gap near recent highs with elevated volume; exhaustion gap risk."
+        if rank >= 0.55 and high_vol:
+            return "Runaway Gap", "Upside runaway/measuring gap inside an existing markup leg."
+        return "Breakaway Gap", "Upside breakaway gap leaving the prior consolidation."
+    if rank <= 0.1 and high_vol:
+        return "Exhaustion Gap", "Downside gap near recent lows with elevated volume; capitulation exhaustion gap."
+    if rank <= 0.45 and high_vol:
+        return "Runaway Gap", "Downside runaway gap inside an existing markdown leg."
+    return "Breakaway Gap", "Downside breakaway gap leaving the prior consolidation."
+
+
 def _price_action(h: pd.DataFrame, pivots: list[dict]) -> dict:
     markers: list[dict] = []
     observations: list[str] = []
@@ -242,6 +273,13 @@ def _price_action(h: pd.DataFrame, pivots: list[dict]) -> dict:
     upper_ratio = upper / full_range
     lower_ratio = lower / full_range
     ts = h.index[-1]
+
+    # Volume context for gap classification
+    vol_ratio = None
+    if "Volume" in h.columns and len(h) >= 20:
+        vol_ma20 = h["Volume"].rolling(20).mean().iloc[-1]
+        if vol_ma20:
+            vol_ratio = float(h["Volume"].iloc[-1]) / float(vol_ma20)
 
     if len(h) > 1:
         bull_engulf = prev["Close"] < prev["Open"] and last["Close"] > last["Open"] and last["Close"] > prev["Open"] and last["Open"] < prev["Close"]
@@ -258,16 +296,25 @@ def _price_action(h: pd.DataFrame, pivots: list[dict]) -> dict:
             markers.append(_marker(ts, "inBar", "#94a3b8", "square", "Inside", "price_action", 2, last["Close"]))
 
         if last["Open"] > prev["High"] * 1.003:
-            observations.append("Upside gap detected; classify by follow-through and volume in later dimensions.")
-            markers.append(_marker(ts, "belowBar", "#f97316", "circle", "Gap Up", "price_action", 3, last["Low"]))
+            label, obs = _classify_gap("up", h, vol_ratio)
+            observations.append(obs)
+            markers.append(_marker(ts, "belowBar", "#f97316", "circle", label, "price_action", 3, last["Low"]))
         if last["Open"] < prev["Low"] * 0.997:
-            observations.append("Downside gap detected; monitor for exhaustion or continuation.")
-            markers.append(_marker(ts, "aboveBar", "#38bdf8", "circle", "Gap Down", "price_action", 3, last["High"]))
+            label, obs = _classify_gap("down", h, vol_ratio)
+            observations.append(obs)
+            markers.append(_marker(ts, "aboveBar", "#38bdf8", "circle", label, "price_action", 3, last["High"]))
 
-    if lower_ratio > 0.55 and body_ratio < 0.35:
+    # Pin Bar / Hammer pattern: very small body with single dominant wick (>= 60% of range)
+    if lower_ratio >= 0.6 and body_ratio <= 0.3 and upper_ratio <= 0.2:
+        observations.append("Hammer / bullish pin bar: capitulation wick rejected from below.")
+        markers.append(_marker(ts, "belowBar", "#34d399", "arrowUp", "Hammer", "price_action", 4, last["Low"]))
+    elif lower_ratio > 0.55 and body_ratio < 0.35:
         observations.append("Long lower wick: downside price rejection and possible liquidity sweep defense.")
         markers.append(_marker(ts, "belowBar", "#34d399", "arrowUp", "Rejection", "price_action", 3, last["Low"]))
-    if upper_ratio > 0.55 and body_ratio < 0.35:
+    if upper_ratio >= 0.6 and body_ratio <= 0.3 and lower_ratio <= 0.2:
+        observations.append("Shooting star / bearish pin bar: failed auction rejected from above.")
+        markers.append(_marker(ts, "aboveBar", "#f87171", "arrowDown", "Pin Bar", "price_action", 4, last["High"]))
+    elif upper_ratio > 0.55 and body_ratio < 0.35:
         observations.append("Long upper wick: overhead selling pressure and failed higher auction.")
         markers.append(_marker(ts, "aboveBar", "#f87171", "arrowDown", "Rejection", "price_action", 3, last["High"]))
 
@@ -318,7 +365,13 @@ def _trend_ma(h: pd.DataFrame) -> dict:
     levels: list[dict] = []
     ma_periods = [5, 10, 20, 50, 60, 200, 240]
     ma = {f"ma{p}": close.rolling(p).mean() for p in ma_periods}
+    # Design checklist also names EMA explicitly ("MA / EMA"). Compute the most
+    # common institutional EMAs alongside the SMA matrix so both populations of
+    # systematic traders see their reference lines.
+    ema_periods = [12, 20, 26, 50]
+    ema = {f"ema{p}": close.ewm(span=p, adjust=False).mean() for p in ema_periods}
     latest = {key: _round(series.iloc[-1], 2) if series.notna().any() else None for key, series in ma.items()}
+    latest_ema = {key: _round(series.iloc[-1], 2) if series.notna().any() else None for key, series in ema.items()}
     price = close.iloc[-1]
 
     available_short = [latest.get("ma5"), latest.get("ma10"), latest.get("ma20")]
@@ -338,6 +391,10 @@ def _trend_ma(h: pd.DataFrame) -> dict:
         if value is not None:
             period = key.replace("ma", "")
             levels.append({"type": "moving_average", "label": key.upper(), "price": value, "period": int(period)})
+    for key, value in latest_ema.items():
+        if value is not None:
+            period = key.replace("ema", "")
+            levels.append({"type": "exponential_ma", "label": key.upper(), "price": value, "period": int(period)})
 
     for fast_key, slow_key, label in (("ma5", "ma20", "5/20"), ("ma20", "ma60", "20/60"), ("ma60", "ma200", "60/200")):
         fast = ma[fast_key]
@@ -383,10 +440,19 @@ def _trend_ma(h: pd.DataFrame) -> dict:
         if dynamic_touch >= 2 and price >= latest["ma20"]:
             observations.append("20MA dynamic support has been defended repeatedly in the recent window.")
 
-    metrics = {**latest, "latest_close": _round(price, 2), "price_vs_ma20_pct": None, "bollinger_width_percentile": _round(width_pct, 1)}
+    metrics = {**latest, **latest_ema, "latest_close": _round(price, 2), "price_vs_ma20_pct": None, "bollinger_width_percentile": _round(width_pct, 1)}
     if latest.get("ma20"):
         metrics["price_vs_ma20_pct"] = _round((price / latest["ma20"] - 1) * 100, 2)
+    if latest_ema.get("ema20"):
+        metrics["price_vs_ema20_pct"] = _round((price / latest_ema["ema20"] - 1) * 100, 2)
     metrics["dynamic_support_touches_20ma"] = dynamic_touch
+    # EMA12/26 cross is the canonical Bollinger / MACD-style fast/slow signal
+    if latest_ema.get("ema12") and latest_ema.get("ema26"):
+        ema_fast, ema_slow = latest_ema["ema12"], latest_ema["ema26"]
+        if ema_fast > ema_slow and price > ema_fast:
+            observations.append("EMA12 above EMA26 with price above the faster line; momentum bias up.")
+        elif ema_fast < ema_slow and price < ema_fast:
+            observations.append("EMA12 below EMA26 with price below the faster line; momentum bias down.")
     return _dimension("trend_ma", "computed", observations, metrics=metrics, markers=markers, levels=levels)
 
 
@@ -447,7 +513,24 @@ def _volume_profile(h: pd.DataFrame) -> dict:
                     for i in order[:6]
                     if bucket[i] > 0
                 ]
-                lvn_order = [i for i in np.argsort(bucket) if bucket[i] > 0]
+                # LVN = price vacuums: lowest-volume bins (including zero) inside the
+                # traversed range. Restrict to bins between VAL and VAH so we surface
+                # internal valleys instead of always-empty edge buckets, and tie-break
+                # by distance to the nearest non-zero bin so true vacuum centers beat
+                # zero bins that merely touch a busy cluster.
+                inside_mask = (labels >= val) & (labels <= vah)
+                inside_indices = [i for i in range(len(bucket)) if inside_mask[i]]
+                busy_indices = [i for i in range(len(bucket)) if bucket[i] > 0]
+
+                def _dist_to_busy(idx: int) -> int:
+                    if not busy_indices:
+                        return 0
+                    return min(abs(idx - j) for j in busy_indices)
+
+                lvn_order = sorted(
+                    inside_indices,
+                    key=lambda i: (bucket[i], -_dist_to_busy(i)),
+                )
                 lvn_nodes = [
                     {"price": _round(labels[i], 2), "volume_share": _round(bucket[i] / total * 100, 2)}
                     for i in lvn_order[:4]
@@ -567,6 +650,99 @@ def _momentum(h: pd.DataFrame, pivots: list[dict]) -> dict:
     )
 
 
+def _collapse_same_price_pivots(seq: list[dict]) -> list[dict]:
+    """Collapse consecutive same-price pivots produced by flat plateaus."""
+    out: list[dict] = []
+    for p in seq:
+        if out and abs(out[-1]["price"] - p["price"]) < 1e-6:
+            continue
+        out.append(p)
+    return out
+
+
+def _detect_head_and_shoulders(highs: list[dict], lows: list[dict]) -> Optional[dict]:
+    """Detect classic Head & Shoulders on the latest three swing highs.
+
+    Returns a level dict or None. Inverse H&S uses lows instead.
+    """
+    highs = _collapse_same_price_pivots(highs)
+    lows = _collapse_same_price_pivots(lows)
+    if len(highs) < 3:
+        return None
+    s1, head, s2 = highs[-3], highs[-2], highs[-1]
+    if head["price"] <= max(s1["price"], s2["price"]):
+        return None
+    if abs(s1["price"] / s2["price"] - 1) > 0.05:  # shoulders within 5%
+        return None
+    if (head["price"] - max(s1["price"], s2["price"])) / head["price"] < 0.015:
+        return None  # head not meaningfully higher
+    # Neckline: lowest swing-low between shoulders
+    neckline_candidates = [l for l in lows if s1["index"] < l["index"] < s2["index"]]
+    neckline = min(neckline_candidates, key=lambda l: l["price"]) if neckline_candidates else None
+    return {
+        "type": "head_and_shoulders",
+        "direction": "bearish",
+        "shoulders": [_round(s1["price"], 2), _round(s2["price"], 2)],
+        "head": _round(head["price"], 2),
+        "neckline_price": _round(neckline["price"], 2) if neckline else None,
+        "neckline_time": _time(neckline["time"]) if neckline else None,
+    }
+
+
+def _detect_inverse_head_and_shoulders(highs: list[dict], lows: list[dict]) -> Optional[dict]:
+    highs = _collapse_same_price_pivots(highs)
+    lows = _collapse_same_price_pivots(lows)
+    if len(lows) < 3:
+        return None
+    s1, head, s2 = lows[-3], lows[-2], lows[-1]
+    if head["price"] >= min(s1["price"], s2["price"]):
+        return None
+    if abs(s1["price"] / s2["price"] - 1) > 0.05:
+        return None
+    if (min(s1["price"], s2["price"]) - head["price"]) / max(head["price"], 1e-9) < 0.015:
+        return None
+    neckline_candidates = [hi for hi in highs if s1["index"] < hi["index"] < s2["index"]]
+    neckline = max(neckline_candidates, key=lambda h: h["price"]) if neckline_candidates else None
+    return {
+        "type": "inverse_head_and_shoulders",
+        "direction": "bullish",
+        "shoulders": [_round(s1["price"], 2), _round(s2["price"], 2)],
+        "head": _round(head["price"], 2),
+        "neckline_price": _round(neckline["price"], 2) if neckline else None,
+        "neckline_time": _time(neckline["time"]) if neckline else None,
+    }
+
+
+def _detect_double_top_or_bottom(highs: list[dict], lows: list[dict]) -> Optional[dict]:
+    """Detect a double top / double bottom on the latest two same-kind swings."""
+    highs = _collapse_same_price_pivots(highs)
+    lows = _collapse_same_price_pivots(lows)
+    if len(highs) >= 2:
+        a, b = highs[-2], highs[-1]
+        if abs(a["price"] / b["price"] - 1) <= 0.02 and b["index"] - a["index"] >= 5:
+            # Neckline = lowest low between the two peaks
+            between = [lo for lo in lows if a["index"] < lo["index"] < b["index"]]
+            neckline = min(between, key=lambda lo: lo["price"]) if between else None
+            return {
+                "type": "double_top",
+                "direction": "bearish",
+                "peaks": [_round(a["price"], 2), _round(b["price"], 2)],
+                "neckline_price": _round(neckline["price"], 2) if neckline else None,
+            }
+    if len(lows) >= 2:
+        a, b = lows[-2], lows[-1]
+        if abs(a["price"] / b["price"] - 1) <= 0.02 and b["index"] - a["index"] >= 5:
+            between = [hi for hi in highs if a["index"] < hi["index"] < b["index"]]
+            neckline = max(between, key=lambda hi: hi["price"]) if between else None
+            return {
+                "type": "double_bottom",
+                "direction": "bullish",
+                "valleys": [_round(a["price"], 2), _round(b["price"], 2)],
+                "neckline_price": _round(neckline["price"], 2) if neckline else None,
+            }
+    return None
+
+
 def _structure_geometry(h: pd.DataFrame, pivots: list[dict]) -> dict:
     observations: list[str] = []
     markers: list[dict] = []
@@ -580,16 +756,41 @@ def _structure_geometry(h: pd.DataFrame, pivots: list[dict]) -> dict:
     for p in lows[-3:]:
         levels.append({"type": "support", "price": _round(p["price"], 2), "time": _time(p["time"])})
 
+    # Distinguish BOS (continuation) from ChoCh (first reversal break) per SMC.
+    # Use the slope of the most recent same-kind pivots as the prior trend proxy:
+    #   - prior trend up   : last two highs ascending OR last two lows ascending
+    #   - prior trend down : last two highs descending OR last two lows descending
+    def _trend_proxy() -> str:
+        if len(highs) >= 2 and len(lows) >= 2:
+            if highs[-1]["price"] > highs[-2]["price"] and lows[-1]["price"] > lows[-2]["price"]:
+                return "up"
+            if highs[-1]["price"] < highs[-2]["price"] and lows[-1]["price"] < lows[-2]["price"]:
+                return "down"
+        if len(highs) >= 2 and highs[-1]["price"] > highs[-2]["price"]:
+            return "up"
+        if len(lows) >= 2 and lows[-1]["price"] < lows[-2]["price"]:
+            return "down"
+        return "neutral"
+
+    prior_trend = _trend_proxy()
     if highs:
         prev_high = highs[-1]
         if price > prev_high["price"]:
-            observations.append("BOS above latest swing high: continuation structure break.")
-            markers.append(_marker(h.index[-1], "belowBar", "#22c55e", "arrowUp", "BOS", "structure_geometry", 5, price))
+            if prior_trend == "down":
+                observations.append("ChoCh up: first break of a swing high while the prior structure was bearish; trend character may flip.")
+                markers.append(_marker(h.index[-1], "belowBar", "#22d3ee", "arrowUp", "ChoCh", "structure_geometry", 5, price))
+            else:
+                observations.append("BOS above latest swing high: continuation structure break.")
+                markers.append(_marker(h.index[-1], "belowBar", "#22c55e", "arrowUp", "BOS", "structure_geometry", 5, price))
     if lows:
         prev_low = lows[-1]
         if price < prev_low["price"]:
-            observations.append("BOS below latest swing low: bearish structure break.")
-            markers.append(_marker(h.index[-1], "aboveBar", "#ef4444", "arrowDown", "BOS", "structure_geometry", 5, price))
+            if prior_trend == "up":
+                observations.append("ChoCh down: first break of a swing low while the prior structure was bullish; trend character may flip.")
+                markers.append(_marker(h.index[-1], "aboveBar", "#fb7185", "arrowDown", "ChoCh", "structure_geometry", 5, price))
+            else:
+                observations.append("BOS below latest swing low: bearish structure break.")
+                markers.append(_marker(h.index[-1], "aboveBar", "#ef4444", "arrowDown", "BOS", "structure_geometry", 5, price))
 
     if len(highs) >= 2:
         prior_high = highs[-2]
@@ -604,6 +805,7 @@ def _structure_geometry(h: pd.DataFrame, pivots: list[dict]) -> dict:
             observations.append("S/R flip watch: old swing support is being retested from below.")
             levels.append({"type": "sr_flip_resistance", "price": _round(prior_low["price"], 2), "time": _time(prior_low["time"])})
 
+    support_slope = resistance_slope = None
     if len(lows) >= 2:
         p1, p2 = lows[-2], lows[-1]
         dx = max(p2["index"] - p1["index"], 1)
@@ -616,6 +818,50 @@ def _structure_geometry(h: pd.DataFrame, pivots: list[dict]) -> dict:
         resistance_slope = (p2["price"] - p1["price"]) / dx
         projected = p2["price"] + resistance_slope * (len(h) - 1 - p2["index"])
         levels.append({"type": "trendline", "label": "swing_high_resistance", "price": _round(projected, 2), "slope": _round(resistance_slope, 4)})
+
+    # Parallel channel: when both trendlines have a comparable slope, anchor a
+    # parallel pair using the AVERAGED slope so the upper/lower lines stay
+    # equidistant — that is the actual definition of a channel rather than two
+    # independently-projected trendlines.
+    if support_slope is not None and resistance_slope is not None:
+        avg = (support_slope + resistance_slope) / 2
+        if abs(support_slope - resistance_slope) <= max(abs(avg) * 0.6, 0.05):
+            anchor_low = lows[-1]
+            anchor_high = highs[-1]
+            lower_projection = anchor_low["price"] + avg * (len(h) - 1 - anchor_low["index"])
+            upper_projection = anchor_high["price"] + avg * (len(h) - 1 - anchor_high["index"])
+            levels.append({"type": "channel", "label": "channel_lower", "price": _round(lower_projection, 2), "slope": _round(avg, 4)})
+            levels.append({"type": "channel", "label": "channel_upper", "price": _round(upper_projection, 2), "slope": _round(avg, 4)})
+            if upper_projection > lower_projection:
+                if price >= upper_projection * 0.995:
+                    observations.append("Price tagging the upper parallel channel; supply-side defense expected.")
+                elif price <= lower_projection * 1.005:
+                    observations.append("Price tagging the lower parallel channel; demand-side defense expected.")
+
+    # Named chart patterns: Head & Shoulders, Inverse H&S, Double Top/Bottom
+    hs = _detect_head_and_shoulders(highs, lows)
+    if hs:
+        observations.append(
+            f"Head & Shoulders top: head {hs['head']}, shoulders {hs['shoulders']}, neckline {hs['neckline_price']}."
+        )
+        levels.append(hs)
+        markers.append(_marker(h.index[-1], "aboveBar", "#ef4444", "arrowDown", "H&S", "structure_geometry", 4, hs["head"]))
+    inv_hs = _detect_inverse_head_and_shoulders(highs, lows)
+    if inv_hs:
+        observations.append(
+            f"Inverse Head & Shoulders: head {inv_hs['head']}, shoulders {inv_hs['shoulders']}, neckline {inv_hs['neckline_price']}."
+        )
+        levels.append(inv_hs)
+        markers.append(_marker(h.index[-1], "belowBar", "#22c55e", "arrowUp", "Inv H&S", "structure_geometry", 4, inv_hs["head"]))
+    dtb = _detect_double_top_or_bottom(highs, lows)
+    if dtb:
+        if dtb["direction"] == "bearish":
+            observations.append(f"Double top: peaks {dtb['peaks']}, neckline {dtb['neckline_price']}.")
+            markers.append(_marker(h.index[-1], "aboveBar", "#ef4444", "arrowDown", "Double Top", "structure_geometry", 4, max(dtb['peaks'])))
+        else:
+            observations.append(f"Double bottom: valleys {dtb['valleys']}, neckline {dtb['neckline_price']}.")
+            markers.append(_marker(h.index[-1], "belowBar", "#22c55e", "arrowUp", "Double Btm", "structure_geometry", 4, min(dtb['valleys'])))
+        levels.append(dtb)
 
     if highs and lows:
         swing_high = max(highs[-5:], key=lambda x: x["price"])
@@ -687,7 +933,26 @@ def _volatility_risk(h: pd.DataFrame) -> dict:
     return _dimension("volatility_risk", "computed", observations, metrics=metrics, levels=levels, severity=_severity_from_value(severity_value))
 
 
-def _mtf_derivatives(h: pd.DataFrame, derivatives: Optional[dict]) -> dict:
+def _intraday_trend_direction(h: Optional[pd.DataFrame], lookback: int = 24) -> Optional[str]:
+    """Return 'up' / 'down' / 'flat' from the last `lookback` intraday closes."""
+    if h is None or len(h) < lookback:
+        return None
+    close = h["Close"].tail(lookback)
+    ret = float(close.iloc[-1] / close.iloc[0] - 1)
+    if ret > 0.01:
+        return "up"
+    if ret < -0.01:
+        return "down"
+    return "flat"
+
+
+def _mtf_derivatives(
+    h: pd.DataFrame,
+    derivatives: Optional[dict],
+    *,
+    intraday_1h: Optional[pd.DataFrame] = None,
+    intraday_15m: Optional[pd.DataFrame] = None,
+) -> dict:
     observations: list[str] = []
     close = h["Close"]
     daily_ret = _series_return(close, 20)
@@ -695,6 +960,15 @@ def _mtf_derivatives(h: pd.DataFrame, derivatives: Optional[dict]) -> dict:
     monthly = h.resample("ME").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}).dropna()
     weekly_ret = _series_return(weekly["Close"], 10) if len(weekly) else None
     monthly_ret = _series_return(monthly["Close"], 6) if len(monthly) else None
+
+    # Execution timeframes: 1H / 15M trend direction as design demands
+    dir_1h = _intraday_trend_direction(intraday_1h, lookback=24)  # ~1 trading day of 1H bars
+    dir_15m = _intraday_trend_direction(intraday_15m, lookback=26)  # ~1 trading day of 15M bars
+    if dir_1h:
+        observations.append(f"1H execution timeframe trend: {dir_1h}.")
+    if dir_15m:
+        observations.append(f"15M execution timeframe trend: {dir_15m}.")
+
     alignment = "mixed"
     rets = [x for x in (daily_ret, weekly_ret, monthly_ret) if x is not None]
     if daily_ret is not None and weekly_ret is not None:
@@ -708,6 +982,15 @@ def _mtf_derivatives(h: pd.DataFrame, derivatives: Optional[dict]) -> dict:
             observations.append("Daily and weekly structures are not aligned.")
     else:
         observations.append("Multi-timeframe price aggregation is partial due to limited history.")
+
+    # Cross-timeframe synchronicity check (macro daily/weekly vs micro 1H/15M)
+    micro_signs = [d for d in (dir_1h, dir_15m) if d in {"up", "down"}]
+    if alignment != "mixed" and micro_signs:
+        macro_sign = "up" if alignment == "bullish" else "down"
+        if all(s == macro_sign for s in micro_signs):
+            observations.append("Macro and intraday timeframes synchronized; high-velocity setup window.")
+        elif any(s != macro_sign for s in micro_signs):
+            observations.append("Macro and intraday timeframes diverge; trade entries should wait for re-alignment.")
 
     data_gaps = []
     status = "computed"
@@ -725,7 +1008,25 @@ def _mtf_derivatives(h: pd.DataFrame, derivatives: Optional[dict]) -> dict:
             derivative_notes.append("Funding is stretched; crowded derivatives positioning risk is elevated.")
         if iv_rank is not None and iv_rank >= 80:
             derivative_notes.append("Implied volatility rank is elevated; options market prices a large move.")
+        # Short Squeeze: sharp daily up move + stretched negative funding
+        recent_ret_3d = _series_return(close, 3)
+        if recent_ret_3d is not None and recent_ret_3d >= 6 and funding is not None and funding <= -0.02:
+            derivative_notes.append(
+                f"Short squeeze warning: 3-day return {round(recent_ret_3d, 2)}% with negative funding {round(funding, 4)}."
+            )
+        # OI Accumulation: OI rising fast while ATR percentile compressed
+        if oi_change is not None and oi_change >= 20 and len(h) >= 20:
+            atr = _atr(h)
+            if atr.dropna().size >= 20:
+                latest_atr = _as_float(atr.iloc[-1])
+                pct = float((atr.dropna() <= latest_atr).mean() * 100)
+                if pct <= 30:
+                    derivative_notes.append(
+                        f"OI accumulation: OI up {round(oi_change, 2)}% while ATR sits at the {round(pct, 1)}th percentile."
+                    )
         observations.extend(derivative_notes or ["Derivative payload supplied without extreme OI/funding/IV flags."])
+    if intraday_1h is None and intraday_15m is None:
+        data_gaps.append("Intraday 1H/15M execution-timeframe data unavailable; macro alignment only.")
     return _dimension(
         "mtf_derivatives",
         status,
@@ -735,10 +1036,39 @@ def _mtf_derivatives(h: pd.DataFrame, derivatives: Optional[dict]) -> dict:
             "weekly_10w_return_pct": _round(weekly_ret, 2),
             "monthly_6m_return_pct": _round(monthly_ret, 2),
             "timeframe_alignment": alignment,
+            "intraday_1h_direction": dir_1h,
+            "intraday_15m_direction": dir_15m,
             "derivatives": derivatives or {},
         },
         data_gaps=data_gaps,
     )
+
+
+def _cvd_divergence(cvd_series, price_series) -> Optional[str]:
+    """Compare last two swings of price vs CVD; return 'bearish' / 'bullish' / None."""
+    if cvd_series is None or price_series is None:
+        return None
+    try:
+        cvd = pd.Series([float(v) for _, v in cvd_series])
+        price = pd.Series([float(p) for _, p in price_series])
+    except Exception:
+        return None
+    if len(cvd) < 6 or len(price) < 6 or len(cvd) != len(price):
+        return None
+    # Compare halves: did price make a higher high while CVD didn't? (bearish div)
+    p_first_max = price.iloc[: len(price) // 2].max()
+    p_second_max = price.iloc[len(price) // 2:].max()
+    c_first_max = cvd.iloc[: len(cvd) // 2].max()
+    c_second_max = cvd.iloc[len(cvd) // 2:].max()
+    if p_second_max > p_first_max and c_second_max <= c_first_max:
+        return "bearish"
+    p_first_min = price.iloc[: len(price) // 2].min()
+    p_second_min = price.iloc[len(price) // 2:].min()
+    c_first_min = cvd.iloc[: len(cvd) // 2].min()
+    c_second_min = cvd.iloc[len(cvd) // 2:].min()
+    if p_second_min < p_first_min and c_second_min >= c_first_min:
+        return "bullish"
+    return None
 
 
 def _microstructure(order_flow: Optional[dict]) -> dict:
@@ -763,16 +1093,28 @@ def _microstructure(order_flow: Optional[dict]) -> dict:
             observations.append("Aggressive sell imbalance exceeds 300%; supply forcing block is possible.")
     if cvd_delta is not None:
         observations.append("CVD delta is positive; aggressive buyers dominate." if cvd_delta > 0 else "CVD delta is negative; aggressive sellers dominate.")
+    # CVD vs price divergence when caller supplies parallel timeseries
+    divergence = _cvd_divergence(order_flow.get("cvd_series"), order_flow.get("price_series"))
+    if divergence == "bearish":
+        observations.append("CVD divergence: price prints a higher high while CVD fails to confirm — fragile rally.")
+    elif divergence == "bullish":
+        observations.append("CVD divergence: price prints a lower low while CVD fails to confirm — fading selling pressure.")
     if liquidation_distance is not None and liquidation_distance <= 2:
         observations.append("Nearby liquidation pool is within 2%; price magnet risk is elevated.")
     metrics = {
-        **order_flow,
+        **{k: v for k, v in order_flow.items() if k not in {"cvd_series", "price_series"}},
         "computed_imbalance_ratio": _round(imbalance_ratio, 2),
+        "cvd_divergence": divergence,
     }
     return _dimension("microstructure_orderflow", "computed", observations, metrics=metrics)
 
 
-def _intermarket(h: pd.DataFrame, benchmark_close: Optional[pd.Series]) -> dict:
+def _intermarket(
+    h: pd.DataFrame,
+    benchmark_close: Optional[pd.Series],
+    *,
+    benchmarks: Optional[dict] = None,
+) -> dict:
     if benchmark_close is None or len(benchmark_close.dropna()) < 25:
         return _dimension(
             "intermarket_correlation",
@@ -793,11 +1135,64 @@ def _intermarket(h: pd.DataFrame, benchmark_close: Optional[pd.Series]) -> dict:
     corr60 = aligned["asset"].pct_change().tail(60).corr(aligned["benchmark"].pct_change().tail(60))
     if alpha20 is not None:
         observations.append("Asset is outperforming benchmark over 20 sessions." if alpha20 > 0 else "Asset is underperforming benchmark over 20 sessions.")
+
+    # Multi-benchmark overlay: design names DXY, US10Y, VIX explicitly so we
+    # compute 20-day asset alpha vs each reference that is present.
+    cross_alpha: dict[str, Optional[float]] = {}
+    levels_list: list[dict] = []
+    if benchmarks:
+        for label, series in benchmarks.items():
+            if series is None or len(series.dropna()) < 25:
+                continue
+            ref = series.copy()
+            ref.index = pd.to_datetime(ref.index).tz_localize(None)
+            joined = pd.concat([asset, ref.rename(label)], axis=1).dropna()
+            if len(joined) < 25:
+                continue
+            asset_ret = _series_return(joined["asset"], 20)
+            ref_ret = _series_return(joined[label], 20)
+            if asset_ret is None or ref_ret is None:
+                continue
+            cross_alpha[label] = round(asset_ret - ref_ret, 2)
+        # Sector ratio for Risk-On/Risk-Off (XLK vs XLV) when present
+        xlk = benchmarks.get("xlk")
+        xlv = benchmarks.get("xlv")
+        if xlk is not None and xlv is not None and len(xlk.dropna()) >= 25 and len(xlv.dropna()) >= 25:
+            joined = pd.concat([xlk.rename("xlk"), xlv.rename("xlv")], axis=1).dropna()
+            if len(joined) >= 25:
+                ratio = (joined["xlk"] / joined["xlv"]).dropna()
+                ratio_ma20 = ratio.rolling(20).mean()
+                if len(ratio_ma20.dropna()):
+                    cur = float(ratio.iloc[-1])
+                    avg = float(ratio_ma20.iloc[-1])
+                    regime = "risk_on" if cur > avg else "risk_off"
+                    cross_alpha["xlk_xlv_ratio"] = round(cur, 4)
+                    cross_alpha["xlk_xlv_regime"] = regime
+                    observations.append(
+                        f"XLK/XLV ratio {round(cur, 3)} vs 20-day mean {round(avg, 3)}: {regime.replace('_', ' ')}."
+                    )
+        # VIX context
+        vix = benchmarks.get("vix")
+        if vix is not None and len(vix.dropna()) >= 20:
+            vix_latest = _as_float(vix.iloc[-1])
+            vix_ma20 = float(vix.tail(20).mean())
+            if vix_latest is not None:
+                cross_alpha["vix_latest"] = round(vix_latest, 2)
+                if vix_latest >= max(vix_ma20 * 1.4, 25):
+                    observations.append(f"VIX {round(vix_latest, 2)} elevated vs 20-day mean {round(vix_ma20, 2)}; macro risk-off pressure.")
+
     return _dimension(
         "intermarket_correlation",
         "computed",
         observations,
-        metrics={"asset_20d_return_pct": _round(asset_ret20, 2), "benchmark_20d_return_pct": _round(bench_ret20, 2), "alpha_20d_pct": _round(alpha20, 2), "correlation_60d": _round(corr60, 3)},
+        metrics={
+            "asset_20d_return_pct": _round(asset_ret20, 2),
+            "benchmark_20d_return_pct": _round(bench_ret20, 2),
+            "alpha_20d_pct": _round(alpha20, 2),
+            "correlation_60d": _round(corr60, 3),
+            "cross_benchmarks_20d_alpha": cross_alpha,
+        },
+        levels=levels_list,
     )
 
 
@@ -825,7 +1220,41 @@ def _breadth(breadth: Optional[dict]) -> dict:
     return _dimension("breadth_internals", "computed", observations, metrics=breadth)
 
 
-def _time_cyclical(h: pd.DataFrame, anchors: Optional[list[dict]]) -> dict:
+def _opening_range(intraday_5m: Optional[pd.DataFrame]) -> Optional[dict]:
+    """Compute the first 30-minute Opening Range high/low and cleared direction."""
+    if intraday_5m is None or len(intraday_5m) < 6:
+        return None
+    last_date = intraday_5m.index[-1].date()
+    today = intraday_5m[intraday_5m.index.date == last_date]
+    if len(today) < 6:
+        return None
+    opening = today.iloc[:6]  # 6 × 5min = 30 minutes
+    or_high = float(opening["High"].max())
+    or_low = float(opening["Low"].min())
+    later = today.iloc[6:]
+    cleared = "pending"
+    if len(later):
+        last_close = float(later["Close"].iloc[-1])
+        if last_close > or_high:
+            cleared = "up"
+        elif last_close < or_low:
+            cleared = "down"
+        else:
+            cleared = "inside"
+    return {
+        "or_high": round(or_high, 2),
+        "or_low": round(or_low, 2),
+        "cleared": cleared,
+        "date": last_date.isoformat(),
+    }
+
+
+def _time_cyclical(
+    h: pd.DataFrame,
+    anchors: Optional[list[dict]],
+    *,
+    intraday_5m: Optional[pd.DataFrame] = None,
+) -> dict:
     observations: list[str] = []
     markers: list[dict] = []
     levels: list[dict] = []
@@ -853,14 +1282,25 @@ def _time_cyclical(h: pd.DataFrame, anchors: Optional[list[dict]]) -> dict:
                 observations.append(f"Price is below anchored VWAP from {anchor.get('label', 'anchor')}.")
     if not avwap_values:
         observations.append("AVWAP requires volume history and a valid anchor event.")
+
+    opening_range = _opening_range(intraday_5m)
+    data_gaps = []
+    if opening_range:
+        levels.append({"type": "opening_range_high", "label": "OR High", "price": opening_range["or_high"]})
+        levels.append({"type": "opening_range_low", "label": "OR Low", "price": opening_range["or_low"]})
+        observations.append(
+            f"30-min Opening Range {opening_range['or_low']}–{opening_range['or_high']} (cleared {opening_range['cleared']})."
+        )
+    else:
+        data_gaps.append("Opening range requires intraday 5m session candles for the current trading day.")
     return _dimension(
         "time_cyclical",
-        "computed" if avwap_values else "partial",
+        "computed" if (avwap_values or opening_range) else "partial",
         observations,
-        metrics={"avwap": avwap_values},
+        metrics={"avwap": avwap_values, "opening_range": opening_range},
         markers=markers,
         levels=levels,
-        data_gaps=["Opening range requires intraday session candles."],
+        data_gaps=data_gaps,
     )
 
 
@@ -870,7 +1310,13 @@ def _ratio_distance(value: Optional[float], target: float) -> Optional[float]:
     return abs(value - target) / max(target, 1e-9)
 
 
-def _harmonic_candidate(pivots: list[dict]) -> Optional[dict]:
+def _harmonic_candidate(pivots: list[dict], strict_tolerance: float = 0.05) -> Optional[dict]:
+    """XABCD harmonic candidate with strict ratio tolerance.
+
+    `strict_tolerance` is the maximum allowed average normalized distance
+    between observed ratios and template ratios. Default 0.05 (5%) keeps the
+    classifier from labelling random pivots as Bat/Butterfly/Gartley.
+    """
     if len(pivots) < 5:
         return None
     points = pivots[-5:]
@@ -890,9 +1336,9 @@ def _harmonic_candidate(pivots: list[dict]) -> Optional[dict]:
         "ad_xa": ad / xa,
     }
     templates = {
-        "Gartley": {"ab_xa": 0.618, "ad_xa": 0.786, "cd_bc": 1.414},
-        "Bat": {"ab_xa": 0.45, "ad_xa": 0.886, "cd_bc": 1.618},
-        "Butterfly": {"ab_xa": 0.786, "ad_xa": 1.414, "cd_bc": 1.618},
+        "Gartley": {"ab_xa": 0.618, "bc_ab": 0.382, "ad_xa": 0.786, "cd_bc": 1.272},
+        "Bat":     {"ab_xa": 0.450, "bc_ab": 0.382, "ad_xa": 0.886, "cd_bc": 1.618},
+        "Butterfly": {"ab_xa": 0.786, "bc_ab": 0.382, "ad_xa": 1.272, "cd_bc": 1.618},
     }
     scored = []
     for name, targets in templates.items():
@@ -904,12 +1350,15 @@ def _harmonic_candidate(pivots: list[dict]) -> Optional[dict]:
     if not scored:
         return None
     distance, name = min(scored)
+    # Strict gate: only classify when ALL targeted ratios are within tolerance
+    if distance > strict_tolerance:
+        return None
     direction = "bullish_prz" if d < c else "bearish_prz"
     return {
         "type": "harmonic_candidate",
         "pattern": name,
         "direction": direction,
-        "confidence": _round(max(0.0, 1 - distance), 2),
+        "confidence": _round(max(0.0, 1 - distance / strict_tolerance), 2),
         "ratios": {key: _round(value, 3) for key, value in ratios.items()},
         "prz": _round(d, 2),
         "points": [{"label": label, "kind": p["kind"], "price": _round(p["price"], 2), "time": _time(p["time"])} for label, p in zip("XABCD", points)],
@@ -933,6 +1382,29 @@ def _advanced_geometries(h: pd.DataFrame, pivots: list[dict]) -> dict:
         markers.append(_marker(pd.to_datetime(zone["time"], unit="s"), "inBar", "#a78bfa", "square", "FVG", "advanced_geometries", 3, marker_price))
     if levels:
         observations.append("Fair Value Gaps mapped as three-candle imbalance zones.")
+    # FVG Fill: latest candle re-enters the price range of a previously mapped
+    # FVG → high-probability rebalance event per the design ("price has a high
+    # probability of returning to fill this imbalance range").
+    if len(h) >= 1 and levels:
+        last_bar = h.iloc[-1]
+        for zone in reversed(levels):
+            ztype = zone.get("type", "")
+            if not ztype.endswith("fvg"):
+                continue
+            zlow = _as_float(zone.get("low"))
+            zhigh = _as_float(zone.get("high"))
+            if zlow is None or zhigh is None:
+                continue
+            if last_bar["Low"] <= zhigh and last_bar["High"] >= zlow:
+                direction = "bullish" if ztype == "bullish_fvg" else "bearish"
+                observations.append(
+                    f"FVG fill: latest bar re-entered a {direction} FVG zone {round(zlow, 2)}–{round(zhigh, 2)}."
+                )
+                shape = "arrowUp" if direction == "bullish" else "arrowDown"
+                position = "belowBar" if direction == "bullish" else "aboveBar"
+                color = "#22c55e" if direction == "bullish" else "#ef4444"
+                markers.append(_marker(h.index[-1], position, color, shape, "FVG Fill", "advanced_geometries", 4, (zlow + zhigh) / 2))
+                break
     if len(pivots) >= 5:
         harmonic = _harmonic_candidate(pivots)
         if harmonic:
@@ -1033,9 +1505,15 @@ def _statistical_reversion(h: pd.DataFrame) -> dict:
         {"type": "regression", "label": "+3σ", "price": _round(latest_fit + 3 * sigma, 2)},
         {"type": "regression", "label": "-3σ", "price": _round(latest_fit - 3 * sigma, 2)},
     ]
-    if latest_z >= 2:
+    if latest_z >= 3:
+        observations.append("Severe statistical overextension above +3 sigma; tail-risk mean reversion is the dominant base case.")
+        markers.append(_marker(close.index[-1], "aboveBar", "#dc2626", "arrowDown", "+3σ", "statistical_reversion", 5, close.iloc[-1]))
+    elif latest_z >= 2:
         observations.append("Statistical overextension above +2 sigma; tail-risk mean reversion watch.")
         markers.append(_marker(close.index[-1], "aboveBar", "#f97316", "arrowDown", "+2σ", "statistical_reversion", 4, close.iloc[-1]))
+    elif latest_z <= -3:
+        observations.append("Severe statistical overextension below -3 sigma; capitulation mean reversion is the dominant base case.")
+        markers.append(_marker(close.index[-1], "belowBar", "#2563eb", "arrowUp", "-3σ", "statistical_reversion", 5, close.iloc[-1]))
     elif latest_z <= -2:
         observations.append("Statistical overextension below -2 sigma; capitulation mean reversion watch.")
         markers.append(_marker(close.index[-1], "belowBar", "#38bdf8", "arrowUp", "-2σ", "statistical_reversion", 4, close.iloc[-1]))
@@ -1054,23 +1532,82 @@ def _statistical_reversion(h: pd.DataFrame) -> dict:
 def _macro_wave(h: pd.DataFrame, pivots: list[dict]) -> dict:
     close = h["Close"]
     ma60 = close.rolling(60).mean()
+    vol = h["Volume"].fillna(0) if "Volume" in h.columns else pd.Series(0, index=h.index)
     observations: list[str] = []
     markers: list[dict] = []
     phase = "unknown"
     if ma60.notna().sum() >= 20:
         slope = ma60.iloc[-1] - ma60.iloc[-20]
         price = close.iloc[-1]
-        if price > ma60.iloc[-1] and slope > 0:
+        rel_slope = abs(slope / ma60.iloc[-1]) if ma60.iloc[-1] else 0.0
+        # Flat 60MA wins first: a barely-positive slope must not pre-empt the
+        # range branch, otherwise accumulation/distribution can never resolve.
+        if rel_slope < 0.02:
+            # Range: distinguish accumulation vs distribution by where rising-volume
+            # candles cluster. Accumulation = effort concentrated at the range low;
+            # Distribution = effort concentrated at the range high.
+            window = h.tail(80) if len(h) >= 80 else h
+            if len(window) >= 20 and float(window["Volume"].sum()) > 0:
+                low_band = window["Low"].quantile(0.30)
+                high_band = window["High"].quantile(0.70)
+                vol_w = window["Volume"].fillna(0)
+                close_w = window["Close"]
+                vol_at_lows = float(vol_w[close_w <= low_band].sum())
+                vol_at_highs = float(vol_w[close_w >= high_band].sum())
+                ratio = (vol_at_lows + 1) / (vol_at_highs + 1)
+                if ratio >= 1.3:
+                    phase = "accumulation"
+                    observations.append("Wyckoff heuristic: accumulation phase, range with effort biased to the lows.")
+                elif ratio <= 1 / 1.3:
+                    phase = "distribution"
+                    observations.append("Wyckoff heuristic: distribution phase, range with effort biased to the highs.")
+                else:
+                    phase = "accumulation_or_distribution"
+                    observations.append("Wyckoff heuristic: flat 60MA implies range, accumulation/distribution requires more volume confirmation.")
+            else:
+                phase = "accumulation_or_distribution"
+                observations.append("Wyckoff heuristic: flat 60MA implies range, accumulation/distribution requires volume confirmation.")
+        elif price > ma60.iloc[-1] and slope > 0:
             phase = "markup"
             observations.append("Wyckoff heuristic: markup phase, price above rising 60MA.")
         elif price < ma60.iloc[-1] and slope < 0:
             phase = "markdown"
             observations.append("Wyckoff heuristic: markdown phase, price below falling 60MA.")
-        elif abs(slope / ma60.iloc[-1]) < 0.02:
-            phase = "accumulation_or_distribution"
-            observations.append("Wyckoff heuristic: flat 60MA implies range, accumulation/distribution requires volume confirmation.")
+    wave3_meta = None
     if len(pivots) >= 5:
         observations.append("Five or more pivots available for wave labeling; deterministic Elliott counts should remain advisory.")
+        # Wave 3 Extension heuristic: among the latest 5 pivots, find the
+        # impulse leg (consecutive pivots) with the largest absolute price
+        # excursion. If it is at least 1.6× the next-largest leg AND its
+        # direction matches the current Wyckoff phase, flag as Wave 3 candidate.
+        recent = pivots[-5:]
+        leg_lengths = []
+        for i in range(len(recent) - 1):
+            leg_lengths.append({
+                "start": recent[i],
+                "end": recent[i + 1],
+                "magnitude": abs(recent[i + 1]["price"] - recent[i]["price"]),
+                "direction": "up" if recent[i + 1]["price"] > recent[i]["price"] else "down",
+            })
+        if leg_lengths:
+            leg_lengths.sort(key=lambda x: x["magnitude"], reverse=True)
+            biggest = leg_lengths[0]
+            second = leg_lengths[1]["magnitude"] if len(leg_lengths) > 1 else 0
+            if second > 0 and biggest["magnitude"] / second >= 1.6:
+                wave3_dir = biggest["direction"]
+                phase_dir = "up" if phase == "markup" else ("down" if phase == "markdown" else None)
+                if phase_dir is None or wave3_dir == phase_dir:
+                    wave3_meta = {
+                        "direction": wave3_dir,
+                        "magnitude": _round(biggest["magnitude"], 2),
+                        "ratio_vs_next": _round(biggest["magnitude"] / second, 2),
+                        "start_time": _time(biggest["start"]["time"]),
+                        "end_time": _time(biggest["end"]["time"]),
+                    }
+                    observations.append(
+                        f"Elliott Wave 3 extension candidate: {wave3_dir} impulse {round(biggest['magnitude'], 2)} "
+                        f"is {round(biggest['magnitude'] / second, 2)}× the next-largest leg."
+                    )
     if len(h) >= 80:
         range_window = h.tail(80)
         range_high = float(range_window["High"].quantile(0.92))
@@ -1082,18 +1619,76 @@ def _macro_wave(h: pd.DataFrame, pivots: list[dict]) -> dict:
         if last["High"] > range_high and last["Close"] < range_high:
             observations.append("Wyckoff UTAD heuristic: range high was swept and rejected.")
             markers.append(_marker(h.index[-1], "aboveBar", "#ef4444", "arrowDown", "UTAD", "macro_wave", 5, last["High"]))
-    wave_context = "impulse_candidate" if phase == "markup" and len(pivots) >= 5 else ("corrective_or_distribution" if phase in {"markdown", "accumulation_or_distribution"} else "unconfirmed")
+    if phase == "markup" and len(pivots) >= 5:
+        wave_context = "impulse_candidate"
+    elif phase in {"markdown", "distribution"}:
+        wave_context = "corrective_or_distribution"
+    elif phase == "accumulation":
+        wave_context = "accumulation_base"
+    elif phase == "accumulation_or_distribution":
+        wave_context = "range_undefined"
+    else:
+        wave_context = "unconfirmed"
     return _dimension(
         "macro_wave",
         "computed" if observations else "partial",
         observations or ["Insufficient structure for macro cycle heuristic."],
-        metrics={"wyckoff_phase": phase, "pivot_count": len(pivots), "wave_context": wave_context},
+        metrics={
+            "wyckoff_phase": phase,
+            "pivot_count": len(pivots),
+            "wave_context": wave_context,
+            "wave3_candidate": wave3_meta,
+        },
         markers=markers,
     )
 
 
-def _event_calendar(events: Optional[list[dict]], latest_ts: Optional[pd.Timestamp] = None, h: Optional[pd.DataFrame] = None) -> dict:
+def _detect_whipsaw(intraday_5m: Optional[pd.DataFrame], daily: Optional[pd.DataFrame]) -> Optional[dict]:
+    """Identify an event-day whipsaw: intraday range >> daily baseline + multi-flips."""
+    if intraday_5m is None or daily is None or len(intraday_5m) < 10 or len(daily) < 20:
+        return None
+    last_date = intraday_5m.index[-1].date()
+    today = intraday_5m[intraday_5m.index.date == last_date]
+    if len(today) < 10:
+        return None
+    intraday_range = float(today["High"].max() - today["Low"].min())
+    avg_daily_range = float((daily["High"] - daily["Low"]).tail(20).mean())
+    if avg_daily_range <= 0:
+        return None
+    range_ratio = intraday_range / avg_daily_range
+    # Count direction reversals via 5-bar smoothed sign of close differences
+    diffs = today["Close"].diff().dropna()
+    if len(diffs) < 6:
+        return None
+    smoothed_sign = diffs.rolling(3).mean().dropna().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+    transitions = int((smoothed_sign.diff().abs() == 2).sum())
+    if range_ratio >= 3 and transitions >= 3:
+        return {"range_ratio": round(range_ratio, 2), "direction_flips": transitions, "date": last_date.isoformat()}
+    return None
+
+
+def _event_calendar(
+    events: Optional[list[dict]],
+    latest_ts: Optional[pd.Timestamp] = None,
+    h: Optional[pd.DataFrame] = None,
+    *,
+    intraday_5m: Optional[pd.DataFrame] = None,
+) -> dict:
     if not events:
+        # Whipsaw can still fire on a day without an explicit catalyst payload.
+        whipsaw = _detect_whipsaw(intraday_5m, h)
+        if whipsaw:
+            return _dimension(
+                "event_calendar",
+                "partial",
+                [
+                    f"Data-driven whipsaw flagged for {whipsaw['date']}: intraday range "
+                    f"{whipsaw['range_ratio']}× daily baseline with {whipsaw['direction_flips']} direction flips.",
+                    "No explicit event calendar payload; treat as untagged catalyst.",
+                ],
+                metrics={"whipsaw": whipsaw},
+                data_gaps=["earnings dates", "CPI/FOMC/NFP timestamps", "company-specific catalysts"],
+            )
         return _dimension(
             "event_calendar",
             "unavailable",
@@ -1121,7 +1716,19 @@ def _event_calendar(events: Optional[list[dict]], latest_ts: Optional[pd.Timesta
         prior_range = ((h["High"] - h["Low"]) / h["Close"].replace(0, np.nan)).tail(20).head(15).mean()
         if _as_float(recent_range) and _as_float(prior_range) and recent_range < prior_range * 0.75:
             observations.append("Recent candle ranges compressed into the event window.")
-    return _dimension("event_calendar", "computed", observations, markers=markers, metrics={"event_count": len(events), "days_to_next_event": days_to_next})
+    whipsaw = _detect_whipsaw(intraday_5m, h)
+    if whipsaw:
+        observations.append(
+            f"Data-driven whipsaw on {whipsaw['date']}: intraday range "
+            f"{whipsaw['range_ratio']}× daily baseline with {whipsaw['direction_flips']} direction flips."
+        )
+    return _dimension(
+        "event_calendar",
+        "computed",
+        observations,
+        markers=markers,
+        metrics={"event_count": len(events), "days_to_next_event": days_to_next, "whipsaw": whipsaw},
+    )
 
 
 def _confluence_zones(dimensions: list[dict], latest_price: float) -> list[dict]:
@@ -1171,20 +1778,58 @@ def _add_signal(signals: list[dict], label: str, direction: str, strength: float
     return sign * clipped_strength
 
 
+_MARKER_TEXT_BIAS = {
+    # bullish-meaning markers (final implication, regardless of source dimension)
+    "bull engulf": +1,
+    "bear trap": +1,
+    "spring": +1,
+    "hammer": +1,
+    "sweep": +1,  # bull sweep colour is green; bear sweep handled separately below
+    # bearish-meaning markers
+    "bear engulf": -1,
+    "bull trap": -1,
+    "utad": -1,
+    "pin bar": -1,
+    "climax": -1,
+}
+
+
 def _marker_direction_score(markers: list[dict]) -> float:
+    """Aggregate marker direction without double-counting position+text.
+
+    Rules:
+      - Markers with directional shapes (arrowUp/arrowDown) use the shape as the
+        direction signal scaled by weight.
+      - Markers with neutral shapes (circle/square) fall back to a small explicit
+        text-bias map so we don't infer direction from substring matches that
+        accidentally trigger on words like "bear trap".
+    """
     score = 0.0
     for marker in markers:
         weight = _clip(marker.get("weight", 1), 1, 5) / 3.0
-        text = (marker.get("text") or "").lower()
-        if marker.get("position") == "belowBar" and marker.get("shape") in {"arrowUp", "circle"}:
+        shape = marker.get("shape")
+        text = (marker.get("text") or "").lower().strip()
+        if shape == "arrowUp":
             score += weight
-        elif marker.get("position") == "aboveBar" and marker.get("shape") in {"arrowDown", "circle"}:
+        elif shape == "arrowDown":
             score -= weight
-        if any(term in text for term in ("bull", "spring", "bear trap")):
-            score += 0.7
-        if any(term in text for term in ("bear", "utad", "bull trap")):
-            score -= 0.7
+        else:
+            bias = _MARKER_TEXT_BIAS.get(text)
+            if bias is None:
+                # Try whole-word matching on the bias keys (e.g., "sweep" inside
+                # "Bear Sweep" would otherwise hijack the bullish bias).
+                tokens = set(text.split())
+                for key, sign in _MARKER_TEXT_BIAS.items():
+                    if key in tokens:
+                        bias = sign
+                        break
+            if bias is not None:
+                score += sign_weight(bias, weight)
     return _clip(score, -3.5, 3.5)
+
+
+def sign_weight(sign: int, weight: float) -> float:
+    return weight * (1 if sign > 0 else -1)
 
 
 def _enrich_dimension(dim: dict) -> dict:
@@ -1336,6 +1981,19 @@ def _enrich_dimension(dim: dict) -> dict:
             score += _add_signal(signals, "wyckoff_phase", "bullish", 1.4, "Markup phase heuristic.")
         elif phase == "markdown":
             score += _add_signal(signals, "wyckoff_phase", "bearish", 1.4, "Markdown phase heuristic.")
+        elif phase == "accumulation":
+            score += _add_signal(signals, "wyckoff_phase", "bullish", 0.7, "Range with effort biased to the lows (accumulation).")
+        elif phase == "distribution":
+            score += _add_signal(signals, "wyckoff_phase", "bearish", 0.7, "Range with effort biased to the highs (distribution).")
+        wave3 = metrics.get("wave3_candidate")
+        if wave3 and wave3.get("direction") in {"up", "down"}:
+            score += _add_signal(
+                signals,
+                "wave3_extension",
+                "bullish" if wave3["direction"] == "up" else "bearish",
+                min(1.6, (_as_float(wave3.get("ratio_vs_next")) or 1.6) / 2),
+                "Largest impulse leg dominates the recent pivot stack.",
+            )
         score += _marker_direction_score(enriched.get("markers", []))
     elif dim_id == "event_calendar":
         days_to_next = _as_float(metrics.get("days_to_next_event"))
@@ -1544,6 +2202,10 @@ def build_technical_matrix(
     history: pd.DataFrame,
     *,
     benchmark_close: Optional[pd.Series] = None,
+    benchmarks: Optional[dict] = None,
+    intraday_1h: Optional[pd.DataFrame] = None,
+    intraday_15m: Optional[pd.DataFrame] = None,
+    intraday_5m: Optional[pd.DataFrame] = None,
     events: Optional[list[dict]] = None,
     derivatives: Optional[dict] = None,
     order_flow: Optional[dict] = None,
@@ -1558,6 +2220,9 @@ def build_technical_matrix(
     if len(h) < 2:
         raise ValueError("not enough OHLC history")
     pivots = _find_pivots(h)
+    intraday_1h = _clean_history(intraday_1h) if intraday_1h is not None and len(intraday_1h) else None
+    intraday_15m = _clean_history(intraday_15m) if intraday_15m is not None and len(intraday_15m) else None
+    intraday_5m = _clean_history(intraday_5m) if intraday_5m is not None and len(intraday_5m) else None
     dimensions = [
         _price_action(h, pivots),
         _trend_ma(h),
@@ -1565,17 +2230,17 @@ def build_technical_matrix(
         _momentum(h, pivots),
         _structure_geometry(h, pivots),
         _volatility_risk(h),
-        _mtf_derivatives(h, derivatives),
+        _mtf_derivatives(h, derivatives, intraday_1h=intraday_1h, intraday_15m=intraday_15m),
         _microstructure(order_flow),
-        _intermarket(h, benchmark_close),
+        _intermarket(h, benchmark_close, benchmarks=benchmarks),
         _breadth(breadth),
-        _time_cyclical(h, anchors),
+        _time_cyclical(h, anchors, intraday_5m=intraday_5m),
         _advanced_geometries(h, pivots),
         _options_gex(options_profile),
         _order_book(order_book),
         _statistical_reversion(h),
         _macro_wave(h, pivots),
-        _event_calendar(events, h.index[-1], h),
+        _event_calendar(events, h.index[-1], h, intraday_5m=intraday_5m),
     ]
     dimensions = [_enrich_dimension(dim) for dim in dimensions]
     markers = [marker for dim in dimensions for marker in dim.get("markers", [])]

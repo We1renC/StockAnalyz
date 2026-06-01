@@ -81,17 +81,35 @@
 已建置：
 
 1. `technical_matrix.py`
-2. `/api/technical-matrix/{symbol}`
-3. `/api/technical-matrix/{symbol}/snapshot`
+2. `/api/technical-matrix/{symbol}`（HTTP 4xx/5xx 錯誤碼 + 5 分鐘 TTL cache）
+3. `/api/technical-matrix/{symbol}/snapshot`（snapshot 強制 bypass cache）
 4. K 線圖 marker 繪製與維度篩選
-5. 17 維矩陣詳情面板
+5. 17 維矩陣詳情面板（執行計畫進場/停損/停利分組顯示）
 6. Obsidian 技術矩陣快照與索引
-7. 單元測試
+7. 單元測試（含 LVN/ChoCh/Gap/Wyckoff/Marker 5 項新行為驗證）
 8. 設計文件與 skill 管理入口
 
-仍需下一階段建置：
+方法論增補（對齊設計檔）：
 
-1. 外部資料 feed 實際接入：options/GEX、breadth、event calendar、order-flow/order-book 目前已保留 payload 入口，尚未接供應商。
-2. 更嚴格 harmonic classifier 與 Elliott/Wyckoff 狀態機。
-3. Intraday opening range 與 session box 繪製。
-4. VPVR 改用真實 intrabar volume distribution。
+- **I Price Action**：Gap 細分 Breakaway / Runaway / Exhaustion；Hammer 與 Shooting Star/Pin Bar 從泛 rejection 中拆出。
+- **II Trend & MA**：補 EMA12/20/26/50 與 EMA12/26 cross 觀察，與 SMA 並列出 metrics + levels。
+- **III Volume Profile**：LVN 取值域內最低量箱（包含 0 量箱）並以「離 busy bin 距離」做 tie-break，真正反映價格真空。
+- **V Structure**：BOS 與 ChoCh 分流（前一段同向結構被首次反向破壞時 ChoCh）；補平行通道（取支撐/壓力平均斜率）；補 Head & Shoulders、Inverse H&S、Double Top/Bottom 命名形態辨識。
+- **VII MTF**：接 yfinance 1H/15M intraday，輸出 `intraday_1h_direction`、`intraday_15m_direction` 與 macro-vs-micro 對齊觀察；當 derivatives payload 提供時偵測 Short Squeeze（3D +6% + funding ≤ -2%）與 OI Accumulation（OI ≥ +20% + ATR ≤ 30th percentile）。
+- **VIII Microstructure**：當 payload 提供 `price_series` + `cvd_series` 時，比對半段 HH/LL 偵測 CVD 發散。
+- **IX Intermarket**：抓多 benchmark（^TWII/^GSPC/DX-Y.NYB/^TNX/^VIX/XLK/XLV），輸出每一檔的 20D alpha；XLK/XLV ratio 解析 Risk-On/Risk-Off；VIX 提供 macro stress 觀察。
+- **XI Time**：用當日 1m/5m intraday 計算 30 分鐘 Opening Range high/low 與 cleared direction。
+- **XII Advanced**：harmonic 容差收緊到 5%、ABCD 全四 ratio 同時驗證；FVG fill 在現價回到歷史 FVG 區間時觸發 marker + observation。
+- **XV Statistical**：±2σ marker 保留 + 補 ±3σ 嚴重 tail-risk marker / observation。
+- **XVI Macro Wave**：Wyckoff 區分 accumulation / distribution；新增 Wave 3 Extension 候選辨識（5 樞紐中最大幅 leg 達次幅 1.6× 且方向與 phase 一致）。
+- **XVII Event**：當日 5m intraday 可用時，偵測 Data-Driven Whipsaw（intraday range ≥ 3× 日平均 + 至少 3 次方向反轉），事件 payload 缺也能 fallback 報出 untagged whipsaw。
+- **Enrichment**：Marker 方向計分箭頭形狀走 position-based；圓形/方形回退到顯式 text bias 對照表；Wave3 候選注入 macro_wave score。
+
+仍需外部 feed（已誠實標 unavailable + data_gaps）：
+
+1. **Microstructure**：tick prints / aggressive buy-sell classification / CVD 完整序列 / liquidation heatmap
+2. **Breadth**：A/D Line、% above 50MA/200MA 真實計算需要 index 成分股
+3. **Options & GEX**：完整選擇權鏈、gamma by strike、expiration calendar
+4. **Order Book**：Level 2/3 snapshots、historical resting liquidity
+5. **Event Calendar**：earnings dates、CPI/FOMC/NFP 時間戳
+6. **True intrabar VPVR**（用 close-price approximation 中）
