@@ -486,6 +486,256 @@ def fetch_intraday_history(symbol: str, period: str, interval: str) -> pd.DataFr
     except Exception:
         return pd.DataFrame()
 
+
+_TW_BREADTH_CACHE: dict[str, tuple[float, dict]] = {}
+_TW_BREADTH_TTL = 3600  # breadth updates once per trading day
+
+
+def _bs_gamma(spot: float, strike: float, iv: float, days_to_expiry: float, rate: float = 0.045) -> float:
+    """Black-Scholes gamma (same for calls and puts).
+
+    gamma = N'(d1) / (S * sigma * sqrt(T))
+    where N'(d1) = (1/sqrt(2π)) * exp(-d1²/2)
+    """
+    if spot <= 0 or strike <= 0 or iv <= 0 or days_to_expiry <= 0:
+        return 0.0
+    T = days_to_expiry / 365.0
+    sigma_sqrt_T = iv * math.sqrt(T)
+    if sigma_sqrt_T == 0:
+        return 0.0
+    d1 = (math.log(spot / strike) + (rate + 0.5 * iv ** 2) * T) / sigma_sqrt_T
+    pdf = math.exp(-0.5 * d1 * d1) / math.sqrt(2 * math.pi)
+    return pdf / (spot * sigma_sqrt_T)
+
+
+def fetch_us_options_profile(symbol: str) -> Optional[dict]:
+    """Build an options/GEX payload from the nearest yfinance expiration.
+
+    Returns the payload shape consumed by `_options_gex`:
+        spot, gamma_flip, gamma_wall, max_pain, gamma_regime, expiration
+
+    Returns None when the ticker has no listed options or the chain pull fails.
+    Caller is responsible for restricting use to US tickers; TW listings have
+    no public option chain via yfinance.
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        expirations = ticker.options
+        if not expirations:
+            return None
+        # Pick the nearest expiration with at least 7 days to live so gamma
+        # exposure has signal; same-day expiries collapse to zero gamma.
+        today = datetime.now().date()
+        chosen = None
+        for exp_str in expirations:
+            try:
+                exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            days = (exp_date - today).days
+            if days >= 7:
+                chosen = (exp_str, days)
+                break
+        if chosen is None:
+            return None
+        exp_str, days_to_expiry = chosen
+        chain = ticker.option_chain(exp_str)
+        calls = chain.calls
+        puts = chain.puts
+        if calls is None or puts is None or calls.empty or puts.empty:
+            return None
+        spot = _safe_float(ticker.fast_info.get("last_price")) if hasattr(ticker, "fast_info") else None
+        if spot is None:
+            hist = ticker.history(period="2d")
+            spot = float(hist["Close"].iloc[-1]) if len(hist) else None
+        if spot is None or spot <= 0:
+            return None
+        # Per-strike: dealer gamma exposure (calls positive, puts negative)
+        # convention assumes market makers are short calls / long puts on net.
+        contract_multiplier = 100  # standard equity option
+        strikes: dict[float, dict] = {}
+        for _, row in calls.iterrows():
+            strike = _safe_float(row.get("strike"))
+            iv = _safe_float(row.get("impliedVolatility"))
+            oi = _safe_float(row.get("openInterest"))
+            if not strike or iv is None or iv <= 0 or oi is None:
+                continue
+            g = _bs_gamma(spot, strike, iv, days_to_expiry)
+            strikes.setdefault(strike, {"call_gex": 0.0, "put_gex": 0.0, "call_oi": 0, "put_oi": 0, "call_value": 0.0, "put_value": 0.0})
+            strikes[strike]["call_gex"] += g * oi * contract_multiplier * spot
+            strikes[strike]["call_oi"] += int(oi)
+            strikes[strike]["call_value"] += max(spot - strike, 0) * oi * contract_multiplier
+        for _, row in puts.iterrows():
+            strike = _safe_float(row.get("strike"))
+            iv = _safe_float(row.get("impliedVolatility"))
+            oi = _safe_float(row.get("openInterest"))
+            if not strike or iv is None or iv <= 0 or oi is None:
+                continue
+            g = _bs_gamma(spot, strike, iv, days_to_expiry)
+            strikes.setdefault(strike, {"call_gex": 0.0, "put_gex": 0.0, "call_oi": 0, "put_oi": 0, "call_value": 0.0, "put_value": 0.0})
+            strikes[strike]["put_gex"] -= g * oi * contract_multiplier * spot
+            strikes[strike]["put_oi"] += int(oi)
+            strikes[strike]["put_value"] += max(strike - spot, 0) * oi * contract_multiplier
+        if not strikes:
+            return None
+        sorted_strikes = sorted(strikes.keys())
+        net_gex_by_strike = [(k, strikes[k]["call_gex"] + strikes[k]["put_gex"]) for k in sorted_strikes]
+        # Gamma flip: highest strike where cumulative dealer gamma crosses zero
+        cumulative = 0.0
+        flip_strike = None
+        for strike, gex in net_gex_by_strike:
+            cumulative += gex
+            if flip_strike is None and cumulative >= 0:
+                flip_strike = strike
+        # Gamma wall: strike with the largest absolute net GEX
+        gamma_wall = max(net_gex_by_strike, key=lambda x: abs(x[1]))[0] if net_gex_by_strike else None
+        # Max pain: strike that minimises (call intrinsic + put intrinsic) total
+        pain_by_strike = {
+            k: strikes[k]["call_value"] + strikes[k]["put_value"]
+            for k in sorted_strikes
+        }
+        max_pain = min(pain_by_strike, key=pain_by_strike.get) if pain_by_strike else None
+        total_net = sum(g for _, g in net_gex_by_strike)
+        regime = "positive" if total_net >= 0 else "negative"
+        return {
+            "spot": round(spot, 2),
+            "expiration": exp_str,
+            "days_to_expiry": days_to_expiry,
+            "gamma_flip": round(flip_strike, 2) if flip_strike else None,
+            "gamma_wall": round(gamma_wall, 2) if gamma_wall else None,
+            "max_pain": round(max_pain, 2) if max_pain else None,
+            "gamma_regime": regime,
+            "net_gex_total": round(total_net, 2),
+            "source": "yfinance_option_chain",
+        }
+    except Exception:
+        return None
+
+
+def fetch_tw_order_book_snapshot(symbol: str) -> Optional[dict]:
+    """Pull the latest 5-level bid/ask snapshot for a TW listing.
+
+    Returns an `order_book` payload (bids/asks as price+size dicts) that the
+    XIV dimension consumes, or None on any failure.
+    """
+    channel = _twse_channel(symbol)
+    if not channel:
+        return None
+    query = urlencode({
+        "ex_ch": channel,
+        "json": "1",
+        "delay": "0",
+        "_": int(datetime.now().timestamp() * 1000),
+    })
+    req = Request(
+        f"{TWSE_MIS_URL}?{query}",
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://mis.twse.com.tw/stock/index.jsp",
+        },
+    )
+    try:
+        with urlopen(req, timeout=8, context=SSL_CONTEXT) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return None
+    msg_array = payload.get("msgArray") or []
+    if not msg_array:
+        return None
+    row = msg_array[0]
+
+    def _parse_levels(price_field: str, size_field: str) -> list[dict]:
+        prices = [p for p in (row.get(price_field) or "").split("_") if p and p != "-"]
+        sizes = [s for s in (row.get(size_field) or "").split("_") if s and s != "-"]
+        out = []
+        for p, s in zip(prices, sizes):
+            price = _safe_float(p)
+            size = _safe_float(s)
+            if price is None or size is None:
+                continue
+            out.append({"price": price, "size": size})
+        return out
+
+    bids = _parse_levels("b", "g")
+    asks = _parse_levels("a", "f")
+    if not bids and not asks:
+        return None
+    return {
+        "bids": bids,
+        "asks": asks,
+        "as_of_ts": row.get("tlong") or row.get("t"),
+        "source": "twse_5level",
+    }
+
+
+def fetch_tw_breadth() -> Optional[dict]:
+    """Pull today's TWSE advance/decline counts from the public MI_INDEX feed.
+
+    Returns {advancing, declining, unchanged, untraded} for use as a breadth
+    payload, or None on any failure. Cached for an hour because the upstream
+    value changes only at the daily close.
+    """
+    cache_key = "twse"
+    entry = _TW_BREADTH_CACHE.get(cache_key)
+    if entry and time.time() < entry[0]:
+        return entry[1]
+    today = datetime.now().strftime("%Y%m%d")
+    url = (
+        "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
+        f"?date={today}&type=MS&response=json"
+    )
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urlopen(req, timeout=8, context=SSL_CONTEXT) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return None
+    counts = {"advancing": None, "declining": None, "unchanged": None, "untraded": None}
+    # TWSE wraps the breadth table under `tables` (new API) or `data*` (legacy).
+    tables = payload.get("tables") or []
+    for table in tables:
+        title = (table.get("title") or "").replace(" ", "")
+        if "漲跌證券數" not in title and "漲跌統計" not in title:
+            continue
+        for row in table.get("data") or []:
+            if not row:
+                continue
+            label = (row[0] or "").replace(" ", "")
+            try:
+                # Row format: [類別, 整體上漲, 整體下跌, 整體持平, 整體未成交]
+                if "整體" in label and "市場" in label:
+                    counts["advancing"] = _safe_float(str(row[1]).replace(",", ""))
+                    counts["declining"] = _safe_float(str(row[2]).replace(",", ""))
+                    counts["unchanged"] = _safe_float(str(row[3]).replace(",", ""))
+            except Exception:
+                continue
+    if counts["advancing"] is None or counts["declining"] is None:
+        # Legacy schema fallback
+        for key in ("data1", "data2", "data3", "data"):
+            table = payload.get(key)
+            if not isinstance(table, list):
+                continue
+            for row in table:
+                if not row or "整體" not in str(row[0] or ""):
+                    continue
+                try:
+                    counts["advancing"] = _safe_float(str(row[1]).replace(",", ""))
+                    counts["declining"] = _safe_float(str(row[2]).replace(",", ""))
+                    counts["unchanged"] = _safe_float(str(row[3]).replace(",", ""))
+                except Exception:
+                    continue
+    if counts["advancing"] is None or counts["declining"] is None:
+        return None
+    breadth = {
+        "advancing": int(counts["advancing"]),
+        "declining": int(counts["declining"]),
+        "unchanged": int(counts["unchanged"] or 0),
+        "as_of_date": today,
+        "source": "twse_mi_index",
+    }
+    _TW_BREADTH_CACHE[cache_key] = (time.time() + _TW_BREADTH_TTL, breadth)
+    return breadth
+
 def _normalize_history_index(h: pd.DataFrame) -> pd.DataFrame:
     if len(h) == 0:
         return h
@@ -1924,11 +2174,11 @@ def api_history(symbol: str, period: str = "6mo"):
 # In-process TTL cache for technical matrix payloads. fetch_history +
 # fetch_benchmark_close are the slow part; reusing for 5 minutes mirrors the
 # monitor loop cadence so UI re-opens during a single cycle are near-instant.
-_TECH_MATRIX_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+_TECH_MATRIX_CACHE: dict[tuple, tuple[float, dict]] = {}
 _TECH_MATRIX_TTL_SECONDS = 300
 
 
-def _tech_matrix_cache_get(key: tuple[str, str]) -> Optional[dict]:
+def _tech_matrix_cache_get(key: tuple) -> Optional[dict]:
     entry = _TECH_MATRIX_CACHE.get(key)
     if not entry:
         return None
@@ -1939,15 +2189,21 @@ def _tech_matrix_cache_get(key: tuple[str, str]) -> Optional[dict]:
     return payload
 
 
-def _tech_matrix_cache_set(key: tuple[str, str], payload: dict) -> None:
-    _TECH_MATRIX_CACHE[(key)] = (time.time() + _TECH_MATRIX_TTL_SECONDS, payload)
+def _tech_matrix_cache_set(key: tuple, payload: dict) -> None:
+    _TECH_MATRIX_CACHE[key] = (time.time() + _TECH_MATRIX_TTL_SECONDS, payload)
 
 
 @app.get("/api/technical-matrix/{symbol}")
-def api_technical_matrix(symbol: str, period: str = "1y"):
-    """17-dimensional technical matrix with chart markers."""
+def api_technical_matrix(symbol: str, period: str = "1y", include_history_markers: bool = False):
+    """17-dimensional technical matrix with chart markers.
+
+    Pass include_history_markers=true to backfill high-value markers across
+    every bar in the requested period (engulfing, hammer, pin bar, sweep,
+    trap, BOS/ChoCh, RSI divergence, ±2σ/±3σ, vol spike/absorb). Off by
+    default to keep the chart uncluttered.
+    """
     try:
-        matrix = _build_technical_matrix_payload(symbol, period)
+        matrix = _build_technical_matrix_payload(symbol, period, include_history_markers=include_history_markers)
         return sanitize_float_values(matrix)
     except ValueError as e:
         raise HTTPException(404, str(e))
@@ -1956,14 +2212,14 @@ def api_technical_matrix(symbol: str, period: str = "1y"):
 
 
 @app.post("/api/technical-matrix/{symbol}/snapshot")
-def api_technical_matrix_snapshot(symbol: str, period: str = "1y"):
+def api_technical_matrix_snapshot(symbol: str, period: str = "1y", include_history_markers: bool = False):
     """Build and save a 17-dimensional technical matrix snapshot to Obsidian."""
     vault = _get_vault()
     if not vault:
         raise HTTPException(400, "obsidian_vault_path 未設定或路徑不存在")
     try:
         # Snapshot writes a fresh matrix to disk; bypass cache for accuracy.
-        matrix = _build_technical_matrix_payload(symbol, period, use_cache=False)
+        matrix = _build_technical_matrix_payload(symbol, period, use_cache=False, include_history_markers=include_history_markers)
         note_path = _obsidian_write_technical_matrix(vault, matrix)
         return sanitize_float_values({
             "ok": True,
@@ -1977,8 +2233,14 @@ def api_technical_matrix_snapshot(symbol: str, period: str = "1y"):
         raise HTTPException(500, str(e))
 
 
-def _build_technical_matrix_payload(symbol: str, period: str, *, use_cache: bool = True) -> dict:
-    key = (symbol, period)
+def _build_technical_matrix_payload(
+    symbol: str,
+    period: str,
+    *,
+    use_cache: bool = True,
+    include_history_markers: bool = False,
+) -> dict:
+    key = (symbol, period, include_history_markers)
     if use_cache:
         cached = _tech_matrix_cache_get(key)
         if cached is not None:
@@ -2006,6 +2268,14 @@ def _build_technical_matrix_payload(symbol: str, period: str, *, use_cache: bool
     intraday_1h = fetch_intraday_history(symbol, period="30d", interval="1h")
     intraday_15m = fetch_intraday_history(symbol, period="14d", interval="15m")
     intraday_5m_today = fetch_intraday_history(symbol, period="1d", interval="5m")
+    # TW-specific free payloads: breadth from MI_INDEX and 5-level order book
+    # snapshot from mis.twse. US symbols stay on the unavailable path because
+    # we have no comparable free feed.
+    breadth = fetch_tw_breadth() if _twse_channel(symbol) else None
+    order_book = fetch_tw_order_book_snapshot(symbol) if _twse_channel(symbol) else None
+    # US options chain via yfinance; TW listings rarely have public chains so
+    # we skip them to avoid pointless network calls.
+    options_profile = fetch_us_options_profile(symbol) if not _twse_channel(symbol) else None
     payload = build_technical_matrix(
         symbol,
         h,
@@ -2015,6 +2285,10 @@ def _build_technical_matrix_payload(symbol: str, period: str, *, use_cache: bool
         intraday_1h=intraday_1h,
         intraday_15m=intraday_15m,
         intraday_5m=intraday_5m_today,
+        breadth=breadth,
+        order_book=order_book,
+        options_profile=options_profile,
+        include_history_markers=include_history_markers,
         source=source or "history",
     )
     payload["analysis_context"]["context_source"] = context_source or source or "history"
@@ -2122,7 +2396,7 @@ def api_update_position(pid: int, p: PositionUpdate):
     updates = []
     params = []
     
-    set_fields = p.dict(exclude_unset=True)
+    set_fields = p.model_dump(exclude_unset=True)
     for field in ("shares", "cost_price", "name", "category", "currency", "purchase_date", "target_entry", "target_profit", "target_stop"):
         if field in set_fields:
             updates.append(f"{field}=?")
@@ -2186,7 +2460,7 @@ def api_update_watch(wid: int, w: WatchUpdate):
         raise HTTPException(404, "Watchlist item not found")
     updates = []
     params = []
-    set_fields = w.dict(exclude_unset=True)
+    set_fields = w.model_dump(exclude_unset=True)
     for field in ("name", "category", "currency", "target_entry", "target_add",
                   "target_profit", "target_stop", "notes"):
         if field in set_fields:

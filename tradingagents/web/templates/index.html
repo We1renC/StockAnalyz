@@ -2555,6 +2555,7 @@ let _chartVolSeries = null;
 let _diagRefreshTimer = null;
 let _technicalMatrix = null;
 let _technicalMarkerFilter = 'all';
+let _includeHistoryMarkers = false;
 let _chartLastPeriod = '6mo';
 let _intradayChart = null;
 let _intradaySeries = null;
@@ -3349,6 +3350,32 @@ function setTechnicalMarkerFilter(dimId) {
   renderTechnicalMatrixPanel(_technicalMatrix);
 }
 
+async function toggleHistoryMarkers(enabled) {
+  _includeHistoryMarkers = !!enabled;
+  if (!_currentSymbol) return;
+  const status = $('technical-matrix-save-status');
+  if (status) {
+    status.textContent = enabled ? '回填歷史標記中...' : '切回當前標記...';
+    status.style.color = '#94a3b8';
+  }
+  try {
+    const period = $('chart-period').value;
+    await drawChart(_currentSymbol, period, false);
+    if (status) {
+      const count = (_technicalMatrix && _technicalMatrix.marker_summary && _technicalMatrix.marker_summary.history_backfill) || 0;
+      status.textContent = enabled
+        ? `已開啟歷史標記，回填 ${count} 個`
+        : '歷史標記已關閉';
+      status.style.color = '#34d399';
+    }
+  } catch (e) {
+    if (status) {
+      status.textContent = '切換失敗：' + e;
+      status.style.color = '#ef4444';
+    }
+  }
+}
+
 function renderPlanItems(items, emptyText, accentClass) {
   if (!items || !items.length) return `<span class="text-slate-500 text-[11px]">${emptyText}</span>`;
   return items.slice(0, 3).map(item => `
@@ -3423,6 +3450,10 @@ function renderTechnicalMatrixPanel(matrix) {
       <span class="text-slate-500 tabular-nums">風險 ${escHtml(technicalSeverityLabel(summary.risk_level || '—'))}</span>
       <span class="text-slate-500 tabular-nums">信心 ${fmt(summary.confidence, 2)}</span>
       <button onclick="setTechnicalMarkerFilter('all')" class="btn-secondary text-xs ml-auto" style="padding:2px 8px">全部標記</button>
+      <label class="flex items-center gap-1 text-[11px] text-slate-300 cursor-pointer select-none" title="開啟後會把吞噬/Hammer/Sweep/BOS/ChoCh/RSI Div/±2σ/±3σ 等歷史出現點都標到圖上">
+        <input type="checkbox" id="technical-history-toggle" onchange="toggleHistoryMarkers(this.checked)" ${_includeHistoryMarkers ? 'checked' : ''}>
+        歷史標記
+      </label>
       <button onclick="saveTechnicalMatrixSnapshot(this)" class="btn-secondary text-xs" style="padding:2px 8px">保存快照</button>
     </div>
     <div class="mt-2 grid grid-cols-3 md:grid-cols-6 gap-2 text-[11px] text-slate-400">
@@ -3453,7 +3484,7 @@ async function saveTechnicalMatrixSnapshot(btn) {
   try {
     const chartPeriod = $('chart-period').value;
     const period = matrixPeriodForChartPeriod(chartPeriod);
-    const r = await fetch(`/api/technical-matrix/${encodeURIComponent(_currentSymbol)}/snapshot?period=${period}`, { method: 'POST' }).then(r => r.json());
+    const r = await fetch(`/api/technical-matrix/${encodeURIComponent(_currentSymbol)}/snapshot?period=${period}&include_history_markers=${_includeHistoryMarkers ? 'true' : 'false'}`, { method: 'POST' }).then(r => r.json());
     if (r.ok) {
       if (status) {
         status.textContent = `已保存：${r.obsidian_path}`;
@@ -3496,7 +3527,7 @@ async function drawChart(symbol, period, isRefresh = false) {
     const matrixPeriod = matrixPeriodForChartPeriod(period);
     const [r, matrix] = await Promise.all([
       fetch(`/api/history/${encodeURIComponent(symbol)}?period=${period}`).then(r=>r.json()),
-      fetch(`/api/technical-matrix/${encodeURIComponent(symbol)}?period=${matrixPeriod}`).then(r=>r.json()).catch(() => null),
+      fetch(`/api/technical-matrix/${encodeURIComponent(symbol)}?period=${matrixPeriod}&include_history_markers=${_includeHistoryMarkers ? 'true' : 'false'}`).then(r=>r.json()).catch(() => null),
     ]);
     if (r.error) {
       if (!isRefresh) {

@@ -1222,6 +1222,26 @@ def _breadth(breadth: Optional[dict]) -> dict:
     above_50 = _as_float(breadth.get("percent_above_50ma") or breadth.get("above_50ma_pct"))
     above_200 = _as_float(breadth.get("percent_above_200ma") or breadth.get("above_200ma_pct"))
     ad_divergence = breadth.get("ad_line_divergence") or breadth.get("breadth_divergence")
+    # Native A/D ratio + cumulative line when caller supplies advancing/declining counts
+    up = _as_float(breadth.get("advancing"))
+    down = _as_float(breadth.get("declining"))
+    ad_ratio = None
+    if up is not None and down is not None and down:
+        ad_ratio = up / down
+        if ad_ratio >= 3:
+            observations.append(f"A/D ratio {round(ad_ratio, 2)} — broad-market thrust (advancers >> decliners).")
+        elif ad_ratio <= 1 / 3:
+            observations.append(f"A/D ratio {round(ad_ratio, 2)} — broad-market capitulation (decliners >> advancers).")
+        else:
+            observations.append(f"A/D ratio {round(ad_ratio, 2)} — neutral breadth.")
+    ad_line_series = breadth.get("ad_line_series") or breadth.get("ad_line")
+    ad_line_slope = None
+    if isinstance(ad_line_series, list) and len(ad_line_series) >= 5:
+        recent = [float(x) for _, x in ad_line_series[-5:]] if isinstance(ad_line_series[0], (list, tuple)) else [float(x) for x in ad_line_series[-5:]]
+        if len(recent) >= 2:
+            ad_line_slope = recent[-1] - recent[0]
+            if ad_line_slope < 0 and (above_50 is None or above_50 > 50):
+                observations.append("Cumulative A/D Line is rolling over while index breadth remains elevated — hollow prosperity warning.")
     if above_50 is not None:
         if above_50 >= 85:
             observations.append("Percent above 50MA is above 85%; broad-market overbought risk is active.")
@@ -1231,7 +1251,8 @@ def _breadth(breadth: Optional[dict]) -> dict:
         observations.append("Long-term breadth is structurally weak; index rallies may be narrow.")
     if ad_divergence:
         observations.append(f"A/D breadth divergence flagged: {ad_divergence}.")
-    return _dimension("breadth_internals", "computed", observations, metrics=breadth)
+    metrics = {**breadth, "ad_ratio": _round(ad_ratio, 2), "ad_line_slope": _round(ad_line_slope, 2)}
+    return _dimension("breadth_internals", "computed", observations, metrics=metrics)
 
 
 def _opening_range(intraday_5m: Optional[pd.DataFrame]) -> Optional[dict]:
@@ -2059,6 +2080,157 @@ def _collect_levels(dimensions: list[dict]) -> list[dict]:
     return levels
 
 
+def _scan_history_markers(h: pd.DataFrame, pivots: list[dict]) -> list[dict]:
+    """Backfill high-value markers by walking every bar.
+
+    Scope is intentionally conservative: only patterns where seeing repeated
+    historical occurrences adds context to chart reading. Each bar is judged
+    in isolation against pre-computed series — the same condition rules used
+    on the latest bar elsewhere, only re-applied across history.
+    """
+    out: list[dict] = []
+    if len(h) < 5:
+        return out
+    close = h["Close"]
+    vol = h["Volume"].fillna(0) if "Volume" in h.columns else pd.Series(0, index=h.index)
+    vol_ma20 = vol.rolling(20).mean()
+    rsi = _rsi(close)
+    dif, dea, hist = _macd(close)
+
+    # Per-bar candlestick / volume / sweep / trap
+    for i in range(2, len(h)):
+        last = h.iloc[i]
+        prev = h.iloc[i - 1]
+        ts = h.index[i]
+        rng = max(last["High"] - last["Low"], 1e-9)
+        body = abs(last["Close"] - last["Open"])
+        body_r = body / rng
+        upper_r = (last["High"] - max(last["Open"], last["Close"])) / rng
+        lower_r = (min(last["Open"], last["Close"]) - last["Low"]) / rng
+
+        if (prev["Close"] < prev["Open"] and last["Close"] > last["Open"]
+                and last["Close"] > prev["Open"] and last["Open"] < prev["Close"]):
+            out.append(_marker(ts, "belowBar", "#22c55e", "arrowUp", "Bull Engulf", "price_action", 3, last["Low"]))
+        if (prev["Close"] > prev["Open"] and last["Close"] < last["Open"]
+                and last["Close"] < prev["Open"] and last["Open"] > prev["Close"]):
+            out.append(_marker(ts, "aboveBar", "#ef4444", "arrowDown", "Bear Engulf", "price_action", 3, last["High"]))
+
+        if lower_r >= 0.6 and body_r <= 0.3 and upper_r <= 0.2:
+            out.append(_marker(ts, "belowBar", "#34d399", "arrowUp", "Hammer", "price_action", 3, last["Low"]))
+        if upper_r >= 0.6 and body_r <= 0.3 and lower_r <= 0.2:
+            out.append(_marker(ts, "aboveBar", "#f87171", "arrowDown", "Pin Bar", "price_action", 3, last["High"]))
+
+        if i >= 22:
+            prior_low = h["Low"].iloc[i - 22:i].min()
+            prior_high = h["High"].iloc[i - 22:i].max()
+            if last["Low"] < prior_low and last["Close"] > prior_low:
+                out.append(_marker(ts, "belowBar", "#a3e635", "arrowUp", "Sweep", "price_action", 4, last["Low"]))
+            if last["High"] > prior_high and last["Close"] < prior_high:
+                out.append(_marker(ts, "aboveBar", "#fb7185", "arrowDown", "Sweep", "price_action", 4, last["High"]))
+
+        if i >= 24:
+            prev_range = h.iloc[i - 23:i - 3]
+            range_high = prev_range["High"].max()
+            range_low = prev_range["Low"].min()
+            prior = h.iloc[i - 1]
+            if prior["Close"] > range_high and last["Close"] < range_high:
+                out.append(_marker(ts, "aboveBar", "#ef4444", "arrowDown", "Bull Trap", "price_action", 4, last["High"]))
+            if prior["Close"] < range_low and last["Close"] > range_low:
+                out.append(_marker(ts, "belowBar", "#22c55e", "arrowUp", "Bear Trap", "price_action", 4, last["Low"]))
+
+        vma = _as_float(vol_ma20.iloc[i])
+        if vma and vma > 0:
+            vr = float(vol.iloc[i]) / vma
+            if vr >= 2 and body_r <= 0.25:
+                out.append(_marker(ts, "aboveBar", "#f43f5e", "square", "Absorb", "volume_profile", 4, last["High"]))
+            elif vr >= 2:
+                out.append(_marker(ts, "aboveBar", "#f59e0b", "circle", "Vol Spike", "volume_profile", 3, last["High"]))
+
+    # Pivot-based BOS / ChoCh: walk each high/low pivot and check break of prior
+    highs = [p for p in pivots if p["kind"] == "high"]
+    lows = [p for p in pivots if p["kind"] == "low"]
+    for j, pivot in enumerate(highs):
+        if j == 0:
+            continue
+        prev_high = highs[j - 1]
+        if pivot["price"] <= prev_high["price"]:
+            continue
+        # Determine prior trend from pivots earlier than prev_high
+        prior_trend = "neutral"
+        if len(lows) >= 2 and len(highs) >= 2:
+            earlier_lows = [l for l in lows if l["index"] < pivot["index"]]
+            if len(earlier_lows) >= 2 and earlier_lows[-1]["price"] < earlier_lows[-2]["price"]:
+                prior_trend = "down"
+        ts = pivot["time"]
+        if prior_trend == "down":
+            out.append(_marker(ts, "belowBar", "#22d3ee", "arrowUp", "ChoCh", "structure_geometry", 4, pivot["price"]))
+        else:
+            out.append(_marker(ts, "belowBar", "#22c55e", "arrowUp", "BOS", "structure_geometry", 3, pivot["price"]))
+    for j, pivot in enumerate(lows):
+        if j == 0:
+            continue
+        prev_low = lows[j - 1]
+        if pivot["price"] >= prev_low["price"]:
+            continue
+        prior_trend = "neutral"
+        if len(highs) >= 2:
+            earlier_highs = [hi for hi in highs if hi["index"] < pivot["index"]]
+            if len(earlier_highs) >= 2 and earlier_highs[-1]["price"] > earlier_highs[-2]["price"]:
+                prior_trend = "up"
+        ts = pivot["time"]
+        if prior_trend == "up":
+            out.append(_marker(ts, "aboveBar", "#fb7185", "arrowDown", "ChoCh", "structure_geometry", 4, pivot["price"]))
+        else:
+            out.append(_marker(ts, "aboveBar", "#ef4444", "arrowDown", "BOS", "structure_geometry", 3, pivot["price"]))
+
+    # Statistical ±3σ across history
+    closes_arr = close.to_numpy(dtype=float)
+    if len(closes_arr) >= 30:
+        window = closes_arr[-min(len(closes_arr), 250):]
+        x_arr = np.arange(len(window), dtype=float)
+        slope, intercept = np.polyfit(x_arr, window, 1)
+        fitted = slope * x_arr + intercept
+        residual = window - fitted
+        sigma = residual.std(ddof=1) if len(residual) > 1 else 0
+        if sigma:
+            base_ts = close.tail(len(window)).index
+            for k, r in enumerate(residual):
+                z = r / sigma
+                if z >= 3:
+                    out.append(_marker(base_ts[k], "aboveBar", "#dc2626", "arrowDown", "+3σ", "statistical_reversion", 4, fitted[k] + r))
+                elif z <= -3:
+                    out.append(_marker(base_ts[k], "belowBar", "#2563eb", "arrowUp", "-3σ", "statistical_reversion", 4, fitted[k] + r))
+                elif z >= 2.2 and (k == len(residual) - 1 or residual[k] > residual[k - 1]):
+                    # Only the local peak above +2σ to avoid clutter
+                    if k > 0 and k < len(residual) - 1 and residual[k] >= residual[k - 1] and residual[k] >= residual[k + 1]:
+                        out.append(_marker(base_ts[k], "aboveBar", "#f97316", "arrowDown", "+2σ", "statistical_reversion", 3, fitted[k] + r))
+                elif z <= -2.2:
+                    if k > 0 and k < len(residual) - 1 and residual[k] <= residual[k - 1] and residual[k] <= residual[k + 1]:
+                        out.append(_marker(base_ts[k], "belowBar", "#38bdf8", "arrowUp", "-2σ", "statistical_reversion", 3, fitted[k] + r))
+
+    # Regular RSI divergence across all consecutive same-kind pivot pairs
+    if len(highs) >= 2:
+        for j in range(1, len(highs)):
+            h1, h2 = highs[j - 1], highs[j]
+            r1 = _as_float(rsi.iloc[h1["index"]]) if h1["index"] < len(rsi) else None
+            r2 = _as_float(rsi.iloc[h2["index"]]) if h2["index"] < len(rsi) else None
+            if r1 is None or r2 is None:
+                continue
+            if h2["price"] > h1["price"] and r2 < r1:
+                out.append(_marker(h2["time"], "aboveBar", "#ef4444", "arrowDown", "RSI Div", "momentum", 4, h2["price"]))
+    if len(lows) >= 2:
+        for j in range(1, len(lows)):
+            l1, l2 = lows[j - 1], lows[j]
+            r1 = _as_float(rsi.iloc[l1["index"]]) if l1["index"] < len(rsi) else None
+            r2 = _as_float(rsi.iloc[l2["index"]]) if l2["index"] < len(rsi) else None
+            if r1 is None or r2 is None:
+                continue
+            if l2["price"] < l1["price"] and r2 > r1:
+                out.append(_marker(l2["time"], "belowBar", "#22c55e", "arrowUp", "RSI Div", "momentum", 4, l2["price"]))
+
+    return out
+
+
 def _marker_summary(markers: list[dict]) -> dict:
     by_dimension: dict[str, int] = {}
     by_weight: dict[str, int] = {}
@@ -2228,6 +2400,7 @@ def build_technical_matrix(
     breadth: Optional[dict] = None,
     options_profile: Optional[dict] = None,
     anchors: Optional[list[dict]] = None,
+    include_history_markers: bool = False,
     source: str = "",
 ) -> dict:
     """Build the full 17-dimensional matrix and chart marker payload."""
@@ -2273,6 +2446,18 @@ def build_technical_matrix(
     ]
     dimensions = [_enrich_dimension(dim) for dim in dimensions]
     markers = [marker for dim in dimensions for marker in dim.get("markers", [])]
+    history_marker_count = 0
+    if include_history_markers:
+        # Dedupe: existing markers' (time, dimension, text) keys take precedence
+        # over re-scanned ones at the same coordinate to avoid double-stamping.
+        seen_keys = {(m["time"], m.get("dimension"), m.get("text")) for m in markers}
+        for hist_marker in _scan_history_markers(execution_h, pivots):
+            key = (hist_marker["time"], hist_marker.get("dimension"), hist_marker.get("text"))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            markers.append(hist_marker)
+            history_marker_count += 1
     markers = sorted(markers, key=lambda m: (m["time"], m.get("weight", 1)))
     latest_price = float(execution_h["Close"].iloc[-1])
     confluence = _confluence_zones(dimensions, latest_price)
@@ -2304,6 +2489,17 @@ def build_technical_matrix(
         "confluence_zones": confluence,
         "execution_plan": _execution_plan(dimensions, summary, confluence, latest_price),
         "markers": markers,
-        "marker_summary": _marker_summary(markers),
+        "marker_summary": {
+            **_marker_summary(markers),
+            "history_backfill": history_marker_count,
+            "include_history_markers": include_history_markers,
+        },
         "data_gaps": sorted({gap for dim in dimensions for gap in dim.get("data_gaps", [])}),
+        # Preserve dimension attribution so the UI can surface which dimension a
+        # missing feed belongs to instead of showing a flat deduped list.
+        "data_gaps_by_dimension": {
+            dim["id"]: list(dim.get("data_gaps", []))
+            for dim in dimensions
+            if dim.get("data_gaps")
+        },
     }

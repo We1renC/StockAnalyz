@@ -477,6 +477,134 @@ def test_whipsaw_detected_with_intraday_5m_on_event_day():
     assert ev["metrics"].get("whipsaw") is not None
 
 
+def test_breadth_payload_with_advancing_declining_promotes_to_computed():
+    """Native TW breadth: advancing + declining counts should resolve A/D ratio."""
+    matrix = build_technical_matrix(
+        "TEST",
+        _history(),
+        breadth={
+            "advancing": 900,
+            "declining": 200,
+            "unchanged": 80,
+            "source": "twse_mi_index",
+        },
+    )
+    br = next(d for d in matrix["dimensions"] if d["id"] == "breadth_internals")
+    assert br["status"] == "computed"
+    assert br["metrics"]["ad_ratio"] == 4.5  # 900/200
+    text = " ".join(br["observations"]).lower()
+    assert "advancers" in text or "thrust" in text
+
+
+def test_order_book_5level_imbalance_resolves_dimension():
+    """5-level snapshot from TWSE should drive XIV order_book → computed."""
+    matrix = build_technical_matrix(
+        "TEST",
+        _history(),
+        order_book={
+            "bids": [
+                {"price": 100.5, "size": 2000},
+                {"price": 100.0, "size": 1500},
+            ],
+            "asks": [
+                {"price": 101.0, "size": 500},
+                {"price": 101.5, "size": 400},
+            ],
+            "source": "twse_5level",
+        },
+    )
+    ob = next(d for d in matrix["dimensions"] if d["id"] == "order_book")
+    assert ob["status"] == "computed"
+    # bid depth 3500 vs ask depth 900 → imbalance ≈ 3.89, bullish wall
+    assert ob["metrics"]["book_imbalance"] > 2
+
+
+def test_options_profile_with_gex_resolves_dimension():
+    """Options payload (gamma flip/wall/max pain) should drive XIII → computed."""
+    matrix = build_technical_matrix(
+        "TEST",
+        _history(),
+        options_profile={
+            "spot": 130,
+            "gamma_flip": 125,
+            "gamma_wall": 140,
+            "max_pain": 128,
+            "gamma_regime": "positive",
+            "expiration": "2026-05-15",
+        },
+    )
+    og = next(d for d in matrix["dimensions"] if d["id"] == "options_gex")
+    assert og["status"] == "computed"
+    types = {lv.get("type") for lv in og["levels"]}
+    assert {"gamma_flip", "gamma_wall", "max_pain"}.issubset(types)
+
+
+def test_data_gaps_by_dimension_preserves_attribution():
+    matrix = build_technical_matrix("TEST", _history())
+    by_dim = matrix.get("data_gaps_by_dimension") or {}
+    # At least one of the unavailable dims should have its gaps recorded
+    assert any(
+        len(gaps) > 0
+        for dim_id, gaps in by_dim.items()
+        if dim_id in {"microstructure_orderflow", "options_gex", "order_book", "event_calendar"}
+    ), by_dim
+
+
+def test_short_period_intraday_still_builds_17_dimensions():
+    """Hourly execution data + daily context should keep all 17 dims healthy."""
+    # 1h intraday for execution (3 days × ~8 bars = 24 bars)
+    idx = pd.date_range("2026-04-01 09:00", periods=24, freq="h")
+    close = 100 + np.linspace(0, 5, 24) + np.random.RandomState(0).normal(0, 0.3, 24)
+    intraday = pd.DataFrame({
+        "Open": close - 0.2, "High": close + 0.3, "Low": close - 0.3,
+        "Close": close, "Volume": [500] * 24,
+    }, index=idx)
+    matrix = build_technical_matrix("TEST", intraday, context_history=_history())
+    assert matrix["summary"]["dimension_count"] == 17
+    ctx = matrix["analysis_context"]
+    assert ctx["execution_granularity"] == "intraday"
+    # Macro / trend / volatility should fall back to the daily context
+    assert ctx["macro_basis"] == "context_daily"
+    assert ctx["trend_basis"] == "context_daily"
+
+
+def test_include_history_markers_backfills_high_value_patterns():
+    """Toggle on should append historical markers without removing original ones."""
+    np.random.seed(21)
+    dates = pd.date_range("2025-01-01", periods=160, freq="D")
+    close = 100 + np.cumsum(np.random.normal(0, 1.5, 160))
+    rows = []
+    # Inject a few clear engulfings into the synthetic series
+    for i, c in enumerate(close):
+        o = c - 0.4
+        hi = c + 0.6
+        lo = c - 0.6
+        rows.append([o, hi, lo, c, 10000])
+    # Force one bull engulf at index 50, one bear engulf at index 100
+    rows[49] = [rows[49][0], rows[49][1] + 0.2, rows[49][2] - 0.2, rows[49][0] - 1.0, 12000]
+    rows[50] = [rows[50][0] - 0.5, rows[50][1] + 1.5, rows[50][2] - 0.5, rows[50][0] + 2.0, 14000]
+    rows[99] = [rows[99][0], rows[99][1] + 0.5, rows[99][2] - 0.2, rows[99][0] + 1.0, 12000]
+    rows[100] = [rows[100][0] + 0.5, rows[100][1] + 0.5, rows[100][2] - 1.5, rows[100][0] - 2.0, 14000]
+    h = pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=dates)
+
+    default = build_technical_matrix("TEST", h)
+    expanded = build_technical_matrix("TEST", h, include_history_markers=True)
+
+    assert default["marker_summary"]["history_backfill"] == 0
+    assert expanded["marker_summary"]["history_backfill"] > 0
+    assert expanded["marker_summary"]["include_history_markers"] is True
+    assert len(expanded["markers"]) > len(default["markers"]), (
+        len(expanded["markers"]), len(default["markers"])
+    )
+    # Every marker in default must still exist in expanded (history toggle is additive)
+    default_keys = {(m["time"], m.get("dimension"), m.get("text")) for m in default["markers"]}
+    expanded_keys = {(m["time"], m.get("dimension"), m.get("text")) for m in expanded["markers"]}
+    assert default_keys.issubset(expanded_keys)
+    # Backfilled marker text must include at least one of the high-value patterns
+    history_texts = {m.get("text") for m in expanded["markers"] if m["time"] != expanded["markers"][-1]["time"]}
+    assert any(label in history_texts for label in {"Bull Engulf", "Bear Engulf", "Hammer", "Pin Bar", "Sweep", "BOS", "ChoCh", "+3σ", "-3σ", "RSI Div"}), history_texts
+
+
 def test_marker_direction_score_does_not_double_count_arrow_text():
     # Bull engulf marker: arrowUp belowBar weight 4 -> +4/3 ≈ 1.33, no text bonus
     bull = [{"position": "belowBar", "shape": "arrowUp", "color": "x",
