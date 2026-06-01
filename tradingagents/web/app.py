@@ -1048,12 +1048,14 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
         f_hist = ex.submit(_yf_history_job)
         f_info = ex.submit(_yf_info_job)
         f_tw = ex.submit(_tw_realtime_job)
-        yf_ind = f_hist.result() or {}
+        # Defensive copy: fetch_yfinance_indicators / mocks may share a dict
+        # across calls and downstream paths mutate price/source on it.
+        yf_ind = dict(f_hist.result() or {})
         yf_realtime = f_info.result()
         official = f_tw.result()
 
     if not yf_ind and is_tw:
-        yf_ind = fetch_official_tw_indicators(symbol, bench_close) or {}
+        yf_ind = dict(fetch_official_tw_indicators(symbol, bench_close) or {})
 
     if yf_ind and yf_realtime is not None:
         yf_ind["_yf_realtime"] = yf_realtime
@@ -1086,6 +1088,28 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
             yf_ind["source"] = f"twse_realtime+{history_source}"
             yf_ind.pop("_yf_realtime", None)
             return yf_ind
+
+    # US (or any non-TW) path: yfinance daily history's last bar is yesterday's
+    # close until Yahoo backfills the intraday partial bar. yf.Ticker.info has
+    # the genuine realtime price — if we got it, overlay both price and change_1d
+    # so positions PnL actually tracks the live market.
+    if not is_tw and yf_ind and yf_realtime is not None:
+        prev_close = None
+        # change_1d in yf_ind was computed against yfinance daily prev close;
+        # we can recover that prev close from price / (1 + change_1d/100).
+        prior_price = yf_ind.get("price")
+        prior_change = yf_ind.get("change_1d")
+        if prior_price and prior_change is not None:
+            try:
+                prev_close = prior_price / (1 + prior_change / 100.0)
+            except (ZeroDivisionError, TypeError):
+                prev_close = None
+        yf_ind["price"] = round(float(yf_realtime), 4)
+        if prev_close and prev_close > 0:
+            yf_ind["change_1d"] = round((yf_realtime / prev_close - 1) * 100, 2)
+        history_source = yf_ind.get("source") or "history"
+        if "yf_realtime" not in history_source:
+            yf_ind["source"] = f"yf_realtime+{history_source}"
 
     yf_ind.pop("_yf_realtime", None)
     return yf_ind

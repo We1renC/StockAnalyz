@@ -78,13 +78,37 @@ def test_safe_float_invalid():
 
 # ──────────────────────── fetch_indicators 並行邏輯 ────────────────────────
 def test_us_stock_uses_yfinance_only():
-    """美股沒有 TWSE channel，應只走 yfinance"""
-    with patch.object(app, "fetch_yfinance_indicators", return_value=YF_FULL_TW_2883), \
-         patch.object(app, "fetch_tw_realtime_quote") as mock_tw:
+    """美股沒有 TWSE channel，應只走 yfinance。mock 掉 yf.Ticker.info 確保
+    不依賴實際網路；當 info 沒提供 realtime 時 source 維持原樣。"""
+    class _FakeTicker:
+        info = {}
+    with patch.object(app, "fetch_yfinance_indicators", return_value=dict(YF_FULL_TW_2883)), \
+         patch.object(app, "fetch_tw_realtime_quote") as mock_tw, \
+         patch.object(app.yf, "Ticker", return_value=_FakeTicker()):
         result = app.fetch_indicators("NVDA")
         assert result["source"] == "yfinance"
         assert result["rsi"] == 73.0
+        assert result["price"] == 22.78  # fallback to yfinance history price
         mock_tw.assert_not_called()
+
+
+def test_us_stock_overlays_realtime_price_when_yf_info_available():
+    """美股 yfinance 歷史最新 bar 落後盤中時，yf.Ticker.info 的 realtime
+    需覆蓋 price 與 change_1d，否則 PnL 會被昨收凍結。"""
+    class _FakeTicker:
+        info = {"regularMarketPrice": 24.0}
+    # Clear caches so _yf_info_job hits our fake
+    app._YF_INFO_CACHE.clear()
+    with patch.object(app, "fetch_yfinance_indicators", return_value=dict(YF_FULL_TW_2883)), \
+         patch.object(app, "fetch_tw_realtime_quote") as mock_tw, \
+         patch.object(app.yf, "Ticker", return_value=_FakeTicker()):
+        result = app.fetch_indicators("NVDA")
+        assert result["price"] == 24.0
+        # 22.78 with 0.5% change ⇒ prev_close ≈ 22.668; 24/22.668 ≈ +5.88%
+        assert abs(result["change_1d"] - 5.88) < 0.05, result["change_1d"]
+        assert result["source"].startswith("yf_realtime+")
+        mock_tw.assert_not_called()
+    app._YF_INFO_CACHE.clear()
 
 
 def test_tw_stock_merges_yfinance_indicators_with_twse_realtime_price():
