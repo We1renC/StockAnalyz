@@ -416,6 +416,32 @@ body { background: var(--bg-base); color: var(--text-primary); }
 .diag-matrix-stage {
   grid-column: 1 / -1;
 }
+/* ── Dimension Help Popover ── */
+.dim-help-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0;
+  font-size: 10px; font-weight: 700; line-height: 1;
+  color: #64748b; background: rgba(100,116,139,0.12);
+  border: 1px solid rgba(100,116,139,0.2);
+  cursor: pointer; transition: all 0.2s ease;
+}
+.dim-help-btn:hover {
+  color: #e2e8f0; background: rgba(100,116,139,0.25);
+  border-color: rgba(148,163,184,0.35);
+}
+.dim-help-popover {
+  display: none; margin-top: 6px;
+  padding: 8px 10px; border-radius: 8px;
+  background: rgba(15,23,42,0.95); border: 1px solid rgba(148,163,184,0.15);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  font-size: 11px; line-height: 1.6; color: #cbd5e1;
+  animation: dim-help-in 0.15s ease;
+}
+.dim-help-popover.show { display: block; }
+.dim-help-popover strong { color: #34d399; font-weight: 600; }
+.dim-help-popover .dim-help-desc { margin-bottom: 4px; }
+.dim-help-popover .dim-help-focus { color: #94a3b8; font-style: italic; }
+@keyframes dim-help-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
 @media (max-width: 1180px) {
   .diag-workspace {
     grid-template-columns: 1fr;
@@ -2852,6 +2878,80 @@ function technicalDimensionLabel(name, id) {
   return map[id] || name || id;
 }
 
+function technicalDimensionDescription(id) {
+  const descs = {
+    price_action: {
+      desc: '分析個別 K 棒的實體與影線比例、吞噬型態、流動性掃單、跳空缺口等原始價格行為，判斷多空力道的即時轉變。',
+      focus: '看反轉 K 線、掃流動性與假突破是否同時出現。'
+    },
+    trend_ma: {
+      desc: '透過多條均線（MA5/10/20/50/60/200）的排列、交叉（黃金/死亡交叉）與布林帶擠壓，評估趨勢方向與延續性。',
+      focus: '看價格是否站穩主要均線，均線排列是否一致延續。'
+    },
+    volume_profile: {
+      desc: '觀測量能相對歷史均量的變化、放量/縮量異常、量價配合度（effort vs result）以及近似的成交量分佈輪廓。',
+      focus: '看量能是否支撐當前推進方向，有無放量確認或吸收訊號。'
+    },
+    momentum: {
+      desc: '綜合 RSI、MACD、Stochastic 等動能震盪指標，偵測正向/反向背離，判斷趨勢加速或疲軟。',
+      focus: '看 RSI、MACD 與背離是否站在同一方向形成共振。'
+    },
+    structure_geometry: {
+      desc: '辨識市場的擺動高低點、支撐壓力區、結構突破（BOS）/轉向（ChoCh）、Fibonacci 回撤/延伸與雙頂/雙底型態。',
+      focus: '看突破、回測與關鍵結構區間的反應是否有效。'
+    },
+    volatility_risk: {
+      desc: '使用 ATR 14 衡量波動擴張/收斂，計算 2ATR 與 3ATR 停損距離，提供倉位管理依據。',
+      focus: '看 ATR 與波動區間目前所處位置，決定倉位與停損寬度。'
+    },
+    mtf_derivatives: {
+      desc: '比較日線/週線/1H/15M 多個時間框架的趨勢對齊情況，並在有衍生品資料時偵測未平倉量異常與軋空風險。',
+      focus: '看大週期與短週期是否同向，衍生品是否出現過熱訊號。'
+    },
+    microstructure_orderflow: {
+      desc: '分析逐筆主動買賣失衡、CVD 發散與清算熱圖，掌握真實資金流向。需外部 feed 才能完整計算。',
+      focus: '看主動買賣失衡是否推動價格延續或反轉。'
+    },
+    intermarket_correlation: {
+      desc: '計算個股相對大盤（TWII/SPX）的 20 日超額報酬、60 日相關性，以及 VIX、DXY、板塊比率的宏觀環境。',
+      focus: '看相對強弱與外部市場是否支撐主趨勢判斷。'
+    },
+    breadth_internals: {
+      desc: '觀察市場廣度指標如漲跌比、站上 50MA/200MA 百分比，判斷個股走勢是否有整體市場底氣配合。',
+      focus: '看個股走勢是否得到整體市場廣度的配合。'
+    },
+    time_cyclical: {
+      desc: '標記 AVWAP 錨點、開盤區間突破方向、事件窗口，以及盤中節奏是否接近週期性轉折。',
+      focus: '看事件窗與盤中節奏是否暗示接近轉折點。'
+    },
+    advanced_geometries: {
+      desc: '偵測公允價值缺口（FVG）、諧波型態候選（ABCD 等）的潛在反轉區（PRZ），補充傳統結構以外的精細進出場依據。',
+      focus: '看 PRZ、缺口回補與型態區是否出現價格反應。'
+    },
+    options_gex: {
+      desc: '分析選擇權 Gamma Exposure 分佈、隱含波動率曲面與到期日結構，判斷做市商避險是否造成價格磁吸或釘扎效應。',
+      focus: '看 gamma 壓力與事件波動定價是否偏向單側。'
+    },
+    order_book: {
+      desc: '觀測 Level 2/3 深度委託簿的買賣牆分佈與流動性集中區，辨識大單護盤或撤單陷阱。',
+      focus: '看買賣牆與深度失衡是否明顯，有無大單異動。'
+    },
+    statistical_reversion: {
+      desc: '以線性回歸通道與 z-score 計算價格偏離程度，標記 ±2σ / ±3σ 統計外擴，提供均值回歸交易依據。',
+      focus: '看價格是否偏離回歸通道過遠，是否存在尾部風險。'
+    },
+    macro_wave: {
+      desc: '運用 Wyckoff 吸籌/派發/推進/擴散四階段判讀，搭配艾略特波浪第 3 波延伸候選辨識，確定宏觀循環位置。',
+      focus: '看 Wyckoff 階段與波浪背景判斷目前所處的大循環位置。'
+    },
+    event_calendar: {
+      desc: '載入財報、經濟數據等催化事件時間戳，偵測事件前壓縮與事件後劇烈擺盪（Whipsaw），提醒風險窗口。',
+      focus: '看催化事件前後的壓縮與波動切換，管控事件風險。'
+    },
+  };
+  return descs[id] || { desc: '此維度分析特定技術面向，為整體矩陣提供判讀依據。', focus: '看分數、方向與標記是否互相驗證。' };
+}
+
 function technicalPlanTypeLabel(type) {
   const map = {
     pullback_to_confluence: '回踩共振區',
@@ -3049,6 +3149,16 @@ function applyTechnicalMarkers() {
   _chartCandleSeries.setMarkers(markers);
 }
 
+function toggleDimHelp(btn) {
+  const card = btn.closest('.dim-help-popover')?.parentElement || btn.closest('[class*="rounded border"]');
+  const popover = card?.querySelector('.dim-help-popover');
+  if (!popover) return;
+  const isOpen = popover.classList.contains('show');
+  // close all other popovers first
+  document.querySelectorAll('.dim-help-popover.show').forEach(p => p.classList.remove('show'));
+  if (!isOpen) popover.classList.add('show');
+}
+
 function setTechnicalMarkerFilter(dimId) {
   _technicalMarkerFilter = dimId;
   applyTechnicalMarkers();
@@ -3094,22 +3204,29 @@ function renderTechnicalMatrixPanel(matrix) {
   const dimButtons = dims.map((dim, idx) => {
     const active = _technicalMarkerFilter === dim.id;
     const obs = technicalObservationPreview((dim.observations || [])[0] || '', dim.id);
+    const helpInfo = technicalDimensionDescription(dim.id);
     return `
-      <button type="button" onclick="setTechnicalMarkerFilter('${dim.id}')"
-              class="text-left rounded border px-2 py-1.5 ${active ? 'border-emerald-500 bg-emerald-500/10' : 'border-slate-800 bg-slate-950/40 hover:border-slate-600'}">
-        <div class="flex items-center gap-1 min-w-0">
-          <span class="text-slate-500 tabular-nums">${String(idx + 1).padStart(2, '0')}</span>
-          <span class="font-semibold truncate">${escHtml(technicalDimensionLabel(dim.name, dim.id))}</span>
-          <span class="ml-auto ${technicalStatusClass(dim.status)}">${technicalStatusLabel(dim.status)}</span>
+      <div class="text-left rounded border px-2 py-1.5 ${active ? 'border-emerald-500 bg-emerald-500/10' : 'border-slate-800 bg-slate-950/40 hover:border-slate-600'}">
+        <button type="button" onclick="setTechnicalMarkerFilter('${dim.id}')" class="w-full text-left">
+          <div class="flex items-center gap-1 min-w-0">
+            <span class="text-slate-500 tabular-nums">${String(idx + 1).padStart(2, '0')}</span>
+            <span class="font-semibold truncate">${escHtml(technicalDimensionLabel(dim.name, dim.id))}</span>
+            <span class="dim-help-btn" onclick="event.stopPropagation();toggleDimHelp(this)" title="指標說明">?</span>
+            <span class="ml-auto ${technicalStatusClass(dim.status)}">${technicalStatusLabel(dim.status)}</span>
+          </div>
+          <div class="mt-1 flex items-center gap-2 text-[11px]">
+            <span class="${technicalBiasClass(dim.bias)}">${technicalBiasLabel(dim.bias)}</span>
+            <span class="text-slate-500 tabular-nums">分數 ${fmt(dim.score, 1)}</span>
+            <span class="text-slate-500 tabular-nums">信心 ${fmt(dim.confidence, 2)}</span>
+            <span class="text-slate-500">風險 ${escHtml(technicalSeverityLabel(dim.severity))}</span>
+          </div>
+          <div class="mt-1 text-[11px] text-slate-500 truncate">${escHtml(obs)}</div>
+        </button>
+        <div class="dim-help-popover">
+          <div class="dim-help-desc"><strong>${escHtml(technicalDimensionLabel(dim.name, dim.id))}</strong>：${escHtml(helpInfo.desc)}</div>
+          <div class="dim-help-focus">重點：${escHtml(helpInfo.focus)}</div>
         </div>
-        <div class="mt-1 flex items-center gap-2 text-[11px]">
-          <span class="${technicalBiasClass(dim.bias)}">${technicalBiasLabel(dim.bias)}</span>
-          <span class="text-slate-500 tabular-nums">分數 ${fmt(dim.score, 1)}</span>
-          <span class="text-slate-500 tabular-nums">信心 ${fmt(dim.confidence, 2)}</span>
-          <span class="text-slate-500">風險 ${escHtml(technicalSeverityLabel(dim.severity))}</span>
-        </div>
-        <div class="mt-1 text-[11px] text-slate-500 truncate">${escHtml(obs)}</div>
-      </button>`;
+      </div>`;
   }).join('');
 
   panel.innerHTML = `
