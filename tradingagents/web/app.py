@@ -1851,10 +1851,19 @@ def api_backtest(months: int = 6):
     ]
     items = [_run_backtest_for_position(p, months=months) for p in positions]
     valid = [x for x in items if not x.get("error")]
-    total_position_pnl = sum(x["position_pnl"] for x in valid)
-    total_buy_hold_pnl = sum(x["buy_hold_pnl"] for x in valid)
-    avg_return = sum(x["period_return_pct"] for x in valid) / len(valid) if valid else 0
-    return {
+
+    def _finite(v) -> float:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return 0.0
+        return f if math.isfinite(f) else 0.0
+
+    total_position_pnl = sum(_finite(x.get("position_pnl")) for x in valid)
+    total_buy_hold_pnl = sum(_finite(x.get("buy_hold_pnl")) for x in valid)
+    returns = [_finite(x.get("period_return_pct")) for x in valid]
+    avg_return = (sum(returns) / len(returns)) if returns else 0.0
+    return sanitize_float_values({
         "months": months,
         "items": items,
         "summary": {
@@ -1863,7 +1872,7 @@ def api_backtest(months: int = 6):
             "total_buy_hold_pnl": round(total_buy_hold_pnl, 0),
             "avg_return_pct": round(avg_return, 2),
         },
-    }
+    })
 
 
 @app.get("/api/portfolio")
