@@ -515,6 +515,8 @@ def fetch_history(symbol: str, period: str = "1y") -> tuple[pd.DataFrame, str]:
 
 def _chart_period_config(period: str) -> dict[str, str]:
     configs = {
+        "1h": {"period": "1d", "interval": "1m"},
+        "4h": {"period": "1d", "interval": "5m"},
         "1d": {"period": "1d", "interval": "15m"},
         "5d": {"period": "5d", "interval": "30m"},
         "1mo": {"period": "1mo", "interval": "1d"},
@@ -1825,6 +1827,8 @@ def api_history(symbol: str, period: str = "6mo"):
         
         # 決定拉取較大的歷史區間，以提供 MA20 / MA60 足夠的 warm-up 緩衝
         calc_periods = {
+            "1h": "5d",
+            "4h": "5d",
             "1d": "5d",
             "5d": "1mo",
             "1mo": "6mo",
@@ -1857,16 +1861,19 @@ def api_history(symbol: str, period: str = "6mo"):
         # 依據資料最後一個時間點，向前裁切出用戶實際請求的週期區間
         import datetime
         latest_ts = h.index[-1]
-        period_days = {
-            "1d": 1,
-            "5d": 5,
-            "1mo": 31,
-            "3mo": 92,
-            "6mo": 183,
-            "1y": 366,
-            "2y": 731,
-        }.get(period, 183)
-        cutoff_date = latest_ts - datetime.timedelta(days=period_days)
+        period_durations = {
+            "1h": datetime.timedelta(hours=1),
+            "4h": datetime.timedelta(hours=4),
+            "1d": datetime.timedelta(days=1),
+            "5d": datetime.timedelta(days=5),
+            "1mo": datetime.timedelta(days=31),
+            "3mo": datetime.timedelta(days=92),
+            "6mo": datetime.timedelta(days=183),
+            "1y": datetime.timedelta(days=366),
+            "2y": datetime.timedelta(days=731),
+        }
+        duration = period_durations.get(period, datetime.timedelta(days=183))
+        cutoff_date = latest_ts - duration
         
         h_sliced = h[h.index >= cutoff_date]
         if len(h_sliced) == 0:

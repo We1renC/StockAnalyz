@@ -3564,6 +3564,19 @@ async function drawChart(symbol, period, isRefresh = false) {
       _chart.timeScale().fitContent();
       const dynamicOffset = Math.min(10, Math.max(2, Math.floor(r.candles.length * 0.08)));
       _chart.timeScale().applyOptions({ rightOffset: dynamicOffset });
+      
+      // 延遲 100ms 觸發二次 resize 與 fitContent 確保在 Modal 動畫或佈局完成後取得正確寬度，防止 X 軸寬度計算錯誤
+      setTimeout(() => {
+        if (_chart && $('chart-container')) {
+          const w = $('chart-container').clientWidth;
+          const h = $('chart-container').clientHeight || 440;
+          if (w > 0) {
+            _chart.resize(w, h);
+            _chart.timeScale().fitContent();
+            _chart.timeScale().applyOptions({ rightOffset: dynamicOffset });
+          }
+        }
+      }, 100);
     }
   } catch (e) {
     if (!isRefresh) {
