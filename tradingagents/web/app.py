@@ -971,6 +971,8 @@ def _indicators_from_history(h: pd.DataFrame, bench_close=None, source: str = ""
 
 _YF_HISTORY_CACHE: dict[tuple[str, str], tuple[float, "pd.DataFrame"]] = {}
 _YF_HISTORY_TTL = 60  # daily bars only refresh intraday by minutes; 60s is safe
+_YF_INFO_CACHE: dict[str, tuple[float, Optional[float]]] = {}
+_YF_INFO_TTL = 30  # realtime price updates roughly every 30s on Yahoo's feed
 
 
 def _cached_yf_history(symbol: str, period: str = "1y") -> "pd.DataFrame":
@@ -1027,12 +1029,17 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
     def _yf_info_job():
         if is_tw:
             return None  # TWSE realtime supersedes; .info is the slowest call
+        entry = _YF_INFO_CACHE.get(symbol)
+        if entry and time.time() < entry[0]:
+            return entry[1]
         try:
             info = yf.Ticker(symbol).info or {}
             rmp = info.get("regularMarketPrice") or info.get("currentPrice")
-            return float(rmp) if rmp and rmp > 0 else None
+            val = float(rmp) if rmp and rmp > 0 else None
         except Exception:
-            return None
+            val = None
+        _YF_INFO_CACHE[symbol] = (time.time() + _YF_INFO_TTL, val)
+        return val
 
     def _tw_realtime_job():
         return fetch_tw_realtime_quote(symbol) if is_tw else None
@@ -2175,22 +2182,19 @@ async def api_refresh():
     import time as _time
     t0 = _time.time()
 
-    # Phase 1: 平行抓大盤
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        f_twii = ex.submit(fetch_benchmark_close, "^TWII")
-        f_spx = ex.submit(fetch_benchmark_close, "^GSPC")
-        f_market = ex.submit(get_market_state)
-        twii = f_twii.result()
-        spx = f_spx.result()
-        market = f_market.result()
+    # Phase 1 + 3 重疊：market state / benchmark fetch 在背景跑時，
+    # 主執行緒直接讀 DB 並提早派發 31 個標的的 indicator fetch。
+    # benchmark 只用於 beta 計算（指標表的次要欄位），手動刷新的場景
+    # 接受 beta 暫時為 None；monitor_loop 仍會帶 benchmark 補回 beta。
+    bg_ex = ThreadPoolExecutor(max_workers=3)
+    f_twii = bg_ex.submit(fetch_benchmark_close, "^TWII")
+    f_spx = bg_ex.submit(fetch_benchmark_close, "^GSPC")
+    f_market = bg_ex.submit(get_market_state)
 
     conn = get_db()
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO market_state (id, ts, vix, twii, twii_ma60, spx, spx_ma60, risk_level, warnings_count) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)",
-              (market.get("ts"), market.get("vix"), market.get("twii"), market.get("twii_ma60"),
-               market.get("spx"), market.get("spx_ma60"), market.get("risk_level"), market.get("warnings_count")))
 
-    # Phase 2: 收集標的 + 去重
+    # Phase 2: 收集標的 + 去重（不依賴 market state）
     positions = [
         dict(row) for row in c.execute("SELECT * FROM positions").fetchall()
         if not _is_test_symbol(row["symbol"], row["name"], row["category"])
@@ -2199,20 +2203,27 @@ async def api_refresh():
         dict(row) for row in c.execute("SELECT * FROM watchlist").fetchall()
         if not _is_test_symbol(row["symbol"], row["name"], row["category"])
     ]
-
-    all_symbols = {}
+    all_symbols: dict = {}
     for d in positions:
-        all_symbols[d["symbol"]] = {"bench": twii if ".TW" in d["symbol"] else spx}
+        all_symbols.setdefault(d["symbol"], {})
     for d in watchlist_rows:
-        all_symbols.setdefault(d["symbol"], {"bench": twii if ".TW" in d["symbol"] else spx})
+        all_symbols.setdefault(d["symbol"], {})
 
-    # Phase 3: 平行抓報價
-    indicators = {}
-    def _fetch_one(symbol, bench):
-        return symbol, fetch_indicators(symbol, bench)
-
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        futures = {ex.submit(_fetch_one, sym, info["bench"]): sym for sym, info in all_symbols.items()}
+    # Phase 3 — kick off all indicator fetches concurrently with market state.
+    indicators: dict = {}
+    def _fetch_one(symbol):
+        return symbol, fetch_indicators(symbol, None)
+    indicator_ex = ThreadPoolExecutor(max_workers=16)
+    try:
+        futures = [indicator_ex.submit(_fetch_one, sym) for sym in all_symbols]
+        # Wait for market state result in the foreground; indicator fetches run alongside.
+        twii = f_twii.result()
+        spx = f_spx.result()
+        market = f_market.result()
+        bg_ex.shutdown(wait=False)
+        c.execute("INSERT OR REPLACE INTO market_state (id, ts, vix, twii, twii_ma60, spx, spx_ma60, risk_level, warnings_count) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  (market.get("ts"), market.get("vix"), market.get("twii"), market.get("twii_ma60"),
+                   market.get("spx"), market.get("spx_ma60"), market.get("risk_level"), market.get("warnings_count")))
         for future in as_completed(futures):
             try:
                 sym, ind = future.result()
@@ -2220,6 +2231,8 @@ async def api_refresh():
                     indicators[sym] = ind
             except Exception:
                 pass
+    finally:
+        indicator_ex.shutdown(wait=False)
 
     # Phase 4: 寫入 DB
     refreshed = 0
