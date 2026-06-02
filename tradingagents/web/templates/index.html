@@ -1986,10 +1986,15 @@ function renderMarket(m) {
 
 function renderPortfolio(data) {
   const s = data.summary;
-  const pnlColor = s.total_pnl >= 0 ? 'text-red-400' : 'text-emerald-400';
-  const pnlAccent = s.total_pnl >= 0 ? 'summary-accent-red' : 'summary-accent-green';
-  const pnlSign = s.total_pnl >= 0 ? '+' : '';
-  const pctSign = s.total_pnl_pct >= 0 ? '+' : '';
+  // 以含手續費的「淨損益」為主顯示；毛損益保留為次要參考
+  const netPnl = (s.total_net_pnl != null) ? s.total_net_pnl : s.total_pnl;
+  const netPnlPct = (s.total_net_pnl_pct != null) ? s.total_net_pnl_pct : s.total_pnl_pct;
+  const pnlColor = netPnl >= 0 ? 'text-red-400' : 'text-emerald-400';
+  const pnlAccent = netPnl >= 0 ? 'summary-accent-red' : 'summary-accent-green';
+  const pnlSign = netPnl >= 0 ? '+' : '';
+  const pctSign = netPnlPct >= 0 ? '+' : '';
+  const grossSign = s.total_pnl >= 0 ? '+' : '';
+  const grossPctSign = s.total_pnl_pct >= 0 ? '+' : '';
 
   const _psum = $('portfolio-summary'); if (_psum) _psum.innerHTML = `
     <div class="glass-card p-4 summary-accent summary-accent-blue">
@@ -2001,18 +2006,20 @@ function renderPortfolio(data) {
       <div class="text-xl font-bold tabular-nums">NT$ ${fmtInt(s.total_value)}</div>
     </div>
     <div class="glass-card p-4 summary-accent ${pnlAccent}">
-      <div class="text-xs text-slate-400 mb-1">總損益</div>
-      <div class="text-xl font-bold tabular-nums ${pnlColor}">NT$ ${pnlSign}${fmtInt(s.total_pnl)}</div>
+      <div class="text-xs text-slate-400 mb-1" title="已扣除買進手續費、賣出手續費與證交稅/SEC 規費">總損益（含手續費）</div>
+      <div class="text-xl font-bold tabular-nums ${pnlColor}">NT$ ${pnlSign}${fmtInt(netPnl)}</div>
+      <div class="text-[10px] text-slate-500 mt-1">毛損益 ${grossSign}${fmtInt(s.total_pnl)}</div>
     </div>
-    <div class="glass-card p-4 ${s.total_pnl_pct >= 0 ? 'glow-border-red' : 'glow-border-green'}">
-      <div class="text-xs text-slate-400 mb-1">報酬率</div>
-      <div class="text-2xl font-bold tabular-nums ${pnlColor}">${pctSign}${fmt(s.total_pnl_pct)}%</div>
+    <div class="glass-card p-4 ${netPnlPct >= 0 ? 'glow-border-red' : 'glow-border-green'}">
+      <div class="text-xs text-slate-400 mb-1">報酬率（含手續費）</div>
+      <div class="text-2xl font-bold tabular-nums ${pnlColor}">${pctSign}${fmt(netPnlPct)}%</div>
+      <div class="text-[10px] text-slate-500 mt-1">毛報酬 ${grossPctSign}${fmt(s.total_pnl_pct)}%</div>
     </div>`;
 
   // 同步更新市場列右側持倉摘要
   const inlineSummary = $('portfolio-inline-summary');
   if (inlineSummary) {
-    const pnlStyle = `color:${s.total_pnl >= 0 ? '#f87171' : '#34d399'}`;
+    const pnlStyle = `color:${netPnl >= 0 ? '#f87171' : '#34d399'}`;
     inlineSummary.innerHTML = `
       <div class="flex flex-col justify-center px-3 py-2 border-r border-slate-700" style="min-width:80px">
         <div class="text-[10px] text-slate-500 mb-0.5">總投入</div>
@@ -2022,20 +2029,21 @@ function renderPortfolio(data) {
         <div class="text-[10px] text-slate-500 mb-0.5">總市值</div>
         <div class="text-sm font-semibold tabular-nums text-slate-200">${fmtInt(s.total_value)}</div>
       </div>
-      <div class="flex flex-col justify-center px-3 py-2 border-r border-slate-700" style="min-width:80px">
+      <div class="flex flex-col justify-center px-3 py-2 border-r border-slate-700" style="min-width:88px" title="已扣手續費">
         <div class="text-[10px] text-slate-500 mb-0.5">總損益</div>
-        <div class="text-sm font-bold tabular-nums" style="${pnlStyle}">${pnlSign}${fmtInt(s.total_pnl)}</div>
+        <div class="text-sm font-bold tabular-nums" style="${pnlStyle}">${pnlSign}${fmtInt(netPnl)}</div>
       </div>
       <div class="flex flex-col justify-center px-3 py-2" style="min-width:68px">
         <div class="text-[10px] text-slate-500 mb-0.5">報酬率</div>
-        <div class="text-base font-bold tabular-nums" style="${pnlStyle}">${pctSign}${fmt(s.total_pnl_pct)}%</div>
+        <div class="text-base font-bold tabular-nums" style="${pnlStyle}">${pctSign}${fmt(netPnlPct)}%</div>
       </div>`;
 
   // 按照損益數字大小 (pnl) 降序排列 (獲利高排上方，虧損大排下方)
   }  // end if (inlineSummary)
 
   if (data.positions) {
-    data.positions.sort((a, b) => (b.pnl || 0) - (a.pnl || 0));
+    // 排序依含手續費的淨損益，獲利大者排上方
+    data.positions.sort((a, b) => ((b.net_pnl != null ? b.net_pnl : b.pnl) || 0) - ((a.net_pnl != null ? a.net_pnl : a.pnl) || 0));
   }
 
   // 1. 分流台美股
@@ -2046,43 +2054,54 @@ function renderPortfolio(data) {
   $('tw-portfolio-count').textContent = `${twPositions.length} 檔`;
   $('us-portfolio-count').textContent = `${usPositions.length} 檔`;
 
-  // 3. 計算並更新台股小彙總
-  let twCost = 0, twValue = 0, twPnl = 0;
+  // 3. 計算並更新台股小彙總（淨損益 = 含手續費）
+  let twCost = 0, twValue = 0, twFee = 0, twNetTwd = 0;
   twPositions.forEach(p => {
     twCost += p.cost_price * p.shares;
     const cur = p.current_price || p.cost_price;
     twValue += cur * p.shares;
+    twFee += (p.fees && p.fees.total_twd) || 0;
+    twNetTwd += (p.net_pnl != null ? p.net_pnl : p.pnl) || 0;
   });
-  twPnl = twValue - twCost;
-  const twPnlPct = twCost > 0 ? (twPnl / twCost) * 100 : 0;
-  const twPnlColor = twPnl >= 0 ? 'text-red-400' : 'text-emerald-400';
+  const twGross = twValue - twCost;
+  const twNetPct = twCost > 0 ? (twNetTwd / twCost) * 100 : 0;
+  const twPnlColor = twNetTwd >= 0 ? 'text-red-400' : 'text-emerald-400';
   $('tw-portfolio-summary').innerHTML = `
     <span>投入: <strong class="text-slate-200 font-mono">NT$ ${fmtInt(twCost)}</strong></span>
     <span>市值: <strong class="text-slate-200 font-mono">NT$ ${fmtInt(twValue)}</strong></span>
-    <span>損益: <strong class="${twPnlColor} font-mono">${twPnl >= 0 ? '+' : ''}${fmtInt(twPnl)} (${twPnlPct >= 0 ? '+' : ''}${fmt(twPnlPct)}%)</strong></span>
+    <span title="毛損益 ${twGross >= 0 ? '+' : ''}${fmtInt(twGross)} − 手續費 ${fmtInt(twFee)}">
+      損益: <strong class="${twPnlColor} font-mono">${twNetTwd >= 0 ? '+' : ''}${fmtInt(twNetTwd)} (${twNetPct >= 0 ? '+' : ''}${fmt(twNetPct)}%)</strong>
+      <span class="text-slate-500 text-[10px]">／毛 ${twGross >= 0 ? '+' : ''}${fmtInt(twGross)}</span>
+    </span>
   `;
 
-  // 4. 計算並更新美股小彙總
-  let usCost = 0, usValue = 0, usPnl = 0, usPnlTwd = 0;
+  // 4. 計算並更新美股小彙總（淨損益 = 含手續費）
+  let usCost = 0, usValue = 0, usFeeUsd = 0, usNetTwd = 0;
   usPositions.forEach(p => {
     usCost += p.cost_price * p.shares;
     const cur = p.current_price || p.cost_price;
     usValue += cur * p.shares;
-    usPnlTwd += p.pnl || 0;
+    usFeeUsd += (p.fees && p.fees.total_native) || 0;
+    usNetTwd += (p.net_pnl != null ? p.net_pnl : p.pnl) || 0;
   });
-  usPnl = usValue - usCost;
-  const usPnlPct = usCost > 0 ? (usPnl / usCost) * 100 : 0;
-  const usPnlColor = usPnl >= 0 ? 'text-red-400' : 'text-emerald-400';
+  const usGross = usValue - usCost;
+  const usNetUsd = usGross - usFeeUsd;
+  const usNetPct = usCost > 0 ? (usNetUsd / usCost) * 100 : 0;
+  const usPnlColor = usNetUsd >= 0 ? 'text-red-400' : 'text-emerald-400';
   $('us-portfolio-summary').innerHTML = `
     <span>投入: <strong class="text-slate-200 font-mono">$ ${fmt(usCost, 2)}</strong></span>
     <span>市值: <strong class="text-slate-200 font-mono">$ ${fmt(usValue, 2)}</strong></span>
-    <span>損益: <strong class="${usPnlColor} font-mono">$ ${usPnl >= 0 ? '+' : ''}${fmt(usPnl, 2)} (${usPnlPct >= 0 ? '+' : ''}${fmt(usPnlPct)}%)</strong></span>
-    <span class="text-slate-500">/ 折合 ${usPnlTwd >= 0 ? '+' : ''}${fmtInt(usPnlTwd)} TWD</span>
+    <span title="毛損益 $${fmt(usGross, 2)} − 手續費 $${fmt(usFeeUsd, 2)}">
+      損益: <strong class="${usPnlColor} font-mono">$ ${usNetUsd >= 0 ? '+' : ''}${fmt(usNetUsd, 2)} (${usNetPct >= 0 ? '+' : ''}${fmt(usNetPct)}%)</strong>
+      <span class="text-slate-500 text-[10px]">／毛 $${usGross >= 0 ? '+' : ''}${fmt(usGross, 2)}</span>
+    </span>
+    <span class="text-slate-500">/ 折合 ${usNetTwd >= 0 ? '+' : ''}${fmtInt(usNetTwd)} TWD</span>
   `;
 
   // 5. 渲染表格 Row 產生器
   const makeRowHtml = (p) => {
-    const pnlPill = p.pnl_pct >= 0 ? 'pill-red' : 'pill-green';
+    const pnlPctValue = (p.net_pnl_pct != null) ? p.net_pnl_pct : p.pnl_pct;
+    const pnlPill = pnlPctValue >= 0 ? 'pill-red' : 'pill-green';
     const dayPill = (p.change_1d||0) >= 0 ? 'pill-red' : 'pill-green';
     const rsiPct = Math.min(Math.max(p.rsi||50, 0), 100);
     const rsiColor = rsiPct >= 75 ? 'bg-red-500' : rsiPct <= 30 ? 'bg-amber-400' : 'bg-slate-500';
@@ -2090,25 +2109,26 @@ function renderPortfolio(data) {
     const recPill = rec.urgency === 'danger' ? 'pill-red animate-pulse-dot' : rec.urgency === 'warning' ? 'pill-amber' : 'pill-gray';
     const targetInfo = [p.target_profit ? `<span class="text-red-400">TP:${fmt(p.target_profit)}</span>` : '', p.target_stop ? `<span class="text-emerald-400">SL:${fmt(p.target_stop)}</span>` : ''].filter(Boolean).join(' ');
     
-    // 損益金額與貨幣顯示（毛損益 + 扣費後淨損益）
+    // 損益金額：主顯示 = 含手續費淨值；毛損益降為次要參考
     let pnlAmountHtml = '';
     const fees = p.fees || {};
-    const feesTooltip = `買入手續費 ${fees.currency === 'USD' ? '$' : 'NT$'}${fmt(fees.buy_fee, 2)} / 賣出手續費 ${fees.currency === 'USD' ? '$' : 'NT$'}${fmt(fees.sell_fee, 2)} / 證交稅或 SEC ${fees.currency === 'USD' ? '$' : 'NT$'}${fmt(fees.sell_tax, 2)}`;
+    const symPrefix = fees.currency === 'USD' ? '$' : 'NT$';
+    const feesTooltip = `買進手續費 ${symPrefix}${fmt(fees.buy_fee, 2)} + 賣出手續費 ${symPrefix}${fmt(fees.sell_fee, 2)} + 證交稅/SEC ${symPrefix}${fmt(fees.sell_tax, 2)}\n總計 ${symPrefix}${fmt(fees.total_native, 2)}（約 NT$ ${fmtInt(fees.total_twd)}）`;
+    const netPnl = p.net_pnl != null ? p.net_pnl : p.pnl;
+    const netPnlColor = netPnl >= 0 ? 'text-red-400' : 'text-emerald-400';
     if (p.currency === 'USD') {
-      const usdPnl = (p.current_price - p.cost_price) * p.shares;
-      const usdPnlColor = usdPnl >= 0 ? 'text-red-400' : 'text-emerald-400';
-      const netPnlColor = (p.net_pnl||0) >= 0 ? 'text-red-400' : 'text-emerald-400';
+      const usdGross = (p.current_price - p.cost_price) * p.shares;
+      const usdNet = usdGross - (fees.total_native || 0);
+      const usdColor = usdNet >= 0 ? 'text-red-400' : 'text-emerald-400';
       pnlAmountHtml = `
-        <div class="font-semibold font-mono ${usdPnlColor}">${usdPnl >= 0 ? '+' : ''}${fmt(usdPnl, 2)}</div>
-        <div class="text-[10px] text-slate-500 font-mono">(NT$ ${p.pnl >= 0 ? '+' : ''}${fmtInt(p.pnl)})</div>
-        <div class="text-[10px] font-mono ${netPnlColor}" title="${feesTooltip}">扣費後 NT$ ${(p.net_pnl||0) >= 0 ? '+' : ''}${fmtInt(p.net_pnl)}</div>
+        <div class="font-semibold font-mono ${usdColor}" title="${feesTooltip}">${usdNet >= 0 ? '+' : ''}${fmt(usdNet, 2)}</div>
+        <div class="text-[10px] font-mono ${netPnlColor}" title="含手續費後折算新台幣">NT$ ${netPnl >= 0 ? '+' : ''}${fmtInt(netPnl)}</div>
+        <div class="text-[10px] text-slate-500 font-mono" title="未扣手續費">毛 ${usdGross >= 0 ? '+' : ''}${fmt(usdGross, 2)}</div>
       `;
     } else {
-      const twdPnlColor = p.pnl >= 0 ? 'text-red-400' : 'text-emerald-400';
-      const netPnlColor = (p.net_pnl||0) >= 0 ? 'text-red-400' : 'text-emerald-400';
       pnlAmountHtml = `
-        <div class="font-semibold font-mono ${twdPnlColor}">NT$ ${p.pnl >= 0 ? '+' : ''}${fmtInt(p.pnl)}</div>
-        <div class="text-[10px] font-mono ${netPnlColor}" title="${feesTooltip}">扣費後 NT$ ${(p.net_pnl||0) >= 0 ? '+' : ''}${fmtInt(p.net_pnl)}</div>
+        <div class="font-semibold font-mono ${netPnlColor}" title="${feesTooltip}">NT$ ${netPnl >= 0 ? '+' : ''}${fmtInt(netPnl)}</div>
+        <div class="text-[10px] text-slate-500 font-mono" title="未扣手續費">毛 ${p.pnl >= 0 ? '+' : ''}${fmtInt(p.pnl)}</div>
       `;
     }
 
@@ -2139,7 +2159,7 @@ function renderPortfolio(data) {
       <td class="text-right"><span class="pill ${dayPill} tabular-nums">${(p.change_1d||0) >= 0 ? '+' : ''}${fmt(p.change_1d)}%</span></td>
       <td class="text-right"><span class="tabular-nums text-xs ${rsiPct>=75?'text-red-400':rsiPct<=30?'text-amber-400':'text-slate-400'}">${fmt(p.rsi,1)}</span><div class="rsi-bar"><div class="rsi-fill ${rsiColor}" style="width:${rsiPct}%"></div></div></td>
       <td class="text-right tabular-nums">${pnlAmountHtml}</td>
-      <td class="text-right"><span class="pill ${pnlPill} tabular-nums">${p.pnl_pct >= 0 ? '+' : ''}${fmt(p.pnl_pct)}%</span></td>
+      <td class="text-right" title="含手續費後的淨報酬率"><span class="pill ${pnlPill} tabular-nums">${pnlPctValue >= 0 ? '+' : ''}${fmt(pnlPctValue)}%</span><div class="text-[10px] text-slate-500 tabular-nums mt-0.5">毛 ${p.pnl_pct >= 0 ? '+' : ''}${fmt(p.pnl_pct)}%</div></td>
       <td class="text-right">${annHtml}</td>
       <td class="text-right">${premHtml}</td>
       <td><span class="pill ${recPill} text-[11px]">${rec.action||'—'}</span>${rec.reason ? `<div class="text-[10px] text-slate-500 mt-1 leading-tight max-w-[180px]">${rec.reason}</div>` : ''}${targetInfo ? `<div class="text-[10px] mt-0.5">${targetInfo}</div>` : ''}</td>
