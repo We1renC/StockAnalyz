@@ -147,6 +147,9 @@ def init_db():
         change_1d REAL,
         change_1m REAL,
         beta REAL,
+        nav REAL,
+        pb REAL,
+        quote_type TEXT,
         data TEXT
     );
     CREATE TABLE IF NOT EXISTS analysis_results (
@@ -190,6 +193,14 @@ def init_db():
                 "twii_ma20", "twii_ma120", "spx_ma20", "spx_ma120"):
         try:
             c.execute(f"ALTER TABLE market_state ADD COLUMN {col} REAL")
+            conn.commit()
+        except Exception:
+            pass
+
+    # Migration: price_cache structured meta fields
+    for col_def in ("nav REAL", "pb REAL", "quote_type TEXT"):
+        try:
+            c.execute(f"ALTER TABLE price_cache ADD COLUMN {col_def}")
             conn.commit()
         except Exception:
             pass
@@ -1168,11 +1179,78 @@ def _get_yf_quote_info(symbol: str, want_info: bool = True) -> dict:
     _YF_INFO_CACHE[symbol] = (time.time() + _YF_INFO_TTL, out)
     return out
 
+
+def _hydrate_price_cache_meta(row: dict) -> tuple[Optional[float], Optional[str], Optional[float]]:
+    nav = row.get("nav")
+    quote_type = row.get("quote_type")
+    pb = _safe_float(row.get("pb"))
+    raw = row.get("price_cache_data")
+    if raw:
+        try:
+            blob = json.loads(raw)
+            if nav is None:
+                nav = blob.get("nav")
+            if quote_type is None:
+                quote_type = blob.get("quote_type")
+            if pb is None:
+                pb = _safe_float(blob.get("pb"))
+        except (TypeError, ValueError):
+            pass
+    return nav, quote_type, pb
+
+
+def _load_active_portfolio_entities(conn) -> tuple[list[dict], list[dict]]:
+    positions = [
+        dict(row) for row in conn.execute("SELECT * FROM positions").fetchall()
+        if not _is_test_symbol(row["symbol"], row["name"], row["category"])
+    ]
+    watchlist = [
+        dict(row) for row in conn.execute("SELECT * FROM watchlist").fetchall()
+        if not _is_test_symbol(row["symbol"], row["name"], row["category"])
+    ]
+    return positions, watchlist
+
+
+def _collect_symbol_benchmarks(positions: list[dict], watchlist: list[dict], twii, spx) -> dict[str, dict]:
+    all_symbols: dict[str, dict] = {}
+    for d in positions:
+        all_symbols[d["symbol"]] = {"bench": twii if ".TW" in d["symbol"] else spx}
+    for d in watchlist:
+        all_symbols.setdefault(d["symbol"], {"bench": twii if ".TW" in d["symbol"] else spx})
+    return all_symbols
+
+
+def _fetch_indicator_batch(symbol_map: dict[str, dict], use_benchmark: bool = True, max_workers: int = 8) -> dict[str, dict]:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _fetch_one(symbol, bench):
+        return symbol, fetch_indicators(symbol, bench if use_benchmark else None)
+
+    indicators: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {
+            ex.submit(_fetch_one, sym, info.get("bench")): sym
+            for sym, info in symbol_map.items()
+        }
+        for future in as_completed(futures):
+            sym = futures[future]
+            try:
+                fetched_sym, ind = future.result()
+                if ind and "price" in ind:
+                    indicators[fetched_sym] = ind
+            except Exception as e:
+                print(f"  [WARN] {sym} fetch failed: {e}")
+    return indicators
+
 def store_price_cache(c, symbol: str, ind: dict):
     """Persist fresh quote data while keeping older indicator fields when absent."""
     ind = sanitize_float_values(ind)
     existing = c.execute("SELECT * FROM price_cache WHERE symbol=?", (symbol,)).fetchone()
     existing_data = json.loads(existing["data"] or "{}") if existing and existing["data"] else {}
+    if existing:
+        for key in ("nav", "pb", "quote_type"):
+            if existing[key] is not None and key not in existing_data:
+                existing_data[key] = existing[key]
     merged = dict(existing_data)
     for key, value in ind.items():
         if value is not None:
@@ -1182,8 +1260,8 @@ def store_price_cache(c, symbol: str, ind: dict):
 
     c.execute(
         """INSERT OR REPLACE INTO price_cache
-           (symbol, ts, price, rsi, ma20, ma60, high52, low52, change_1d, change_1m, beta, data)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (symbol, ts, price, rsi, ma20, ma60, high52, low52, change_1d, change_1m, beta, nav, pb, quote_type, data)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             symbol,
             datetime.now().isoformat(timespec="seconds"),
@@ -1196,6 +1274,9 @@ def store_price_cache(c, symbol: str, ind: dict):
             merged.get("change_1d"),
             merged.get("change_1m"),
             merged.get("beta"),
+            merged.get("nav"),
+            merged.get("pb"),
+            merged.get("quote_type"),
             json.dumps(merged),
         ),
     )
@@ -1467,111 +1548,17 @@ _refresh_lock = asyncio.Lock()
 
 async def monitor_loop():
     """Background task: refresh prices + evaluate alerts every 5 minutes."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     while True:
         try:
             async with _refresh_lock:
                 t0 = datetime.now()
                 print(f"[{t0:%H:%M:%S}] Monitor cycle started...")
-
-                # ── Phase 1: 平行抓大盤指數 + 市場狀態 ──
-                with ThreadPoolExecutor(max_workers=3) as ex:
-                    f_twii = ex.submit(fetch_benchmark_close, "^TWII")
-                    f_spx = ex.submit(fetch_benchmark_close, "^GSPC")
-                    f_market = ex.submit(get_market_state)
-                    twii = f_twii.result()
-                    spx = f_spx.result()
-                    market = f_market.result()
-
-                conn = get_db()
-                c = conn.cursor()
-                c.execute(
-                    """INSERT OR REPLACE INTO market_state
-                       (id, ts, vix,
-                        twii, twii_ma20, twii_ma60, twii_ma120,
-                        spx,  spx_ma20,  spx_ma60,  spx_ma120,
-                        sox, sox_ma60, ndx, ndx_ma20, tnx, dxy,
-                        risk_level, warnings_count)
-                       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (market.get("ts"), market.get("vix"),
-                     market.get("twii"), market.get("twii_ma20"), market.get("twii_ma60"), market.get("twii_ma120"),
-                     market.get("spx"),  market.get("spx_ma20"),  market.get("spx_ma60"),  market.get("spx_ma120"),
-                     market.get("sox"), market.get("sox_ma60"),
-                     market.get("ndx"), market.get("ndx_ma20"),
-                     market.get("tnx"), market.get("dxy"),
-                     market.get("risk_level"), market.get("warnings_count"))
-                )
-
-                # ── Phase 2: 收集所有需抓價格的標的 ──
-                positions = [
-                    dict(row) for row in c.execute("SELECT * FROM positions").fetchall()
-                    if not _is_test_symbol(row["symbol"], row["name"], row["category"])
-                ]
-                watchlist = [
-                    dict(row) for row in c.execute("SELECT * FROM watchlist").fetchall()
-                    if not _is_test_symbol(row["symbol"], row["name"], row["category"])
-                ]
-
-                # 去重：同一個 symbol 只抓一次
-                all_symbols = {}
-                for d in positions:
-                    all_symbols[d["symbol"]] = {"bench": twii if ".TW" in d["symbol"] else spx}
-                for d in watchlist:
-                    all_symbols.setdefault(d["symbol"], {"bench": twii if ".TW" in d["symbol"] else spx})
-
-                # ── Phase 3: 平行抓所有標的的即時指標 ──
-                indicators = {}  # symbol -> ind dict
-
-                def _fetch_one(symbol, bench):
-                    return symbol, fetch_indicators(symbol, bench)
-
-                with ThreadPoolExecutor(max_workers=8) as ex:
-                    futures = {
-                        ex.submit(_fetch_one, sym, info["bench"]): sym
-                        for sym, info in all_symbols.items()
-                    }
-                    for future in as_completed(futures):
-                        try:
-                            sym, ind = future.result()
-                            if ind and "price" in ind:
-                                indicators[sym] = ind
-                        except Exception as e:
-                            sym = futures[future]
-                            print(f"  [WARN] {sym} fetch failed: {e}")
-
-                # ── Phase 4: 寫入快取 + 產生警報（循序寫 DB） ──
-                alerts_created = 0
-                for d in positions:
-                    ind = indicators.get(d["symbol"])
-                    if ind:
-                        store_price_cache(c, d["symbol"], ind)
-                        created = insert_alerts(c, d["symbol"], d["name"], ind, market, position=d)
-                        alerts_created += created
-                        if created:
-                            print(f"  [ALERT] {d['symbol']}: {created} new alert(s)")
-
-                for d in watchlist:
-                    ind = indicators.get(d["symbol"])
-                    if ind:
-                        store_price_cache(c, d["symbol"], ind)
-                        created = insert_alerts(c, d["symbol"], d["name"], ind, market, watch=d)
-                        alerts_created += created
-                        if created:
-                            print(f"  [ALERT] {d['symbol']}: {created} new alert(s)")
-
-                conn.commit()
-                # 每輪結束記錄當日 portfolio snapshot（per-zone TWD 總計）
-                try:
-                    _record_portfolio_snapshot(conn)
-                except Exception as e:
-                    print(f"  [WARN] snapshot failed: {e}")
-                vault = _get_vault()
-                if alerts_created and vault:
-                    _obsidian_post_write_sync(vault, kinds=("alerts",))
-                conn.close()
+                cycle = _run_refresh_cycle_sync(use_benchmark=True, indicator_workers=8)
                 elapsed = (datetime.now() - t0).total_seconds()
-                print(f"[{datetime.now():%H:%M:%S}] Monitor cycle done. ({elapsed:.1f}s, {len(indicators)}/{len(all_symbols)} symbols)")
+                print(
+                    f"[{datetime.now():%H:%M:%S}] Monitor cycle done. "
+                    f"({elapsed:.1f}s, {len(cycle['indicators'])}/{len(cycle['symbol_map'])} symbols)"
+                )
         except Exception as e:
             print(f"Monitor error: {e}")
 
@@ -2023,41 +2010,28 @@ def _record_portfolio_snapshot(conn=None) -> None:
         conn = get_db()
     try:
         rows = conn.execute("""
-            SELECT p.*, pc.price as current_price, pc.data AS price_cache_data
+            SELECT p.*, pc.price as current_price, pc.nav, pc.pb, pc.quote_type, pc.data AS price_cache_data
             FROM positions p
             LEFT JOIN price_cache pc ON p.symbol = pc.symbol
         """).fetchall()
-        positions = [
-            dict(r) for r in rows
-            if not _is_test_symbol(r["symbol"], r["name"], r["category"])
-        ]
+        positions = [dict(r) for r in rows if not _is_test_symbol(r["symbol"], r["name"], r["category"])]
         if not positions:
             return
         fees_cfg = (load_settings().get("brokerage_fees") or {})
-
-        # Compute net_pnl per position (TWD) to mirror api_portfolio
-        for d in positions:
-            raw = d.pop("price_cache_data", None)
-            quote_type = None
-            if raw:
-                try:
-                    blob = json.loads(raw)
-                    quote_type = blob.get("quote_type")
-                except (TypeError, ValueError):
-                    pass
-            cur = d.get("current_price") or d["cost_price"]
-            currency = d.get("currency") or "TWD"
-            is_etf = _is_etf_symbol(d["symbol"], quote_type)
-            buy_fees = _compute_fees(d["cost_price"], d["shares"], currency, "buy", fees_cfg, is_etf)
-            sell_fees = _compute_fees(cur, d["shares"], currency, "sell", fees_cfg, is_etf)
-            gross_native = (cur - d["cost_price"]) * d["shares"]
-            net_native = gross_native - buy_fees["total"] - sell_fees["total"]
-            rate = USD_TWD if currency == "USD" else 1.0
-            d["net_pnl"] = net_native * rate
+        vault = _get_vault()
+        market_row = conn.execute("SELECT * FROM market_state WHERE id=1").fetchone()
+        market = dict(market_row) if market_row else None
+        sqlite_dirty = False
+        enriched_positions = []
+        for row in positions:
+            enriched, changed = _enrich_position_for_portfolio(conn, row, market, fees_cfg, vault)
+            sqlite_dirty = sqlite_dirty or changed
+            enriched_positions.append(enriched)
+        if sqlite_dirty:
+            conn.commit()
 
         today = date.today().isoformat()
-        tw_positions = [p for p in positions if (p.get("currency") == "TWD" or p["symbol"].endswith(".TW") or p["symbol"].endswith(".TWO"))]
-        us_positions = [p for p in positions if p not in tw_positions]
+        tw_positions, us_positions = _split_positions_by_zone(enriched_positions)
         for zone, plist in (("tw", tw_positions), ("us", us_positions)):
             snap = _compute_portfolio_snapshot_for_zone(plist, fees_cfg)
             conn.execute(
@@ -2073,11 +2047,222 @@ def _record_portfolio_snapshot(conn=None) -> None:
             conn.close()
 
 
+def _split_positions_by_zone(positions: list[dict]) -> tuple[list[dict], list[dict]]:
+    tw_positions = [
+        p for p in positions
+        if (p.get("currency") == "TWD" or p["symbol"].endswith(".TW") or p["symbol"].endswith(".TWO"))
+    ]
+    us_positions = [p for p in positions if p not in tw_positions]
+    return tw_positions, us_positions
+
+
+def _enrich_position_for_portfolio(
+    conn,
+    row: dict,
+    market: Optional[dict],
+    fees_cfg: dict,
+    vault: Optional[Path],
+) -> tuple[dict, bool]:
+    d = dict(row)
+    sqlite_dirty = False
+    nav, quote_type, pb = _hydrate_price_cache_meta(d)
+
+    if vault and (
+        not d.get("purchase_date")
+        or not d.get("name")
+        or not d.get("category")
+        or not d.get("currency")
+    ):
+        obsidian_pos = _obsidian_position_fallback(vault, d["symbol"])
+        if obsidian_pos:
+            for field in ("purchase_date", "name", "category", "currency"):
+                if not d.get(field) and obsidian_pos.get(field) not in (None, ""):
+                    d[field] = obsidian_pos[field]
+                    conn.execute(f"UPDATE positions SET {field}=? WHERE id=?", (obsidian_pos[field], d["id"]))
+                    sqlite_dirty = True
+
+    cur = d.get("current_price") or d["cost_price"]
+    cost_price = d["cost_price"]
+    shares = d["shares"]
+    currency = d["currency"] or "TWD"
+    is_etf = _is_etf_symbol(d["symbol"], quote_type)
+
+    if is_etf and (nav is None or quote_type is None or pb is None):
+        info_payload = _get_yf_quote_info(d["symbol"], want_info=True)
+        changed = {}
+        if nav is None and info_payload.get("nav") is not None:
+            nav = info_payload["nav"]
+            changed["nav"] = nav
+        if not quote_type and info_payload.get("quote_type"):
+            quote_type = info_payload["quote_type"]
+            changed["quote_type"] = quote_type
+        if pb is None and info_payload.get("pb") is not None:
+            pb = info_payload["pb"]
+            changed["pb"] = pb
+        if changed:
+            if info_payload.get("realtime") is not None and not d.get("current_price"):
+                d["current_price"] = info_payload["realtime"]
+                cur = d["current_price"]
+                changed["price"] = d["current_price"]
+            store_price_cache(conn.cursor(), d["symbol"], changed)
+            sqlite_dirty = True
+    elif not is_etf and pb is None:
+        info_payload = _get_yf_quote_info(d["symbol"], want_info=True)
+        if info_payload.get("pb") is not None:
+            pb = info_payload["pb"]
+            changed = {"pb": pb}
+            if info_payload.get("quote_type") and not quote_type:
+                quote_type = info_payload["quote_type"]
+                changed["quote_type"] = quote_type
+            store_price_cache(conn.cursor(), d["symbol"], changed)
+            sqlite_dirty = True
+
+    cost_total = cost_price * shares
+    val_total = cur * shares
+    buy_fees = _compute_fees(cost_price, shares, currency, "buy", fees_cfg, is_etf)
+    sell_fees = _compute_fees(cur, shares, currency, "sell", fees_cfg, is_etf)
+    gross_pnl_native = val_total - cost_total
+    net_pnl_native = gross_pnl_native - buy_fees["total"] - sell_fees["total"]
+
+    rate = USD_TWD if currency == "USD" else 1.0
+    cost_total_twd = cost_total * rate
+    val_total_twd = val_total * rate
+    net_pnl_twd = net_pnl_native * rate
+
+    premium_pct = None
+    premium_status = "not_etf"
+    if nav and nav > 0 and cur:
+        premium_pct = round((cur / nav - 1) * 100, 2)
+        premium_status = "ok"
+    elif is_etf:
+        premium_status = "missing_nav" if not nav else "missing_price"
+
+    annualized = None
+    annualized_status = "missing_purchase_date"
+    purchase_date_str = _normalize_purchase_date(d.get("purchase_date"))
+    d["purchase_date"] = purchase_date_str
+    if purchase_date_str:
+        try:
+            purchase_date = datetime.fromisoformat(purchase_date_str).date()
+            days_held = (date.today() - purchase_date).days
+            if days_held >= 0 and cost_price:
+                d["days_held"] = days_held
+                total_return_pct = (cur / cost_price - 1) * 100
+                annualized = _annualized_return(total_return_pct, days_held)
+                annualized_status = "ok" if annualized is not None else "too_short"
+        except (ValueError, TypeError):
+            pass
+
+    d["pnl"] = round(val_total_twd - cost_total_twd, 0)
+    d["pnl_pct"] = round((cur / cost_price - 1) * 100, 2) if cost_price else None
+    d["net_pnl"] = round(net_pnl_twd, 0)
+    d["net_pnl_pct"] = round(net_pnl_native / cost_total * 100, 2) if cost_total else None
+    d["fees"] = {
+        "buy_fee": buy_fees["fee"],
+        "sell_fee": sell_fees["fee"],
+        "sell_tax": sell_fees["tax"],
+        "total_native": round(buy_fees["total"] + sell_fees["total"], 2),
+        "total_twd": round((buy_fees["total"] + sell_fees["total"]) * rate, 0),
+        "currency": currency,
+    }
+    d["nav"] = nav
+    d["pb"] = round(pb, 2) if pb is not None else None
+    d["premium_pct"] = premium_pct
+    d["quote_type"] = quote_type
+    d["is_etf"] = is_etf
+    d["annualized_return_pct"] = annualized
+    d["annualized_status"] = annualized_status
+    d["premium_status"] = premium_status
+    d["market_value"] = round(val_total_twd, 0)
+    d["cost_total"] = round(cost_total_twd, 0)
+    d["recommendation"] = _recommend_position(d, market)
+    return d, sqlite_dirty
+
+
+def _persist_market_state(conn, market: dict) -> None:
+    conn.execute(
+        """INSERT OR REPLACE INTO market_state
+           (id, ts, vix,
+            twii, twii_ma20, twii_ma60, twii_ma120,
+            spx,  spx_ma20,  spx_ma60,  spx_ma120,
+            sox, sox_ma60, ndx, ndx_ma20, tnx, dxy,
+            risk_level, warnings_count)
+           VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (market.get("ts"), market.get("vix"),
+         market.get("twii"), market.get("twii_ma20"), market.get("twii_ma60"), market.get("twii_ma120"),
+         market.get("spx"),  market.get("spx_ma20"),  market.get("spx_ma60"),  market.get("spx_ma120"),
+         market.get("sox"), market.get("sox_ma60"),
+         market.get("ndx"), market.get("ndx_ma20"),
+         market.get("tnx"), market.get("dxy"),
+         market.get("risk_level"), market.get("warnings_count"))
+    )
+
+
+def _apply_indicator_updates_and_alerts(conn, positions: list[dict], watchlist: list[dict], indicators: dict[str, dict], market: dict) -> int:
+    c = conn.cursor()
+    alerts_created = 0
+    for d in positions:
+        ind = indicators.get(d["symbol"])
+        if ind:
+            store_price_cache(c, d["symbol"], ind)
+            created = insert_alerts(c, d["symbol"], d["name"], ind, market, position=d)
+            alerts_created += created
+            if created:
+                print(f"  [ALERT] {d['symbol']}: {created} new alert(s)")
+
+    for d in watchlist:
+        ind = indicators.get(d["symbol"])
+        if ind:
+            store_price_cache(c, d["symbol"], ind)
+            created = insert_alerts(c, d["symbol"], d["name"], ind, market, watch=d)
+            alerts_created += created
+            if created:
+                print(f"  [ALERT] {d['symbol']}: {created} new alert(s)")
+    return alerts_created
+
+
+def _run_refresh_cycle_sync(*, use_benchmark: bool, indicator_workers: int) -> dict:
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_twii = ex.submit(fetch_benchmark_close, "^TWII")
+        f_spx = ex.submit(fetch_benchmark_close, "^GSPC")
+        f_market = ex.submit(get_market_state)
+        twii = f_twii.result()
+        spx = f_spx.result()
+        market = f_market.result()
+
+    conn = get_db()
+    positions, watchlist = _load_active_portfolio_entities(conn)
+    symbol_map = _collect_symbol_benchmarks(positions, watchlist, twii, spx)
+    indicators = _fetch_indicator_batch(symbol_map, use_benchmark=use_benchmark, max_workers=indicator_workers)
+    _persist_market_state(conn, market)
+    alerts_created = _apply_indicator_updates_and_alerts(conn, positions, watchlist, indicators, market)
+    conn.commit()
+    try:
+        _record_portfolio_snapshot(conn)
+    except Exception as e:
+        print(f"  [WARN] snapshot failed: {e}")
+    vault = _get_vault()
+    if alerts_created and vault:
+        _obsidian_post_write_sync(vault, kinds=("alerts",))
+    conn.close()
+    return {
+        "market": market,
+        "positions": positions,
+        "watchlist": watchlist,
+        "symbol_map": symbol_map,
+        "indicators": indicators,
+        "alerts_created": alerts_created,
+    }
+
+
 @app.get("/api/portfolio")
 def api_portfolio():
     conn = get_db()
     rows = conn.execute("""
         SELECT p.*, pc.price as current_price, pc.rsi, pc.change_1d, pc.beta, pc.ma20, pc.high52,
+               pc.nav, pc.pb, pc.quote_type,
                pc.data AS price_cache_data
         FROM positions p
         LEFT JOIN price_cache pc ON p.symbol = pc.symbol
@@ -2088,147 +2273,16 @@ def api_portfolio():
     fees_cfg = settings.get("brokerage_fees") or {}
     vault = _get_vault()
 
-    today = date.today()
     out = []
     total_cost = total_value = total_net_pnl = 0.0
     sqlite_dirty = False
     for r in rows:
-        d = dict(r)
-        # Parse cached payload for nav + quote_type
-        raw = d.pop("price_cache_data", None)
-        nav = None
-        quote_type = None
-        pb = None
-        if raw:
-            try:
-                blob = json.loads(raw)
-                nav = blob.get("nav")
-                quote_type = blob.get("quote_type")
-                pb = _safe_float(blob.get("pb"))
-            except (TypeError, ValueError):
-                pass
-
-        obsidian_pos = None
-        if vault and (
-            not d.get("purchase_date")
-            or not d.get("name")
-            or not d.get("category")
-            or not d.get("currency")
-        ):
-            obsidian_pos = _obsidian_position_fallback(vault, d["symbol"])
-            if obsidian_pos:
-                for field in ("purchase_date", "name", "category", "currency"):
-                    if not d.get(field) and obsidian_pos.get(field) not in (None, ""):
-                        d[field] = obsidian_pos[field]
-                        conn.execute(f"UPDATE positions SET {field}=? WHERE id=?", (obsidian_pos[field], d["id"]))
-                        sqlite_dirty = True
-
-        cur = d.get("current_price") or d["cost_price"]
-        cost_price = d["cost_price"]
-        shares = d["shares"]
-        currency = d["currency"] or "TWD"
-        is_etf = _is_etf_symbol(d["symbol"], quote_type)
-
-        if is_etf and (nav is None or quote_type is None):
-            info_payload = _get_yf_quote_info(d["symbol"], want_info=True)
-            changed = {}
-            if nav is None and info_payload.get("nav") is not None:
-                nav = info_payload["nav"]
-                changed["nav"] = nav
-            if not quote_type and info_payload.get("quote_type"):
-                quote_type = info_payload["quote_type"]
-                changed["quote_type"] = quote_type
-            if pb is None and info_payload.get("pb") is not None:
-                pb = info_payload["pb"]
-                changed["pb"] = pb
-            if changed:
-                if info_payload.get("realtime") is not None and not d.get("current_price"):
-                    d["current_price"] = info_payload["realtime"]
-                    cur = d["current_price"]
-                    changed["price"] = d["current_price"]
-                store_price_cache(conn.cursor(), d["symbol"], changed)
-                sqlite_dirty = True
-        elif not is_etf and pb is None:
-            info_payload = _get_yf_quote_info(d["symbol"], want_info=True)
-            if info_payload.get("pb") is not None:
-                pb = info_payload["pb"]
-                changed = {"pb": pb}
-                if info_payload.get("quote_type") and not quote_type:
-                    quote_type = info_payload["quote_type"]
-                    changed["quote_type"] = quote_type
-                store_price_cache(conn.cursor(), d["symbol"], changed)
-                sqlite_dirty = True
-
-        cost_total = cost_price * shares
-        val_total = cur * shares
-
-        # Fees: buy at cost_price, sell (hypothetical) at current price
-        buy_fees = _compute_fees(cost_price, shares, currency, "buy", fees_cfg, is_etf)
-        sell_fees = _compute_fees(cur, shares, currency, "sell", fees_cfg, is_etf)
-        gross_pnl_native = val_total - cost_total
-        net_pnl_native = gross_pnl_native - buy_fees["total"] - sell_fees["total"]
-
-        # Convert to TWD for summary
-        rate = USD_TWD if currency == "USD" else 1.0
-        cost_total_twd = cost_total * rate
-        val_total_twd = val_total * rate
-        net_pnl_twd = net_pnl_native * rate
-
-        # Premium / discount vs NAV
-        premium_pct = None
-        premium_status = "not_etf"
-        if nav and nav > 0 and cur:
-            premium_pct = round((cur / nav - 1) * 100, 2)
-            premium_status = "ok"
-        elif is_etf:
-            premium_status = "missing_nav" if not nav else "missing_price"
-
-        # Annualized return (requires purchase_date)
-        annualized = None
-        annualized_status = "missing_purchase_date"
-        purchase_date_str = _normalize_purchase_date(d.get("purchase_date"))
-        d["purchase_date"] = purchase_date_str
-        if purchase_date_str:
-            try:
-                purchase_date = datetime.fromisoformat(purchase_date_str).date()
-                days_held = (today - purchase_date).days
-                if days_held >= 0 and cost_price:
-                    d["days_held"] = days_held
-                    total_return_pct = (cur / cost_price - 1) * 100
-                    annualized = _annualized_return(total_return_pct, days_held)
-                    annualized_status = "ok" if annualized is not None else "too_short"
-                else:
-                    annualized_status = "missing_purchase_date"
-            except (ValueError, TypeError):
-                annualized_status = "missing_purchase_date"
-
-        d["pnl"] = round(val_total_twd - cost_total_twd, 0)
-        d["pnl_pct"] = round((cur / cost_price - 1) * 100, 2) if cost_price else None
-        d["net_pnl"] = round(net_pnl_twd, 0)
-        d["net_pnl_pct"] = round((net_pnl_native / cost_total - 1 + 1) / 1 * 0, 2) if False else (round(net_pnl_native / cost_total * 100, 2) if cost_total else None)
-        d["fees"] = {
-            "buy_fee": buy_fees["fee"],
-            "sell_fee": sell_fees["fee"],
-            "sell_tax": sell_fees["tax"],
-            "total_native": round(buy_fees["total"] + sell_fees["total"], 2),
-            "total_twd": round((buy_fees["total"] + sell_fees["total"]) * rate, 0),
-            "currency": currency,
-        }
-        d["nav"] = nav
-        d["pb"] = round(pb, 2) if pb is not None else None
-        d["premium_pct"] = premium_pct
-        d["quote_type"] = quote_type
-        d["is_etf"] = is_etf
-        d["annualized_return_pct"] = annualized
-        d["annualized_status"] = annualized_status
-        d["premium_status"] = premium_status
-        d["market_value"] = round(val_total_twd, 0)
-        d["cost_total"] = round(cost_total_twd, 0)
-        d["recommendation"] = _recommend_position(d, market)
-        total_cost += cost_total_twd
-        total_value += val_total_twd
-        total_net_pnl += net_pnl_twd
-        out.append(d)
+        enriched, changed = _enrich_position_for_portfolio(conn, dict(r), market, fees_cfg, vault)
+        sqlite_dirty = sqlite_dirty or changed
+        total_cost += enriched["cost_total"]
+        total_value += enriched["market_value"]
+        total_net_pnl += enriched["net_pnl"]
+        out.append(enriched)
 
     if sqlite_dirty:
         conn.commit()
@@ -2310,36 +2364,25 @@ def api_portfolio_trend():
     try:
         conn = get_db()
         rows = conn.execute(
-            """SELECT p.*, pc.price as current_price, pc.data AS price_cache_data
+            """SELECT p.*, pc.price as current_price, pc.nav, pc.pb, pc.quote_type, pc.data AS price_cache_data
                FROM positions p
                LEFT JOIN price_cache pc ON p.symbol = pc.symbol"""
         ).fetchall()
-        conn.close()
-        positions = [
-            dict(r) for r in rows
-            if not _is_test_symbol(r["symbol"], r["name"], r["category"])
-        ]
+        market_row = conn.execute("SELECT * FROM market_state WHERE id=1").fetchone()
+        market = dict(market_row) if market_row else None
+        positions = [dict(r) for r in rows if not _is_test_symbol(r["symbol"], r["name"], r["category"])]
         if positions:
             fees_cfg = (load_settings().get("brokerage_fees") or {})
-            for d in positions:
-                raw = d.pop("price_cache_data", None)
-                quote_type = None
-                if raw:
-                    try:
-                        quote_type = json.loads(raw).get("quote_type")
-                    except (TypeError, ValueError):
-                        pass
-                cur = d.get("current_price") or d["cost_price"]
-                currency = d.get("currency") or "TWD"
-                is_etf = _is_etf_symbol(d["symbol"], quote_type)
-                buy_fees = _compute_fees(d["cost_price"], d["shares"], currency, "buy", fees_cfg, is_etf)
-                sell_fees = _compute_fees(cur, d["shares"], currency, "sell", fees_cfg, is_etf)
-                gross_native = (cur - d["cost_price"]) * d["shares"]
-                net_native = gross_native - buy_fees["total"] - sell_fees["total"]
-                rate = USD_TWD if currency == "USD" else 1.0
-                d["net_pnl"] = net_native * rate
-            tw_positions = [p for p in positions if (p.get("currency") == "TWD" or p["symbol"].endswith(".TW") or p["symbol"].endswith(".TWO"))]
-            us_positions = [p for p in positions if p not in tw_positions]
+            vault = _get_vault()
+            sqlite_dirty = False
+            enriched_positions = []
+            for row in positions:
+                enriched, changed = _enrich_position_for_portfolio(conn, row, market, fees_cfg, vault)
+                sqlite_dirty = sqlite_dirty or changed
+                enriched_positions.append(enriched)
+            if sqlite_dirty:
+                conn.commit()
+            tw_positions, us_positions = _split_positions_by_zone(enriched_positions)
             today_ts = int(datetime.fromisoformat(today_str).timestamp())
             for zone, plist, arr in (("tw", tw_positions, trend_tw), ("us", us_positions, trend_us)):
                 snap = _compute_portfolio_snapshot_for_zone(plist, fees_cfg)
@@ -2355,6 +2398,7 @@ def api_portfolio_trend():
                     "live": True,
                 }
                 arr.append(point)
+        conn.close()
     except Exception:
         pass
 
@@ -2569,93 +2613,22 @@ async def api_refresh():
 
 def _run_api_refresh_sync(t0: float) -> dict:
     """Synchronous body of the manual refresh, held under _refresh_lock."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     import time as _time
     import gc
 
-    # Phase 1 + 3 重疊：market state / benchmark fetch 在背景跑時，
-    # 主執行緒直接讀 DB 並提早派發 31 個標的的 indicator fetch。
-    # benchmark 只用於 beta 計算（指標表的次要欄位），手動刷新的場景
-    # 接受 beta 暫時為 None；monitor_loop 仍會帶 benchmark 補回 beta。
-    # 兩個 executor 都用 `with` 包起來；先前 try/finally + shutdown(wait=False)
-    # 不會 join worker thread，連續刷新會在 process 內累積 FD/thread 直到
-    # "Too many open files" 把 server 打死。
-    conn = get_db()
-    c = conn.cursor()
-
-    # Phase 2: 收集標的 + 去重（不依賴 market state）
-    positions = [
-        dict(row) for row in c.execute("SELECT * FROM positions").fetchall()
-        if not _is_test_symbol(row["symbol"], row["name"], row["category"])
-    ]
-    watchlist_rows = [
-        dict(row) for row in c.execute("SELECT * FROM watchlist").fetchall()
-        if not _is_test_symbol(row["symbol"], row["name"], row["category"])
-    ]
-    all_symbols: dict = {}
-    for d in positions:
-        all_symbols.setdefault(d["symbol"], {})
-    for d in watchlist_rows:
-        all_symbols.setdefault(d["symbol"], {})
-
-    def _fetch_one(symbol):
-        return symbol, fetch_indicators(symbol, None)
-
-    indicators: dict = {}
-    with ThreadPoolExecutor(max_workers=3) as bg_ex, \
-         ThreadPoolExecutor(max_workers=16) as indicator_ex:
-        f_twii = bg_ex.submit(fetch_benchmark_close, "^TWII")
-        f_spx = bg_ex.submit(fetch_benchmark_close, "^GSPC")
-        f_market = bg_ex.submit(get_market_state)
-        # Phase 3 — kick off all indicator fetches concurrently with market state.
-        futures = [indicator_ex.submit(_fetch_one, sym) for sym in all_symbols]
-        # Wait for market state result in the foreground; indicator fetches run alongside.
-        twii = f_twii.result()
-        spx = f_spx.result()
-        market = f_market.result()
-        c.execute("INSERT OR REPLACE INTO market_state (id, ts, vix, twii, twii_ma60, spx, spx_ma60, risk_level, warnings_count) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)",
-                  (market.get("ts"), market.get("vix"), market.get("twii"), market.get("twii_ma60"),
-                   market.get("spx"), market.get("spx_ma60"), market.get("risk_level"), market.get("warnings_count")))
-        for future in as_completed(futures):
-            try:
-                sym, ind = future.result()
-                if ind and "price" in ind:
-                    indicators[sym] = ind
-            except Exception:
-                pass
-
-    # Phase 4: 寫入 DB
-    refreshed = 0
-    alerts_created = 0
-    for d in positions:
-        ind = indicators.get(d["symbol"])
-        if ind:
-            store_price_cache(c, d["symbol"], ind)
-            refreshed += 1
-            alerts_created += insert_alerts(c, d["symbol"], d["name"], ind, market, position=d)
-    for d in watchlist_rows:
-        ind = indicators.get(d["symbol"])
-        if ind:
-            store_price_cache(c, d["symbol"], ind)
-            refreshed += 1
-            alerts_created += insert_alerts(c, d["symbol"], d["name"], ind, market, watch=d)
-
-    conn.commit()
-    try:
-        _record_portfolio_snapshot(conn)
-    except Exception as e:
-        print(f"  [WARN] snapshot failed: {e}")
-    vault = _get_vault()
-    if vault and alerts_created:
-        _obsidian_post_write_sync(vault, kinds=("alerts",))
-    conn.close()
+    cycle = _run_refresh_cycle_sync(use_benchmark=False, indicator_workers=16)
     # yfinance >= 0.2 leaks SQLite FDs from its per-Ticker timezone cache
     # (~10 stranded `tkr-tz` FDs per refresh). The connections only release
     # when the Ticker objects are garbage-collected; a forced full GC after
     # each refresh keeps the process from hitting ulimit -n.
     gc.collect()
     elapsed = round(_time.time() - t0, 1)
-    return {"refreshed": refreshed, "alerts_created": alerts_created, "market": market, "elapsed_seconds": elapsed}
+    return {
+        "refreshed": len(cycle["indicators"]),
+        "alerts_created": cycle["alerts_created"],
+        "market": cycle["market"],
+        "elapsed_seconds": elapsed,
+    }
 
 @app.get("/api/history/{symbol}")
 def api_history(symbol: str, period: str = "6mo"):
