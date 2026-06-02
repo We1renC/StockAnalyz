@@ -189,6 +189,23 @@ def init_db():
         obsidian_path TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_domain_research_ts ON domain_research(ts DESC);
+    CREATE TABLE IF NOT EXISTS trades (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol      TEXT NOT NULL,
+        name        TEXT DEFAULT '',
+        action      TEXT NOT NULL CHECK(action IN ('buy','sell')),
+        shares      REAL NOT NULL,
+        price       REAL NOT NULL,
+        fee         REAL DEFAULT 0,
+        tax         REAL DEFAULT 0,
+        trade_date  TEXT NOT NULL,
+        settle_date TEXT,
+        currency    TEXT DEFAULT 'TWD',
+        notes       TEXT DEFAULT '',
+        created_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
+    CREATE INDEX IF NOT EXISTS idx_trades_date   ON trades(trade_date DESC);
     """)
     conn.commit()
 
@@ -214,6 +231,20 @@ def init_db():
     for col_def in ("nav REAL", "pb REAL", "quote_type TEXT"):
         try:
             c.execute(f"ALTER TABLE price_cache ADD COLUMN {col_def}")
+            conn.commit()
+        except Exception:
+            pass
+
+    # Migration: trades table (for pre-existing DBs)
+    for col_def in (
+        "name TEXT DEFAULT ''",
+        "fee REAL DEFAULT 0",
+        "tax REAL DEFAULT 0",
+        "settle_date TEXT",
+        "notes TEXT DEFAULT ''",
+    ):
+        try:
+            c.execute(f"ALTER TABLE trades ADD COLUMN {col_def}")
             conn.commit()
         except Exception:
             pass
@@ -3372,7 +3403,281 @@ def api_del_watch(wid: int):
     conn.close()
     return {"ok": True}
 
+
+# ─────────────── Trade Records CRUD ───────────────
+
+def _estimate_trade_fees(action: str, shares: float, price: float, currency: str) -> tuple[float, float]:
+    """Estimate brokerage fee and transaction tax for TW stocks.
+
+    TW buy:  fee = shares * price * 0.001425  (capped at min 20 TWD)
+    TW sell: fee = shares * price * 0.001425  + tax = shares * price * 0.003
+    US / other: fee = 0 (user can enter manually)
+    """
+    if currency != "TWD":
+        return 0.0, 0.0
+    gross = shares * price
+    fee = round(max(20.0, gross * 0.001425), 0)
+    tax = round(gross * 0.003, 0) if action == "sell" else 0.0
+    return fee, tax
+
+
+def _compute_fifo_pnl(symbol: str, conn) -> dict:
+    """FIFO realized P&L for a single symbol from all trades.
+
+    Returns dict with keys:
+      realized_pnl, realized_pnl_pct, total_bought, total_sold,
+      remaining_shares, avg_cost, win_trades, loss_trades,
+      total_trades, holding_days (avg of closed lots), best_pnl, worst_pnl
+    """
+    rows = conn.execute(
+        "SELECT action, shares, price, fee, tax, trade_date FROM trades "
+        "WHERE symbol=? ORDER BY trade_date ASC, id ASC",
+        (symbol,),
+    ).fetchall()
+
+    buy_queue: list[dict] = []   # {"shares": float, "price": float, "date": str}
+    realized_pnl = 0.0
+    realized_cost = 0.0
+    total_bought = 0.0
+    total_sold = 0.0
+    win, loss = 0, 0
+    best_pnl: Optional[float] = None
+    worst_pnl: Optional[float] = None
+    holding_days_list: list[float] = []
+
+    for r in rows:
+        action, shares, price, fee, tax, trade_date = (
+            r["action"], r["shares"], r["price"], r["fee"] or 0.0, r["tax"] or 0.0, r["trade_date"]
+        )
+        if action == "buy":
+            buy_queue.append({"shares": shares, "price": price + (fee / shares if shares else 0), "date": trade_date})
+            total_bought += shares
+        elif action == "sell":
+            total_sold += shares
+            sell_gross = shares * price - fee - tax
+            remaining_sell = shares
+            sell_cost = 0.0
+            while remaining_sell > 1e-9 and buy_queue:
+                lot = buy_queue[0]
+                use = min(lot["shares"], remaining_sell)
+                sell_cost += use * lot["price"]
+                # holding days for this lot
+                try:
+                    from datetime import date as _date
+                    d1 = _date.fromisoformat(lot["date"])
+                    d2 = _date.fromisoformat(trade_date)
+                    holding_days_list.append((d2 - d1).days)
+                except Exception:
+                    pass
+                lot["shares"] -= use
+                remaining_sell -= use
+                if lot["shares"] < 1e-9:
+                    buy_queue.pop(0)
+            pnl = sell_gross - sell_cost
+            realized_pnl += pnl
+            realized_cost += sell_cost
+            if pnl >= 0:
+                win += 1
+            else:
+                loss += 1
+            if best_pnl is None or pnl > best_pnl:
+                best_pnl = pnl
+            if worst_pnl is None or pnl < worst_pnl:
+                worst_pnl = pnl
+
+    remaining_shares = sum(l["shares"] for l in buy_queue)
+    avg_cost = (
+        sum(l["shares"] * l["price"] for l in buy_queue) / remaining_shares
+        if remaining_shares > 1e-9 else 0.0
+    )
+    total_trades = win + loss
+    return {
+        "realized_pnl": round(realized_pnl, 2),
+        "realized_pnl_pct": round(realized_pnl / realized_cost * 100, 2) if realized_cost > 0 else 0.0,
+        "realized_cost": round(realized_cost, 2),
+        "total_bought": total_bought,
+        "total_sold": total_sold,
+        "remaining_shares": round(remaining_shares, 4),
+        "avg_cost": round(avg_cost, 4),
+        "win_trades": win,
+        "loss_trades": loss,
+        "total_closed_trades": total_trades,
+        "win_rate": round(win / total_trades * 100, 1) if total_trades > 0 else None,
+        "avg_holding_days": round(sum(holding_days_list) / len(holding_days_list), 1) if holding_days_list else None,
+        "best_pnl": round(best_pnl, 2) if best_pnl is not None else None,
+        "worst_pnl": round(worst_pnl, 2) if worst_pnl is not None else None,
+    }
+
+
+class TradeCreate(BaseModel):
+    symbol: str
+    name: Optional[str] = ""
+    action: str          # "buy" | "sell"
+    shares: float
+    price: float
+    fee: Optional[float] = None   # None = auto-estimate for TW stocks
+    tax: Optional[float] = None   # None = auto-estimate for TW stocks
+    trade_date: Optional[str] = None
+    settle_date: Optional[str] = None
+    currency: str = "TWD"
+    notes: Optional[str] = ""
+    auto_fee: bool = True          # if True and fee/tax are None, auto-estimate
+
+
+class TradeUpdate(BaseModel):
+    name: Optional[str] = None
+    action: Optional[str] = None
+    shares: Optional[float] = None
+    price: Optional[float] = None
+    fee: Optional[float] = None
+    tax: Optional[float] = None
+    trade_date: Optional[str] = None
+    settle_date: Optional[str] = None
+    currency: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@app.get("/api/trades")
+def api_get_trades(
+    symbol: Optional[str] = None,
+    action: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    limit: int = 500,
+):
+    conn = get_db()
+    query = "SELECT * FROM trades WHERE 1=1"
+    params: list = []
+    if symbol:
+        query += " AND symbol = ?"
+        params.append(symbol.upper())
+    if action:
+        query += " AND action = ?"
+        params.append(action)
+    if from_date:
+        query += " AND trade_date >= ?"
+        params.append(from_date)
+    if to_date:
+        query += " AND trade_date <= ?"
+        params.append(to_date)
+    query += " ORDER BY trade_date DESC, id DESC LIMIT ?"
+    params.append(limit)
+    rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+    conn.close()
+    return sanitize_float_values({"trades": rows, "count": len(rows)})
+
+
+@app.post("/api/trades")
+def api_add_trade(t: TradeCreate):
+    if t.action not in ("buy", "sell"):
+        raise HTTPException(400, "action must be 'buy' or 'sell'")
+    if t.shares <= 0:
+        raise HTTPException(400, "shares must be positive")
+    if t.price <= 0:
+        raise HTTPException(400, "price must be positive")
+
+    trade_date = _normalize_purchase_date(t.trade_date) or date.today().isoformat()
+    symbol = t.symbol.strip().upper()
+
+    fee = t.fee
+    tax = t.tax
+    if t.auto_fee and fee is None and tax is None:
+        fee, tax = _estimate_trade_fees(t.action, t.shares, t.price, t.currency)
+    fee = fee or 0.0
+    tax = tax or 0.0
+
+    created_at = datetime.utcnow().isoformat() + "Z"
+    conn = get_db()
+    conn.execute(
+        """INSERT INTO trades
+           (symbol, name, action, shares, price, fee, tax, trade_date, settle_date, currency, notes, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (symbol, t.name or "", t.action, t.shares, t.price, fee, tax,
+         trade_date, t.settle_date, t.currency, t.notes or "", created_at),
+    )
+    conn.commit()
+    tid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.close()
+    return {"ok": True, "id": tid, "fee": fee, "tax": tax}
+
+
+@app.put("/api/trades/{tid}")
+def api_update_trade(tid: int, t: TradeUpdate):
+    conn = get_db()
+    existing = conn.execute("SELECT * FROM trades WHERE id=?", (tid,)).fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(404, "Trade not found")
+    set_fields = t.model_dump(exclude_unset=True)
+    if "trade_date" in set_fields:
+        set_fields["trade_date"] = _normalize_purchase_date(set_fields["trade_date"]) or existing["trade_date"]
+    updates = [f"{k}=?" for k in set_fields]
+    params = list(set_fields.values()) + [tid]
+    if updates:
+        conn.execute(f"UPDATE trades SET {', '.join(updates)} WHERE id=?", params)
+        conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.delete("/api/trades/{tid}")
+def api_del_trade(tid: int):
+    conn = get_db()
+    conn.execute("DELETE FROM trades WHERE id=?", (tid,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@app.get("/api/trades/summary")
+def api_trades_summary():
+    """已實現損益彙總（全部股票，FIFO）"""
+    conn = get_db()
+    symbols = [r[0] for r in conn.execute(
+        "SELECT DISTINCT symbol FROM trades ORDER BY symbol"
+    ).fetchall()]
+    result = []
+    total_realized = 0.0
+    for sym in symbols:
+        fifo = _compute_fifo_pnl(sym, conn)
+        # grab display name
+        name_row = conn.execute(
+            "SELECT name FROM trades WHERE symbol=? AND name != '' ORDER BY id DESC LIMIT 1", (sym,)
+        ).fetchone()
+        name = name_row[0] if name_row else sym
+        # currency — assume homogeneous per symbol
+        cur_row = conn.execute("SELECT currency FROM trades WHERE symbol=? LIMIT 1", (sym,)).fetchone()
+        currency = cur_row[0] if cur_row else "TWD"
+        row_data = {"symbol": sym, "name": name, "currency": currency, **fifo}
+        result.append(row_data)
+        total_realized += fifo["realized_pnl"]
+    conn.close()
+    win_symbols = [r for r in result if r["realized_pnl"] > 0]
+    loss_symbols = [r for r in result if r["realized_pnl"] < 0]
+    return sanitize_float_values({
+        "by_symbol": result,
+        "total_realized_pnl": round(total_realized, 2),
+        "win_symbols": len(win_symbols),
+        "loss_symbols": len(loss_symbols),
+        "symbol_count": len(result),
+    })
+
+
+@app.get("/api/trades/{symbol}/timeline")
+def api_trades_timeline(symbol: str):
+    """單一股票交易時間線 + FIFO 損益"""
+    symbol = symbol.upper()
+    conn = get_db()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM trades WHERE symbol=? ORDER BY trade_date ASC, id ASC", (symbol,)
+    ).fetchall()]
+    fifo = _compute_fifo_pnl(symbol, conn)
+    conn.close()
+    return sanitize_float_values({"symbol": symbol, "trades": rows, "fifo_summary": fifo})
+
+
 # ─────────────── 警報歷史篩選 ───────────────
+
 @app.get("/api/alerts/search")
 def api_alerts_search(
     symbol: Optional[str] = None,

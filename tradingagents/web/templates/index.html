@@ -638,116 +638,206 @@ body { background: var(--bg-base); color: var(--text-primary); }
   <!-- Portfolio Tab -->
   <div id="tab-portfolio" class="tab-content">
 
-    <!-- 持倉趨勢圖表 (台股美股分開顯示) -->
-    <div id="portfolio-charts-container" class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6 hidden">
-      <!-- 台股趨勢 -->
-      <div id="tw-trend-card" class="glass-card p-4 flex flex-col relative">
-        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-2">
-          <div class="text-sm font-semibold text-slate-300">台股資產與投入成本趨勢 (TWD)</div>
-          <div class="flex gap-4 text-xs font-semibold">
-            <div class="flex items-center gap-1.5">
-              <span class="inline-block w-2 h-2 rounded-full" style="background-color: rgba(239, 68, 68, 0.95)"></span>
-              <span class="text-slate-400">市值:</span>
-              <span id="tw-legend-value" class="text-slate-200 tabular-nums">—</span>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <span class="inline-block w-2 h-2 rounded-full" style="background-color: rgba(250, 204, 21, 0.6)"></span>
-              <span class="text-slate-400">成本:</span>
-              <span id="tw-legend-cost" class="text-slate-200 tabular-nums">—</span>
-            </div>
-          </div>
-        </div>
-        <div id="tw-portfolio-trend-chart" class="w-full h-72"></div>
-      </div>
-      <!-- 美股趨勢 -->
-      <div id="us-trend-card" class="glass-card p-4 flex flex-col relative">
-        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-2">
-          <div class="text-sm font-semibold text-slate-300">美股資產與投入成本趨勢 (USD)</div>
-          <div class="flex gap-4 text-xs font-semibold">
-            <div class="flex items-center gap-1.5">
-              <span class="inline-block w-2 h-2 rounded-full" style="background-color: rgba(59, 130, 246, 0.95)"></span>
-              <span class="text-slate-400">市值:</span>
-              <span id="us-legend-value" class="text-slate-200 tabular-nums">—</span>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <span class="inline-block w-2 h-2 rounded-full" style="background-color: rgba(250, 204, 21, 0.6)"></span>
-              <span class="text-slate-400">成本:</span>
-              <span id="us-legend-cost" class="text-slate-200 tabular-nums">—</span>
-            </div>
-          </div>
-        </div>
-        <div id="us-portfolio-trend-chart" class="w-full h-72"></div>
-      </div>
+    <!-- Portfolio Sub-tab bar -->
+    <div class="flex items-center gap-1 mb-5 border-b border-slate-800/60 pb-0">
+      <button id="portfolio-subtab-btn-positions" onclick="showPortfolioSubtab('positions')"
+        class="portfolio-subtab-btn active text-sm font-semibold px-4 py-2 border-b-2 border-emerald-500 text-emerald-400 transition-colors">
+        持倉總覽
+      </button>
+      <button id="portfolio-subtab-btn-trades" onclick="showPortfolioSubtab('trades')"
+        class="portfolio-subtab-btn text-sm font-semibold px-4 py-2 border-b-2 border-transparent text-slate-500 hover:text-slate-300 transition-colors">
+        交易紀錄
+      </button>
     </div>
 
-    <!-- 台股持倉 -->
-    <div class="mb-6">
-      <div class="flex items-center justify-between mb-2 px-1">
-        <div class="flex items-center gap-2">
-          <span class="text-base font-bold text-slate-100">台股持倉</span>
-          <span id="tw-portfolio-count" class="pill pill-gray text-xs" style="font-size:10px;padding:2px 6px">0 檔</span>
+    <!-- Sub-tab: 持倉總覽 -->
+    <div id="portfolio-subtab-positions">
+
+      <!-- 持倉趨勢圖表 (台股美股分開顯示) -->
+      <div id="portfolio-charts-container" class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6 hidden">
+        <!-- 台股趨勢 -->
+        <div id="tw-trend-card" class="glass-card p-4 flex flex-col relative">
+          <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-2">
+            <div class="text-sm font-semibold text-slate-300">台股資產與投入成本趨勢 (TWD)</div>
+            <div class="flex gap-4 text-xs font-semibold">
+              <div class="flex items-center gap-1.5">
+                <span class="inline-block w-2 h-2 rounded-full" style="background-color: rgba(239, 68, 68, 0.95)"></span>
+                <span class="text-slate-400">市值:</span>
+                <span id="tw-legend-value" class="text-slate-200 tabular-nums">—</span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <span class="inline-block w-2 h-2 rounded-full" style="background-color: rgba(250, 204, 21, 0.6)"></span>
+                <span class="text-slate-400">成本:</span>
+                <span id="tw-legend-cost" class="text-slate-200 tabular-nums">—</span>
+              </div>
+            </div>
+          </div>
+          <div id="tw-portfolio-trend-chart" class="w-full h-72"></div>
         </div>
-        <div class="flex items-center gap-3">
-          <button onclick="openAddPosition()" class="btn-primary text-xs px-2.5 py-1 shrink-0" style="border-radius: 6px; padding: 4px 8px; font-size: 11px;">新增持倉</button>
-          <div id="tw-portfolio-summary" class="flex gap-4 text-xs text-slate-400"></div>
+        <!-- 美股趨勢 -->
+        <div id="us-trend-card" class="glass-card p-4 flex flex-col relative">
+          <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-2">
+            <div class="text-sm font-semibold text-slate-300">美股資產與投入成本趨勢 (USD)</div>
+            <div class="flex gap-4 text-xs font-semibold">
+              <div class="flex items-center gap-1.5">
+                <span class="inline-block w-2 h-2 rounded-full" style="background-color: rgba(59, 130, 246, 0.95)"></span>
+                <span class="text-slate-400">市值:</span>
+                <span id="us-legend-value" class="text-slate-200 tabular-nums">—</span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <span class="inline-block w-2 h-2 rounded-full" style="background-color: rgba(250, 204, 21, 0.6)"></span>
+                <span class="text-slate-400">成本:</span>
+                <span id="us-legend-cost" class="text-slate-200 tabular-nums">—</span>
+              </div>
+            </div>
+          </div>
+          <div id="us-portfolio-trend-chart" class="w-full h-72"></div>
         </div>
       </div>
-      <div class="glass-card overflow-hidden">
-        <table class="data-table">
+
+      <!-- 台股持倉 -->
+      <div class="mb-6">
+        <div class="flex items-center justify-between mb-2 px-1">
+          <div class="flex items-center gap-2">
+            <span class="text-base font-bold text-slate-100">台股持倉</span>
+            <span id="tw-portfolio-count" class="pill pill-gray text-xs" style="font-size:10px;padding:2px 6px">0 檔</span>
+          </div>
+          <div class="flex items-center gap-3">
+            <button onclick="openAddPosition()" class="btn-primary text-xs px-2.5 py-1 shrink-0" style="border-radius: 6px; padding: 4px 8px; font-size: 11px;">新增持倉</button>
+            <div id="tw-portfolio-summary" class="flex gap-4 text-xs text-slate-400"></div>
+          </div>
+        </div>
+        <div class="glass-card overflow-hidden">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th class="text-left">代號</th>
+                <th class="text-left">名稱</th>
+                <th class="text-right">股數</th>
+                <th class="text-right">成本</th>
+                <th class="text-right">現價</th>
+                <th class="text-right">日漲</th>
+                <th class="text-right">RSI</th>
+                <th class="text-right" title="已扣除手續費與稅費的淨損益">損益金額</th>
+                <th class="text-right">報酬率</th>
+                <th class="text-right" title="(1 + 總報酬)^(365 / 持有天數) - 1">年化</th>
+                <th class="text-right" title="ETF 顯示折溢價，個股顯示 P/B">折溢價 / PB</th>
+                <th class="text-left">建議</th>
+                <th class="text-center">操作</th>
+              </tr>
+            </thead>
+            <tbody id="tw-portfolio-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 美股持倉 -->
+      <div class="mb-6">
+        <div class="flex items-center justify-between mb-2 px-1">
+          <div class="flex items-center gap-2">
+            <span class="text-base font-bold text-slate-100">美股持倉</span>
+            <span id="us-portfolio-count" class="pill pill-gray text-xs" style="font-size:10px;padding:2px 6px">0 檔</span>
+          </div>
+          <div id="us-portfolio-summary" class="flex gap-4 text-xs text-slate-400"></div>
+        </div>
+        <div class="glass-card overflow-hidden">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th class="text-left">代號</th>
+                <th class="text-left">名稱</th>
+                <th class="text-right">股數</th>
+                <th class="text-right">成本</th>
+                <th class="text-right">現價</th>
+                <th class="text-right">日漲</th>
+                <th class="text-right">RSI</th>
+                <th class="text-right" title="已扣除手續費與稅費的淨損益">損益金額</th>
+                <th class="text-right">報酬率</th>
+                <th class="text-right" title="(1 + 總報酬)^(365 / 持有天數) - 1">年化</th>
+                <th class="text-right" title="ETF 顯示折溢價，個股顯示 P/B">折溢價 / PB</th>
+                <th class="text-left">建議</th>
+                <th class="text-center">操作</th>
+              </tr>
+            </thead>
+            <tbody id="us-portfolio-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div><!-- /portfolio-subtab-positions -->
+
+    <!-- Sub-tab: 交易紀錄 -->
+    <div id="portfolio-subtab-trades" class="hidden">
+
+      <!-- 已實現損益 彙總卡片 -->
+      <div id="trades-summary-cards" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="glass-card p-4 flex flex-col gap-1">
+          <div class="text-xs text-slate-500 font-semibold uppercase tracking-wide">已實現損益</div>
+          <div id="tr-total-pnl" class="text-xl font-bold tabular-nums text-slate-200">—</div>
+          <div id="tr-total-pnl-pct" class="text-xs text-slate-500 tabular-nums">—</div>
+        </div>
+        <div class="glass-card p-4 flex flex-col gap-1">
+          <div class="text-xs text-slate-500 font-semibold uppercase tracking-wide">交易勝率</div>
+          <div id="tr-win-rate" class="text-xl font-bold tabular-nums text-slate-200">—</div>
+          <div id="tr-win-loss" class="text-xs text-slate-500">— 勝 / — 敗</div>
+        </div>
+        <div class="glass-card p-4 flex flex-col gap-1">
+          <div class="text-xs text-slate-500 font-semibold uppercase tracking-wide">平均持有天數</div>
+          <div id="tr-avg-days" class="text-xl font-bold tabular-nums text-slate-200">—</div>
+          <div id="tr-trade-count" class="text-xs text-slate-500">— 筆已平倉</div>
+        </div>
+        <div class="glass-card p-4 flex flex-col gap-1">
+          <div class="text-xs text-slate-500 font-semibold uppercase tracking-wide">最佳 / 最差</div>
+          <div id="tr-best" class="text-sm font-bold tabular-nums text-emerald-400">—</div>
+          <div id="tr-worst" class="text-sm font-bold tabular-nums text-red-400">—</div>
+        </div>
+      </div>
+
+      <!-- 篩選列 + 新增按鈕 -->
+      <div class="flex flex-wrap items-center gap-3 mb-4">
+        <input id="tr-filter-symbol" placeholder="股票代號" class="input-field text-xs" style="width:120px;padding:6px 10px" oninput="renderTradesTable()">
+        <select id="tr-filter-action" class="input-field text-xs" style="width:96px;padding:6px 10px" onchange="renderTradesTable()">
+          <option value="">全部</option>
+          <option value="buy">買入</option>
+          <option value="sell">賣出</option>
+        </select>
+        <input id="tr-filter-from" type="date" class="input-field text-xs" style="padding:6px 10px" onchange="renderTradesTable()">
+        <span class="text-slate-600 text-xs">至</span>
+        <input id="tr-filter-to" type="date" class="input-field text-xs" style="padding:6px 10px" onchange="renderTradesTable()">
+        <button onclick="clearTradeFilters()" class="btn-secondary text-xs px-3 py-1.5">清除篩選</button>
+        <div class="ml-auto flex gap-2">
+          <button onclick="loadTrades()" class="btn-secondary text-xs px-3 py-1.5" title="重新載入">↺ 重整</button>
+          <button onclick="openAddTrade()" class="btn-primary text-xs px-3 py-1.5">＋ 新增交易</button>
+        </div>
+      </div>
+
+      <!-- 交易紀錄表 -->
+      <div class="glass-card overflow-x-auto">
+        <table class="data-table w-full">
           <thead>
             <tr>
-              <th class="text-left">代號</th>
+              <th class="text-left" style="min-width:80px">日期</th>
+              <th class="text-left" style="min-width:80px">代號</th>
               <th class="text-left">名稱</th>
+              <th class="text-center" style="min-width:56px">方向</th>
               <th class="text-right">股數</th>
-              <th class="text-right">成本</th>
-              <th class="text-right">現價</th>
-              <th class="text-right">日漲</th>
-              <th class="text-right">RSI</th>
-              <th class="text-right" title="已扣除手續費與稅費的淨損益">損益金額</th>
-              <th class="text-right">報酬率</th>
-              <th class="text-right" title="(1 + 總報酬)^(365 / 持有天數) - 1">年化</th>
-              <th class="text-right" title="ETF 顯示折溢價，個股顯示 P/B">折溢價 / PB</th>
-              <th class="text-left">建議</th>
+              <th class="text-right">成交價</th>
+              <th class="text-right">手續費</th>
+              <th class="text-right">稅</th>
+              <th class="text-right" style="min-width:90px" title="賣出時顯示 FIFO 實現損益">實現損益</th>
+              <th class="text-left">備註</th>
               <th class="text-center">操作</th>
             </tr>
           </thead>
-          <tbody id="tw-portfolio-tbody"></tbody>
+          <tbody id="trades-tbody">
+            <tr><td colspan="11" class="text-center text-slate-500 py-8">載入中...</td></tr>
+          </tbody>
         </table>
       </div>
-    </div>
+      <div id="trades-pagination" class="flex items-center justify-between mt-3 text-xs text-slate-500"></div>
 
-    <!-- 美股持倉 -->
-    <div class="mb-6">
-      <div class="flex items-center justify-between mb-2 px-1">
-        <div class="flex items-center gap-2">
-          <span class="text-base font-bold text-slate-100">美股持倉</span>
-          <span id="us-portfolio-count" class="pill pill-gray text-xs" style="font-size:10px;padding:2px 6px">0 檔</span>
-        </div>
-        <div id="us-portfolio-summary" class="flex gap-4 text-xs text-slate-400"></div>
-      </div>
-      <div class="glass-card overflow-hidden">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th class="text-left">代號</th>
-              <th class="text-left">名稱</th>
-              <th class="text-right">股數</th>
-              <th class="text-right">成本</th>
-              <th class="text-right">現價</th>
-              <th class="text-right">日漲</th>
-              <th class="text-right">RSI</th>
-              <th class="text-right" title="已扣除手續費與稅費的淨損益">損益金額</th>
-              <th class="text-right">報酬率</th>
-              <th class="text-right" title="(1 + 總報酬)^(365 / 持有天數) - 1">年化</th>
-              <th class="text-right" title="ETF 顯示折溢價，個股顯示 P/B">折溢價 / PB</th>
-              <th class="text-left">建議</th>
-              <th class="text-center">操作</th>
-            </tr>
-          </thead>
-          <tbody id="us-portfolio-tbody"></tbody>
-        </table>
-      </div>
-    </div>
+    </div><!-- /portfolio-subtab-trades -->
+
   </div>
 
   <!-- Taiwan Watchlist Tab -->
@@ -1412,7 +1502,123 @@ body { background: var(--bg-base); color: var(--text-primary); }
   </div>
 </div>
 
+<!-- Add Trade Modal -->
+<div id="add-trade-modal" class="modal-backdrop hidden">
+  <div class="modal-content p-6 max-w-lg w-full">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-xl font-bold text-violet-400">新增交易紀錄</h2>
+      <button onclick="closeAddTrade()" class="text-gray-400 hover:text-white text-2xl">×</button>
+    </div>
+    <form onsubmit="submitAddTrade(event)" class="space-y-3">
+      <!-- 買入 / 賣出 toggle -->
+      <div class="flex gap-2">
+        <button type="button" id="trade-action-buy" onclick="setTradeAction('buy')"
+          class="flex-1 py-2 rounded-lg text-sm font-semibold border-2 border-emerald-600 bg-emerald-900/40 text-emerald-300 transition">
+          ▲ 買入
+        </button>
+        <button type="button" id="trade-action-sell" onclick="setTradeAction('sell')"
+          class="flex-1 py-2 rounded-lg text-sm font-semibold border-2 border-transparent text-slate-500 hover:text-slate-300 transition">
+          ▼ 賣出
+        </button>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-gray-400">代號（台股加 .TW）</label>
+          <input id="trade-symbol" required class="input-field" placeholder="2330.TW" oninput="this.value=this.value.toUpperCase()">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400">名稱（可選）</label>
+          <input id="trade-name" class="input-field" placeholder="台積電">
+        </div>
+      </div>
+      <div class="grid grid-cols-3 gap-3">
+        <div>
+          <label class="text-xs text-gray-400">股數</label>
+          <input id="trade-shares" type="number" step="any" min="0.0001" required class="input-field" oninput="autoEstimateFee()">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400">成交均價</label>
+          <input id="trade-price" type="number" step="any" min="0.0001" required class="input-field" oninput="autoEstimateFee()">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400">幣別</label>
+          <select id="trade-currency" class="input-field" onchange="autoEstimateFee()">
+            <option value="TWD">TWD</option>
+            <option value="USD">USD</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-gray-400">手續費</label>
+          <input id="trade-fee" type="number" step="any" min="0" class="input-field" placeholder="自動估算">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400">證交稅（賣出）</label>
+          <input id="trade-tax" type="number" step="any" min="0" class="input-field" placeholder="自動估算">
+        </div>
+      </div>
+      <div class="flex items-center gap-2 text-xs text-slate-500">
+        <input type="checkbox" id="trade-auto-fee" checked class="accent-violet-500" onchange="autoEstimateFee()">
+        <label for="trade-auto-fee">台股自動估算手續費（買 0.1425%，賣另加 0.3%）</label>
+      </div>
+      <div>
+        <label class="text-xs text-gray-400">交易日期</label>
+        <input id="trade-date" type="date" required class="input-field">
+      </div>
+      <div>
+        <label class="text-xs text-gray-400">備註（可選）</label>
+        <input id="trade-notes" class="input-field" placeholder="原因、策略...">
+      </div>
+      <button type="submit" class="w-full py-2 rounded-lg font-semibold bg-violet-700 hover:bg-violet-600 text-white transition">確認新增</button>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Trade Modal -->
+<div id="edit-trade-modal" class="modal-backdrop hidden">
+  <div class="modal-content p-6 max-w-md w-full">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-xl font-bold text-yellow-400">編輯交易紀錄</h2>
+      <button onclick="closeEditTrade()" class="text-gray-400 hover:text-white text-2xl">×</button>
+    </div>
+    <div class="text-sm text-gray-300 mb-3 font-mono" id="edit-trade-label"></div>
+    <form onsubmit="submitEditTrade(event)" class="space-y-3">
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-gray-400">股數</label>
+          <input id="et-shares" type="number" step="any" min="0.0001" required class="input-field">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400">成交均價</label>
+          <input id="et-price" type="number" step="any" min="0.0001" required class="input-field">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-gray-400">手續費</label>
+          <input id="et-fee" type="number" step="any" min="0" class="input-field">
+        </div>
+        <div>
+          <label class="text-xs text-gray-400">證交稅</label>
+          <input id="et-tax" type="number" step="any" min="0" class="input-field">
+        </div>
+      </div>
+      <div>
+        <label class="text-xs text-gray-400">交易日期</label>
+        <input id="et-date" type="date" required class="input-field">
+      </div>
+      <div>
+        <label class="text-xs text-gray-400">備註</label>
+        <input id="et-notes" class="input-field">
+      </div>
+      <button type="submit" class="w-full bg-yellow-600 hover:bg-yellow-700 py-2 rounded font-semibold">儲存變更</button>
+    </form>
+  </div>
+</div>
+
 <!-- Batch AI Analyze Modal -->
+
 <div id="batch-analyze-modal" class="fixed inset-0 bg-black bg-opacity-75 backdrop-blur-md flex items-center justify-center hidden z-50 p-4">
   <div class="bg-gray-850 bg-opacity-90 border border-gray-700 rounded-xl p-6 max-w-4xl w-full flex flex-col max-h-[85vh] shadow-2xl">
     <div class="flex justify-between items-center mb-4 pb-2 border-b border-gray-700">
@@ -4431,8 +4637,289 @@ async function saveSettings() {
 // 頁面載入時也顯示一次配置
 fetch('/api/settings').then(r=>r.json()).then(s => updateLLMHint(s.roles));
 
+// ─── Portfolio Sub-tab ───
+let _portfolioSubtab = 'positions';
+function showPortfolioSubtab(tab) {
+  _portfolioSubtab = tab;
+  ['positions', 'trades'].forEach(t => {
+    const el = $(`portfolio-subtab-${t}`);
+    const btn = $(`portfolio-subtab-btn-${t}`);
+    if (!el || !btn) return;
+    const active = t === tab;
+    el.classList.toggle('hidden', !active);
+    if (active) {
+      btn.classList.add('border-emerald-500', 'text-emerald-400');
+      btn.classList.remove('border-transparent', 'text-slate-500');
+    } else {
+      btn.classList.remove('border-emerald-500', 'text-emerald-400');
+      btn.classList.add('border-transparent', 'text-slate-500');
+    }
+  });
+  if (tab === 'trades' && !_tradesLoaded) loadTrades();
+}
+
+// ─── Trade Records ───
+let _allTrades = [];
+let _tradesLoaded = false;
+let _editTradeId = null;
+let _currentTradeAction = 'buy';
+
+async function loadTrades() {
+  _tradesLoaded = true;
+  try {
+    const [tradesRes, summaryRes] = await Promise.all([
+      fetch('/api/trades?limit=1000').then(r => r.json()),
+      fetch('/api/trades/summary').then(r => r.json()),
+    ]);
+    _allTrades = tradesRes.trades || [];
+    renderTradesTable();
+    renderTradesSummary(summaryRes);
+  } catch(e) {
+    const tb = $('trades-tbody');
+    if (tb) tb.innerHTML = `<tr><td colspan="11" class="text-center text-red-400 py-6">載入失敗: ${escHtml(String(e))}</td></tr>`;
+  }
+}
+
+function renderTradesSummary(s) {
+  if (!s) return;
+  const bySymbol = s.by_symbol || [];
+  // Aggregate across all symbols
+  let totalPnl = s.total_realized_pnl || 0;
+  let totalCost = bySymbol.reduce((a, r) => a + (r.realized_cost || 0), 0);
+  let totalWin = bySymbol.reduce((a, r) => a + (r.win_trades || 0), 0);
+  let totalLoss = bySymbol.reduce((a, r) => a + (r.loss_trades || 0), 0);
+  let totalClosed = totalWin + totalLoss;
+  let holdingDays = bySymbol.filter(r => r.avg_holding_days != null).map(r => r.avg_holding_days);
+  let avgDays = holdingDays.length ? holdingDays.reduce((a,b)=>a+b,0)/holdingDays.length : null;
+  let bestPnl = bySymbol.filter(r=>r.best_pnl!=null).map(r=>r.best_pnl);
+  let worstPnl = bySymbol.filter(r=>r.worst_pnl!=null).map(r=>r.worst_pnl);
+  let overallBest = bestPnl.length ? Math.max(...bestPnl) : null;
+  let overallWorst = worstPnl.length ? Math.min(...worstPnl) : null;
+
+  const pnlEl = $('tr-total-pnl');
+  if (pnlEl) {
+    const pos = totalPnl >= 0;
+    pnlEl.textContent = (pos ? '+' : '') + fmt(totalPnl, 0);
+    pnlEl.className = `text-xl font-bold tabular-nums ${pos ? 'text-red-400' : 'text-emerald-400'}`;
+  }
+  const pctEl = $('tr-total-pnl-pct');
+  if (pctEl) {
+    const pct = totalCost > 0 ? (totalPnl / totalCost * 100) : null;
+    pctEl.textContent = pct != null ? `${pct >= 0 ? '+' : ''}${fmt(pct, 2)}%` : '—';
+  }
+  const wr = totalClosed > 0 ? (totalWin / totalClosed * 100) : null;
+  const wrEl = $('tr-win-rate');
+  if (wrEl) {
+    wrEl.textContent = wr != null ? `${fmt(wr, 1)}%` : '—';
+    wrEl.className = `text-xl font-bold tabular-nums ${(wr||0) >= 50 ? 'text-red-400' : 'text-emerald-400'}`;
+  }
+  const wlEl = $('tr-win-loss');
+  if (wlEl) wlEl.textContent = `${totalWin} 勝 / ${totalLoss} 敗`;
+  const adEl = $('tr-avg-days');
+  if (adEl) adEl.textContent = avgDays != null ? `${fmt(avgDays, 1)} 天` : '—';
+  const tcEl = $('tr-trade-count');
+  if (tcEl) tcEl.textContent = `${totalClosed} 筆已平倉`;
+  const bestEl = $('tr-best');
+  if (bestEl) bestEl.textContent = overallBest != null ? `最佳 +${fmt(overallBest, 0)}` : '—';
+  const worstEl = $('tr-worst');
+  if (worstEl) worstEl.textContent = overallWorst != null ? `最差 ${fmt(overallWorst, 0)}` : '—';
+}
+
+function renderTradesTable() {
+  const symFilter = ($('tr-filter-symbol')?.value || '').toUpperCase().trim();
+  const actionFilter = $('tr-filter-action')?.value || '';
+  const fromFilter = $('tr-filter-from')?.value || '';
+  const toFilter = $('tr-filter-to')?.value || '';
+
+  let rows = _allTrades.filter(t => {
+    if (symFilter && !t.symbol.includes(symFilter)) return false;
+    if (actionFilter && t.action !== actionFilter) return false;
+    if (fromFilter && t.trade_date < fromFilter) return false;
+    if (toFilter && t.trade_date > toFilter) return false;
+    return true;
+  });
+
+  const tb = $('trades-tbody');
+  if (!tb) return;
+  if (rows.length === 0) {
+    tb.innerHTML = `<tr><td colspan="11" class="text-center text-slate-500 py-10 italic">暫無交易紀錄</td></tr>`;
+    const pg = $('trades-pagination');
+    if (pg) pg.textContent = '';
+    return;
+  }
+
+  tb.innerHTML = rows.map(t => {
+    const isBuy = t.action === 'buy';
+    const actionBadge = isBuy
+      ? `<span class="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-900/50 text-emerald-300 border border-emerald-800">▲ 買</span>`
+      : `<span class="px-2 py-0.5 rounded text-[11px] font-bold bg-red-900/50 text-red-300 border border-red-800">▼ 賣</span>`;
+
+    const gross = t.shares * t.price;
+    const totalCost = gross + (t.fee || 0) + (t.tax || 0) * (isBuy ? 0 : 1);
+    const pnlCell = isBuy
+      ? `<td class="text-right text-slate-600 text-xs">—</td>`
+      : `<td class="text-right text-xs tabular-nums text-slate-400" title="賣出毛利（不含FIFO成本）">-${fmt(t.fee||0,0)}/${fmt(t.tax||0,0)}</td>`;
+
+    return `<tr class="hover:bg-white/[0.02] group">
+      <td class="text-left text-xs tabular-nums text-slate-400">${t.trade_date}</td>
+      <td class="text-left font-mono text-xs text-slate-200 font-semibold">${escHtml(t.symbol)}</td>
+      <td class="text-left text-xs text-slate-400">${escHtml(t.name || '—')}</td>
+      <td class="text-center">${actionBadge}</td>
+      <td class="text-right text-xs tabular-nums">${fmt(t.shares, t.shares < 10 ? 4 : 0)}</td>
+      <td class="text-right text-xs tabular-nums">${fmt(t.price, 2)}</td>
+      <td class="text-right text-xs tabular-nums text-slate-400">${t.fee ? fmt(t.fee, 0) : '—'}</td>
+      <td class="text-right text-xs tabular-nums text-slate-400">${t.tax ? fmt(t.tax, 0) : '—'}</td>
+      ${pnlCell}
+      <td class="text-left text-xs text-slate-500 max-w-[140px] truncate" title="${escHtml(t.notes||'')}">${escHtml(t.notes || '')}</td>
+      <td class="text-center">
+        <div class="flex justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button onclick="openEditTrade(${t.id})" class="text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300">編輯</button>
+          <button onclick="deleteTrade(${t.id})" class="text-xs px-2 py-0.5 rounded bg-red-900/60 hover:bg-red-800 text-red-300">刪</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+
+  const pg = $('trades-pagination');
+  if (pg) pg.textContent = `共 ${rows.length} 筆`;
+}
+
+function clearTradeFilters() {
+  $('tr-filter-symbol').value = '';
+  $('tr-filter-action').value = '';
+  $('tr-filter-from').value = '';
+  $('tr-filter-to').value = '';
+  renderTradesTable();
+}
+
+// ─── Add Trade Modal ───
+function openAddTrade(prefillSymbol, prefillAction) {
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  $('trade-date').value = `${yyyy}-${mm}-${dd}`;
+  $('trade-symbol').value = prefillSymbol || '';
+  $('trade-name').value = '';
+  $('trade-shares').value = '';
+  $('trade-price').value = '';
+  $('trade-fee').value = '';
+  $('trade-tax').value = '';
+  $('trade-notes').value = '';
+  $('trade-auto-fee').checked = true;
+  setTradeAction(prefillAction || 'buy');
+  $('add-trade-modal').classList.remove('hidden');
+}
+function closeAddTrade() { $('add-trade-modal').classList.add('hidden'); }
+
+function setTradeAction(action) {
+  _currentTradeAction = action;
+  const buyBtn = $('trade-action-buy');
+  const sellBtn = $('trade-action-sell');
+  if (action === 'buy') {
+    buyBtn.className = 'flex-1 py-2 rounded-lg text-sm font-semibold border-2 border-emerald-600 bg-emerald-900/40 text-emerald-300 transition';
+    sellBtn.className = 'flex-1 py-2 rounded-lg text-sm font-semibold border-2 border-transparent text-slate-500 hover:text-slate-300 transition';
+  } else {
+    sellBtn.className = 'flex-1 py-2 rounded-lg text-sm font-semibold border-2 border-red-600 bg-red-900/40 text-red-300 transition';
+    buyBtn.className = 'flex-1 py-2 rounded-lg text-sm font-semibold border-2 border-transparent text-slate-500 hover:text-slate-300 transition';
+  }
+  autoEstimateFee();
+}
+
+function autoEstimateFee() {
+  const autoCheck = $('trade-auto-fee');
+  if (!autoCheck?.checked) return;
+  const currency = $('trade-currency')?.value || 'TWD';
+  if (currency !== 'TWD') { $('trade-fee').value = ''; $('trade-tax').value = ''; return; }
+  const shares = parseFloat($('trade-shares')?.value) || 0;
+  const price = parseFloat($('trade-price')?.value) || 0;
+  const gross = shares * price;
+  if (gross <= 0) return;
+  const fee = Math.max(20, Math.round(gross * 0.001425));
+  const tax = _currentTradeAction === 'sell' ? Math.round(gross * 0.003) : 0;
+  $('trade-fee').value = fee;
+  $('trade-tax').value = tax;
+}
+
+async function submitAddTrade(e) {
+  e.preventDefault();
+  const autoFee = $('trade-auto-fee').checked;
+  const feeVal = $('trade-fee').value;
+  const taxVal = $('trade-tax').value;
+  const body = {
+    symbol: $('trade-symbol').value.trim(),
+    name: $('trade-name').value.trim(),
+    action: _currentTradeAction,
+    shares: parseFloat($('trade-shares').value),
+    price: parseFloat($('trade-price').value),
+    fee: feeVal !== '' ? parseFloat(feeVal) : null,
+    tax: taxVal !== '' ? parseFloat(taxVal) : null,
+    trade_date: $('trade-date').value,
+    currency: $('trade-currency').value,
+    notes: $('trade-notes').value.trim(),
+    auto_fee: autoFee && feeVal === '' && taxVal === '',
+  };
+  const r = await fetch('/api/trades', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+  }).then(r => r.json());
+  if (r.ok) {
+    closeAddTrade();
+    await loadTrades();
+  } else {
+    alert('新增失敗: ' + (r.detail || JSON.stringify(r)));
+  }
+}
+
+// ─── Edit Trade Modal ───
+function openEditTrade(tid) {
+  const t = _allTrades.find(x => x.id === tid);
+  if (!t) return;
+  _editTradeId = tid;
+  $('edit-trade-label').textContent = `${t.symbol}  ${t.action === 'buy' ? '▲ 買入' : '▼ 賣出'}  ${t.trade_date}`;
+  $('et-shares').value = t.shares;
+  $('et-price').value = t.price;
+  $('et-fee').value = t.fee ?? '';
+  $('et-tax').value = t.tax ?? '';
+  $('et-date').value = t.trade_date;
+  $('et-notes').value = t.notes || '';
+  $('edit-trade-modal').classList.remove('hidden');
+}
+function closeEditTrade() { $('edit-trade-modal').classList.add('hidden'); }
+
+async function submitEditTrade(e) {
+  e.preventDefault();
+  const body = {
+    shares: parseFloat($('et-shares').value),
+    price: parseFloat($('et-price').value),
+    fee: parseFloat($('et-fee').value) || 0,
+    tax: parseFloat($('et-tax').value) || 0,
+    trade_date: $('et-date').value,
+    notes: $('et-notes').value.trim(),
+  };
+  const r = await fetch(`/api/trades/${_editTradeId}`, {
+    method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+  }).then(r => r.json());
+  if (r.ok) {
+    closeEditTrade();
+    await loadTrades();
+  } else {
+    alert('更新失敗: ' + (r.detail || JSON.stringify(r)));
+  }
+}
+
+async function deleteTrade(tid) {
+  if (!confirm('確認刪除此筆交易紀錄？')) return;
+  const r = await fetch(`/api/trades/${tid}`, { method: 'DELETE' }).then(r => r.json());
+  if (r.ok) {
+    await loadTrades();
+  } else {
+    alert('刪除失敗');
+  }
+}
+
 // ─── Add/Delete Position ───
 function openAddPosition() {
+
   const today = new Date();
   const yyyy = today.getFullYear();
   const mm = String(today.getMonth() + 1).padStart(2, '0');
