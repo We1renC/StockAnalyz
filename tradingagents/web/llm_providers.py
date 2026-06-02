@@ -34,10 +34,10 @@ DEFAULT_SETTINGS = {
         "tw_sell_tax_rate_stock": 0.003,     # 股票證交稅 0.3%
         "tw_sell_tax_rate_etf": 0.001,       # ETF 證交稅 0.1%
         "tw_min_fee": 20,                    # 單筆最低手續費 NT$
-        # 美股：以複委託保守值為預設；IBKR/嘉信等可自行下調
-        "us_broker": "fubon_proxy",
-        "us_fee_rate": 0.005,                # 0.5%
-        "us_min_fee": 39.9,                  # USD
+        # 美股預設 0.25%（依個券商最新公告為準；可在 UI 切換 preset）
+        "us_broker": "discount_0_25",
+        "us_fee_rate": 0.0025,               # 0.25%
+        "us_min_fee": 0,                     # 無最低
         "us_sec_fee_rate": 0.0000278,        # SEC 規費（賣出）2025 年率
     },
 }
@@ -68,8 +68,14 @@ BROKERAGE_PRESETS = {
         "tw_sell_tax_rate_etf": 0.001,
         "tw_min_fee": 20,
     },
+    "discount_0_25": {
+        "label": "美股 0.25%（折扣複委託）",
+        "us_fee_rate": 0.0025,
+        "us_min_fee": 0,
+        "us_sec_fee_rate": 0.0000278,
+    },
     "fubon_proxy": {
-        "label": "富邦複委託",
+        "label": "富邦複委託 0.5%/min $39.9",
         "us_fee_rate": 0.005,
         "us_min_fee": 39.9,
         "us_sec_fee_rate": 0.0000278,

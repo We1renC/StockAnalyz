@@ -37,6 +37,18 @@ def test_compute_fees_us_min_fee():
     assert r["tax"] > 0
 
 
+def test_compute_fees_us_default_0_25_pct():
+    """0.25% 預設費率，無最低 — 小單也只按比例收。"""
+    cfg = {"us_fee_rate": 0.0025, "us_min_fee": 0, "us_sec_fee_rate": 0.0000278}
+    # 買進 $720 → 0.25% = $1.8（沒有 min fee 攔截）
+    r = app._compute_fees(price=3.6, shares=200, currency="USD", side="buy", fees_cfg=cfg, is_etf=False)
+    assert round(r["fee"], 2) == 1.8
+    # 賣出 $760 → 0.25% = $1.9 + SEC 規費
+    r = app._compute_fees(price=3.8, shares=200, currency="USD", side="sell", fees_cfg=cfg, is_etf=False)
+    assert round(r["fee"], 2) == 1.9
+    assert r["tax"] > 0
+
+
 def test_annualized_return_positive():
     # 1 年 +10% → 大約 10%
     assert app._annualized_return(10.0, 365) == 10.0
@@ -63,10 +75,16 @@ def test_is_etf_symbol():
 
 
 def test_brokerage_presets_loaded_in_settings():
-    from llm_providers import BROKERAGE_PRESETS
+    from llm_providers import BROKERAGE_PRESETS, DEFAULT_SETTINGS
     assert "default_60_discount" in BROKERAGE_PRESETS
+    assert "discount_0_25" in BROKERAGE_PRESETS
     assert "fubon_proxy" in BROKERAGE_PRESETS
     assert "ibkr_tiered" in BROKERAGE_PRESETS
     assert "firstrade" in BROKERAGE_PRESETS
     # 第一證券免手續費
     assert BROKERAGE_PRESETS["firstrade"]["us_fee_rate"] == 0.0
+    # 預設改為 0.25%，無最低
+    fees = DEFAULT_SETTINGS["brokerage_fees"]
+    assert fees["us_fee_rate"] == 0.0025
+    assert fees["us_min_fee"] == 0
+    assert fees["us_broker"] == "discount_0_25"
