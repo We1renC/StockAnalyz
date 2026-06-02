@@ -144,23 +144,31 @@ body { background: var(--bg-base); color: var(--text-primary); }
 .data-table tbody tr { transition: all 0.15s ease; border-left: 2px solid transparent; }
 .data-table tbody tr:hover { background: var(--bg-hover); border-left-color: var(--accent); }
 .data-table tbody td { padding: 10px 12px; border-bottom: 1px solid rgba(148,163,184,0.04); vertical-align: middle; }
-.watchlist-table { table-layout: fixed; }
-.watchlist-table col.watch-col-priority { width: 5rem; }
-.watchlist-table col.watch-col-symbol { width: 7.5rem; }
-.watchlist-table col.watch-col-name { width: 10rem; }
-.watchlist-table col.watch-col-category { width: 8.5rem; }
-.watchlist-table col.watch-col-rsi { width: 6.5rem; }
-.watchlist-table col.watch-col-beta { width: 5.5rem; }
-.watchlist-table col.watch-col-premium { width: 7rem; }
-.watchlist-table col.watch-col-profit { width: 6rem; }
-.watchlist-table col.watch-col-price { width: 12rem; }
-.watchlist-table col.watch-col-stop { width: 6rem; }
-.watchlist-table col.watch-col-alert { width: 10rem; }
-.watchlist-table col.watch-col-status { width: 8.5rem; }
-.watchlist-table col.watch-col-actions { width: 8.5rem; }
+.watchlist-table-shell {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.watchlist-table {
+  table-layout: fixed;
+  min-width: 81rem;
+  font-size: 12px;
+}
+.watchlist-table col.watch-col-priority { width: 4.25rem; }
+.watchlist-table col.watch-col-name { width: 12rem; }
+.watchlist-table col.watch-col-category { width: 7rem; }
+.watchlist-table col.watch-col-rsi { width: 5.75rem; }
+.watchlist-table col.watch-col-beta { width: 5rem; }
+.watchlist-table col.watch-col-premium { width: 6.25rem; }
+.watchlist-table col.watch-col-profit { width: 5.75rem; }
+.watchlist-table col.watch-col-price { width: 10.5rem; }
+.watchlist-table col.watch-col-stop { width: 5.75rem; }
+.watchlist-table col.watch-col-alert { width: 8.5rem; }
+.watchlist-table col.watch-col-status { width: 8rem; }
 .watchlist-table thead th,
 .watchlist-table tbody td { text-align: center; }
-.watchlist-table tbody td { padding: 10px 8px; }
+.watchlist-table thead th { padding: 9px 8px; }
+.watchlist-table tbody td { padding: 8px 6px; }
 .watchlist-cell-ellipsis {
   display: block;
   width: 100%;
@@ -188,6 +196,23 @@ body { background: var(--bg-base); color: var(--text-primary); }
   flex-shrink: 1;
   min-width: 0;
 }
+.watchlist-price-cell,
+.watchlist-alert-cell,
+.watchlist-status-cell .status-analyze-host {
+  white-space: nowrap;
+}
+.watchlist-status-cell .status-analyze-host {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.watchlist-status-cell .status-analyze-host .pill {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .watchlist-price-cell {
   display: inline-flex;
   align-items: center;
@@ -197,12 +222,36 @@ body { background: var(--bg-base); color: var(--text-primary); }
   min-width: 0;
   white-space: nowrap;
 }
-.watchlist-actions-cell {
+.watchlist-priority-host {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  width: 100%;
+  gap: 4px;
+}
+.watchlist-priority-delete {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(239,68,68,0.16);
+  background: rgba(239,68,68,0.08);
+  color: #f87171;
+  font-size: 11px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: translateX(-2px);
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease;
+}
+.watchlist-priority-host:hover .watchlist-priority-delete {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+.watchlist-priority-delete:hover {
+  background: rgba(239,68,68,0.16);
 }
 .watch-name-hover { cursor: crosshair; text-decoration: underline; text-decoration-style: dotted; text-decoration-color: rgba(148,163,184,0.45); text-underline-offset: 3px; }
 .watch-name-hover:hover { color: var(--text-primary); text-decoration-color: var(--accent-light); }
@@ -702,11 +751,10 @@ body { background: var(--bg-base); color: var(--text-primary); }
         <button onclick="openAddWatch()" class="btn-primary text-sm px-4 py-1.5">新增觀察</button>
       </div>
     </div>
-    <div class="glass-card overflow-hidden">
+    <div class="glass-card watchlist-table-shell">
       <table class="data-table watchlist-table">
         <colgroup>
           <col class="watch-col-priority">
-          <col class="watch-col-symbol">
           <col class="watch-col-name">
           <col class="watch-col-category">
           <col class="watch-col-rsi">
@@ -717,13 +765,11 @@ body { background: var(--bg-base); color: var(--text-primary); }
           <col class="watch-col-stop">
           <col class="watch-col-alert">
           <col class="watch-col-status">
-          <col class="watch-col-actions">
         </colgroup>
         <thead>
           <tr>
             <th class="text-center">優先</th>
-            <th class="text-center">代號</th>
-            <th class="text-center">名稱</th>
+            <th class="text-center">名稱（代號）</th>
             <th class="text-center">類別</th>
             <th class="text-center">RSI</th>
             <th class="text-center">Beta</th>
@@ -749,7 +795,6 @@ body { background: var(--bg-base); color: var(--text-primary); }
               </div>
             </th>
             <th class="text-center">狀態</th>
-            <th class="text-center">操作</th>
           </tr>
         </thead>
         <tbody id="tw-watchlist-tbody"></tbody>
@@ -777,11 +822,10 @@ body { background: var(--bg-base); color: var(--text-primary); }
         <button onclick="openAddWatch()" class="btn-primary text-sm px-4 py-1.5">新增觀察</button>
       </div>
     </div>
-    <div class="glass-card overflow-hidden">
+    <div class="glass-card watchlist-table-shell">
       <table class="data-table watchlist-table">
         <colgroup>
           <col class="watch-col-priority">
-          <col class="watch-col-symbol">
           <col class="watch-col-name">
           <col class="watch-col-category">
           <col class="watch-col-rsi">
@@ -792,13 +836,11 @@ body { background: var(--bg-base); color: var(--text-primary); }
           <col class="watch-col-stop">
           <col class="watch-col-alert">
           <col class="watch-col-status">
-          <col class="watch-col-actions">
         </colgroup>
         <thead>
           <tr>
             <th class="text-center">優先</th>
-            <th class="text-center">代號</th>
-            <th class="text-center">名稱</th>
+            <th class="text-center">名稱（代號）</th>
             <th class="text-center">類別</th>
             <th class="text-center">RSI</th>
             <th class="text-center">Beta</th>
@@ -824,7 +866,6 @@ body { background: var(--bg-base); color: var(--text-primary); }
               </div>
             </th>
             <th class="text-center">狀態</th>
-            <th class="text-center">操作</th>
           </tr>
         </thead>
         <tbody id="us-watchlist-tbody"></tbody>
@@ -2316,13 +2357,16 @@ function renderWatchlist(items) {
       statusPill = 'pill-blue';
     }
 
+    const priorityHtml = w.is_watchlist
+      ? `<span class="watchlist-priority-host"><button type="button" onclick="deleteWatch(${w.id})" class="watchlist-priority-delete" data-tip="刪除">×</button><span class="pill ${priPill} tabular-nums" style="font-size:11px">${Math.round(pri)}</span></span>`
+      : `<span class="watchlist-priority-host"><span class="pill ${priPill} tabular-nums" style="font-size:11px">${Math.round(pri)}</span></span>`;
+
     return `<tr>
-      <td class="text-center"><span class="pill ${priPill} tabular-nums" style="font-size:11px">${Math.round(pri)}</span></td>
-      <td class="text-center font-mono font-semibold text-slate-200">
-        <span class="watchlist-cell-ellipsis">${w.symbol}</span>
-        ${w.is_position ? `<span class="pill pill-blue ml-1 text-[10px]" style="font-size:10px;padding:1px 4px">持倉</span>` : ''}
+      <td class="text-center">${priorityHtml}</td>
+      <td class="text-center text-slate-300 watchlist-name-cell">
+        <span class="watch-name-hover watchlist-cell-ellipsis" data-symbol="${w.symbol}" title="${((w.name || '') + '（' + (w.symbol || '') + '）').replace(/"/g, '&quot;')}">${w.name || ''}<span class="text-slate-500">（${w.symbol || ''}）</span></span>
+        ${w.is_position ? `<div class="mt-1"><span class="pill pill-blue text-[10px]" style="font-size:10px;padding:1px 4px">持倉</span></div>` : ''}
       </td>
-      <td class="text-center text-slate-300 watchlist-name-cell"><span class="watch-name-hover watchlist-cell-ellipsis" data-symbol="${w.symbol}" title="${(w.name || '').replace(/"/g, '&quot;')}">${w.name || ''}</span></td>
       <td class="text-center text-xs watchlist-category-cell" title="${(w.category || '').replace(/"/g, '&quot;')}">${makeCategoryCell(w.category)}</td>
       <td class="text-center"><span class="tabular-nums text-xs ${rsiPct>=75?'text-red-400':rsiPct<=30?'text-amber-400':'text-slate-400'}">${fmt(w.rsi, 1)}</span><div class="rsi-bar"><div class="rsi-fill ${rsiColor}" style="width:${rsiPct}%"></div></div></td>
       <td class="text-center"><span class="pill ${betaPill} tabular-nums" style="font-size:11px">${fmt(w.beta, 2)}</span></td>
@@ -2337,12 +2381,6 @@ function renderWatchlist(items) {
           <button type="button" onclick="diagnose('${w.symbol}','${(w.name||'').replace(/'/g,"\\\'")}')" class="btn-action status-analyze-action" data-tip="分析此股">分析</button>
         </span>
       </td>
-      <td class="text-center">
-        <span class="watchlist-actions-cell">
-        <button onclick="diagnose('${w.symbol}','${(w.name||'').replace(/'/g,"\\\'")}')" class="btn-action" data-tip="分析">分析</button>
-        ${w.is_watchlist ? `<button onclick="deleteWatch(${w.id})" class="btn-action-danger" data-tip="刪除">刪除</button>` : `<span class="text-xs text-slate-500 italic">持倉不可刪</span>`}
-        </span>
-      </td>
     </tr>`;
   };
 
@@ -2350,13 +2388,13 @@ function renderWatchlist(items) {
   if (twItems.length > 0) {
     $('tw-watchlist-tbody').innerHTML = twItems.map(makeRowHtml).join('');
   } else {
-    $('tw-watchlist-tbody').innerHTML = `<tr><td colspan="13" class="text-center text-slate-500 py-6">無台股觀察資料</td></tr>`;
+    $('tw-watchlist-tbody').innerHTML = `<tr><td colspan="11" class="text-center text-slate-500 py-6">無台股觀察資料</td></tr>`;
   }
 
   if (usItems.length > 0) {
     $('us-watchlist-tbody').innerHTML = usItems.map(makeRowHtml).join('');
   } else {
-    $('us-watchlist-tbody').innerHTML = `<tr><td colspan="13" class="text-center text-slate-500 py-6">無美股觀察資料</td></tr>`;
+    $('us-watchlist-tbody').innerHTML = `<tr><td colspan="11" class="text-center text-slate-500 py-6">無美股觀察資料</td></tr>`;
   }
 }
 
