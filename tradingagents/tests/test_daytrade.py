@@ -78,7 +78,7 @@ def test_api_technical_matrix_bypass_cache(tmp_path):
 
 def test_chart_period_config_daytrade():
     c1 = app._chart_period_config("1m")
-    assert c1 == {"period": "1d", "interval": "1m"}
+    assert c1 == {"period": "5d", "interval": "1m"}
     c5 = app._chart_period_config("5m")
-    assert c5 == {"period": "1d", "interval": "1m"}
+    assert c5 == {"period": "5d", "interval": "5m"}
 
