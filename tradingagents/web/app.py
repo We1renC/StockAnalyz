@@ -971,7 +971,7 @@ def _indicators_from_history(h: pd.DataFrame, bench_close=None, source: str = ""
 
 _YF_HISTORY_CACHE: dict[tuple[str, str], tuple[float, "pd.DataFrame"]] = {}
 _YF_HISTORY_TTL = 60  # daily bars only refresh intraday by minutes; 60s is safe
-_YF_INFO_CACHE: dict[str, tuple[float, Optional[float]]] = {}
+_YF_INFO_CACHE: dict[str, tuple[float, dict]] = {}
 _YF_INFO_TTL = 30  # realtime price updates roughly every 30s on Yahoo's feed
 
 
@@ -1026,20 +1026,33 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
     def _yf_history_job():
         return fetch_yfinance_indicators(symbol, bench_close)
 
+    # TW ETF code heuristic: 4-digit codes starting with "00" before the dot
+    # (0050, 0056, 00xx series). Used to opt-in to the slower yf.info call
+    # only for TW ETFs where we genuinely need navPrice for 折溢價 display.
+    _tw_part = symbol.split(".")[0] if symbol else ""
+    is_tw_etf_like = is_tw and _tw_part.startswith("00") and len(_tw_part) <= 6
+    want_info = (not is_tw) or is_tw_etf_like
+
     def _yf_info_job():
-        if is_tw:
-            return None  # TWSE realtime supersedes; .info is the slowest call
+        if not want_info:
+            return {"realtime": None, "nav": None, "quote_type": None}
         entry = _YF_INFO_CACHE.get(symbol)
         if entry and time.time() < entry[0]:
             return entry[1]
+        out = {"realtime": None, "nav": None, "quote_type": None}
         try:
             info = yf.Ticker(symbol).info or {}
             rmp = info.get("regularMarketPrice") or info.get("currentPrice")
-            val = float(rmp) if rmp and rmp > 0 else None
+            if rmp and rmp > 0:
+                out["realtime"] = float(rmp)
+            nav = info.get("navPrice")
+            if nav and nav > 0:
+                out["nav"] = float(nav)
+            out["quote_type"] = info.get("quoteType")
         except Exception:
-            val = None
-        _YF_INFO_CACHE[symbol] = (time.time() + _YF_INFO_TTL, val)
-        return val
+            pass
+        _YF_INFO_CACHE[symbol] = (time.time() + _YF_INFO_TTL, out)
+        return out
 
     def _tw_realtime_job():
         return fetch_tw_realtime_quote(symbol) if is_tw else None
@@ -1051,7 +1064,8 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
         # Defensive copy: fetch_yfinance_indicators / mocks may share a dict
         # across calls and downstream paths mutate price/source on it.
         yf_ind = dict(f_hist.result() or {})
-        yf_realtime = f_info.result()
+        info_payload = f_info.result() or {}
+        yf_realtime = info_payload.get("realtime") if isinstance(info_payload, dict) else info_payload
         official = f_tw.result()
 
     if not yf_ind and is_tw:
@@ -1059,6 +1073,12 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
 
     if yf_ind and yf_realtime is not None:
         yf_ind["_yf_realtime"] = yf_realtime
+    # NAV + quote_type 是 ETF 折溢價計算需要的；只要 yfinance.info 給了就保留
+    if yf_ind and isinstance(info_payload, dict):
+        if info_payload.get("nav") is not None:
+            yf_ind["nav"] = info_payload["nav"]
+        if info_payload.get("quote_type"):
+            yf_ind["quote_type"] = info_payload["quote_type"]
 
     if is_tw:
         if official:
@@ -1875,44 +1895,172 @@ def api_backtest(months: int = 6):
     })
 
 
+def _compute_fees(price: float, shares: float, currency: str, side: str, fees_cfg: dict, is_etf: bool) -> dict:
+    """Calculate brokerage fees + taxes for a single side (buy/sell).
+
+    Returns {fee, tax, total} in the symbol's native currency.
+    """
+    notional = float(price) * float(shares)
+    if currency == "USD":
+        rate = float(fees_cfg.get("us_fee_rate", 0.005) or 0)
+        min_fee = float(fees_cfg.get("us_min_fee", 0) or 0)
+        sec_rate = float(fees_cfg.get("us_sec_fee_rate", 0) or 0)
+        fee = max(notional * rate, min_fee)
+        # SEC 規費只在賣出時收取
+        tax = notional * sec_rate if side == "sell" else 0.0
+    else:  # TWD
+        if side == "buy":
+            rate = float(fees_cfg.get("tw_buy_fee_rate", 0.001425 * 0.6) or 0)
+        else:
+            rate = float(fees_cfg.get("tw_sell_fee_rate", 0.001425 * 0.6) or 0)
+        min_fee = float(fees_cfg.get("tw_min_fee", 20) or 0)
+        fee = max(notional * rate, min_fee) if notional > 0 else 0.0
+        if side == "sell":
+            tax_rate = float(fees_cfg.get("tw_sell_tax_rate_etf" if is_etf else "tw_sell_tax_rate_stock", 0.003) or 0)
+            tax = notional * tax_rate
+        else:
+            tax = 0.0
+    return {"fee": round(fee, 4), "tax": round(tax, 4), "total": round(fee + tax, 4)}
+
+
+def _annualized_return(total_return_pct: float, days_held: float) -> Optional[float]:
+    """Convert total return % over `days_held` to annualized return %.
+
+    Formula: (1 + total)^(365 / days) - 1
+    Returns None when days_held < 7 (too short to annualize meaningfully).
+    """
+    if days_held is None or days_held < 7:
+        return None
+    try:
+        growth = 1.0 + total_return_pct / 100.0
+        if growth <= 0:
+            return -100.0  # full loss
+        return round((growth ** (365.0 / days_held) - 1) * 100, 2)
+    except (ValueError, OverflowError, ZeroDivisionError):
+        return None
+
+
+def _is_etf_symbol(symbol: str, quote_type: Optional[str] = None) -> bool:
+    """Best-effort ETF detection for fee/tax rate selection."""
+    if quote_type and str(quote_type).upper() == "ETF":
+        return True
+    base = symbol.split(".")[0]
+    if base.startswith("00") and 4 <= len(base) <= 6:
+        return True  # TW ETF code pattern
+    return False
+
+
 @app.get("/api/portfolio")
 def api_portfolio():
     conn = get_db()
     rows = conn.execute("""
-        SELECT p.*, pc.price as current_price, pc.rsi, pc.change_1d, pc.beta, pc.ma20, pc.high52
+        SELECT p.*, pc.price as current_price, pc.rsi, pc.change_1d, pc.beta, pc.ma20, pc.high52,
+               pc.data AS price_cache_data
         FROM positions p
         LEFT JOIN price_cache pc ON p.symbol = pc.symbol
     """).fetchall()
     market_row = conn.execute("SELECT * FROM market_state WHERE id=1").fetchone()
     conn.close()
     market = dict(market_row) if market_row else None
+    settings = load_settings()
+    fees_cfg = settings.get("brokerage_fees") or {}
 
+    today = date.today()
     out = []
-    total_cost = total_value = 0
+    total_cost = total_value = total_net_pnl = 0.0
     for r in rows:
         d = dict(r)
+        # Parse cached payload for nav + quote_type
+        raw = d.pop("price_cache_data", None)
+        nav = None
+        quote_type = None
+        if raw:
+            try:
+                blob = json.loads(raw)
+                nav = blob.get("nav")
+                quote_type = blob.get("quote_type")
+            except (TypeError, ValueError):
+                pass
+
         cur = d.get("current_price") or d["cost_price"]
-        cost_total = d["cost_price"] * d["shares"]
-        val_total = cur * d["shares"]
-        if d["currency"] == "USD":
-            cost_total *= USD_TWD
-            val_total *= USD_TWD
-        d["pnl"] = round(val_total - cost_total, 0)
-        d["pnl_pct"] = round((cur/d["cost_price"]-1)*100, 2)
-        d["market_value"] = round(val_total, 0)
-        d["cost_total"] = round(cost_total, 0)
+        cost_price = d["cost_price"]
+        shares = d["shares"]
+        currency = d["currency"] or "TWD"
+        is_etf = _is_etf_symbol(d["symbol"], quote_type)
+
+        cost_total = cost_price * shares
+        val_total = cur * shares
+
+        # Fees: buy at cost_price, sell (hypothetical) at current price
+        buy_fees = _compute_fees(cost_price, shares, currency, "buy", fees_cfg, is_etf)
+        sell_fees = _compute_fees(cur, shares, currency, "sell", fees_cfg, is_etf)
+        gross_pnl_native = val_total - cost_total
+        net_pnl_native = gross_pnl_native - buy_fees["total"] - sell_fees["total"]
+
+        # Convert to TWD for summary
+        rate = USD_TWD if currency == "USD" else 1.0
+        cost_total_twd = cost_total * rate
+        val_total_twd = val_total * rate
+        net_pnl_twd = net_pnl_native * rate
+
+        # Premium / discount vs NAV
+        premium_pct = None
+        if nav and nav > 0 and cur:
+            premium_pct = round((cur / nav - 1) * 100, 2)
+
+        # Annualized return (requires purchase_date)
+        annualized = None
+        purchase_date_str = d.get("purchase_date")
+        if purchase_date_str:
+            try:
+                purchase_date = datetime.fromisoformat(purchase_date_str).date()
+                days_held = (today - purchase_date).days
+                if days_held > 0 and cost_price:
+                    total_return_pct = (cur / cost_price - 1) * 100
+                    annualized = _annualized_return(total_return_pct, days_held)
+                    d["days_held"] = days_held
+            except (ValueError, TypeError):
+                pass
+
+        d["pnl"] = round(val_total_twd - cost_total_twd, 0)
+        d["pnl_pct"] = round((cur / cost_price - 1) * 100, 2) if cost_price else None
+        d["net_pnl"] = round(net_pnl_twd, 0)
+        d["net_pnl_pct"] = round((net_pnl_native / cost_total - 1 + 1) / 1 * 0, 2) if False else (round(net_pnl_native / cost_total * 100, 2) if cost_total else None)
+        d["fees"] = {
+            "buy_fee": buy_fees["fee"],
+            "sell_fee": sell_fees["fee"],
+            "sell_tax": sell_fees["tax"],
+            "total_native": round(buy_fees["total"] + sell_fees["total"], 2),
+            "total_twd": round((buy_fees["total"] + sell_fees["total"]) * rate, 0),
+            "currency": currency,
+        }
+        d["nav"] = nav
+        d["premium_pct"] = premium_pct
+        d["quote_type"] = quote_type
+        d["is_etf"] = is_etf
+        d["annualized_return_pct"] = annualized
+        d["market_value"] = round(val_total_twd, 0)
+        d["cost_total"] = round(cost_total_twd, 0)
         d["recommendation"] = _recommend_position(d, market)
-        total_cost += cost_total
-        total_value += val_total
+        total_cost += cost_total_twd
+        total_value += val_total_twd
+        total_net_pnl += net_pnl_twd
         out.append(d)
+
     return sanitize_float_values({
         "positions": out,
         "summary": {
             "total_cost": round(total_cost, 0),
             "total_value": round(total_value, 0),
             "total_pnl": round(total_value - total_cost, 0),
-            "total_pnl_pct": round((total_value/total_cost-1)*100, 2) if total_cost > 0 else 0,
-        }
+            "total_pnl_pct": round((total_value / total_cost - 1) * 100, 2) if total_cost > 0 else 0,
+            "total_net_pnl": round(total_net_pnl, 0),
+            "total_net_pnl_pct": round(total_net_pnl / total_cost * 100, 2) if total_cost > 0 else 0,
+        },
+        "brokerage": {
+            "tw_broker": fees_cfg.get("tw_broker"),
+            "us_broker": fees_cfg.get("us_broker"),
+        },
     })
 
 
@@ -3099,6 +3247,7 @@ def api_batch_update_levels(req: BatchUpdateRequests):
 @app.get("/api/settings")
 def api_get_settings():
     """回傳設定，API key 用 mask 格式。"""
+    from llm_providers import BROKERAGE_PRESETS
     s = load_settings()
     return {
         "api_keys_masked": {k: mask_key(v) for k, v in s["api_keys"].items()},
@@ -3107,15 +3256,22 @@ def api_get_settings():
         "available_models": AVAILABLE_MODELS,
         "cli_status": detect_cli_availability(),
         "obsidian_vault_path": s.get("obsidian_vault_path", ""),
+        "brokerage_fees": s.get("brokerage_fees", {}),
+        "brokerage_presets": BROKERAGE_PRESETS,
     }
 
 class SettingsUpdate(BaseModel):
     api_keys: Optional[dict] = None           # {anthropic, openai, google} - 空字串 = 不更新
     roles: Optional[dict] = None              # {analyst: {provider, model}, reviewer: {...}}
     obsidian_vault_path: Optional[str] = None # Obsidian vault 根目錄，None = 不更新
+    brokerage_fees: Optional[dict] = None     # 手續費覆寫 - 可帶 tw_broker / us_broker 切 preset
+    tw_broker_preset: Optional[str] = None    # 一鍵套用 preset
+    us_broker_preset: Optional[str] = None
+
 
 @app.post("/api/settings")
 def api_save_settings(req: SettingsUpdate):
+    from llm_providers import BROKERAGE_PRESETS
     s = load_settings()
     if req.api_keys:
         for provider, key in req.api_keys.items():
@@ -3129,6 +3285,16 @@ def api_save_settings(req: SettingsUpdate):
                 s["roles"][role_name].update(cfg)
     if req.obsidian_vault_path is not None:
         s["obsidian_vault_path"] = req.obsidian_vault_path
+    fees = dict(s.get("brokerage_fees") or {})
+    if req.tw_broker_preset and req.tw_broker_preset in BROKERAGE_PRESETS:
+        fees.update({k: v for k, v in BROKERAGE_PRESETS[req.tw_broker_preset].items() if k != "label"})
+        fees["tw_broker"] = req.tw_broker_preset
+    if req.us_broker_preset and req.us_broker_preset in BROKERAGE_PRESETS:
+        fees.update({k: v for k, v in BROKERAGE_PRESETS[req.us_broker_preset].items() if k != "label"})
+        fees["us_broker"] = req.us_broker_preset
+    if req.brokerage_fees:
+        fees.update({k: v for k, v in req.brokerage_fees.items() if v is not None})
+    s["brokerage_fees"] = fees
     save_settings(s)
     return {"ok": True}
 

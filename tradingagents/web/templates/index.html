@@ -634,8 +634,10 @@ body { background: var(--bg-base); color: var(--text-primary); }
               <th class="text-right">現價</th>
               <th class="text-right">日漲</th>
               <th class="text-right">RSI</th>
-              <th class="text-right">損益金額</th>
+              <th class="text-right" title="毛損益 / 扣除手續費與稅後淨損益">損益金額</th>
               <th class="text-right">報酬率</th>
+              <th class="text-right" title="(1 + 總報酬)^(365 / 持有天數) - 1">年化</th>
+              <th class="text-right" title="(現價 - NAV) / NAV，僅 ETF 顯示">折溢價</th>
               <th class="text-left">建議</th>
               <th class="text-center">操作</th>
             </tr>
@@ -665,8 +667,10 @@ body { background: var(--bg-base); color: var(--text-primary); }
               <th class="text-right">現價</th>
               <th class="text-right">日漲</th>
               <th class="text-right">RSI</th>
-              <th class="text-right">損益金額</th>
+              <th class="text-right" title="毛損益 / 扣除手續費與稅後淨損益">損益金額</th>
               <th class="text-right">報酬率</th>
+              <th class="text-right" title="(1 + 總報酬)^(365 / 持有天數) - 1">年化</th>
+              <th class="text-right" title="(現價 - NAV) / NAV，僅 ETF 顯示">折溢價</th>
               <th class="text-left">建議</th>
               <th class="text-center">操作</th>
             </tr>
@@ -1132,6 +1136,23 @@ body { background: var(--bg-base); color: var(--text-primary); }
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- 券商手續費 -->
+    <div class="mb-6">
+      <h3 class="text-lg font-semibold mb-3 border-b border-gray-700 pb-1">券商手續費（影響扣費後損益）</h3>
+      <p class="text-xs text-gray-400 mb-3">選擇實際使用的券商方案，系統會以其公定費率計算扣費後損益與淨報酬率。</p>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">台股券商</label>
+          <select id="tw-broker-preset" class="input-field text-sm w-full"></select>
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">美股券商</label>
+          <select id="us-broker-preset" class="input-field text-sm w-full"></select>
+        </div>
+      </div>
+      <div id="brokerage-fees-preview" class="text-[11px] text-slate-500 mt-2 font-mono"></div>
     </div>
 
     <!-- Obsidian -->
@@ -2069,20 +2090,44 @@ function renderPortfolio(data) {
     const recPill = rec.urgency === 'danger' ? 'pill-red animate-pulse-dot' : rec.urgency === 'warning' ? 'pill-amber' : 'pill-gray';
     const targetInfo = [p.target_profit ? `<span class="text-red-400">TP:${fmt(p.target_profit)}</span>` : '', p.target_stop ? `<span class="text-emerald-400">SL:${fmt(p.target_stop)}</span>` : ''].filter(Boolean).join(' ');
     
-    // 損益金額與貨幣顯示
+    // 損益金額與貨幣顯示（毛損益 + 扣費後淨損益）
     let pnlAmountHtml = '';
+    const fees = p.fees || {};
+    const feesTooltip = `買入手續費 ${fees.currency === 'USD' ? '$' : 'NT$'}${fmt(fees.buy_fee, 2)} / 賣出手續費 ${fees.currency === 'USD' ? '$' : 'NT$'}${fmt(fees.sell_fee, 2)} / 證交稅或 SEC ${fees.currency === 'USD' ? '$' : 'NT$'}${fmt(fees.sell_tax, 2)}`;
     if (p.currency === 'USD') {
       const usdPnl = (p.current_price - p.cost_price) * p.shares;
       const usdPnlColor = usdPnl >= 0 ? 'text-red-400' : 'text-emerald-400';
+      const netPnlColor = (p.net_pnl||0) >= 0 ? 'text-red-400' : 'text-emerald-400';
       pnlAmountHtml = `
         <div class="font-semibold font-mono ${usdPnlColor}">${usdPnl >= 0 ? '+' : ''}${fmt(usdPnl, 2)}</div>
         <div class="text-[10px] text-slate-500 font-mono">(NT$ ${p.pnl >= 0 ? '+' : ''}${fmtInt(p.pnl)})</div>
+        <div class="text-[10px] font-mono ${netPnlColor}" title="${feesTooltip}">扣費後 NT$ ${(p.net_pnl||0) >= 0 ? '+' : ''}${fmtInt(p.net_pnl)}</div>
       `;
     } else {
       const twdPnlColor = p.pnl >= 0 ? 'text-red-400' : 'text-emerald-400';
+      const netPnlColor = (p.net_pnl||0) >= 0 ? 'text-red-400' : 'text-emerald-400';
       pnlAmountHtml = `
         <div class="font-semibold font-mono ${twdPnlColor}">NT$ ${p.pnl >= 0 ? '+' : ''}${fmtInt(p.pnl)}</div>
+        <div class="text-[10px] font-mono ${netPnlColor}" title="${feesTooltip}">扣費後 NT$ ${(p.net_pnl||0) >= 0 ? '+' : ''}${fmtInt(p.net_pnl)}</div>
       `;
+    }
+
+    // 年化報酬
+    const ann = p.annualized_return_pct;
+    const annColor = ann == null ? 'text-slate-500' : ann >= 0 ? 'text-red-400' : 'text-emerald-400';
+    const annLabel = ann == null
+      ? (p.purchase_date ? '計算中' : '未填進場日')
+      : `${ann >= 0 ? '+' : ''}${fmt(ann)}%`;
+    const annTooltip = p.days_held ? `持有 ${p.days_held} 天` : '需設定進場日才可計算';
+    const annHtml = `<span class="tabular-nums ${annColor}" title="${annTooltip}">${annLabel}</span>`;
+
+    // 折溢價（僅 ETF）
+    const prem = p.premium_pct;
+    let premHtml = '<span class="text-slate-600">—</span>';
+    if (p.is_etf && prem != null) {
+      const premColor = Math.abs(prem) >= 1 ? 'text-amber-400' : (prem >= 0 ? 'text-red-400' : 'text-emerald-400');
+      const premTip = `市價 ${fmt(p.current_price)} / NAV ${fmt(p.nav)}`;
+      premHtml = `<span class="tabular-nums ${premColor}" title="${premTip}">${prem >= 0 ? '+' : ''}${fmt(prem)}%</span>`;
     }
 
     return `<tr>
@@ -2095,6 +2140,8 @@ function renderPortfolio(data) {
       <td class="text-right"><span class="tabular-nums text-xs ${rsiPct>=75?'text-red-400':rsiPct<=30?'text-amber-400':'text-slate-400'}">${fmt(p.rsi,1)}</span><div class="rsi-bar"><div class="rsi-fill ${rsiColor}" style="width:${rsiPct}%"></div></div></td>
       <td class="text-right tabular-nums">${pnlAmountHtml}</td>
       <td class="text-right"><span class="pill ${pnlPill} tabular-nums">${p.pnl_pct >= 0 ? '+' : ''}${fmt(p.pnl_pct)}%</span></td>
+      <td class="text-right">${annHtml}</td>
+      <td class="text-right">${premHtml}</td>
       <td><span class="pill ${recPill} text-[11px]">${rec.action||'—'}</span>${rec.reason ? `<div class="text-[10px] text-slate-500 mt-1 leading-tight max-w-[180px]">${rec.reason}</div>` : ''}${targetInfo ? `<div class="text-[10px] mt-0.5">${targetInfo}</div>` : ''}</td>
       <td class="text-center whitespace-nowrap">
         <button onclick="diagnose('${p.symbol}','${(p.name||'').replace(/'/g,"\\\'")}')" class="btn-action" data-tip="分析">分析</button>
@@ -2108,13 +2155,13 @@ function renderPortfolio(data) {
   if (twPositions.length > 0) {
     $('tw-portfolio-tbody').innerHTML = twPositions.map(makeRowHtml).join('');
   } else {
-    $('tw-portfolio-tbody').innerHTML = `<tr><td colspan="11" class="text-center text-slate-500 py-6">無台股持倉資料</td></tr>`;
+    $('tw-portfolio-tbody').innerHTML = `<tr><td colspan="13" class="text-center text-slate-500 py-6">無台股持倉資料</td></tr>`;
   }
 
   if (usPositions.length > 0) {
     $('us-portfolio-tbody').innerHTML = usPositions.map(makeRowHtml).join('');
   } else {
-    $('us-portfolio-tbody').innerHTML = `<tr><td colspan="11" class="text-center text-slate-500 py-6">無美股持倉資料</td></tr>`;
+    $('us-portfolio-tbody').innerHTML = `<tr><td colspan="13" class="text-center text-slate-500 py-6">無美股持倉資料</td></tr>`;
   }
 }
 
@@ -4087,6 +4134,24 @@ async function openSettings() {
   // Obsidian
   $('obsidian-vault-path').value = r.obsidian_vault_path || '';
 
+  // 券商 presets
+  const presets = r.brokerage_presets || {};
+  const fees = r.brokerage_fees || {};
+  const twSel = $('tw-broker-preset');
+  const usSel = $('us-broker-preset');
+  if (twSel && usSel) {
+    const twOpts = Object.entries(presets).filter(([k, v]) => v.tw_buy_fee_rate !== undefined);
+    const usOpts = Object.entries(presets).filter(([k, v]) => v.us_fee_rate !== undefined);
+    twSel.innerHTML = twOpts.map(([k, v]) => `<option value="${k}">${v.label || k}</option>`).join('');
+    usSel.innerHTML = usOpts.map(([k, v]) => `<option value="${k}">${v.label || k}</option>`).join('');
+    twSel.value = fees.tw_broker || 'default_60_discount';
+    usSel.value = fees.us_broker || 'fubon_proxy';
+    const preview = $('brokerage-fees-preview');
+    if (preview) {
+      preview.textContent = `台股：買 ${(fees.tw_buy_fee_rate*100||0).toFixed(4)}% / 賣 ${(fees.tw_sell_fee_rate*100||0).toFixed(4)}% / 證交稅 股${(fees.tw_sell_tax_rate_stock*100||0).toFixed(2)}% ETF${(fees.tw_sell_tax_rate_etf*100||0).toFixed(2)}%　|　美股：費率 ${(fees.us_fee_rate*100||0).toFixed(3)}% 最低 $${fees.us_min_fee||0}`;
+    }
+  }
+
   updateLLMHint(r.roles);
 }
 
@@ -4125,6 +4190,8 @@ async function saveSettings() {
       },
     },
     obsidian_vault_path: $('obsidian-vault-path').value,
+    tw_broker_preset: ($('tw-broker-preset') || {}).value,
+    us_broker_preset: ($('us-broker-preset') || {}).value,
   };
   const r = await fetch('/api/settings', {
     method: 'POST', headers: {'Content-Type':'application/json'},

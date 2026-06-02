@@ -26,6 +26,66 @@ DEFAULT_SETTINGS = {
         },
     },
     "obsidian_vault_path": "",        # 留空則不存 Obsidian 筆記
+    # ─── 券商手續費（依個券商最新公告為準；用戶可在 UI 切換 preset） ───
+    "brokerage_fees": {
+        "tw_broker": "default_60_discount",  # preset 名稱
+        "tw_buy_fee_rate": 0.001425 * 0.6,   # 0.1425% × 6 折 = 0.0855%
+        "tw_sell_fee_rate": 0.001425 * 0.6,
+        "tw_sell_tax_rate_stock": 0.003,     # 股票證交稅 0.3%
+        "tw_sell_tax_rate_etf": 0.001,       # ETF 證交稅 0.1%
+        "tw_min_fee": 20,                    # 單筆最低手續費 NT$
+        # 美股：以複委託保守值為預設；IBKR/嘉信等可自行下調
+        "us_broker": "fubon_proxy",
+        "us_fee_rate": 0.005,                # 0.5%
+        "us_min_fee": 39.9,                  # USD
+        "us_sec_fee_rate": 0.0000278,        # SEC 規費（賣出）2025 年率
+    },
+}
+
+# 常見券商 preset，UI 可一鍵切換
+BROKERAGE_PRESETS = {
+    "default_60_discount": {  # 一般網路下單 6 折
+        "label": "台股 6 折券商",
+        "tw_buy_fee_rate": 0.001425 * 0.6,
+        "tw_sell_fee_rate": 0.001425 * 0.6,
+        "tw_sell_tax_rate_stock": 0.003,
+        "tw_sell_tax_rate_etf": 0.001,
+        "tw_min_fee": 20,
+    },
+    "discount_28": {  # 大量交易 2.8 折
+        "label": "台股 2.8 折券商",
+        "tw_buy_fee_rate": 0.001425 * 0.28,
+        "tw_sell_fee_rate": 0.001425 * 0.28,
+        "tw_sell_tax_rate_stock": 0.003,
+        "tw_sell_tax_rate_etf": 0.001,
+        "tw_min_fee": 20,
+    },
+    "full_rate": {  # 未打折
+        "label": "台股公定費率",
+        "tw_buy_fee_rate": 0.001425,
+        "tw_sell_fee_rate": 0.001425,
+        "tw_sell_tax_rate_stock": 0.003,
+        "tw_sell_tax_rate_etf": 0.001,
+        "tw_min_fee": 20,
+    },
+    "fubon_proxy": {
+        "label": "富邦複委託",
+        "us_fee_rate": 0.005,
+        "us_min_fee": 39.9,
+        "us_sec_fee_rate": 0.0000278,
+    },
+    "ibkr_tiered": {
+        "label": "IBKR Tiered",
+        "us_fee_rate": 0.00035,  # 約 0.035%
+        "us_min_fee": 0.35,
+        "us_sec_fee_rate": 0.0000278,
+    },
+    "firstrade": {
+        "label": "第一證券 Firstrade",
+        "us_fee_rate": 0.0,
+        "us_min_fee": 0.0,
+        "us_sec_fee_rate": 0.0000278,
+    },
 }
 
 # 各 provider 的 CLI 工具
