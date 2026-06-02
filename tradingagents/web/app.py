@@ -124,6 +124,17 @@ def init_db():
         risk_level TEXT,
         warnings_count INTEGER
     );
+    CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+        date TEXT NOT NULL,
+        zone TEXT NOT NULL,
+        total_cost REAL,
+        total_value REAL,
+        total_pnl REAL,
+        total_net_pnl REAL,
+        position_count INTEGER,
+        PRIMARY KEY (date, zone)
+    );
+    CREATE INDEX IF NOT EXISTS idx_snapshots_date ON portfolio_snapshots(date);
     CREATE TABLE IF NOT EXISTS price_cache (
         symbol TEXT PRIMARY KEY,
         ts TEXT,
@@ -1527,6 +1538,11 @@ async def monitor_loop():
                             print(f"  [ALERT] {d['symbol']}: {created} new alert(s)")
 
                 conn.commit()
+                # 每輪結束記錄當日 portfolio snapshot（per-zone TWD 總計）
+                try:
+                    _record_portfolio_snapshot(conn)
+                except Exception as e:
+                    print(f"  [WARN] snapshot failed: {e}")
                 vault = _get_vault()
                 if alerts_created and vault:
                     _obsidian_post_write_sync(vault, kinds=("alerts",))
@@ -1950,6 +1966,90 @@ def _is_etf_symbol(symbol: str, quote_type: Optional[str] = None) -> bool:
     return False
 
 
+def _compute_portfolio_snapshot_for_zone(positions: list[dict], fees_cfg: dict) -> dict:
+    """Aggregate one zone's positions into snapshot fields (TWD-denominated).
+
+    positions: rows from api_portfolio's enriched output (must include
+    current_price, cost_price, shares, currency, net_pnl already in TWD).
+    """
+    cost = value = net_pnl = 0.0
+    for d in positions:
+        cur = d.get("current_price") or d["cost_price"]
+        rate = USD_TWD if d.get("currency") == "USD" else 1.0
+        cost += d["cost_price"] * d["shares"] * rate
+        value += cur * d["shares"] * rate
+        net_pnl += float(d.get("net_pnl") or 0)
+    return {
+        "total_cost": round(cost, 0),
+        "total_value": round(value, 0),
+        "total_pnl": round(value - cost, 0),
+        "total_net_pnl": round(net_pnl, 0),
+        "position_count": len(positions),
+    }
+
+
+def _record_portfolio_snapshot(conn=None) -> None:
+    """Persist today's per-zone aggregate to portfolio_snapshots.
+
+    Idempotent on (date, zone) — same-day repeated calls overwrite the day's
+    value with the latest one, but past days remain untouched even when a
+    user later edits a position's cost / shares / purchase_date.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = get_db()
+    try:
+        rows = conn.execute("""
+            SELECT p.*, pc.price as current_price, pc.data AS price_cache_data
+            FROM positions p
+            LEFT JOIN price_cache pc ON p.symbol = pc.symbol
+        """).fetchall()
+        positions = [
+            dict(r) for r in rows
+            if not _is_test_symbol(r["symbol"], r["name"], r["category"])
+        ]
+        if not positions:
+            return
+        fees_cfg = (load_settings().get("brokerage_fees") or {})
+
+        # Compute net_pnl per position (TWD) to mirror api_portfolio
+        for d in positions:
+            raw = d.pop("price_cache_data", None)
+            quote_type = None
+            if raw:
+                try:
+                    blob = json.loads(raw)
+                    quote_type = blob.get("quote_type")
+                except (TypeError, ValueError):
+                    pass
+            cur = d.get("current_price") or d["cost_price"]
+            currency = d.get("currency") or "TWD"
+            is_etf = _is_etf_symbol(d["symbol"], quote_type)
+            buy_fees = _compute_fees(d["cost_price"], d["shares"], currency, "buy", fees_cfg, is_etf)
+            sell_fees = _compute_fees(cur, d["shares"], currency, "sell", fees_cfg, is_etf)
+            gross_native = (cur - d["cost_price"]) * d["shares"]
+            net_native = gross_native - buy_fees["total"] - sell_fees["total"]
+            rate = USD_TWD if currency == "USD" else 1.0
+            d["net_pnl"] = net_native * rate
+
+        today = date.today().isoformat()
+        tw_positions = [p for p in positions if (p.get("currency") == "TWD" or p["symbol"].endswith(".TW") or p["symbol"].endswith(".TWO"))]
+        us_positions = [p for p in positions if p not in tw_positions]
+        for zone, plist in (("tw", tw_positions), ("us", us_positions)):
+            snap = _compute_portfolio_snapshot_for_zone(plist, fees_cfg)
+            conn.execute(
+                """INSERT OR REPLACE INTO portfolio_snapshots
+                   (date, zone, total_cost, total_value, total_pnl, total_net_pnl, position_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (today, zone, snap["total_cost"], snap["total_value"],
+                 snap["total_pnl"], snap["total_net_pnl"], snap["position_count"]),
+            )
+        conn.commit()
+    finally:
+        if own_conn:
+            conn.close()
+
+
 @app.get("/api/portfolio")
 def api_portfolio():
     conn = get_db()
@@ -2066,117 +2166,105 @@ def api_portfolio():
 
 @app.get("/api/portfolio/trend")
 def api_portfolio_trend():
+    """Daily portfolio equity curve from immutable snapshots.
+
+    歷史線取自 portfolio_snapshots（monitor / refresh 每次都會 INSERT OR
+    REPLACE 當日值；過去日是凍結的，**使用者後續修改持倉、刪除持倉、
+    改 cost_price 都不會回溯影響已存的歷史水位**）。
+
+    今日的最後一個點仍然用即時 price_cache 計算，這樣 UI 在盤中也能看到
+    當下的資產值動態變化。
+    """
     conn = get_db()
-    rows = conn.execute("SELECT * FROM positions").fetchall()
+    snap_rows = conn.execute(
+        """SELECT date, zone, total_cost, total_value, total_pnl, total_net_pnl
+           FROM portfolio_snapshots
+           ORDER BY date ASC"""
+    ).fetchall()
     conn.close()
-    
-    positions = [dict(r) for r in rows]
-    if not positions:
-        return {"tw": [], "us": []}
-        
-    from concurrent.futures import ThreadPoolExecutor
-    
-    def _fetch_history(symbol):
+
+    today_str = date.today().isoformat()
+    trend_tw: list[dict] = []
+    trend_us: list[dict] = []
+    last_seen = {"tw": None, "us": None}
+    for r in snap_rows:
+        d = dict(r)
+        if d["date"] == today_str:
+            # 今日值由 live snapshot 取代（下面補）
+            continue
         try:
-            h = yf.Ticker(symbol).history(period="1wk", interval="15m")
-            h = h.dropna(subset=["Close"])
-            prices = {int(ts.timestamp()): float(close) for ts, close in h["Close"].items()}
-            return symbol, prices
-        except Exception:
-            return symbol, {}
-            
-    histories = {}
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        futures = [ex.submit(_fetch_history, p["symbol"]) for p in positions]
-        for f in futures:
-            sym, prices = f.result()
-            histories[sym] = prices
-            
-    all_timestamps = set()
-    for prices in histories.values():
-        all_timestamps.update(prices.keys())
-        
-    if not all_timestamps:
-        return {"tw": [], "us": []}
-        
-    sorted_timestamps = sorted(list(all_timestamps))
-    
-    last_seen_prices = {}
-    for p in positions:
-        sym = p["symbol"]
-        sym_prices = histories.get(sym, {})
-        if sym_prices:
-            first_ts = min(sym_prices.keys())
-            last_seen_prices[sym] = sym_prices[first_ts]
-        else:
-            last_seen_prices[sym] = p["cost_price"]
-            
-    import datetime
-    
-    # 解析各持倉的購買日期
-    purchase_dates = {}
-    for p in positions:
-        p_date_str = p.get("purchase_date")
-        if p_date_str:
-            try:
-                purchase_dates[p["id"]] = datetime.date.fromisoformat(p_date_str.strip())
-            except Exception:
-                purchase_dates[p["id"]] = None
-        else:
-            purchase_dates[p["id"]] = None
-            
-    trend_tw = []
-    trend_us = []
-    for ts in sorted_timestamps:
-        # 將時間戳記轉為本地日期做比較
-        ts_date = datetime.datetime.fromtimestamp(ts).date()
-        
-        tw_cost = tw_val = 0.0
-        us_cost = us_val = 0.0
-        tw_active = us_active = False
-        
-        for p in positions:
-            p_date = purchase_dates.get(p["id"])
-            # 若該時間點尚未購買此股票，則不計入持倉成本與市值
-            if p_date and ts_date < p_date:
-                continue
-                
-            sym = p["symbol"]
-            sym_prices = histories.get(sym, {})
-            if ts in sym_prices:
-                last_seen_prices[sym] = sym_prices[ts]
-                
-            price = last_seen_prices[sym]
-            cost_total = p["cost_price"] * p["shares"]
-            val_total = price * p["shares"]
-            
-            is_tw = p["currency"] == "TWD" or p["symbol"].endswith(".TW")
-            if is_tw:
-                tw_cost += cost_total
-                tw_val += val_total
-                tw_active = True
-            else:
-                us_cost += cost_total
-                us_val += val_total
-                us_active = True
-                
-        if tw_active:
-            trend_tw.append({
-                "time": ts,
-                "total_value": round(tw_val, 0),
-                "total_cost": round(tw_cost, 0),
-            })
-        if us_active:
-            trend_us.append({
-                "time": ts,
-                "total_value": round(us_val, 2),
-                "total_cost": round(us_cost, 2),
-            })
-        
-    return sanitize_float_values({
-        "tw": trend_tw,
-        "us": trend_us
-    })
+            ts = int(datetime.fromisoformat(d["date"]).timestamp())
+        except ValueError:
+            continue
+        point = {
+            "time": ts,
+            "date": d["date"],
+            "total_value": round(d["total_value"] or 0, 0),
+            "total_cost": round(d["total_cost"] or 0, 0),
+            "total_pnl": round(d["total_pnl"] or 0, 0),
+            "total_net_pnl": round(d["total_net_pnl"] or 0, 0),
+        }
+        if d["zone"] == "tw":
+            trend_tw.append(point)
+            last_seen["tw"] = point
+        elif d["zone"] == "us":
+            trend_us.append(point)
+            last_seen["us"] = point
+
+    # Append today's live snapshot (in-memory; doesn't write to DB so a manual
+    # browse doesn't persist a partial-day value).
+    try:
+        conn = get_db()
+        rows = conn.execute(
+            """SELECT p.*, pc.price as current_price, pc.data AS price_cache_data
+               FROM positions p
+               LEFT JOIN price_cache pc ON p.symbol = pc.symbol"""
+        ).fetchall()
+        conn.close()
+        positions = [
+            dict(r) for r in rows
+            if not _is_test_symbol(r["symbol"], r["name"], r["category"])
+        ]
+        if positions:
+            fees_cfg = (load_settings().get("brokerage_fees") or {})
+            for d in positions:
+                raw = d.pop("price_cache_data", None)
+                quote_type = None
+                if raw:
+                    try:
+                        quote_type = json.loads(raw).get("quote_type")
+                    except (TypeError, ValueError):
+                        pass
+                cur = d.get("current_price") or d["cost_price"]
+                currency = d.get("currency") or "TWD"
+                is_etf = _is_etf_symbol(d["symbol"], quote_type)
+                buy_fees = _compute_fees(d["cost_price"], d["shares"], currency, "buy", fees_cfg, is_etf)
+                sell_fees = _compute_fees(cur, d["shares"], currency, "sell", fees_cfg, is_etf)
+                gross_native = (cur - d["cost_price"]) * d["shares"]
+                net_native = gross_native - buy_fees["total"] - sell_fees["total"]
+                rate = USD_TWD if currency == "USD" else 1.0
+                d["net_pnl"] = net_native * rate
+            tw_positions = [p for p in positions if (p.get("currency") == "TWD" or p["symbol"].endswith(".TW") or p["symbol"].endswith(".TWO"))]
+            us_positions = [p for p in positions if p not in tw_positions]
+            today_ts = int(datetime.fromisoformat(today_str).timestamp())
+            for zone, plist, arr in (("tw", tw_positions, trend_tw), ("us", us_positions, trend_us)):
+                snap = _compute_portfolio_snapshot_for_zone(plist, fees_cfg)
+                if snap["position_count"] == 0:
+                    continue
+                point = {
+                    "time": today_ts,
+                    "date": today_str,
+                    "total_value": snap["total_value"],
+                    "total_cost": snap["total_cost"],
+                    "total_pnl": snap["total_pnl"],
+                    "total_net_pnl": snap["total_net_pnl"],
+                    "live": True,
+                }
+                arr.append(point)
+    except Exception:
+        pass
+
+    return sanitize_float_values({"tw": trend_tw, "us": trend_us})
 
 
 @app.get("/api/watchlist")
@@ -2459,6 +2547,10 @@ def _run_api_refresh_sync(t0: float) -> dict:
             alerts_created += insert_alerts(c, d["symbol"], d["name"], ind, market, watch=d)
 
     conn.commit()
+    try:
+        _record_portfolio_snapshot(conn)
+    except Exception as e:
+        print(f"  [WARN] snapshot failed: {e}")
     vault = _get_vault()
     if vault and alerts_created:
         _obsidian_post_write_sync(vault, kinds=("alerts",))
@@ -2794,6 +2886,21 @@ def api_add_position(p: PositionCreate):
         (p.symbol, p.name, p.category, p.shares, p.cost_price, p.currency, p_date, p.target_entry, p.target_profit, p.target_stop)
     )
     conn.commit()
+    # 立即抓一次該標的的報價並寫入 price_cache，這樣 UI 在新增後第一次
+    # 重新整理就能看到正確的現價 / PnL，不必等下一輪 monitor_loop。
+    try:
+        ind = fetch_indicators(p.symbol, None)
+        if ind and "price" in ind:
+            c = conn.cursor()
+            store_price_cache(c, p.symbol, ind)
+            conn.commit()
+    except Exception as e:
+        print(f"  [WARN] initial fetch for {p.symbol} failed: {e}")
+    # 寫一個 snapshot，避免「新增後到 monitor 跑之前資產線是空的」的視覺感
+    try:
+        _record_portfolio_snapshot(conn)
+    except Exception:
+        pass
     vault = _get_vault()
     if vault:
         _obsidian_write_position_snapshot(vault, conn, p.symbol)
