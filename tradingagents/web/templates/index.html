@@ -1029,13 +1029,17 @@ body { background: var(--bg-base); color: var(--text-primary); }
   <div id="tab-daytrade" class="tab-content hidden">
     <div class="mb-4 glass-card-sm p-4 flex flex-wrap items-center justify-between gap-3">
       <div class="flex items-center gap-2 flex-wrap">
-        <input id="daytrade-input" type="text" placeholder="加入個股代號，例如 AAPL, 2330.TW" class="input-field uppercase text-sm" style="width:240px; padding:6px 12px;" onkeydown="if(event.key==='Enter') addDaytradeSymbol()">
-        <button onclick="addDaytradeSymbol()" class="btn-primary text-sm px-4 py-1.5">新增監控</button>
+        <span class="text-xs text-slate-400">新增監控:</span>
+        <select id="daytrade-selector" onchange="addDaytradeFromSelector(this)" class="input-field text-sm" style="width:280px; padding:6px 12px;">
+          <option value="">-- 選擇觀察名單中的個股 --</option>
+        </select>
       </div>
       <div class="flex items-center gap-4 flex-wrap">
         <div class="flex items-center gap-1.5">
           <span class="text-xs text-slate-400">時間級距:</span>
           <select id="daytrade-period" class="input-field text-xs" style="width:auto; padding:4px 8px;">
+            <option value="1m">1 分鐘 (1m K線)</option>
+            <option value="5m">5 分鐘 (1m K線)</option>
             <option value="15m" selected>15 分鐘 (1m K線)</option>
             <option value="30m">30 分鐘 (1m K線)</option>
             <option value="1h">1 小時 (1m K線)</option>
@@ -2472,6 +2476,7 @@ function renderWatchlist(items) {
   } else {
     $('us-watchlist-tbody').innerHTML = `<tr><td colspan="11" class="text-center text-slate-500 py-6">無美股觀察資料</td></tr>`;
   }
+  populateDaytradeSelector();
 }
 
 // 後端傳回的 type metadata，用於 chip 與排序
@@ -5440,19 +5445,34 @@ function saveDaytradeSymbols() {
   localStorage.setItem('daytrade_symbols', JSON.stringify(_daytradeSymbols));
 }
 
-function addDaytradeSymbol() {
-  const input = $('daytrade-input');
-  const symbol = input.value.trim().toUpperCase();
+function addDaytradeFromSelector(select) {
+  const symbol = select.value;
   if (!symbol) return;
   if (_daytradeSymbols.includes(symbol)) {
     alert('該商品已在監控列表中');
+    select.value = '';
     return;
   }
   _daytradeSymbols.push(symbol);
   saveDaytradeSymbols();
-  input.value = '';
+  select.value = '';
   renderDaytradeGrid();
-  refreshDaytradeSymbol(symbol);
+  refreshDaytradeSymbol(symbol, true);
+}
+
+function populateDaytradeSelector() {
+  const select = $('daytrade-selector');
+  if (!select) return;
+  const currentVal = select.value;
+  select.innerHTML = '<option value="">-- 選擇觀察名單中的個股 --</option>';
+  const watchlist = window._watchlist || [];
+  watchlist.forEach(w => {
+    const opt = document.createElement('option');
+    opt.value = w.symbol;
+    opt.textContent = `${w.name || w.symbol} (${w.symbol})`;
+    select.appendChild(opt);
+  });
+  select.value = currentVal;
 }
 
 function removeDaytradeSymbol(symbol) {
@@ -5503,7 +5523,7 @@ function renderDaytradeGrid() {
   });
   
   if (_daytradeSymbols.length === 0) {
-    grid.innerHTML = '<div class="text-slate-500 italic p-4 text-center col-span-2">監控清單為空，請於上方輸入代號新增監控</div>';
+    grid.innerHTML = '<div class="text-slate-500 italic p-4 text-center col-span-2">監控清單為空，請於上方選擇代號新增監控</div>';
     return;
   }
   

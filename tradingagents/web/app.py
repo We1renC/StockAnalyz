@@ -961,6 +961,8 @@ def _fetch_daily_history_from_date(symbol: str, start_date: date, end_date: date
 
 def _chart_period_config(period: str) -> dict[str, str]:
     configs = {
+        "1m": {"period": "1d", "interval": "1m"},
+        "5m": {"period": "1d", "interval": "1m"},
         "15m": {"period": "1d", "interval": "1m"},
         "30m": {"period": "1d", "interval": "1m"},
         "1h": {"period": "1d", "interval": "1m"},
@@ -2873,6 +2875,8 @@ def api_history(symbol: str, period: str = "6mo"):
         
         # 決定拉取較大的歷史區間，以提供 MA20 / MA60 足夠的 warm-up 緩衝
         calc_periods = {
+            "1m": "5d",
+            "5m": "5d",
             "15m": "5d",
             "30m": "5d",
             "1h": "5d",
@@ -2910,6 +2914,8 @@ def api_history(symbol: str, period: str = "6mo"):
         import datetime
         latest_ts = h.index[-1]
         period_durations = {
+            "1m": datetime.timedelta(minutes=1),
+            "5m": datetime.timedelta(minutes=5),
             "15m": datetime.timedelta(minutes=15),
             "30m": datetime.timedelta(minutes=30),
             "1h": datetime.timedelta(hours=1),
