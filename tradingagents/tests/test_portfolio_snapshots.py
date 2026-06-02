@@ -1,5 +1,7 @@
 """Tests for portfolio_snapshots immutability + auto-quote on add."""
+import json
 from datetime import date, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 import app
@@ -140,5 +142,101 @@ def test_trend_reads_from_snapshots_not_current_positions(tmp_path):
         assert len(past_points) == 2
         assert past_points[0]["total_value"] == 9500
         assert past_points[1]["total_value"] == 9800
+    finally:
+        _restore_db(original)
+
+
+def test_portfolio_falls_back_to_obsidian_purchase_date_for_annualized(tmp_path):
+    original = _setup_temp_db(tmp_path)
+    try:
+        purchase_date = (date.today() - timedelta(days=30)).isoformat()
+        _insert_position("2330.TW", "台積電", shares=10, cost_price=100)
+        conn = app.get_db()
+        conn.execute("UPDATE positions SET purchase_date=NULL WHERE symbol='2330.TW'")
+        conn.commit()
+        conn.close()
+        _set_price_cache("2330.TW", 110)
+
+        vault = tmp_path / "vault"
+        app._obsidian_write_position(vault, {
+            "symbol": "2330.TW",
+            "name": "台積電",
+            "category": "半導體",
+            "shares": 10,
+            "cost_price": 100,
+            "currency": "TWD",
+            "purchase_date": purchase_date,
+            "target_entry": None,
+            "target_profit": None,
+            "target_stop": None,
+        })
+
+        with patch.object(app, "_get_vault", return_value=Path(vault)):
+            result = app.api_portfolio()
+
+        pos = result["positions"][0]
+        assert pos["purchase_date"] == purchase_date
+        assert pos["annualized_status"] == "ok"
+        assert pos["annualized_return_pct"] is not None
+
+        conn = app.get_db()
+        row = conn.execute("SELECT purchase_date FROM positions WHERE symbol='2330.TW'").fetchone()
+        conn.close()
+        assert row["purchase_date"] == purchase_date
+    finally:
+        _restore_db(original)
+
+
+def test_portfolio_backfills_etf_nav_into_sqlite_price_cache(tmp_path):
+    original = _setup_temp_db(tmp_path)
+    try:
+        _insert_position("0050.TW", "元大台灣50", shares=2, cost_price=100, currency="TWD")
+        _set_price_cache("0050.TW", 110)
+
+        with patch.object(app, "_get_yf_quote_info", return_value={
+            "realtime": 110.0,
+            "nav": 108.0,
+            "quote_type": "ETF",
+        }):
+            result = app.api_portfolio()
+
+        pos = result["positions"][0]
+        assert pos["is_etf"] is True
+        assert pos["premium_status"] == "ok"
+        assert pos["premium_pct"] == round((110 / 108 - 1) * 100, 2)
+
+        conn = app.get_db()
+        row = conn.execute("SELECT data FROM price_cache WHERE symbol='0050.TW'").fetchone()
+        conn.close()
+        payload = json.loads(row["data"])
+        assert payload["nav"] == 108.0
+        assert payload["quote_type"] == "ETF"
+    finally:
+        _restore_db(original)
+
+
+def test_portfolio_backfills_equity_pb_into_sqlite_price_cache(tmp_path):
+    original = _setup_temp_db(tmp_path)
+    try:
+        _insert_position("AAPL", "Apple", shares=1, cost_price=100, currency="USD")
+        _set_price_cache("AAPL", 110)
+
+        with patch.object(app, "_get_yf_quote_info", return_value={
+            "realtime": 110.0,
+            "nav": None,
+            "quote_type": "EQUITY",
+            "pb": 12.34,
+        }):
+            result = app.api_portfolio()
+
+        pos = result["positions"][0]
+        assert pos["is_etf"] is False
+        assert pos["pb"] == 12.34
+
+        conn = app.get_db()
+        row = conn.execute("SELECT data FROM price_cache WHERE symbol='AAPL'").fetchone()
+        conn.close()
+        payload = json.loads(row["data"])
+        assert payload["pb"] == 12.34
     finally:
         _restore_db(original)

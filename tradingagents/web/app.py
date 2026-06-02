@@ -206,6 +206,22 @@ def _safe_float(value):
         return None
 
 
+def _normalize_purchase_date(value) -> Optional[str]:
+    if value in (None, "", "-", "--"):
+        return None
+    text = str(value).strip().replace("/", "-")
+    try:
+        if "T" in text:
+            return datetime.fromisoformat(text).date().isoformat()
+        parts = text.split("-")
+        if len(parts) == 3:
+            y, m, d = (int(parts[0]), int(parts[1]), int(parts[2]))
+            return date(y, m, d).isoformat()
+    except Exception:
+        return None
+    return None
+
+
 def _is_test_symbol(symbol: str, name: str = "", category: str = "") -> bool:
     symbol_upper = (symbol or "").strip().upper()
     name_text = (name or "").strip()
@@ -1045,25 +1061,7 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
     want_info = (not is_tw) or is_tw_etf_like
 
     def _yf_info_job():
-        if not want_info:
-            return {"realtime": None, "nav": None, "quote_type": None}
-        entry = _YF_INFO_CACHE.get(symbol)
-        if entry and time.time() < entry[0]:
-            return entry[1]
-        out = {"realtime": None, "nav": None, "quote_type": None}
-        try:
-            info = yf.Ticker(symbol).info or {}
-            rmp = info.get("regularMarketPrice") or info.get("currentPrice")
-            if rmp and rmp > 0:
-                out["realtime"] = float(rmp)
-            nav = info.get("navPrice")
-            if nav and nav > 0:
-                out["nav"] = float(nav)
-            out["quote_type"] = info.get("quoteType")
-        except Exception:
-            pass
-        _YF_INFO_CACHE[symbol] = (time.time() + _YF_INFO_TTL, out)
-        return out
+        return _get_yf_quote_info(symbol, want_info=want_info)
 
     def _tw_realtime_job():
         return fetch_tw_realtime_quote(symbol) if is_tw else None
@@ -1144,6 +1142,31 @@ def fetch_indicators(symbol: str, bench_close=None) -> dict:
 
     yf_ind.pop("_yf_realtime", None)
     return yf_ind
+
+
+def _get_yf_quote_info(symbol: str, want_info: bool = True) -> dict:
+    if not want_info:
+        return {"realtime": None, "nav": None, "quote_type": None, "pb": None}
+    entry = _YF_INFO_CACHE.get(symbol)
+    if entry and time.time() < entry[0]:
+        return entry[1]
+    out = {"realtime": None, "nav": None, "quote_type": None, "pb": None}
+    try:
+        info = yf.Ticker(symbol).info or {}
+        rmp = info.get("regularMarketPrice") or info.get("currentPrice")
+        if rmp and rmp > 0:
+            out["realtime"] = float(rmp)
+        nav = info.get("navPrice")
+        if nav and nav > 0:
+            out["nav"] = float(nav)
+        out["quote_type"] = info.get("quoteType")
+        pb = info.get("priceToBook")
+        if pb is not None:
+            out["pb"] = _safe_float(pb)
+    except Exception:
+        pass
+    _YF_INFO_CACHE[symbol] = (time.time() + _YF_INFO_TTL, out)
+    return out
 
 def store_price_cache(c, symbol: str, ind: dict):
     """Persist fresh quote data while keeping older indicator fields when absent."""
@@ -2060,33 +2083,81 @@ def api_portfolio():
         LEFT JOIN price_cache pc ON p.symbol = pc.symbol
     """).fetchall()
     market_row = conn.execute("SELECT * FROM market_state WHERE id=1").fetchone()
-    conn.close()
     market = dict(market_row) if market_row else None
     settings = load_settings()
     fees_cfg = settings.get("brokerage_fees") or {}
+    vault = _get_vault()
 
     today = date.today()
     out = []
     total_cost = total_value = total_net_pnl = 0.0
+    sqlite_dirty = False
     for r in rows:
         d = dict(r)
         # Parse cached payload for nav + quote_type
         raw = d.pop("price_cache_data", None)
         nav = None
         quote_type = None
+        pb = None
         if raw:
             try:
                 blob = json.loads(raw)
                 nav = blob.get("nav")
                 quote_type = blob.get("quote_type")
+                pb = _safe_float(blob.get("pb"))
             except (TypeError, ValueError):
                 pass
+
+        obsidian_pos = None
+        if vault and (
+            not d.get("purchase_date")
+            or not d.get("name")
+            or not d.get("category")
+            or not d.get("currency")
+        ):
+            obsidian_pos = _obsidian_position_fallback(vault, d["symbol"])
+            if obsidian_pos:
+                for field in ("purchase_date", "name", "category", "currency"):
+                    if not d.get(field) and obsidian_pos.get(field) not in (None, ""):
+                        d[field] = obsidian_pos[field]
+                        conn.execute(f"UPDATE positions SET {field}=? WHERE id=?", (obsidian_pos[field], d["id"]))
+                        sqlite_dirty = True
 
         cur = d.get("current_price") or d["cost_price"]
         cost_price = d["cost_price"]
         shares = d["shares"]
         currency = d["currency"] or "TWD"
         is_etf = _is_etf_symbol(d["symbol"], quote_type)
+
+        if is_etf and (nav is None or quote_type is None):
+            info_payload = _get_yf_quote_info(d["symbol"], want_info=True)
+            changed = {}
+            if nav is None and info_payload.get("nav") is not None:
+                nav = info_payload["nav"]
+                changed["nav"] = nav
+            if not quote_type and info_payload.get("quote_type"):
+                quote_type = info_payload["quote_type"]
+                changed["quote_type"] = quote_type
+            if pb is None and info_payload.get("pb") is not None:
+                pb = info_payload["pb"]
+                changed["pb"] = pb
+            if changed:
+                if info_payload.get("realtime") is not None and not d.get("current_price"):
+                    d["current_price"] = info_payload["realtime"]
+                    cur = d["current_price"]
+                    changed["price"] = d["current_price"]
+                store_price_cache(conn.cursor(), d["symbol"], changed)
+                sqlite_dirty = True
+        elif not is_etf and pb is None:
+            info_payload = _get_yf_quote_info(d["symbol"], want_info=True)
+            if info_payload.get("pb") is not None:
+                pb = info_payload["pb"]
+                changed = {"pb": pb}
+                if info_payload.get("quote_type") and not quote_type:
+                    quote_type = info_payload["quote_type"]
+                    changed["quote_type"] = quote_type
+                store_price_cache(conn.cursor(), d["symbol"], changed)
+                sqlite_dirty = True
 
         cost_total = cost_price * shares
         val_total = cur * shares
@@ -2105,22 +2176,31 @@ def api_portfolio():
 
         # Premium / discount vs NAV
         premium_pct = None
+        premium_status = "not_etf"
         if nav and nav > 0 and cur:
             premium_pct = round((cur / nav - 1) * 100, 2)
+            premium_status = "ok"
+        elif is_etf:
+            premium_status = "missing_nav" if not nav else "missing_price"
 
         # Annualized return (requires purchase_date)
         annualized = None
-        purchase_date_str = d.get("purchase_date")
+        annualized_status = "missing_purchase_date"
+        purchase_date_str = _normalize_purchase_date(d.get("purchase_date"))
+        d["purchase_date"] = purchase_date_str
         if purchase_date_str:
             try:
                 purchase_date = datetime.fromisoformat(purchase_date_str).date()
                 days_held = (today - purchase_date).days
-                if days_held > 0 and cost_price:
+                if days_held >= 0 and cost_price:
+                    d["days_held"] = days_held
                     total_return_pct = (cur / cost_price - 1) * 100
                     annualized = _annualized_return(total_return_pct, days_held)
-                    d["days_held"] = days_held
+                    annualized_status = "ok" if annualized is not None else "too_short"
+                else:
+                    annualized_status = "missing_purchase_date"
             except (ValueError, TypeError):
-                pass
+                annualized_status = "missing_purchase_date"
 
         d["pnl"] = round(val_total_twd - cost_total_twd, 0)
         d["pnl_pct"] = round((cur / cost_price - 1) * 100, 2) if cost_price else None
@@ -2135,10 +2215,13 @@ def api_portfolio():
             "currency": currency,
         }
         d["nav"] = nav
+        d["pb"] = round(pb, 2) if pb is not None else None
         d["premium_pct"] = premium_pct
         d["quote_type"] = quote_type
         d["is_etf"] = is_etf
         d["annualized_return_pct"] = annualized
+        d["annualized_status"] = annualized_status
+        d["premium_status"] = premium_status
         d["market_value"] = round(val_total_twd, 0)
         d["cost_total"] = round(cost_total_twd, 0)
         d["recommendation"] = _recommend_position(d, market)
@@ -2146,6 +2229,10 @@ def api_portfolio():
         total_value += val_total_twd
         total_net_pnl += net_pnl_twd
         out.append(d)
+
+    if sqlite_dirty:
+        conn.commit()
+    conn.close()
 
     return sanitize_float_values({
         "positions": out,
@@ -2183,6 +2270,13 @@ def api_portfolio_trend():
     ).fetchall()
     conn.close()
 
+    def _zone_scale(zone: str) -> float:
+        return USD_TWD if zone == "us" else 1.0
+
+    def _round_zone_amount(value, zone: str):
+        scale = _zone_scale(zone)
+        return round((value or 0) / scale, 2 if zone == "us" else 0)
+
     today_str = date.today().isoformat()
     trend_tw: list[dict] = []
     trend_us: list[dict] = []
@@ -2199,10 +2293,10 @@ def api_portfolio_trend():
         point = {
             "time": ts,
             "date": d["date"],
-            "total_value": round(d["total_value"] or 0, 0),
-            "total_cost": round(d["total_cost"] or 0, 0),
-            "total_pnl": round(d["total_pnl"] or 0, 0),
-            "total_net_pnl": round(d["total_net_pnl"] or 0, 0),
+            "total_value": _round_zone_amount(d["total_value"], d["zone"]),
+            "total_cost": _round_zone_amount(d["total_cost"], d["zone"]),
+            "total_pnl": _round_zone_amount(d["total_pnl"], d["zone"]),
+            "total_net_pnl": _round_zone_amount(d["total_net_pnl"], d["zone"]),
         }
         if d["zone"] == "tw":
             trend_tw.append(point)
@@ -2254,10 +2348,10 @@ def api_portfolio_trend():
                 point = {
                     "time": today_ts,
                     "date": today_str,
-                    "total_value": snap["total_value"],
-                    "total_cost": snap["total_cost"],
-                    "total_pnl": snap["total_pnl"],
-                    "total_net_pnl": snap["total_net_pnl"],
+                    "total_value": _round_zone_amount(snap["total_value"], zone),
+                    "total_cost": _round_zone_amount(snap["total_cost"], zone),
+                    "total_pnl": _round_zone_amount(snap["total_pnl"], zone),
+                    "total_net_pnl": _round_zone_amount(snap["total_net_pnl"], zone),
                     "live": True,
                 }
                 arr.append(point)
@@ -2880,7 +2974,7 @@ class PositionCreate(BaseModel):
 @app.post("/api/positions")
 def api_add_position(p: PositionCreate):
     conn = get_db()
-    p_date = p.purchase_date or date.today().isoformat()
+    p_date = _normalize_purchase_date(p.purchase_date) or date.today().isoformat()
     conn.execute(
         "INSERT INTO positions (symbol, name, category, shares, cost_price, currency, purchase_date, target_entry, target_profit, target_stop) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (p.symbol, p.name, p.category, p.shares, p.cost_price, p.currency, p_date, p.target_entry, p.target_profit, p.target_stop)
@@ -2948,6 +3042,8 @@ def api_update_position(pid: int, p: PositionUpdate):
     params = []
     
     set_fields = p.model_dump(exclude_unset=True)
+    if "purchase_date" in set_fields:
+        set_fields["purchase_date"] = _normalize_purchase_date(set_fields.get("purchase_date"))
     for field in ("shares", "cost_price", "name", "category", "currency", "purchase_date", "target_entry", "target_profit", "target_stop"):
         if field in set_fields:
             updates.append(f"{field}=?")
@@ -4238,6 +4334,10 @@ def _obsidian_portfolio_index_path(vault: Path) -> Path:
     return vault / "Portfolio" / "持倉總覽.md"
 
 
+def _obsidian_position_note_path(vault: Path, symbol: str) -> Path:
+    return vault / "Portfolio" / "Positions" / f"{_safe_obsidian_name(symbol)}.md"
+
+
 def _obsidian_watchlist_index_path(vault: Path) -> Path:
     return vault / "Watchlist" / "觀察清單總覽.md"
 
@@ -4860,13 +4960,22 @@ def _obsidian_parse_position(note_path: Path) -> Optional[dict]:
             "shares": _safe_float(meta.get("shares")),
             "cost_price": _safe_float(meta.get("cost_price")),
             "currency": meta.get("currency", "TWD"),
-            "purchase_date": meta.get("purchase_date", ""),
+            "purchase_date": _normalize_purchase_date(meta.get("purchase_date")),
             "target_entry": _safe_float(meta.get("target_entry")),
             "target_profit": _safe_float(meta.get("target_profit")),
             "target_stop": _safe_float(meta.get("target_stop")),
         }
     except Exception:
         return None
+
+
+def _obsidian_position_fallback(vault: Optional[Path], symbol: str) -> Optional[dict]:
+    if not vault or not symbol:
+        return None
+    note_path = _obsidian_position_note_path(vault, symbol)
+    if not note_path.is_file():
+        return None
+    return _obsidian_parse_position(note_path)
 
 
 def _obsidian_parse_watchlist(note_path: Path) -> Optional[dict]:
