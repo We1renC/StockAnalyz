@@ -557,6 +557,26 @@ body { background: var(--bg-base); color: var(--text-primary); }
 
 /* ── Utilities ── */
 .tabular-nums { font-variant-numeric: tabular-nums; }
+
+/* ── Day-Trading CSS ── */
+.daytrade-card {
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+  border-left: 3px solid var(--border-subtle);
+}
+.daytrade-card:hover {
+  transform: translateY(-2px);
+  border-left-color: var(--accent);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
+.daytrade-chart-container {
+  height: 280px;
+  background: #070b14;
+  border-radius: 12px;
+  border: 1px solid rgba(148,163,184,0.06);
+  position: relative;
+  overflow: hidden;
+}
 </style>
 </head>
 <body class="min-h-screen">
@@ -594,6 +614,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
       <button data-tab="watchlist-us" class="tab-btn tab-item">美股觀察</button>
       <button data-tab="backtest" class="tab-btn tab-item">回測</button>
       <button data-tab="domain-research" class="tab-btn tab-item">領域研究</button>
+      <button data-tab="daytrade" class="tab-btn tab-item">當沖監控</button>
     </div>
     <span id="last-update" class="text-xs text-slate-500 self-center pr-2" style="white-space:nowrap">—</span>
   </nav>
@@ -1002,6 +1023,43 @@ body { background: var(--bg-base); color: var(--text-primary); }
       <div id="dr-history-list" class="space-y-2"></div>
     </div>
 
+  </div>
+
+  <!-- Day-Trading Monitor Tab -->
+  <div id="tab-daytrade" class="tab-content hidden">
+    <div class="mb-4 glass-card-sm p-4 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-2 flex-wrap">
+        <input id="daytrade-input" type="text" placeholder="加入個股代號，例如 AAPL, 2330.TW" class="input-field uppercase text-sm" style="width:240px; padding:6px 12px;" onkeydown="if(event.key==='Enter') addDaytradeSymbol()">
+        <button onclick="addDaytradeSymbol()" class="btn-primary text-sm px-4 py-1.5">新增監控</button>
+      </div>
+      <div class="flex items-center gap-4 flex-wrap">
+        <div class="flex items-center gap-1.5">
+          <span class="text-xs text-slate-400">時間級距:</span>
+          <select id="daytrade-period" class="input-field text-xs" style="width:auto; padding:4px 8px;">
+            <option value="1h">1 小時 (1m K線)</option>
+            <option value="4h">4 小時 (5m K線)</option>
+            <option value="1d">1 天 (15m K線)</option>
+          </select>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <span class="text-xs text-slate-400">刷新頻率:</span>
+          <select id="daytrade-refresh" class="input-field text-xs" style="width:auto; padding:4px 8px;">
+            <option value="5">5 秒</option>
+            <option value="10" selected>10 秒</option>
+            <option value="30">30 秒</option>
+            <option value="60">60 秒</option>
+            <option value="0">手動</option>
+          </select>
+        </div>
+        <button onclick="refreshDaytradeAll({ force: true })" class="btn-secondary text-xs px-3 py-1" style="height:28px;">
+          立即重整
+        </button>
+        <span id="daytrade-refresh-badge" class="text-xs text-slate-500 tabular-nums"></span>
+      </div>
+    </div>
+
+    <!-- Daytrade Cards Grid -->
+    <div id="daytrade-grid" class="grid grid-cols-1 xl:grid-cols-2 gap-6"></div>
   </div>
 
 </div>
@@ -1530,6 +1588,22 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       if (_usTrendChart && $('us-portfolio-trend-chart')) {
         try { _usTrendChart.resize($('us-portfolio-trend-chart').clientWidth, 288); } catch(e){}
       }
+    }
+    if (btn.dataset.tab === 'daytrade') {
+      renderDaytradeGrid();
+      // Delay slightly to ensure layout and width calculations are fully updated in the DOM
+      setTimeout(() => {
+        Object.keys(_daytradeCharts).forEach(sym => {
+          const container = $(`daytrade-chart-${sym}`);
+          if (container && _daytradeCharts[sym]) {
+            try { _daytradeCharts[sym].resize(container.clientWidth, 280); } catch(e){}
+          }
+        });
+      }, 50);
+      setupDaytradeTimer();
+      refreshDaytradeAll();
+    } else {
+      stopDaytradeTimer();
     }
   });
 });
@@ -5329,8 +5403,415 @@ document.querySelectorAll('.tab-btn[data-tab="domain-research"]').forEach(btn =>
   btn.addEventListener('click', () => loadDomainHistory());
 });
 
+// ─────────────── 當沖監控 JS 實作 ───────────────
+let _daytradeSymbols = [];
+let _daytradeTimer = null;
+let _daytradeCharts = {};
+let _daytradeCandlesSeries = {};
+let _daytradeMa20Series = {};
+let _daytradeMa60Series = {};
+let _daytradeVolSeries = {};
+let _daytradeInFlight = false;
+
+function initDaytrade() {
+  const saved = localStorage.getItem('daytrade_symbols');
+  if (saved) {
+    try {
+      _daytradeSymbols = JSON.parse(saved);
+    } catch(e) {
+      _daytradeSymbols = ['2330.TW', 'AAPL'];
+    }
+  } else {
+    _daytradeSymbols = ['2330.TW', 'AAPL'];
+  }
+  
+  $('daytrade-period').addEventListener('change', () => {
+    refreshDaytradeAll({ resetCharts: true });
+  });
+  
+  $('daytrade-refresh').addEventListener('change', () => {
+    setupDaytradeTimer();
+  });
+}
+
+function saveDaytradeSymbols() {
+  localStorage.setItem('daytrade_symbols', JSON.stringify(_daytradeSymbols));
+}
+
+function addDaytradeSymbol() {
+  const input = $('daytrade-input');
+  const symbol = input.value.trim().toUpperCase();
+  if (!symbol) return;
+  if (_daytradeSymbols.includes(symbol)) {
+    alert('該商品已在監控列表中');
+    return;
+  }
+  _daytradeSymbols.push(symbol);
+  saveDaytradeSymbols();
+  input.value = '';
+  renderDaytradeGrid();
+  refreshDaytradeSymbol(symbol);
+}
+
+function removeDaytradeSymbol(symbol) {
+  _daytradeSymbols = _daytradeSymbols.filter(s => s !== symbol);
+  saveDaytradeSymbols();
+  renderDaytradeGrid();
+}
+
+function renderDaytradeCardHTML(symbol, name) {
+  return `
+    <div class="glass-card daytrade-card p-4 flex flex-col lg:flex-row gap-4" id="daytrade-card-${symbol}" data-symbol="${symbol}">
+      <div class="flex-1 min-w-0 flex flex-col justify-between">
+        <div class="flex items-center justify-between mb-2">
+          <div class="min-w-0">
+            <span class="text-base font-bold text-slate-100">${escHtml(name || symbol)}</span>
+            <span class="text-xs text-slate-500 ml-1.5 tabular-nums">${escHtml(symbol)}</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span id="dt-price-${symbol}" class="text-base font-bold tabular-nums text-slate-100">—</span>
+            <span id="dt-change-${symbol}" class="text-xs font-semibold px-2 py-0.5 rounded-full tabular-nums bg-slate-800 text-slate-400">—</span>
+            <button onclick="removeDaytradeSymbol('${symbol}')" class="text-slate-500 hover:text-red-400 text-lg font-bold ml-1" title="移除監控">×</button>
+          </div>
+        </div>
+        <div class="daytrade-chart-container" id="daytrade-chart-${symbol}" style="height: 280px;"></div>
+      </div>
+      <div class="w-full lg:w-[300px] shrink-0 border-t lg:border-t-0 lg:border-l border-slate-800/80 pt-3 lg:pt-0 lg:pl-4 flex flex-col justify-between" id="daytrade-info-${symbol}">
+        <div class="space-y-3">
+          <div class="flex items-center justify-between border-b border-slate-800/60 pb-1.5">
+            <span class="text-xs font-semibold text-emerald-400">17D 全景技術分析</span>
+            <span id="dt-bias-${symbol}" class="text-xs font-semibold text-slate-400">—</span>
+          </div>
+          <div class="grid grid-cols-2 gap-2 text-xs">
+            <div>評分: <span id="dt-score-${symbol}" class="tabular-nums text-slate-200">—</span></div>
+            <div>風險: <span id="dt-risk-${symbol}" class="text-slate-200">—</span></div>
+            <div>信心: <span id="dt-confidence-${symbol}" class="tabular-nums text-slate-200">—</span></div>
+            <div>ATR 波動: <span id="dt-atr-${symbol}" class="tabular-nums text-slate-200">—</span></div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-[11px] text-slate-500 font-semibold">當前活躍訊號</div>
+            <div id="dt-signals-${symbol}" class="flex flex-wrap gap-1 min-h-[22px]">
+              <span class="text-xs text-slate-600 italic">無訊號</span>
+            </div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-[11px] text-slate-500 font-semibold">短線候選交易計畫</div>
+            <div class="grid grid-cols-3 gap-1 text-[11px]">
+              <div class="bg-sky-500/10 border border-sky-500/20 rounded p-1 text-center">
+                <div class="text-sky-400">進場</div>
+                <div id="dt-lvl-entry-${symbol}" class="tabular-nums text-slate-300 font-semibold">—</div>
+              </div>
+              <div class="bg-red-500/10 border border-red-500/20 rounded p-1 text-center">
+                <div class="text-red-400">停利</div>
+                <div id="dt-lvl-target-${symbol}" class="tabular-nums text-slate-300 font-semibold">—</div>
+              </div>
+              <div class="bg-emerald-500/10 border border-emerald-500/20 rounded p-1 text-center">
+                <div class="text-emerald-400">停損</div>
+                <div id="dt-lvl-stop-${symbol}" class="tabular-nums text-slate-300 font-semibold">—</div>
+              </div>
+            </div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-[11px] text-slate-500 font-semibold">核心技術觀察</div>
+            <div id="dt-obs-${symbol}" class="text-[11px] text-slate-400 space-y-1 max-h-[85px] overflow-y-auto pr-1">
+              <div class="italic text-slate-600">無觀察數據</div>
+            </div>
+          </div>
+        </div>
+        <div class="mt-3 border-t border-slate-800/60 pt-2.5 flex justify-between items-center">
+          <span id="dt-status-${symbol}" class="text-[10px] text-slate-600 tabular-nums">未載入</span>
+          <button onclick="diagnose('${symbol}', '${escHtml(symbol)}')" class="btn-primary text-xs px-3 py-1">診斷詳細</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderDaytradeGrid() {
+  const grid = $('daytrade-grid');
+  const existingCards = Array.from(grid.querySelectorAll('.daytrade-card'));
+  
+  // 1. Remove obsolete cards
+  existingCards.forEach(card => {
+    const sym = card.dataset.symbol;
+    if (!_daytradeSymbols.includes(sym)) {
+      if (_daytradeCharts[sym]) {
+        try { _daytradeCharts[sym].remove(); } catch(e) {}
+        delete _daytradeCharts[sym];
+      }
+      delete _daytradeCandlesSeries[sym];
+      delete _daytradeMa20Series[sym];
+      delete _daytradeMa60Series[sym];
+      delete _daytradeVolSeries[sym];
+      card.remove();
+    }
+  });
+  
+  if (_daytradeSymbols.length === 0) {
+    grid.innerHTML = '<div class="text-slate-500 italic p-4 text-center col-span-2">監控清單為空，請於上方輸入代號新增監控</div>';
+    return;
+  }
+  
+  const placeholder = grid.querySelector('.italic');
+  if (placeholder) placeholder.remove();
+  
+  // 2. Append new cards
+  _daytradeSymbols.forEach(sym => {
+    if (!grid.querySelector(`[data-symbol="${sym}"]`)) {
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = renderDaytradeCardHTML(sym, sym);
+      grid.appendChild(tempDiv.firstElementChild);
+    }
+  });
+}
+
+async function refreshDaytradeSymbol(symbol, resetChart = false) {
+  const period = $('daytrade-period').value;
+  const matrixPeriod = matrixPeriodForChartPeriod(period);
+  
+  const statusEl = $(`dt-status-${symbol}`);
+  if (statusEl) statusEl.textContent = '更新中...';
+  
+  try {
+    const [historyRes, matrixRes, diagRes] = await Promise.all([
+      fetch(`/api/history/${encodeURIComponent(symbol)}?period=${period}`).then(r => r.json()),
+      fetch(`/api/technical-matrix/${encodeURIComponent(symbol)}?period=${matrixPeriod}&bypass_cache=true`).then(r => r.json()).catch(() => null),
+      fetch(`/api/diagnose/${encodeURIComponent(symbol)}?bypass_cache=true`).then(r => r.json()).catch(() => null),
+    ]);
+    
+    if (historyRes.error) {
+      if (statusEl) statusEl.textContent = '載入失敗: ' + historyRes.error;
+      return;
+    }
+    
+    const name = diagRes?.name || matrixRes?.name || historyRes.name || symbol;
+    
+    const card = $(`daytrade-card-${symbol}`);
+    if (card) {
+      const titleEl = card.querySelector('.text-base.font-bold');
+      if (titleEl) titleEl.textContent = name;
+      
+      const diagBtn = card.querySelector('.mt-3 button');
+      if (diagBtn) {
+        diagBtn.setAttribute('onclick', `diagnose('${symbol}', '${escHtml(name)}')`);
+      }
+    }
+    
+    const ind = diagRes?.indicators || {};
+    
+    const priceEl = $(`dt-price-${symbol}`);
+    const changeEl = $(`dt-change-${symbol}`);
+    if (priceEl && ind.price != null) {
+      priceEl.textContent = fmt(ind.price, symbol.endsWith('.TW') || symbol.endsWith('.TWO') ? 2 : 2);
+    }
+    if (changeEl && ind.change_1d != null) {
+      const positive = ind.change_1d >= 0;
+      changeEl.textContent = `${positive ? '+' : ''}${fmt(ind.change_1d)}%`;
+      changeEl.className = `text-xs font-semibold px-2 py-0.5 rounded-full tabular-nums ${positive ? 'bg-red-950/60 text-red-400 border border-red-900/40' : 'bg-emerald-950/60 text-emerald-400 border border-emerald-900/40'}`;
+    }
+    
+    const summary = matrixRes?.summary || {};
+    const biasEl = $(`dt-bias-${symbol}`);
+    if (biasEl) {
+      biasEl.textContent = technicalBiasLabel(summary.bias);
+      biasEl.className = `text-xs font-semibold ${technicalBiasClass(summary.bias)}`;
+    }
+    
+    const scoreEl = $(`dt-score-${symbol}`);
+    if (scoreEl && summary.net_score != null) {
+      scoreEl.textContent = `${summary.net_score >= 0 ? '+' : ''}${fmt(summary.net_score, 1)}`;
+      scoreEl.className = `tabular-nums font-semibold ${summary.net_score >= 0 ? 'text-red-400' : 'text-emerald-400'}`;
+    }
+    
+    const riskEl = $(`dt-risk-${symbol}`);
+    if (riskEl) {
+      riskEl.textContent = technicalSeverityLabel(summary.risk_level || '—');
+    }
+    
+    const confEl = $(`dt-confidence-${symbol}`);
+    if (confEl && summary.confidence != null) {
+      confEl.textContent = fmt(summary.confidence, 2);
+    }
+    
+    const atrEl = $(`dt-atr-${symbol}`);
+    if (atrEl && ind.atr14 != null) {
+      atrEl.textContent = fmt(ind.atr14);
+    }
+    
+    const signalsEl = $(`dt-signals-${symbol}`);
+    if (signalsEl && matrixRes?.markers) {
+      const recentMarkers = (matrixRes.markers || []).slice(-4);
+      if (recentMarkers.length > 0) {
+        signalsEl.innerHTML = recentMarkers.map(m => {
+          return `<span class="px-1.5 py-0.5 rounded border border-slate-700 bg-slate-900 text-[10px] text-slate-300">${escHtml(technicalMarkerTextLabel(m.text || ''))}</span>`;
+        }).join('');
+      } else {
+        signalsEl.innerHTML = '<span class="text-xs text-slate-600 italic">無訊號</span>';
+      }
+    }
+    
+    const plan = matrixRes?.execution_plan || {};
+    const entryLvl = $(`dt-lvl-entry-${symbol}`);
+    const targetLvl = $(`dt-lvl-target-${symbol}`);
+    const stopLvl = $(`dt-lvl-stop-${symbol}`);
+    
+    if (entryLvl) {
+      const activeEntry = plan.entries && plan.entries[0] ? plan.entries[0].price : null;
+      entryLvl.textContent = activeEntry ? fmt(activeEntry) : '—';
+    }
+    if (targetLvl) {
+      const activeTarget = plan.targets && plan.targets[0] ? plan.targets[0].price : null;
+      targetLvl.textContent = activeTarget ? fmt(activeTarget) : '—';
+    }
+    if (stopLvl) {
+      const activeStop = plan.stops && plan.stops[0] ? plan.stops[0].price : null;
+      stopLvl.textContent = activeStop ? fmt(activeStop) : '—';
+    }
+    
+    const obsEl = $(`dt-obs-${symbol}`);
+    if (obsEl && matrixRes?.dimensions) {
+      const obsList = [];
+      matrixRes.dimensions.forEach(d => {
+        if (d.observations && d.observations.length > 0) {
+          const firstObs = d.observations[0];
+          if (firstObs && firstObs.trim()) {
+            obsList.push(`<li><span class="text-slate-500 font-semibold">[${escHtml(technicalDimensionLabel(d.name, d.id))}]</span> ${escHtml(firstObs)}</li>`);
+          }
+        }
+      });
+      if (obsList.length > 0) {
+        obsEl.innerHTML = `<ul class="list-disc list-inside space-y-0.5">${obsList.slice(0, 3).join('')}</ul>`;
+      } else {
+        obsEl.innerHTML = '<div class="italic text-slate-600">無觀察數據</div>';
+      }
+    }
+    
+    const container = $(`daytrade-chart-${symbol}`);
+    if (container) {
+      if (resetChart && _daytradeCharts[symbol]) {
+        try { _daytradeCharts[symbol].remove(); } catch(e) {}
+        _daytradeCharts[symbol] = null;
+      }
+      
+      if (!_daytradeCharts[symbol]) {
+        container.innerHTML = '';
+        _daytradeCharts[symbol] = LightweightCharts.createChart(container, {
+          width: container.clientWidth,
+          height: 280,
+          layout: {
+            background: { color: '#070b14' },
+            textColor: '#64748b',
+          },
+          grid: {
+            vertLines: { color: 'rgba(148,163,184,0.04)' },
+            horzLines: { color: 'rgba(148,163,184,0.04)' },
+          },
+          timeScale: {
+            timeVisible: true,
+            secondsVisible: false,
+            borderColor: 'rgba(148,163,184,0.08)',
+            fixLeftEdge: true,
+          },
+          rightPriceScale: { borderColor: 'rgba(148,163,184,0.08)' },
+          crosshair: {
+            vertLine: { color: 'rgba(148,163,184,0.12)' },
+            horzLine: { color: 'rgba(148,163,184,0.12)' },
+          },
+        });
+        
+        _daytradeCandlesSeries[symbol] = _daytradeCharts[symbol].addCandlestickSeries({
+          upColor: '#ef4444', downColor: '#10b981',
+          borderUpColor: '#ef4444', borderDownColor: '#10b981',
+          wickUpColor: '#ef4444', wickDownColor: '#10b981',
+        });
+        _daytradeMa20Series[symbol] = _daytradeCharts[symbol].addLineSeries({ color: '#facc15', lineWidth: 1, priceLineVisible: false });
+        _daytradeMa60Series[symbol] = _daytradeCharts[symbol].addLineSeries({ color: '#22d3ee', lineWidth: 1, priceLineVisible: false });
+        _daytradeVolSeries[symbol] = _daytradeCharts[symbol].addHistogramSeries({
+          priceFormat: { type: 'volume' },
+          priceScaleId: '',
+          scaleMargins: { top: 0.85, bottom: 0 },
+        });
+      }
+      
+      _daytradeCandlesSeries[symbol].setData(historyRes.candles);
+      _daytradeMa20Series[symbol].setData(historyRes.ma20);
+      _daytradeMa60Series[symbol].setData(historyRes.ma60);
+      _daytradeVolSeries[symbol].setData(historyRes.volumes);
+      
+      if (matrixRes && !matrixRes.error && Array.isArray(matrixRes.markers)) {
+        const markers = matrixRes.markers.map(m => ({
+          time: m.time,
+          position: m.position || 'inBar',
+          color: m.color || '#a78bfa',
+          shape: m.shape || 'circle',
+          text: technicalMarkerTextLabel(m.text || ''),
+        }));
+        _daytradeCandlesSeries[symbol].setMarkers(markers);
+      }
+      
+      _daytradeCharts[symbol].timeScale().fitContent();
+      const dynamicOffset = Math.min(10, Math.max(2, Math.floor(historyRes.candles.length * 0.08)));
+      _daytradeCharts[symbol].timeScale().applyOptions({ rightOffset: dynamicOffset });
+    }
+    
+    if (statusEl) {
+      const now = new Date();
+      statusEl.textContent = `已更新 ${now.toLocaleTimeString()}`;
+    }
+  } catch (e) {
+    if (statusEl) statusEl.textContent = '更新失敗: ' + e;
+  }
+}
+
+async function refreshDaytradeAll({ force = false, resetCharts = false } = {}) {
+  if (_daytradeInFlight && !force) return;
+  _daytradeInFlight = true;
+  
+  const badge = $('daytrade-refresh-badge');
+  if (badge) badge.textContent = '同步中...';
+  
+  try {
+    const promises = _daytradeSymbols.map(sym => refreshDaytradeSymbol(sym, resetCharts));
+    await Promise.all(promises);
+    if (badge) {
+      const now = new Date();
+      badge.textContent = `更新於 ${now.toLocaleTimeString()}`;
+    }
+  } catch(e) {
+    if (badge) badge.textContent = '刷新失敗: ' + e;
+  } finally {
+    _daytradeInFlight = false;
+  }
+}
+
+function setupDaytradeTimer() {
+  stopDaytradeTimer();
+  const rate = parseInt($('daytrade-refresh').value);
+  if (rate > 0) {
+    _daytradeTimer = setInterval(() => {
+      if (document.hidden || $('tab-daytrade').classList.contains('hidden')) return;
+      refreshDaytradeAll();
+    }, rate * 1000);
+  }
+}
+
+function stopDaytradeTimer() {
+  if (_daytradeTimer) {
+    clearInterval(_daytradeTimer);
+    _daytradeTimer = null;
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopDaytradeTimer();
+  } else if (!$('tab-daytrade').classList.contains('hidden')) {
+    setupDaytradeTimer();
+    refreshDaytradeAll();
+  }
+});
+
 window.addEventListener('keydown', (e) => {
-  // Ignore shortcuts when user is entering data
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
     if (e.key === 'Escape') {
       closeAllModals();
@@ -5342,14 +5823,18 @@ window.addEventListener('keydown', (e) => {
     closeAllModals();
   } else if (e.key === '?') {
     toggleShortcutsHelp();
-  } else if (e.altKey && e.key >= '1' && e.key <= '5') {
+  } else if (e.altKey && e.key >= '1' && e.key <= '6') {
     e.preventDefault();
-    const tabs = ['portfolio', 'watchlist-tw', 'watchlist-us', 'backtest', 'domain-research'];
+    const tabs = ['portfolio', 'watchlist-tw', 'watchlist-us', 'backtest', 'domain-research', 'daytrade'];
     const tabName = tabs[parseInt(e.key) - 1];
     switchTab(tabName);
   } else if (e.key.toLowerCase() === 'r') {
     e.preventDefault();
-    $('refresh-btn').click();
+    if (!$('tab-daytrade').classList.contains('hidden')) {
+      refreshDaytradeAll({ force: true });
+    } else {
+      $('refresh-btn').click();
+    }
   } else if (e.key.toLowerCase() === 'a') {
     e.preventDefault();
     openBatchAnalyze();
@@ -5359,6 +5844,7 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+initDaytrade();
 loadAll();
 setupAutoRefresh();
 </script>

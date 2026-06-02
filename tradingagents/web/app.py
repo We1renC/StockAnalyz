@@ -2988,7 +2988,7 @@ def _tech_matrix_cache_set(key: tuple, payload: dict) -> None:
 
 
 @app.get("/api/technical-matrix/{symbol}")
-def api_technical_matrix(symbol: str, period: str = "1y", include_history_markers: bool = False):
+def api_technical_matrix(symbol: str, period: str = "1y", include_history_markers: bool = False, bypass_cache: bool = False):
     """17-dimensional technical matrix with chart markers.
 
     Pass include_history_markers=true to backfill high-value markers across
@@ -2997,7 +2997,9 @@ def api_technical_matrix(symbol: str, period: str = "1y", include_history_marker
     default to keep the chart uncluttered.
     """
     try:
-        matrix = _build_technical_matrix_payload(symbol, period, include_history_markers=include_history_markers)
+        matrix = _build_technical_matrix_payload(
+            symbol, period, use_cache=not bypass_cache, include_history_markers=include_history_markers
+        )
         return sanitize_float_values(matrix)
     except ValueError as e:
         raise HTTPException(404, str(e))
@@ -4487,9 +4489,18 @@ def api_llm_analyze(symbol: str, mode: str = "both"):
         return {"error": f"LLM 工作流失敗: {e}"}
 
 @app.get("/api/diagnose/{symbol}")
-def api_diagnose(symbol: str):
+def api_diagnose(symbol: str, bypass_cache: bool = False):
     """On-demand diagnosis for a symbol."""
     conn = get_db()
+    if bypass_cache:
+        try:
+            ind = fetch_indicators(symbol)
+            if ind:
+                cursor = conn.cursor()
+                store_price_cache(cursor, symbol, ind)
+                conn.commit()
+        except Exception:
+            pass
     market_row = conn.execute("SELECT * FROM market_state WHERE id=1").fetchone()
     market = dict(market_row) if market_row else {}
     cache = conn.execute("SELECT * FROM price_cache WHERE symbol=?", (symbol,)).fetchone()
