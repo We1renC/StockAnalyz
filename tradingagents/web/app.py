@@ -2065,7 +2065,6 @@ def _enrich_position_for_portfolio(
 ) -> tuple[dict, bool]:
     d = dict(row)
     sqlite_dirty = False
-    nav, quote_type, pb = _hydrate_price_cache_meta(d)
 
     if vault and (
         not d.get("purchase_date")
@@ -2081,41 +2080,16 @@ def _enrich_position_for_portfolio(
                     conn.execute(f"UPDATE positions SET {field}=? WHERE id=?", (obsidian_pos[field], d["id"]))
                     sqlite_dirty = True
 
+    d, meta_dirty = _enrich_quote_meta_for_symbol(conn, d)
+    sqlite_dirty = sqlite_dirty or meta_dirty
     cur = d.get("current_price") or d["cost_price"]
     cost_price = d["cost_price"]
     shares = d["shares"]
     currency = d["currency"] or "TWD"
-    is_etf = _is_etf_symbol(d["symbol"], quote_type)
-
-    if is_etf and (nav is None or quote_type is None or pb is None):
-        info_payload = _get_yf_quote_info(d["symbol"], want_info=True)
-        changed = {}
-        if nav is None and info_payload.get("nav") is not None:
-            nav = info_payload["nav"]
-            changed["nav"] = nav
-        if not quote_type and info_payload.get("quote_type"):
-            quote_type = info_payload["quote_type"]
-            changed["quote_type"] = quote_type
-        if pb is None and info_payload.get("pb") is not None:
-            pb = info_payload["pb"]
-            changed["pb"] = pb
-        if changed:
-            if info_payload.get("realtime") is not None and not d.get("current_price"):
-                d["current_price"] = info_payload["realtime"]
-                cur = d["current_price"]
-                changed["price"] = d["current_price"]
-            store_price_cache(conn.cursor(), d["symbol"], changed)
-            sqlite_dirty = True
-    elif not is_etf and pb is None:
-        info_payload = _get_yf_quote_info(d["symbol"], want_info=True)
-        if info_payload.get("pb") is not None:
-            pb = info_payload["pb"]
-            changed = {"pb": pb}
-            if info_payload.get("quote_type") and not quote_type:
-                quote_type = info_payload["quote_type"]
-                changed["quote_type"] = quote_type
-            store_price_cache(conn.cursor(), d["symbol"], changed)
-            sqlite_dirty = True
+    nav = d.get("nav")
+    quote_type = d.get("quote_type")
+    pb = d.get("pb")
+    is_etf = d.get("is_etf", _is_etf_symbol(d["symbol"], quote_type))
 
     cost_total = cost_price * shares
     val_total = cur * shares
@@ -2128,14 +2102,6 @@ def _enrich_position_for_portfolio(
     cost_total_twd = cost_total * rate
     val_total_twd = val_total * rate
     net_pnl_twd = net_pnl_native * rate
-
-    premium_pct = None
-    premium_status = "not_etf"
-    if nav and nav > 0 and cur:
-        premium_pct = round((cur / nav - 1) * 100, 2)
-        premium_status = "ok"
-    elif is_etf:
-        premium_status = "missing_nav" if not nav else "missing_price"
 
     annualized = None
     annualized_status = "missing_purchase_date"
@@ -2165,17 +2131,72 @@ def _enrich_position_for_portfolio(
         "total_twd": round((buy_fees["total"] + sell_fees["total"]) * rate, 0),
         "currency": currency,
     }
-    d["nav"] = nav
-    d["pb"] = round(pb, 2) if pb is not None else None
-    d["premium_pct"] = premium_pct
-    d["quote_type"] = quote_type
-    d["is_etf"] = is_etf
     d["annualized_return_pct"] = annualized
     d["annualized_status"] = annualized_status
-    d["premium_status"] = premium_status
     d["market_value"] = round(val_total_twd, 0)
     d["cost_total"] = round(cost_total_twd, 0)
     d["recommendation"] = _recommend_position(d, market)
+    return d, sqlite_dirty
+
+
+def _enrich_quote_meta_for_symbol(conn, row: dict) -> tuple[dict, bool]:
+    d = dict(row)
+    sqlite_dirty = False
+    nav, quote_type, pb = _hydrate_price_cache_meta(d)
+    cur = d.get("current_price") or d.get("cost_price")
+    is_etf = _is_etf_symbol(d["symbol"], quote_type)
+
+    if is_etf and (nav is None or quote_type is None or pb is None):
+        info_payload = _get_yf_quote_info(d["symbol"], want_info=True)
+        changed = {}
+        if nav is None and info_payload.get("nav") is not None:
+            nav = info_payload["nav"]
+            changed["nav"] = nav
+        if not quote_type and info_payload.get("quote_type"):
+            quote_type = info_payload["quote_type"]
+            changed["quote_type"] = quote_type
+        if pb is None and info_payload.get("pb") is not None:
+            pb = info_payload["pb"]
+            changed["pb"] = pb
+        if changed:
+            if info_payload.get("realtime") is not None and not d.get("current_price"):
+                d["current_price"] = info_payload["realtime"]
+                cur = d["current_price"]
+                changed["price"] = d["current_price"]
+            store_price_cache(conn.cursor(), d["symbol"], changed)
+            sqlite_dirty = True
+    elif not is_etf and pb is None:
+        info_payload = _get_yf_quote_info(d["symbol"], want_info=True)
+        changed = {}
+        if info_payload.get("pb") is not None:
+            pb = info_payload["pb"]
+            changed["pb"] = pb
+        if info_payload.get("quote_type") and not quote_type:
+            quote_type = info_payload["quote_type"]
+            changed["quote_type"] = quote_type
+        if changed:
+            if info_payload.get("realtime") is not None and not d.get("current_price"):
+                d["current_price"] = info_payload["realtime"]
+                cur = d["current_price"]
+                changed["price"] = d["current_price"]
+            store_price_cache(conn.cursor(), d["symbol"], changed)
+            sqlite_dirty = True
+
+    premium_pct = None
+    premium_status = "not_etf"
+    if nav and nav > 0 and cur:
+        premium_pct = round((cur / nav - 1) * 100, 2)
+        premium_status = "ok"
+    elif is_etf:
+        premium_status = "missing_nav" if not nav else "missing_price"
+
+    d["current_price"] = cur
+    d["nav"] = nav
+    d["pb"] = round(pb, 2) if pb is not None else None
+    d["quote_type"] = quote_type
+    d["is_etf"] = is_etf
+    d["premium_pct"] = premium_pct
+    d["premium_status"] = premium_status
     return d, sqlite_dirty
 
 
@@ -2409,17 +2430,18 @@ def api_portfolio_trend():
 def api_watchlist():
     conn = get_db()
     watchlist_rows = conn.execute("""
-        SELECT w.*, pc.price as current_price, pc.rsi, pc.change_1d, pc.ma20, pc.ma60, pc.beta
+        SELECT w.*, pc.price as current_price, pc.rsi, pc.change_1d, pc.ma20, pc.ma60, pc.beta,
+               pc.nav, pc.pb, pc.quote_type, pc.data AS price_cache_data
         FROM watchlist w
         LEFT JOIN price_cache pc ON w.symbol = pc.symbol
     """).fetchall()
     positions_rows = conn.execute("""
         SELECT p.id, p.symbol, p.name, p.category, p.currency, p.target_entry, p.target_profit, p.target_stop,
-               pc.price as current_price, pc.rsi, pc.change_1d, pc.ma20, pc.ma60, pc.beta
+               pc.price as current_price, pc.rsi, pc.change_1d, pc.ma20, pc.ma60, pc.beta,
+               pc.nav, pc.pb, pc.quote_type, pc.data AS price_cache_data
         FROM positions p
         LEFT JOIN price_cache pc ON p.symbol = pc.symbol
     """).fetchall()
-    conn.close()
 
     out_map = {}
     # 1. 放入觀察清單的資料
@@ -2449,7 +2471,10 @@ def api_watchlist():
             out_map[sym] = d
 
     out = []
+    sqlite_dirty = False
     for d in out_map.values():
+        d, meta_dirty = _enrich_quote_meta_for_symbol(conn, d)
+        sqlite_dirty = sqlite_dirty or meta_dirty
         cur = d.get("current_price")
         rsi = d.get("rsi") or 50
 
@@ -2505,6 +2530,10 @@ def api_watchlist():
 
         d["priority"] = round(priority, 1)
         out.append(d)
+
+    if sqlite_dirty:
+        conn.commit()
+    conn.close()
 
     # 按優先度降序，再按類別
     out.sort(key=lambda x: (-x["priority"], x.get("category") or ""))

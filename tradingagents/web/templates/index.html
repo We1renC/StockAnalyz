@@ -151,9 +151,10 @@ body { background: var(--bg-base); color: var(--text-primary); }
 .watchlist-table col.watch-col-category { width: 8.5rem; }
 .watchlist-table col.watch-col-rsi { width: 6.5rem; }
 .watchlist-table col.watch-col-beta { width: 5.5rem; }
-.watchlist-table col.watch-col-profit { width: 6.5rem; }
-.watchlist-table col.watch-col-price { width: 13.5rem; }
-.watchlist-table col.watch-col-stop { width: 6.5rem; }
+.watchlist-table col.watch-col-premium { width: 7rem; }
+.watchlist-table col.watch-col-profit { width: 6rem; }
+.watchlist-table col.watch-col-price { width: 12rem; }
+.watchlist-table col.watch-col-stop { width: 6rem; }
 .watchlist-table col.watch-col-alert { width: 10rem; }
 .watchlist-table col.watch-col-status { width: 8.5rem; }
 .watchlist-table col.watch-col-actions { width: 8.5rem; }
@@ -710,6 +711,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
           <col class="watch-col-category">
           <col class="watch-col-rsi">
           <col class="watch-col-beta">
+          <col class="watch-col-premium">
           <col class="watch-col-profit">
           <col class="watch-col-price">
           <col class="watch-col-stop">
@@ -725,6 +727,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
             <th class="text-center">類別</th>
             <th class="text-center">RSI</th>
             <th class="text-center">Beta</th>
+            <th class="text-center" title="ETF 顯示折溢價，個股顯示 P/B">折溢價 / PB</th>
             <th class="text-center">停利</th>
             <th class="text-center">進場價|現價(距離)</th>
             <th class="text-center">停損</th>
@@ -783,6 +786,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
           <col class="watch-col-category">
           <col class="watch-col-rsi">
           <col class="watch-col-beta">
+          <col class="watch-col-premium">
           <col class="watch-col-profit">
           <col class="watch-col-price">
           <col class="watch-col-stop">
@@ -798,6 +802,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
             <th class="text-center">類別</th>
             <th class="text-center">RSI</th>
             <th class="text-center">Beta</th>
+            <th class="text-center" title="ETF 顯示折溢價，個股顯示 P/B">折溢價 / PB</th>
             <th class="text-center">停利</th>
             <th class="text-center">進場價|現價(距離)</th>
             <th class="text-center">停損</th>
@@ -2276,6 +2281,21 @@ function renderWatchlist(items) {
     else if (pri >= 40) priPill = 'pill-blue';
     else if (pri < 20) priPill = 'pill-red';
     const betaPill = w.beta >= 1.3 ? 'pill-red' : w.beta <= 0.7 ? 'pill-green' : 'pill-gray';
+    let premHtml = '<span class="text-slate-500">暫無資料</span>';
+    if (w.is_etf && w.premium_pct != null) {
+      const premColor = Math.abs(w.premium_pct) >= 1 ? 'text-amber-400' : (w.premium_pct >= 0 ? 'text-red-400' : 'text-emerald-400');
+      const premTip = `市價 ${fmt(w.current_price)} / NAV ${fmt(w.nav)}`;
+      premHtml = `<span class="tabular-nums ${premColor}" title="${premTip}">${w.premium_pct >= 0 ? '+' : ''}${fmt(w.premium_pct)}%</span>`;
+    } else if (w.is_etf) {
+      const premStatusMap = {
+        missing_nav: '缺NAV',
+        missing_price: '缺市價',
+      };
+      premHtml = `<span class="text-slate-500" title="ETF 需同時有市價與 NAV 才能計算">${premStatusMap[w.premium_status] || '暫無資料'}</span>`;
+    } else if (w.pb != null) {
+      const pbColor = w.pb >= 3 ? 'text-amber-400' : w.pb >= 1 ? 'text-slate-300' : 'text-emerald-400';
+      premHtml = `<span class="tabular-nums ${pbColor}" title="Price to Book ratio">PB ${fmt(w.pb, 2)}</span>`;
+    }
     const entryCurrentHtml = `
       <span class="tabular-nums text-slate-500">${fmt(w.target_entry)}</span>
       <span class="text-slate-600 mx-1">|</span>
@@ -2306,6 +2326,7 @@ function renderWatchlist(items) {
       <td class="text-center text-xs watchlist-category-cell" title="${(w.category || '').replace(/"/g, '&quot;')}">${makeCategoryCell(w.category)}</td>
       <td class="text-center"><span class="tabular-nums text-xs ${rsiPct>=75?'text-red-400':rsiPct<=30?'text-amber-400':'text-slate-400'}">${fmt(w.rsi, 1)}</span><div class="rsi-bar"><div class="rsi-fill ${rsiColor}" style="width:${rsiPct}%"></div></div></td>
       <td class="text-center"><span class="pill ${betaPill} tabular-nums" style="font-size:11px">${fmt(w.beta, 2)}</span></td>
+      <td class="text-center">${premHtml}</td>
       <td class="text-center tabular-nums text-red-400">${fmt(w.target_profit)}</td>
       <td class="text-center"><span class="watchlist-price-cell">${entryCurrentHtml}</span></td>
       <td class="text-center tabular-nums text-emerald-400">${fmt(w.target_stop)}</td>
@@ -2329,13 +2350,13 @@ function renderWatchlist(items) {
   if (twItems.length > 0) {
     $('tw-watchlist-tbody').innerHTML = twItems.map(makeRowHtml).join('');
   } else {
-    $('tw-watchlist-tbody').innerHTML = `<tr><td colspan="12" class="text-center text-slate-500 py-6">無台股觀察資料</td></tr>`;
+    $('tw-watchlist-tbody').innerHTML = `<tr><td colspan="13" class="text-center text-slate-500 py-6">無台股觀察資料</td></tr>`;
   }
 
   if (usItems.length > 0) {
     $('us-watchlist-tbody').innerHTML = usItems.map(makeRowHtml).join('');
   } else {
-    $('us-watchlist-tbody').innerHTML = `<tr><td colspan="12" class="text-center text-slate-500 py-6">無美股觀察資料</td></tr>`;
+    $('us-watchlist-tbody').innerHTML = `<tr><td colspan="13" class="text-center text-slate-500 py-6">無美股觀察資料</td></tr>`;
   }
 }
 

@@ -42,6 +42,18 @@ def _set_price_cache(symbol, price):
     conn.close()
 
 
+def _insert_watchlist(symbol="2330.TW", name="台積電", category="半導體", currency="TWD"):
+    conn = app.get_db()
+    conn.execute(
+        """INSERT INTO watchlist
+           (symbol, name, category, currency, target_entry, target_profit, target_stop)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (symbol, name, category, currency, 100.0, 120.0, 90.0),
+    )
+    conn.commit()
+    conn.close()
+
+
 def test_snapshot_writes_one_row_per_zone_per_day(tmp_path):
     original = _setup_temp_db(tmp_path)
     try:
@@ -238,5 +250,42 @@ def test_portfolio_backfills_equity_pb_into_sqlite_price_cache(tmp_path):
         conn.close()
         payload = json.loads(row["data"])
         assert payload["pb"] == 12.34
+    finally:
+        _restore_db(original)
+
+
+def test_watchlist_exposes_etf_premium_and_equity_pb(tmp_path):
+    original = _setup_temp_db(tmp_path)
+    try:
+        _insert_watchlist("0050.TW", "元大台灣50", category="ETF", currency="TWD")
+        _insert_watchlist("AAPL", "Apple", category="科技", currency="USD")
+        _set_price_cache("0050.TW", 110)
+        _set_price_cache("AAPL", 110)
+
+        def fake_quote_info(symbol, want_info=True):
+            if symbol == "0050.TW":
+                return {"realtime": 110.0, "nav": 108.0, "quote_type": "ETF", "pb": None}
+            if symbol == "AAPL":
+                return {"realtime": 110.0, "nav": None, "quote_type": "EQUITY", "pb": 12.34}
+            return {}
+
+        with patch.object(app, "_get_yf_quote_info", side_effect=fake_quote_info):
+            result = app.api_watchlist()
+
+        rows = {item["symbol"]: item for item in result["watchlist"]}
+        assert rows["0050.TW"]["is_etf"] is True
+        assert rows["0050.TW"]["premium_status"] == "ok"
+        assert rows["0050.TW"]["premium_pct"] == round((110 / 108 - 1) * 100, 2)
+        assert rows["AAPL"]["is_etf"] is False
+        assert rows["AAPL"]["pb"] == 12.34
+
+        conn = app.get_db()
+        etf_row = conn.execute("SELECT nav, quote_type FROM price_cache WHERE symbol='0050.TW'").fetchone()
+        equity_row = conn.execute("SELECT pb, quote_type FROM price_cache WHERE symbol='AAPL'").fetchone()
+        conn.close()
+        assert etf_row["nav"] == 108.0
+        assert etf_row["quote_type"] == "ETF"
+        assert equity_row["pb"] == 12.34
+        assert equity_row["quote_type"] == "EQUITY"
     finally:
         _restore_db(original)
