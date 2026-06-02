@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
+import pandas as pd
 
 
 def _setup_temp_db(tmp_path):
@@ -65,11 +66,18 @@ def test_snapshot_writes_one_row_per_zone_per_day(tmp_path):
         rows = conn.execute(
             "SELECT date, zone, total_cost, total_value FROM portfolio_snapshots"
         ).fetchall()
+        intraday_rows = conn.execute(
+            "SELECT trade_date, zone, total_cost, total_value FROM portfolio_intraday_snapshots"
+        ).fetchall()
         conn.close()
         zones = {r["zone"]: dict(r) for r in rows}
+        intraday_zones = {r["zone"]: dict(r) for r in intraday_rows}
         assert "tw" in zones
+        assert "tw" in intraday_zones
         assert zones["tw"]["total_cost"] == 10 * 1000
         assert zones["tw"]["total_value"] == 10 * 1100
+        assert intraday_zones["tw"]["total_cost"] == 10 * 1000
+        assert intraday_zones["tw"]["total_value"] == 10 * 1100
     finally:
         _restore_db(original)
 
@@ -154,6 +162,130 @@ def test_trend_reads_from_snapshots_not_current_positions(tmp_path):
         assert len(past_points) == 2
         assert past_points[0]["total_value"] == 9500
         assert past_points[1]["total_value"] == 9800
+    finally:
+        _restore_db(original)
+
+
+def test_trend_reads_intraday_snapshots_for_today(tmp_path):
+    original = _setup_temp_db(tmp_path)
+    try:
+        conn = app.get_db()
+        conn.execute(
+            """INSERT OR REPLACE INTO portfolio_intraday_snapshots
+               (ts, trade_date, zone, total_cost, total_value, total_pnl, total_net_pnl, position_count)
+               VALUES (?, ?, 'tw', 10000, 10100, 100, 90, 1)""",
+            (f"{date.today().isoformat()}T09:00", date.today().isoformat()),
+        )
+        conn.execute(
+            """INSERT OR REPLACE INTO portfolio_intraday_snapshots
+               (ts, trade_date, zone, total_cost, total_value, total_pnl, total_net_pnl, position_count)
+               VALUES (?, ?, 'tw', 10000, 10250, 250, 230, 1)""",
+            (f"{date.today().isoformat()}T09:05", date.today().isoformat()),
+        )
+        conn.commit()
+        conn.close()
+
+        result = app.api_portfolio_trend()
+        tw = result.get("tw") or []
+        live_points = [p for p in tw if p.get("live")]
+        assert len(live_points) >= 2
+        assert live_points[-2]["total_value"] == 10100
+        assert live_points[-1]["total_value"] == 10250
+    finally:
+        _restore_db(original)
+
+
+def test_intraday_snapshot_uses_10_minute_bucket(tmp_path):
+    original = _setup_temp_db(tmp_path)
+    try:
+        _insert_position("2330.TW", "台積電", shares=10, cost_price=1000, currency="TWD")
+        _set_price_cache("2330.TW", 1100)
+
+        conn = app.get_db()
+        app._record_portfolio_snapshot(conn)
+        conn.execute("DELETE FROM portfolio_intraday_snapshots")
+        conn.commit()
+
+        rows = conn.execute(
+            """SELECT p.*, pc.price as current_price, pc.nav, pc.pb, pc.quote_type, pc.data AS price_cache_data
+               FROM positions p
+               LEFT JOIN price_cache pc ON p.symbol = pc.symbol"""
+        ).fetchall()
+        fees_cfg = (app.load_settings().get("brokerage_fees") or {})
+        market_row = conn.execute("SELECT * FROM market_state WHERE id=1").fetchone()
+        market = dict(market_row) if market_row else None
+        enriched = [app._enrich_position_for_portfolio(conn, dict(r), market, fees_cfg, None)[0] for r in rows]
+        tw_positions, us_positions = app._split_positions_by_zone(enriched)
+
+        app._record_intraday_portfolio_snapshot(
+            conn,
+            tw_positions,
+            us_positions,
+            fees_cfg,
+            now_dt=app.datetime.fromisoformat(f"{date.today().isoformat()}T09:07:35"),
+        )
+        app._record_intraday_portfolio_snapshot(
+            conn,
+            tw_positions,
+            us_positions,
+            fees_cfg,
+            now_dt=app.datetime.fromisoformat(f"{date.today().isoformat()}T09:09:59"),
+        )
+        app._record_intraday_portfolio_snapshot(
+            conn,
+            tw_positions,
+            us_positions,
+            fees_cfg,
+            now_dt=app.datetime.fromisoformat(f"{date.today().isoformat()}T09:10:01"),
+        )
+        conn.commit()
+
+        intraday = conn.execute(
+            "SELECT ts FROM portfolio_intraday_snapshots WHERE zone='tw' ORDER BY ts"
+        ).fetchall()
+        conn.close()
+        assert [row["ts"] for row in intraday] == [
+            f"{date.today().isoformat()}T09:00",
+            f"{date.today().isoformat()}T09:10",
+        ]
+    finally:
+        _restore_db(original)
+
+
+def test_trend_backfills_daily_history_from_purchase_date(tmp_path):
+    original = _setup_temp_db(tmp_path)
+    try:
+        purchase_date = (date.today() - timedelta(days=3)).isoformat()
+        _insert_position("2330.TW", "台積電", shares=10, cost_price=100, currency="TWD", purchase_date=purchase_date)
+
+        hist = pd.DataFrame(
+            {
+                "Close": [101.0, 102.0, 103.0],
+            },
+            index=pd.to_datetime([
+                date.today() - timedelta(days=3),
+                date.today() - timedelta(days=2),
+                date.today() - timedelta(days=1),
+            ]),
+        )
+
+        with patch.object(app, "_fetch_daily_history_from_date", return_value=hist), \
+             patch.object(app, "_get_vault", return_value=None):
+            result = app.api_portfolio_trend()
+
+        tw = result.get("tw") or []
+        past_points = [p for p in tw if not p.get("live")]
+        assert len(past_points) >= 3
+        assert past_points[-3]["total_value"] == 1010
+        assert past_points[-2]["total_value"] == 1020
+        assert past_points[-1]["total_value"] == 1030
+
+        conn = app.get_db()
+        rows = conn.execute(
+            "SELECT date, total_value FROM portfolio_snapshots WHERE zone='tw' ORDER BY date"
+        ).fetchall()
+        conn.close()
+        assert [row["total_value"] for row in rows[-3:]] == [1010, 1020, 1030]
     finally:
         _restore_db(original)
 

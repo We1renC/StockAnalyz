@@ -579,8 +579,8 @@ body { background: var(--bg-base); color: var(--text-primary); }
       <span id="refresh-badge" class="text-xs text-slate-500 min-w-[100px]"></span>
       <select id="auto-refresh" class="input-field" style="width:auto;padding:8px 12px;font-size:12px">
         <option value="0">手動</option>
-        <option value="60">1 分鐘</option>
-        <option value="300" selected>5 分鐘</option>
+        <option value="60" selected>1 分鐘</option>
+        <option value="300">5 分鐘</option>
         <option value="900">15 分鐘</option>
       </select>
     </div>
@@ -4576,27 +4576,41 @@ function setRefreshBadge(text, color = 'text-gray-400', sticky = false) {
   }
 }
 
-$('refresh-btn').addEventListener('click', async () => {
+let _refreshInFlight = false;
+async function runQuoteRefresh({ showBadge = true } = {}) {
+  if (_refreshInFlight) return;
+  _refreshInFlight = true;
   $('refresh-btn').disabled = true;
   $('refresh-icon').classList.add('animate-spin-refresh');
-  setRefreshBadge('讀取中...', 'text-slate-400', true);
+  if (showBadge) {
+    setRefreshBadge('讀取中...', 'text-slate-400', true);
+  }
   try {
     const res = await fetch('/api/refresh', {method:'POST'});
     const data = await res.json();
     await loadAll();
     const created = data.alerts_created || 0;
     const refreshed = data.refreshed || 0;
-    if (created > 0) {
-      setRefreshBadge(`已更新 ${refreshed} 檔・新增 ${created} 筆警報`, 'text-amber-400');
-    } else {
-      setRefreshBadge(`已更新 ${refreshed} 檔・無新警報`, 'text-emerald-400');
+    if (showBadge) {
+      if (created > 0) {
+        setRefreshBadge(`已更新 ${refreshed} 檔・新增 ${created} 筆警報`, 'text-amber-400');
+      } else {
+        setRefreshBadge(`已更新 ${refreshed} 檔・無新警報`, 'text-emerald-400');
+      }
     }
   } catch (e) {
-    setRefreshBadge(`刷新失敗: ${e}`, 'text-red-400');
+    if (showBadge) {
+      setRefreshBadge(`刷新失敗: ${e}`, 'text-red-400');
+    }
   } finally {
     $('refresh-btn').disabled = false;
     $('refresh-icon').classList.remove('animate-spin-refresh');
+    _refreshInFlight = false;
   }
+}
+
+$('refresh-btn').addEventListener('click', async () => {
+  await runQuoteRefresh({ showBadge: true });
 });
 
 let autoTimer = null;
@@ -4604,7 +4618,9 @@ function setupAutoRefresh() {
   if (autoTimer) clearInterval(autoTimer);
   const sec = parseInt($('auto-refresh').value);
   if (sec > 0) {
-    autoTimer = setInterval(loadAll, sec * 1000);
+    autoTimer = setInterval(() => {
+      runQuoteRefresh({ showBadge: false });
+    }, sec * 1000);
   }
 }
 $('auto-refresh').addEventListener('change', setupAutoRefresh);

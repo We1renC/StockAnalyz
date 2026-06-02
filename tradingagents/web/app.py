@@ -135,6 +135,19 @@ def init_db():
         PRIMARY KEY (date, zone)
     );
     CREATE INDEX IF NOT EXISTS idx_snapshots_date ON portfolio_snapshots(date);
+    CREATE TABLE IF NOT EXISTS portfolio_intraday_snapshots (
+        ts TEXT NOT NULL,
+        trade_date TEXT NOT NULL,
+        zone TEXT NOT NULL,
+        total_cost REAL,
+        total_value REAL,
+        total_pnl REAL,
+        total_net_pnl REAL,
+        position_count INTEGER,
+        PRIMARY KEY (ts, zone)
+    );
+    CREATE INDEX IF NOT EXISTS idx_intraday_snapshots_date_zone
+        ON portfolio_intraday_snapshots(trade_date, zone, ts);
     CREATE TABLE IF NOT EXISTS price_cache (
         symbol TEXT PRIMARY KEY,
         ts TEXT,
@@ -922,6 +935,28 @@ def fetch_history(symbol: str, period: str = "1y") -> tuple[pd.DataFrame, str]:
         if len(h) > 0:
             return h, h.attrs.get("source", "official_tw_daily")
     return pd.DataFrame(), ""
+
+
+def _fetch_daily_history_from_date(symbol: str, start_date: date, end_date: date) -> pd.DataFrame:
+    if start_date > end_date:
+        return pd.DataFrame()
+    try:
+        h = yf.Ticker(symbol).history(
+            start=start_date.isoformat(),
+            end=(end_date + timedelta(days=1)).isoformat(),
+            interval="1d",
+        )
+        if len(h) > 0:
+            return _normalize_history_index(h)
+    except Exception:
+        pass
+
+    if _twse_channel(symbol):
+        months = max(2, int(math.ceil(((end_date - start_date).days + 31) / 30)))
+        h = fetch_official_tw_daily_history(symbol, months=months)
+        if len(h) > 0:
+            return h[h.index.date >= start_date]
+    return pd.DataFrame()
 
 
 def _chart_period_config(period: str) -> dict[str, str]:
@@ -1998,6 +2033,139 @@ def _compute_portfolio_snapshot_for_zone(positions: list[dict], fees_cfg: dict) 
     }
 
 
+def _record_intraday_portfolio_snapshot(
+    conn,
+    tw_positions: list[dict],
+    us_positions: list[dict],
+    fees_cfg: dict,
+    now_dt: Optional[datetime] = None,
+) -> None:
+    now_dt = now_dt or datetime.now()
+    bucket_minute = (now_dt.minute // 10) * 10
+    bucket_ts = now_dt.replace(minute=bucket_minute, second=0, microsecond=0).isoformat(timespec="minutes")
+    trade_date = now_dt.date().isoformat()
+    for zone, plist in (("tw", tw_positions), ("us", us_positions)):
+        snap = _compute_portfolio_snapshot_for_zone(plist, fees_cfg)
+        conn.execute(
+            """INSERT OR REPLACE INTO portfolio_intraday_snapshots
+               (ts, trade_date, zone, total_cost, total_value, total_pnl, total_net_pnl, position_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                bucket_ts,
+                trade_date,
+                zone,
+                snap["total_cost"],
+                snap["total_value"],
+                snap["total_pnl"],
+                snap["total_net_pnl"],
+                snap["position_count"],
+            ),
+        )
+
+
+def _backfill_portfolio_snapshots(conn) -> None:
+    rows = conn.execute(
+        """SELECT p.*, pc.price as current_price, pc.nav, pc.pb, pc.quote_type, pc.data AS price_cache_data
+           FROM positions p
+           LEFT JOIN price_cache pc ON p.symbol = pc.symbol"""
+    ).fetchall()
+    positions = [dict(r) for r in rows if not _is_test_symbol(r["symbol"], r["name"], r["category"])]
+    if not positions:
+        return
+
+    fees_cfg = (load_settings().get("brokerage_fees") or {})
+    vault = _get_vault()
+    market_row = conn.execute("SELECT * FROM market_state WHERE id=1").fetchone()
+    market = dict(market_row) if market_row else None
+    sqlite_dirty = False
+    enriched_positions = []
+    earliest_purchase = None
+    for row in positions:
+        enriched, changed = _enrich_position_for_portfolio(conn, row, market, fees_cfg, vault)
+        sqlite_dirty = sqlite_dirty or changed
+        enriched_positions.append(enriched)
+        p_date = _normalize_purchase_date(enriched.get("purchase_date"))
+        if p_date:
+            dt = datetime.fromisoformat(p_date).date()
+            earliest_purchase = dt if earliest_purchase is None else min(earliest_purchase, dt)
+    if sqlite_dirty:
+        conn.commit()
+    if earliest_purchase is None:
+        return
+
+    yesterday = date.today() - timedelta(days=1)
+    if earliest_purchase > yesterday:
+        return
+
+    existing_rows = conn.execute(
+        "SELECT date, zone FROM portfolio_snapshots WHERE date BETWEEN ? AND ?",
+        (earliest_purchase.isoformat(), yesterday.isoformat()),
+    ).fetchall()
+    existing_pairs = {(row["date"], row["zone"]) for row in existing_rows}
+
+    zone_daily_values = {"tw": {}, "us": {}}
+    for pos in enriched_positions:
+        purchase_date_str = _normalize_purchase_date(pos.get("purchase_date"))
+        if not purchase_date_str:
+            continue
+        purchase_dt = datetime.fromisoformat(purchase_date_str).date()
+        if purchase_dt > yesterday:
+            continue
+        hist = _fetch_daily_history_from_date(pos["symbol"], purchase_dt, yesterday)
+        if len(hist) == 0 or "Close" not in hist:
+            continue
+        zone = "tw" if (pos.get("currency") == "TWD" or pos["symbol"].endswith(".TW") or pos["symbol"].endswith(".TWO")) else "us"
+        currency = pos.get("currency") or "TWD"
+        rate = USD_TWD if currency == "USD" else 1.0
+        is_etf = bool(pos.get("is_etf"))
+        cost_total = pos["cost_price"] * pos["shares"] * rate
+        buy_fees = _compute_fees(pos["cost_price"], pos["shares"], currency, "buy", fees_cfg, is_etf)
+        for ts, hist_row in hist.iterrows():
+            snap_date = ts.date().isoformat()
+            if (snap_date, zone) in existing_pairs:
+                continue
+            close_price = _safe_float(hist_row.get("Close"))
+            if close_price is None:
+                continue
+            sell_fees = _compute_fees(close_price, pos["shares"], currency, "sell", fees_cfg, is_etf)
+            market_value = close_price * pos["shares"] * rate
+            gross_native = (close_price - pos["cost_price"]) * pos["shares"]
+            net_native = gross_native - buy_fees["total"] - sell_fees["total"]
+            payload = zone_daily_values[zone].setdefault(
+                snap_date,
+                {"total_cost": 0.0, "total_value": 0.0, "total_net_pnl": 0.0, "position_count": 0},
+            )
+            payload["total_cost"] += cost_total
+            payload["total_value"] += market_value
+            payload["total_net_pnl"] += net_native * rate
+            payload["position_count"] += 1
+
+    inserts = []
+    for zone, date_map in zone_daily_values.items():
+        for snap_date, payload in sorted(date_map.items()):
+            total_cost = round(payload["total_cost"], 0)
+            total_value = round(payload["total_value"], 0)
+            inserts.append(
+                (
+                    snap_date,
+                    zone,
+                    total_cost,
+                    total_value,
+                    round(total_value - total_cost, 0),
+                    round(payload["total_net_pnl"], 0),
+                    payload["position_count"],
+                )
+            )
+    if inserts:
+        conn.executemany(
+            """INSERT OR IGNORE INTO portfolio_snapshots
+               (date, zone, total_cost, total_value, total_pnl, total_net_pnl, position_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            inserts,
+        )
+        conn.commit()
+
+
 def _record_portfolio_snapshot(conn=None) -> None:
     """Persist today's per-zone aggregate to portfolio_snapshots.
 
@@ -2041,6 +2209,7 @@ def _record_portfolio_snapshot(conn=None) -> None:
                 (today, zone, snap["total_cost"], snap["total_value"],
                  snap["total_pnl"], snap["total_net_pnl"], snap["position_count"]),
             )
+        _record_intraday_portfolio_snapshot(conn, tw_positions, us_positions, fees_cfg)
         conn.commit()
     finally:
         if own_conn:
@@ -2338,10 +2507,22 @@ def api_portfolio_trend():
     當下的資產值動態變化。
     """
     conn = get_db()
+    try:
+        _backfill_portfolio_snapshots(conn)
+    except Exception:
+        pass
     snap_rows = conn.execute(
         """SELECT date, zone, total_cost, total_value, total_pnl, total_net_pnl
            FROM portfolio_snapshots
            ORDER BY date ASC"""
+    ).fetchall()
+    today_str = date.today().isoformat()
+    intraday_rows = conn.execute(
+        """SELECT ts, trade_date, zone, total_cost, total_value, total_pnl, total_net_pnl
+           FROM portfolio_intraday_snapshots
+           WHERE trade_date = ?
+           ORDER BY ts ASC""",
+        (today_str,),
     ).fetchall()
     conn.close()
 
@@ -2352,7 +2533,6 @@ def api_portfolio_trend():
         scale = _zone_scale(zone)
         return round((value or 0) / scale, 2 if zone == "us" else 0)
 
-    today_str = date.today().isoformat()
     trend_tw: list[dict] = []
     trend_us: list[dict] = []
     last_seen = {"tw": None, "us": None}
@@ -2380,6 +2560,27 @@ def api_portfolio_trend():
             trend_us.append(point)
             last_seen["us"] = point
 
+    intraday_by_zone = {"tw": trend_tw, "us": trend_us}
+    intraday_seen = {"tw": False, "us": False}
+    for r in intraday_rows:
+        d = dict(r)
+        try:
+            ts = int(datetime.fromisoformat(d["ts"]).timestamp())
+        except ValueError:
+            continue
+        point = {
+            "time": ts,
+            "date": d["trade_date"],
+            "total_value": _round_zone_amount(d["total_value"], d["zone"]),
+            "total_cost": _round_zone_amount(d["total_cost"], d["zone"]),
+            "total_pnl": _round_zone_amount(d["total_pnl"], d["zone"]),
+            "total_net_pnl": _round_zone_amount(d["total_net_pnl"], d["zone"]),
+            "live": True,
+        }
+        if d["zone"] in intraday_by_zone:
+            intraday_by_zone[d["zone"]].append(point)
+            intraday_seen[d["zone"]] = True
+
     # Append today's live snapshot (in-memory; doesn't write to DB so a manual
     # browse doesn't persist a partial-day value).
     try:
@@ -2404,13 +2605,15 @@ def api_portfolio_trend():
             if sqlite_dirty:
                 conn.commit()
             tw_positions, us_positions = _split_positions_by_zone(enriched_positions)
-            today_ts = int(datetime.fromisoformat(today_str).timestamp())
+            now_ts = int(datetime.now().timestamp())
             for zone, plist, arr in (("tw", tw_positions, trend_tw), ("us", us_positions, trend_us)):
+                if intraday_seen.get(zone):
+                    continue
                 snap = _compute_portfolio_snapshot_for_zone(plist, fees_cfg)
                 if snap["position_count"] == 0:
                     continue
                 point = {
-                    "time": today_ts,
+                    "time": now_ts,
                     "date": today_str,
                     "total_value": _round_zone_amount(snap["total_value"], zone),
                     "total_cost": _round_zone_amount(snap["total_cost"], zone),
