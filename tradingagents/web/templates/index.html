@@ -3819,6 +3819,11 @@ async function drawChart(symbol, period, isRefresh = false) {
           horzLine: { color: 'rgba(148,163,184,0.18)' },
         },
       });
+      _chartVolSeries = _chart.addHistogramSeries({
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+        scaleMargins: { top: 0.85, bottom: 0 },
+      });
       _chartCandleSeries = _chart.addCandlestickSeries({
         upColor: '#ef4444', downColor: '#10b981',
         borderUpColor: '#ef4444', borderDownColor: '#10b981',
@@ -3826,11 +3831,6 @@ async function drawChart(symbol, period, isRefresh = false) {
       });
       _chartMa20Series = _chart.addLineSeries({ color: '#facc15', lineWidth: 1, priceLineVisible: false });
       _chartMa60Series = _chart.addLineSeries({ color: '#22d3ee', lineWidth: 1, priceLineVisible: false });
-      _chartVolSeries = _chart.addHistogramSeries({
-        priceFormat: { type: 'volume' },
-        priceScaleId: '',
-        scaleMargins: { top: 0.85, bottom: 0 },
-      });
     }
     _chartCandleSeries.setData(r.candles);
     _chartMa20Series.setData(r.ma20);
@@ -5694,6 +5694,11 @@ async function refreshDaytradeSymbol(symbol, resetChart = false) {
           },
         });
         
+        _daytradeVolSeries[symbol] = _daytradeCharts[symbol].addHistogramSeries({
+          priceFormat: { type: 'volume' },
+          priceScaleId: '',
+          scaleMargins: { top: 0.85, bottom: 0 },
+        });
         _daytradeCandlesSeries[symbol] = _daytradeCharts[symbol].addCandlestickSeries({
           upColor: '#ef4444', downColor: '#10b981',
           borderUpColor: '#ef4444', borderDownColor: '#10b981',
@@ -5701,11 +5706,6 @@ async function refreshDaytradeSymbol(symbol, resetChart = false) {
         });
         _daytradeMa20Series[symbol] = _daytradeCharts[symbol].addLineSeries({ color: '#facc15', lineWidth: 1, priceLineVisible: false });
         _daytradeMa60Series[symbol] = _daytradeCharts[symbol].addLineSeries({ color: '#22d3ee', lineWidth: 1, priceLineVisible: false });
-        _daytradeVolSeries[symbol] = _daytradeCharts[symbol].addHistogramSeries({
-          priceFormat: { type: 'volume' },
-          priceScaleId: '',
-          scaleMargins: { top: 0.85, bottom: 0 },
-        });
       }
       
       _daytradeCandlesSeries[symbol].setData(historyRes.candles);
