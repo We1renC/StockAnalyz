@@ -1036,6 +1036,8 @@ body { background: var(--bg-base); color: var(--text-primary); }
         <div class="flex items-center gap-1.5">
           <span class="text-xs text-slate-400">時間級距:</span>
           <select id="daytrade-period" class="input-field text-xs" style="width:auto; padding:4px 8px;">
+            <option value="15m" selected>15 分鐘 (1m K線)</option>
+            <option value="30m">30 分鐘 (1m K線)</option>
             <option value="1h">1 小時 (1m K線)</option>
             <option value="4h">4 小時 (5m K線)</option>
             <option value="1d">1 天 (15m K線)</option>
@@ -1058,8 +1060,8 @@ body { background: var(--bg-base); color: var(--text-primary); }
       </div>
     </div>
 
-    <!-- Daytrade Cards Grid -->
-    <div id="daytrade-grid" class="grid grid-cols-1 xl:grid-cols-2 gap-6"></div>
+    <!-- Daytrade Cards Grid (One stock per row) -->
+    <div id="daytrade-grid" class="grid grid-cols-1 gap-6"></div>
   </div>
 
 </div>
@@ -1596,7 +1598,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
         Object.keys(_daytradeCharts).forEach(sym => {
           const container = $(`daytrade-chart-${sym}`);
           if (container && _daytradeCharts[sym]) {
-            try { _daytradeCharts[sym].resize(container.clientWidth, 280); } catch(e){}
+            try { _daytradeCharts[sym].resize(container.clientWidth, 320); } catch(e){}
           }
         });
       }, 50);
@@ -5461,68 +5463,21 @@ function removeDaytradeSymbol(symbol) {
 
 function renderDaytradeCardHTML(symbol, name) {
   return `
-    <div class="glass-card daytrade-card p-4 flex flex-col lg:flex-row gap-4" id="daytrade-card-${symbol}" data-symbol="${symbol}">
-      <div class="flex-1 min-w-0 flex flex-col justify-between">
-        <div class="flex items-center justify-between mb-2">
-          <div class="min-w-0">
-            <span class="text-base font-bold text-slate-100">${escHtml(name || symbol)}</span>
-            <span class="text-xs text-slate-500 ml-1.5 tabular-nums">${escHtml(symbol)}</span>
-          </div>
-          <div class="flex items-center gap-2">
-            <span id="dt-price-${symbol}" class="text-base font-bold tabular-nums text-slate-100">—</span>
-            <span id="dt-change-${symbol}" class="text-xs font-semibold px-2 py-0.5 rounded-full tabular-nums bg-slate-800 text-slate-400">—</span>
-            <button onclick="removeDaytradeSymbol('${symbol}')" class="text-slate-500 hover:text-red-400 text-lg font-bold ml-1" title="移除監控">×</button>
-          </div>
+    <div class="glass-card daytrade-card p-4 flex flex-col gap-3" id="daytrade-card-${symbol}" data-symbol="${symbol}">
+      <div class="flex items-center justify-between flex-wrap gap-2">
+        <div class="flex items-center gap-2">
+          <span class="text-base font-bold text-slate-100">${escHtml(name || symbol)}</span>
+          <span class="text-xs text-slate-500 tabular-nums">${escHtml(symbol)}</span>
+          <span id="dt-status-${symbol}" class="text-[10px] text-slate-500 ml-2 tabular-nums">未載入</span>
         </div>
-        <div class="daytrade-chart-container" id="daytrade-chart-${symbol}" style="height: 280px;"></div>
-      </div>
-      <div class="w-full lg:w-[300px] shrink-0 border-t lg:border-t-0 lg:border-l border-slate-800/80 pt-3 lg:pt-0 lg:pl-4 flex flex-col justify-between" id="daytrade-info-${symbol}">
-        <div class="space-y-3">
-          <div class="flex items-center justify-between border-b border-slate-800/60 pb-1.5">
-            <span class="text-xs font-semibold text-emerald-400">17D 全景技術分析</span>
-            <span id="dt-bias-${symbol}" class="text-xs font-semibold text-slate-400">—</span>
-          </div>
-          <div class="grid grid-cols-2 gap-2 text-xs">
-            <div>評分: <span id="dt-score-${symbol}" class="tabular-nums text-slate-200">—</span></div>
-            <div>風險: <span id="dt-risk-${symbol}" class="text-slate-200">—</span></div>
-            <div>信心: <span id="dt-confidence-${symbol}" class="tabular-nums text-slate-200">—</span></div>
-            <div>ATR 波動: <span id="dt-atr-${symbol}" class="tabular-nums text-slate-200">—</span></div>
-          </div>
-          <div class="space-y-1">
-            <div class="text-[11px] text-slate-500 font-semibold">當前活躍訊號</div>
-            <div id="dt-signals-${symbol}" class="flex flex-wrap gap-1 min-h-[22px]">
-              <span class="text-xs text-slate-600 italic">無訊號</span>
-            </div>
-          </div>
-          <div class="space-y-1">
-            <div class="text-[11px] text-slate-500 font-semibold">短線候選交易計畫</div>
-            <div class="grid grid-cols-3 gap-1 text-[11px]">
-              <div class="bg-sky-500/10 border border-sky-500/20 rounded p-1 text-center">
-                <div class="text-sky-400">進場</div>
-                <div id="dt-lvl-entry-${symbol}" class="tabular-nums text-slate-300 font-semibold">—</div>
-              </div>
-              <div class="bg-red-500/10 border border-red-500/20 rounded p-1 text-center">
-                <div class="text-red-400">停利</div>
-                <div id="dt-lvl-target-${symbol}" class="tabular-nums text-slate-300 font-semibold">—</div>
-              </div>
-              <div class="bg-emerald-500/10 border border-emerald-500/20 rounded p-1 text-center">
-                <div class="text-emerald-400">停損</div>
-                <div id="dt-lvl-stop-${symbol}" class="tabular-nums text-slate-300 font-semibold">—</div>
-              </div>
-            </div>
-          </div>
-          <div class="space-y-1">
-            <div class="text-[11px] text-slate-500 font-semibold">核心技術觀察</div>
-            <div id="dt-obs-${symbol}" class="text-[11px] text-slate-400 space-y-1 max-h-[85px] overflow-y-auto pr-1">
-              <div class="italic text-slate-600">無觀察數據</div>
-            </div>
-          </div>
-        </div>
-        <div class="mt-3 border-t border-slate-800/60 pt-2.5 flex justify-between items-center">
-          <span id="dt-status-${symbol}" class="text-[10px] text-slate-600 tabular-nums">未載入</span>
-          <button onclick="diagnose('${symbol}', '${escHtml(symbol)}')" class="btn-primary text-xs px-3 py-1">診斷詳細</button>
+        <div class="flex items-center gap-3">
+          <span id="dt-price-${symbol}" class="text-base font-bold tabular-nums text-slate-100">—</span>
+          <span id="dt-change-${symbol}" class="text-xs font-semibold px-2 py-0.5 rounded-full tabular-nums bg-slate-800 text-slate-400">—</span>
+          <button onclick="diagnose('${symbol}', '${escHtml(name || symbol)}')" class="btn-primary text-xs px-2.5 py-1" style="font-size:11px">診斷詳細</button>
+          <button onclick="removeDaytradeSymbol('${symbol}')" class="text-slate-500 hover:text-red-400 text-lg font-bold ml-1" title="移除監控">×</button>
         </div>
       </div>
+      <div class="daytrade-chart-container w-full" id="daytrade-chart-${symbol}" style="height: 320px;"></div>
     </div>
   `;
 }
@@ -5591,7 +5546,7 @@ async function refreshDaytradeSymbol(symbol, resetChart = false) {
       const titleEl = card.querySelector('.text-base.font-bold');
       if (titleEl) titleEl.textContent = name;
       
-      const diagBtn = card.querySelector('.mt-3 button');
+      const diagBtn = card.querySelector('button[onclick^="diagnose"]');
       if (diagBtn) {
         diagBtn.setAttribute('onclick', `diagnose('${symbol}', '${escHtml(name)}')`);
       }
@@ -5697,7 +5652,7 @@ async function refreshDaytradeSymbol(symbol, resetChart = false) {
         container.innerHTML = '';
         _daytradeCharts[symbol] = LightweightCharts.createChart(container, {
           width: container.clientWidth,
-          height: 280,
+          height: 320,
           layout: {
             background: { color: '#070b14' },
             textColor: '#64748b',
