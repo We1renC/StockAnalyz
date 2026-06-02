@@ -961,12 +961,12 @@ def _fetch_daily_history_from_date(symbol: str, start_date: date, end_date: date
 
 def _chart_period_config(period: str) -> dict[str, str]:
     configs = {
-        "1m": {"period": "1d", "interval": "1m"},
-        "5m": {"period": "1d", "interval": "1m"},
-        "15m": {"period": "1d", "interval": "1m"},
-        "30m": {"period": "1d", "interval": "1m"},
-        "1h": {"period": "1d", "interval": "1m"},
-        "4h": {"period": "1d", "interval": "5m"},
+        "1m": {"period": "5d", "interval": "1m"},
+        "5m": {"period": "5d", "interval": "5m"},
+        "15m": {"period": "10d", "interval": "15m"},
+        "30m": {"period": "20d", "interval": "30m"},
+        "1h": {"period": "30d", "interval": "1h"},
+        "4h": {"period": "60d", "interval": "1h"},
         "1d": {"period": "1d", "interval": "15m"},
         "5d": {"period": "5d", "interval": "30m"},
         "1mo": {"period": "1mo", "interval": "1d"},
@@ -2877,10 +2877,10 @@ def api_history(symbol: str, period: str = "6mo"):
         calc_periods = {
             "1m": "5d",
             "5m": "5d",
-            "15m": "5d",
-            "30m": "5d",
-            "1h": "5d",
-            "4h": "5d",
+            "15m": "10d",
+            "30m": "20d",
+            "1h": "30d",
+            "4h": "60d",
             "1d": "5d",
             "5d": "1mo",
             "1mo": "6mo",
@@ -2914,12 +2914,12 @@ def api_history(symbol: str, period: str = "6mo"):
         import datetime
         latest_ts = h.index[-1]
         period_durations = {
-            "1m": datetime.timedelta(minutes=1),
-            "5m": datetime.timedelta(minutes=5),
-            "15m": datetime.timedelta(minutes=15),
-            "30m": datetime.timedelta(minutes=30),
-            "1h": datetime.timedelta(hours=1),
-            "4h": datetime.timedelta(hours=4),
+            "1m": datetime.timedelta(hours=2),
+            "5m": datetime.timedelta(hours=10),
+            "15m": datetime.timedelta(hours=30),
+            "30m": datetime.timedelta(hours=60),
+            "1h": datetime.timedelta(days=5),
+            "4h": datetime.timedelta(days=20),
             "1d": datetime.timedelta(days=1),
             "5d": datetime.timedelta(days=5),
             "1mo": datetime.timedelta(days=31),

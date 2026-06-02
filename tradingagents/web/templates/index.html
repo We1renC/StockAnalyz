@@ -1039,12 +1039,11 @@ body { background: var(--bg-base); color: var(--text-primary); }
           <span class="text-xs text-slate-400">時間級距:</span>
           <select id="daytrade-period" class="input-field text-xs" style="width:auto; padding:4px 8px;">
             <option value="1m">1 分鐘 (1m K線)</option>
-            <option value="5m">5 分鐘 (1m K線)</option>
-            <option value="15m" selected>15 分鐘 (1m K線)</option>
-            <option value="30m">30 分鐘 (1m K線)</option>
-            <option value="1h">1 小時 (1m K線)</option>
-            <option value="4h">4 小時 (5m K線)</option>
-            <option value="1d">1 天 (15m K線)</option>
+            <option value="5m">5 分鐘 (5m K線)</option>
+            <option value="15m" selected>15 分鐘 (15m K線)</option>
+            <option value="30m">30 分鐘 (30m K線)</option>
+            <option value="1h">1 小時 (1h K線)</option>
+            <option value="4h">4 小時 (1h K線)</option>
           </select>
         </div>
         <div class="flex items-center gap-1.5">
@@ -1580,14 +1579,16 @@ const escHtml = v => String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<'
 // Tab switching
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
+    const tabName = btn.dataset.tab;
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'));
-    $('tab-' + btn.dataset.tab).classList.remove('hidden');
-    if (btn.dataset.tab === 'backtest' && !$('backtest-tbody').innerHTML.trim()) {
+    $('tab-' + tabName).classList.remove('hidden');
+    adjustMarketBarPosition(tabName);
+    if (tabName === 'backtest' && !$('backtest-tbody').innerHTML.trim()) {
       loadBacktest();
     }
-    if (btn.dataset.tab === 'portfolio') {
+    if (tabName === 'portfolio') {
       if (_twTrendChart && $('tw-portfolio-trend-chart')) {
         try { _twTrendChart.resize($('tw-portfolio-trend-chart').clientWidth, 288); } catch(e){}
       }
@@ -1595,7 +1596,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
         try { _usTrendChart.resize($('us-portfolio-trend-chart').clientWidth, 288); } catch(e){}
       }
     }
-    if (btn.dataset.tab === 'daytrade') {
+    if (tabName === 'daytrade') {
       renderDaytradeGrid();
       // Delay slightly to ensure layout and width calculations are fully updated in the DOM
       setTimeout(() => {
@@ -5419,6 +5420,24 @@ let _daytradeMa20Series = {};
 let _daytradeMa60Series = {};
 let _daytradeVolSeries = {};
 let _daytradeInFlight = false;
+
+function adjustMarketBarPosition(tabName) {
+  const marketBar = $('market-bar');
+  if (!marketBar) return;
+  if (tabName === 'daytrade') {
+    const daytradeTab = $('tab-daytrade');
+    if (daytradeTab) {
+      daytradeTab.appendChild(marketBar);
+      marketBar.style.marginTop = '24px';
+    }
+  } else {
+    const tooltip = $('intraday-tooltip');
+    if (tooltip && tooltip.parentNode) {
+      tooltip.parentNode.insertBefore(marketBar, tooltip);
+      marketBar.style.marginTop = '';
+    }
+  }
+}
 
 function initDaytrade() {
   const saved = localStorage.getItem('daytrade_symbols');
