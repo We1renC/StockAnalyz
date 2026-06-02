@@ -63,7 +63,13 @@ def _clean_history(history: pd.DataFrame) -> pd.DataFrame:
     if "Volume" not in h.columns:
         h["Volume"] = 0
     h["Volume"] = h["Volume"].fillna(0)
-    h.index = pd.to_datetime(h.index).tz_localize(None)
+    idx = pd.to_datetime(h.index)
+    # tz_localize(None) preserves wall-clock values without UTC conversion in
+    # pandas 3.  Always tz_convert('UTC') first so that _time()/.timestamp()
+    # produces correct Unix epochs regardless of server local timezone.
+    if idx.tz is not None:
+        idx = idx.tz_convert('UTC').tz_localize(None)
+    h.index = idx
     return h.sort_index()
 
 

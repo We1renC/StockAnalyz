@@ -584,30 +584,28 @@ body { background: var(--bg-base); color: var(--text-primary); }
 <div class="container mx-auto px-4 py-5 max-w-[1440px]">
 
   <!-- Header -->
-  <header class="flex items-center justify-between mb-5 flex-wrap gap-3">
-    <div class="flex items-center gap-3">
-      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-lg font-bold shadow-lg shadow-emerald-500/20">T</div>
-      <div>
+  <header class="flex items-center justify-between mb-5 flex-nowrap gap-3">
+    <div class="flex items-center gap-3 flex-nowrap shrink-0">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-lg font-bold shadow-lg shadow-emerald-500/20 shrink-0">T</div>
+      <div class="shrink-0">
         <h1 class="text-xl font-bold text-white tracking-tight">TradingAgents <span class="text-emerald-400">投資儀表板</span></h1>
       </div>
+      <div id="header-indices" class="flex flex-col gap-1.5 justify-center ml-4 shrink-0">
+        <div id="header-market-indices" class="flex items-center gap-2.5 flex-nowrap"></div>
+        <div id="header-market-stats" class="flex items-center gap-2.5 flex-nowrap"></div>
+      </div>
     </div>
-    <div class="flex items-center gap-2 flex-wrap">
+    <div class="flex items-center gap-2 flex-nowrap shrink-0 ml-auto">
       <button onclick="openSettings()" class="btn-secondary text-xs" style="padding:8px 16px;height:36px;border-radius:10px" title="LLM 設定">設定</button>
       <button onclick="toggleShortcutsHelp()" class="btn-secondary text-xs" style="padding:8px 16px;height:36px;border-radius:10px" title="按 ? 鍵顯示快捷鍵說明">快捷鍵</button>
       <button onclick="reloadFromDB(this)" class="btn-secondary text-xs" style="padding:8px 16px;height:36px;border-radius:10px" title="從資料庫重新載入（不抓報價）">重新載入</button>
       <button id="refresh-btn" class="btn-secondary text-xs" style="padding:8px 16px;height:36px;border-radius:10px" title="立即刷新（重抓報價）"><span id="refresh-icon">刷新報價</span></button>
       <span id="refresh-badge" class="text-xs text-slate-500 min-w-[100px]"></span>
-      <select id="auto-refresh" class="input-field" style="width:auto;padding:8px 12px;font-size:12px">
-        <option value="0">手動</option>
-        <option value="60" selected>1 分鐘</option>
-        <option value="300">5 分鐘</option>
-        <option value="900">15 分鐘</option>
-      </select>
     </div>
   </header>
 
   <!-- Tab Navigation -->
-  <nav class="tab-nav mb-6" style="justify-content:space-between">
+  <nav class="tab-nav mb-6" style="justify-content:space-between; align-items:center">
     <div style="display:flex;gap:4px;flex-wrap:wrap">
       <button data-tab="portfolio" class="tab-btn tab-item active">我的持倉</button>
       <button data-tab="watchlist-tw" class="tab-btn tab-item">台股觀察</button>
@@ -616,11 +614,16 @@ body { background: var(--bg-base); color: var(--text-primary); }
       <button data-tab="domain-research" class="tab-btn tab-item">領域研究</button>
       <button data-tab="daytrade" class="tab-btn tab-item">當沖監控</button>
     </div>
-    <span id="last-update" class="text-xs text-slate-500 self-center pr-2" style="white-space:nowrap">—</span>
+    <div id="nav-market-info" class="flex items-center gap-3 flex-wrap ml-auto text-xs text-slate-400 pr-2">
+      <button onclick="openBatchAnalyze()" class="btn-ai text-xs px-2.5 py-1 shrink-0" style="border-radius: 6px; padding: 4px 8px; font-size: 11px;" title="AI 智能點位調整">
+        <span style="position:relative;z-index:1">AI 智能分析</span>
+      </button>
+      <div id="portfolio-inline-summary" class="flex items-center gap-1.5 pr-2.5">
+        <span class="text-slate-500 text-[11px]">持倉載入中...</span>
+      </div>
+      <span id="last-update" class="text-xs text-slate-500 self-center" style="white-space:nowrap">—</span>
+    </div>
   </nav>
-
-  <!-- Market State Bar -->
-  <div id="market-bar" class="mb-4"></div>
   <div id="intraday-tooltip" class="intraday-tooltip hidden">
     <div class="flex items-center justify-between gap-3">
       <div class="min-w-0">
@@ -634,15 +637,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
 
   <!-- Portfolio Tab -->
   <div id="tab-portfolio" class="tab-content">
-    <div class="flex justify-between items-center mb-3">
-      <div></div>
-      <div class="flex items-center gap-2">
-        <button onclick="openBatchAnalyze()" class="btn-ai text-sm px-4 py-1.5" title="AI 智能點位調整">
-          <span style="position:relative;z-index:1">AI 智能分析</span>
-        </button>
-        <button onclick="openAddPosition()" class="btn-primary text-sm px-4 py-1.5">新增持倉</button>
-      </div>
-    </div>
+
     <!-- 持倉趨勢圖表 (台股美股分開顯示) -->
     <div id="portfolio-charts-container" class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6 hidden">
       <!-- 台股趨勢 -->
@@ -692,7 +687,10 @@ body { background: var(--bg-base); color: var(--text-primary); }
           <span class="text-base font-bold text-slate-100">台股持倉</span>
           <span id="tw-portfolio-count" class="pill pill-gray text-xs" style="font-size:10px;padding:2px 6px">0 檔</span>
         </div>
-        <div id="tw-portfolio-summary" class="flex gap-4 text-xs text-slate-400"></div>
+        <div class="flex items-center gap-3">
+          <button onclick="openAddPosition()" class="btn-primary text-xs px-2.5 py-1 shrink-0" style="border-radius: 6px; padding: 4px 8px; font-size: 11px;">新增持倉</button>
+          <div id="tw-portfolio-summary" class="flex gap-4 text-xs text-slate-400"></div>
+        </div>
       </div>
       <div class="glass-card overflow-hidden">
         <table class="data-table">
@@ -1247,6 +1245,22 @@ body { background: var(--bg-base); color: var(--text-primary); }
       </div>
     </div>
 
+    <!-- 自動重新整理頻率 -->
+    <div class="mb-6">
+      <h3 class="text-lg font-semibold mb-3 border-b border-gray-700 pb-1">數據更新</h3>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">自動重新整理頻率</label>
+          <select id="auto-refresh" class="input-field text-sm w-full">
+            <option value="0">手動</option>
+            <option value="60">1 分鐘</option>
+            <option value="300">5 分鐘</option>
+            <option value="900">15 分鐘</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
     <!-- 券商手續費 -->
     <div class="mb-6">
       <h3 class="text-lg font-semibold mb-3 border-b border-gray-700 pb-1">券商手續費（影響扣費後損益）</h3>
@@ -1584,7 +1598,6 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.classList.add('active');
     document.querySelectorAll('.tab-content').forEach(t => t.classList.add('hidden'));
     $('tab-' + tabName).classList.remove('hidden');
-    adjustMarketBarPosition(tabName);
     if (tabName === 'backtest' && !$('backtest-tbody').innerHTML.trim()) {
       loadBacktest();
     }
@@ -1974,140 +1987,185 @@ function renderMarketMiniChart(key, data) {
   if (key === 'spx') _spxMarketChart = chart;
 }
 
+function renderHeaderSparkline(key, points, rising) {
+  const container = $(`header-chart-${key}`);
+  if (!container) return;
+  container.innerHTML = '';
+  const chart = LightweightCharts.createChart(container, {
+    width: 60,
+    height: 20,
+    layout: { background: { color: 'transparent' }, textColor: 'transparent' },
+    grid: { vertLines: { visible: false }, horzLines: { visible: false } },
+    timeScale: { visible: false },
+    rightPriceScale: { visible: false },
+    crosshair: { mode: 0 },
+    handleScroll: false,
+    handleScale: false,
+  });
+  const series = chart.addAreaSeries({
+    lineColor: rising ? '#f87171' : '#34d399',
+    topColor: rising ? 'rgba(248,113,113,0.15)' : 'rgba(52,211,153,0.15)',
+    bottomColor: 'rgba(15,23,42,0)',
+    lineWidth: 1.5,
+    priceLineVisible: false,
+    lastValueVisible: false,
+  });
+  series.setData(points);
+  chart.timeScale().fitContent();
+}
+
 async function loadMarketIntradayCharts() {
   try {
     const data = await fetch('/api/market/intraday?interval=5m').then(r => r.json());
+    let html = '';
+    
+    if (data.twii && !data.twii.error) {
+      const val = data.twii.last;
+      const pct = data.twii.change_pct;
+      const pctStr = pct !== null && pct !== undefined ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : '—';
+      const colorClass = pct >= 0 ? 'text-[#f87171]' : 'text-[#34d399]';
+      html += `
+        <div class="bg-slate-800/40 border border-slate-700/50 rounded-lg px-2.5 py-1 flex items-center gap-2 text-xs">
+          <span class="text-slate-400 font-medium">台股加權</span>
+          <span class="font-bold font-mono text-slate-100">${val ? fmtInt(val) : '—'}</span>
+          <span class="font-semibold font-mono ${colorClass}">${pctStr}</span>
+          <div id="header-chart-twii" class="ml-1 shrink-0" style="width:60px; height:20px;"></div>
+        </div>`;
+    } else {
+      html += `
+        <div class="bg-slate-800/40 border border-slate-700/50 rounded-lg px-2.5 py-1 flex items-center gap-2 text-xs">
+          <span class="text-slate-400 font-medium">台股加權</span>
+          <span class="font-bold font-mono text-slate-100">—</span>
+        </div>`;
+    }
+    
+    if (data.spx && !data.spx.error) {
+      const val = data.spx.last;
+      const pct = data.spx.change_pct;
+      const pctStr = pct !== null && pct !== undefined ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : '—';
+      const colorClass = pct >= 0 ? 'text-[#f87171]' : 'text-[#34d399]';
+      html += `
+        <div class="bg-slate-800/40 border border-slate-700/50 rounded-lg px-2.5 py-1 flex items-center gap-2 text-xs">
+          <span class="text-slate-400 font-medium">S&P 500</span>
+          <span class="font-bold font-mono text-slate-100">${val ? fmt(val) : '—'}</span>
+          <span class="font-semibold font-mono ${colorClass}">${pctStr}</span>
+          <div id="header-chart-spx" class="ml-1 shrink-0" style="width:60px; height:20px;"></div>
+        </div>`;
+    } else {
+      html += `
+        <div class="bg-slate-800/40 border border-slate-700/50 rounded-lg px-2.5 py-1 flex items-center gap-2 text-xs">
+          <span class="text-slate-400 font-medium">S&P 500</span>
+          <span class="font-bold font-mono text-slate-100">—</span>
+        </div>`;
+    }
+    
+    const headerIndices = $('header-market-indices');
+    if (headerIndices) headerIndices.innerHTML = html;
+
+    // Render Sparklines
+    if (data.twii && !data.twii.error && data.twii.points && data.twii.points.length > 0) {
+      renderHeaderSparkline('twii', data.twii.points, data.twii.change_pct >= 0);
+    }
+    if (data.spx && !data.spx.error && data.spx.points && data.spx.points.length > 0) {
+      renderHeaderSparkline('spx', data.spx.points, data.spx.change_pct >= 0);
+    }
+
     renderMarketMiniChart('twii', data.twii);
     renderMarketMiniChart('spx', data.spx);
   } catch (e) {
+    console.error('Failed to load market intraday charts/header indices:', e);
+    const headerIndices = $('header-market-indices');
+    if (headerIndices) {
+      headerIndices.innerHTML = `<div class="text-xs text-amber-400">指數載入失敗</div>`;
+    }
     renderMarketMiniChart('twii', { error: String(e) });
     renderMarketMiniChart('spx', { error: String(e) });
   }
 }
 
 function renderMarket(m) {
+  const container = $('header-market-stats');
+  if (!container) return;
+
   if (m.error) {
-    $('market-bar').innerHTML = `<div class="col-span-4 glass-card p-4 text-amber-400">市場資料尚未就緒，請稍候或按刷新</div>`;
+    container.innerHTML = `<span class="text-amber-400">市場資料尚未就緒</span>`;
     return;
   }
-  const levelGlow = m.risk_level === 'danger' ? 'glow-border-red' : m.risk_level === 'warning' ? 'glow-border-amber' : 'glow-border-green';
-  const levelBg = m.risk_level === 'danger' ? 'from-red-900/30 to-red-950/20' : m.risk_level === 'warning' ? 'from-amber-900/30 to-amber-950/20' : 'from-emerald-900/30 to-emerald-950/20';
+
+  const levelBgClass = m.risk_level === 'danger' ? 'bg-red-500/10 border border-red-500/20 text-[#f87171]' : m.risk_level === 'warning' ? 'bg-amber-500/10 border border-amber-500/20 text-[#fbbf24]' : 'bg-emerald-500/10 border border-emerald-500/20 text-[#34d399]';
   const levelText = m.risk_level === 'danger' ? '危險' : m.risk_level === 'warning' ? '警戒' : '安全';
-  const vixColor = m.vix > 25 ? 'text-red-400' : m.vix > 15 ? 'text-amber-400' : 'text-emerald-400';
-  // Compact indicator cell helper
-  const cell = (label, val, sub, subColor) => `
-    <div class="flex flex-col justify-center px-3 py-2 border-r border-slate-700 last:border-0 min-w-0">
-      <div class="text-[10px] text-slate-500 mb-0.5 truncate">${label}</div>
-      <div class="text-sm font-bold tabular-nums text-slate-100 truncate">${val}</div>
-      ${sub ? `<div class="text-[10px] truncate" style="color:${subColor||'#64748b'}">${sub}</div>` : ''}
-    </div>`;
 
-  const maCell = (label, val, ma, digits) => {
-    if (!val) return cell(label, '—', '', '');
-    const v = digits === 0 ? fmtInt(val) : fmt(val);
-    if (!ma) return cell(label, v, '', '');
-    const pct = ((val/ma - 1)*100).toFixed(1);
-    const up = val >= ma;
-    return cell(label, v, `${up ? '▲' : '▼'} MA ${pct}%`, up ? '#f87171' : '#34d399');
-  };
+  const vixColorClass = m.vix > 25 ? 'text-[#f87171]' : m.vix > 15 ? 'text-[#fbbf24]' : 'text-[#34d399]';
 
-  const vixSub = m.vix ? (m.vix > 25 ? '恐慌' : m.vix > 15 ? '警戒' : '正常') : '';
-  const vixSubColor = m.vix > 25 ? '#f87171' : m.vix > 15 ? '#fbbf24' : '#34d399';
   const tnxColor = m.tnx > 4.5 ? '#f87171' : m.tnx > 3.5 ? '#fbbf24' : '#34d399';
   const dxyColor = m.dxy > 104 ? '#f87171' : m.dxy > 100 ? '#fbbf24' : '#34d399';
 
-  $('market-bar').innerHTML = `
-    <div class="glass-card ${levelGlow} bg-gradient-to-br ${levelBg} overflow-hidden">
-      <div class="flex items-stretch flex-wrap">
+  const formatMaPct = (val, ma) => {
+    if (!val || !ma) return '';
+    const pct = ((val / ma - 1) * 100).toFixed(1);
+    const up = val >= ma;
+    return ` <span class="text-[10px] font-mono ${up ? 'text-[#f87171]' : 'text-[#34d399]'}">${up ? '▲' : '▼'}${pct}%</span>`;
+  };
 
-        <!-- 市場狀態 -->
-        <div class="flex flex-col justify-center px-4 py-3 border-r border-slate-700" style="min-width:100px">
-          <div class="text-[10px] text-slate-500 mb-0.5">市場狀態</div>
-          <div class="text-base font-bold">${levelText}</div>
-          <div class="flex flex-wrap gap-1 mt-1">
-            ${[
-              {code:'VIX', ok: m.vix <= 25},
-              {code:'TW',  ok: !m.twii || !m.twii_ma60 || m.twii >= m.twii_ma60},
-              {code:'SPX', ok: !m.spx  || !m.spx_ma60  || m.spx  >= m.spx_ma60},
-              {code:'SOX', ok: !m.sox  || !m.sox_ma60  || m.sox  >= m.sox_ma60},
-            ].map(s => `<span class="pill ${s.ok?'pill-green':'pill-red'}" style="font-size:9px;padding:1px 5px">${s.code}</span>`).join('')}
-          </div>
-        </div>
+  const soxMaStr = formatMaPct(m.sox, m.sox_ma60);
+  const ndxMaStr = formatMaPct(m.ndx, m.ndx_ma20);
 
-        <!-- VIX -->
-        <div class="flex flex-col justify-center px-3 py-2 border-r border-slate-700" style="min-width:72px">
-          <div class="text-[10px] text-slate-500 mb-0.5">VIX</div>
-          <div class="text-sm font-bold tabular-nums" style="color:${vixColor}">${m.vix ? fmt(m.vix) : '—'}</div>
-          <div class="text-[10px]" style="color:${vixSubColor}">${vixSub}</div>
-        </div>
-
-        ${maCell('SOX', m.sox, m.sox_ma60, 0)}
-        ${maCell('NDX', m.ndx, m.ndx_ma20, 0)}
-
-        <!-- TNX -->
-        <div class="flex flex-col justify-center px-3 py-2 border-r border-slate-700" style="min-width:72px">
-          <div class="text-[10px] text-slate-500 mb-0.5">10Y債</div>
-          <div class="text-sm font-bold tabular-nums" style="color:${tnxColor}">${m.tnx ? fmt(m.tnx)+'%' : '—'}</div>
-          <div class="text-[10px]" style="color:${tnxColor}">${m.tnx > 4.5 ? '緊縮壓力' : m.tnx > 3.5 ? '中性' : '寬鬆'}</div>
-        </div>
-
-        <!-- DXY -->
-        <div class="flex flex-col justify-center px-3 py-2 border-r border-slate-700" style="min-width:72px">
-          <div class="text-[10px] text-slate-500 mb-0.5">DXY</div>
-          <div class="text-sm font-bold tabular-nums" style="color:${dxyColor}">${m.dxy ? fmt(m.dxy) : '—'}</div>
-          <div class="text-[10px]" style="color:${dxyColor}">${m.dxy > 104 ? '強美元' : m.dxy > 100 ? '偏強' : '中性'}</div>
-        </div>
-
-        <!-- 持倉摘要（由 renderPortfolio 填入） -->
-        <div id="portfolio-inline-summary" class="ml-auto flex items-stretch">
-          <div class="flex flex-col justify-center px-3 py-2 text-[10px] text-slate-600">載入中...</div>
-        </div>
-
-      </div>
-    </div>
-
-    <div class="grid grid-cols-2 gap-3 mt-3">
-      <div class="glass-card p-4 market-chart-card" style="min-height:110px">
-        <div id="market-chart-twii" class="market-mini-chart"></div>
-        <div class="market-card-content flex flex-col justify-between" style="min-height:80px">
-          <div>
-            <div class="text-xs text-slate-400 mb-0.5">台股加權</div>
-            <div class="text-2xl font-bold tabular-nums">${m.twii ? fmtInt(m.twii) : '—'}</div>
-            <div id="market-session-twii" class="market-session-label text-[10px] text-slate-500 mt-0.5"></div>
-          </div>
-          <div class="flex justify-end gap-3 text-xs">
-            ${[['MA20', m.twii, m.twii_ma20], ['MA60', m.twii, m.twii_ma60], ['MA120', m.twii, m.twii_ma120]].map(([label, val, ma]) =>
-              val && ma ? `<div class="text-right">
-                <div class="text-slate-500">${label}</div>
-                <div class="font-semibold ${val >= ma ? 'text-red-400' : 'text-emerald-400'}">${val >= ma ? '▲' : '▼'}${((val/ma-1)*100).toFixed(1)}%</div>
-              </div>` : ''
-            ).join('')}
-          </div>
-        </div>
-      </div>
-      <div class="glass-card p-4 market-chart-card" style="min-height:110px">
-        <div id="market-chart-spx" class="market-mini-chart"></div>
-        <div class="market-card-content flex flex-col justify-between" style="min-height:80px">
-          <div>
-            <div class="text-xs text-slate-400 mb-0.5">S&P 500</div>
-            <div class="text-2xl font-bold tabular-nums">${m.spx ? fmt(m.spx) : '—'}</div>
-            <div id="market-session-spx" class="market-session-label text-[10px] text-slate-500 mt-0.5"></div>
-          </div>
-          <div class="flex justify-end gap-3 text-xs">
-            ${[['MA20', m.spx, m.spx_ma20], ['MA60', m.spx, m.spx_ma60], ['MA120', m.spx, m.spx_ma120]].map(([label, val, ma]) =>
-              val && ma ? `<div class="text-right">
-                <div class="text-slate-500">${label}</div>
-                <div class="font-semibold ${val >= ma ? 'text-red-400' : 'text-emerald-400'}">${val >= ma ? '▲' : '▼'}${((val/ma-1)*100).toFixed(1)}%</div>
-              </div>` : ''
-            ).join('')}
-          </div>
-        </div>
-      </div>
-    </div>`;
-  // Push market update time to tab-nav last-update
+  // Time format
   const mTime = (m.ts || '').split('T')[1]?.substring(0,8) || '';
   const mDate = (m.ts || '').split('T')[0] || '';
-  if (mTime) $('last-update').textContent = `${mDate} ${mTime}`;
+  const timeStr = mTime ? `${mDate} ${mTime}` : '—';
+
+  const lastUpdate = $('last-update');
+  if (lastUpdate) lastUpdate.textContent = timeStr;
+
+  container.innerHTML = `
+    <!-- 市場狀態 -->
+    <div class="flex items-center gap-1.5 border-r border-slate-800 pr-2.5">
+      <span class="text-slate-500 text-[11px]">市場</span>
+      <span class="px-1.5 py-0.5 rounded text-[11px] font-bold ${levelBgClass}">${levelText}</span>
+      <span class="flex items-center gap-0.5 ml-1">
+        ${[
+          {code:'VIX', ok: m.vix <= 25},
+          {code:'TW',  ok: !m.twii || !m.twii_ma60 || m.twii >= m.twii_ma60},
+          {code:'SPX', ok: !m.spx  || !m.spx_ma60  || m.spx  >= m.spx_ma60},
+          {code:'SOX', ok: !m.sox  || !m.sox_ma60  || m.sox  >= m.sox_ma60},
+        ].map(s => `<span class="text-[9px] px-1 rounded font-bold ${s.ok?'bg-emerald-950/60 text-emerald-400 border border-emerald-900/50':'bg-red-950/60 text-red-400 border border-red-900/50'}">${s.code}</span>`).join('')}
+      </span>
+    </div>
+
+    <!-- VIX -->
+    <div class="flex items-center gap-1 border-r border-slate-800 pr-2.5">
+      <span class="text-slate-500 text-[11px]">VIX</span>
+      <span class="font-semibold font-mono text-[12px] ${vixColorClass}">${m.vix ? fmt(m.vix) : '—'}</span>
+    </div>
+
+    <!-- SOX -->
+    <div class="flex items-center gap-1 border-r border-slate-800 pr-2.5">
+      <span class="text-slate-500 text-[11px]">SOX</span>
+      <span class="font-semibold font-mono text-[12px] text-slate-200">${m.sox ? fmtInt(m.sox) : '—'}</span>
+      ${soxMaStr}
+    </div>
+
+    <!-- NDX -->
+    <div class="flex items-center gap-1 border-r border-slate-800 pr-2.5">
+      <span class="text-slate-500 text-[11px]">NDX</span>
+      <span class="font-semibold font-mono text-[12px] text-slate-200">${m.ndx ? fmtInt(m.ndx) : '—'}</span>
+      ${ndxMaStr}
+    </div>
+
+    <!-- 10Y債 -->
+    <div class="flex items-center gap-1 border-r border-slate-800 pr-2.5">
+      <span class="text-slate-500 text-[11px]">10Y債</span>
+      <span class="font-semibold font-mono text-[12px]" style="color:${tnxColor}">${m.tnx ? fmt(m.tnx)+'%' : '—'}</span>
+    </div>
+
+    <!-- DXY -->
+    <div class="flex items-center gap-1 pr-1">
+      <span class="text-slate-500 text-[11px]">DXY</span>
+      <span class="font-semibold font-mono text-[12px]" style="color:${dxyColor}">${m.dxy ? fmt(m.dxy) : '—'}</span>
+    </div>
+  `;
+
   loadMarketIntradayCharts();
 }
 
@@ -2142,26 +2200,13 @@ function renderPortfolio(data) {
   // 同步更新市場列右側持倉摘要
   const inlineSummary = $('portfolio-inline-summary');
   if (inlineSummary) {
-    const pnlStyle = `color:${netPnl >= 0 ? '#f87171' : '#34d399'}`;
+    const pnlColorClass = netPnl >= 0 ? 'text-[#f87171]' : 'text-[#34d399]';
     inlineSummary.innerHTML = `
-      <div class="flex flex-col justify-center px-3 py-2 border-r border-slate-700" style="min-width:80px">
-        <div class="text-[10px] text-slate-500 mb-0.5">總投入</div>
-        <div class="text-sm font-semibold tabular-nums text-slate-200">${fmtInt(s.total_cost)}</div>
-      </div>
-      <div class="flex flex-col justify-center px-3 py-2 border-r border-slate-700" style="min-width:80px">
-        <div class="text-[10px] text-slate-500 mb-0.5">總市值</div>
-        <div class="text-sm font-semibold tabular-nums text-slate-200">${fmtInt(s.total_value)}</div>
-      </div>
-      <div class="flex flex-col justify-center px-3 py-2 border-r border-slate-700" style="min-width:88px" title="已扣手續費">
-        <div class="text-[10px] text-slate-500 mb-0.5">總損益</div>
-        <div class="text-sm font-bold tabular-nums" style="${pnlStyle}">${pnlSign}${fmtInt(netPnl)}</div>
-      </div>
-      <div class="flex flex-col justify-center px-3 py-2" style="min-width:68px">
-        <div class="text-[10px] text-slate-500 mb-0.5">報酬率</div>
-        <div class="text-base font-bold tabular-nums" style="${pnlStyle}">${pctSign}${fmt(netPnlPct)}%</div>
-      </div>`;
-
-  // 按照損益數字大小 (pnl) 降序排列 (獲利高排上方，虧損大排下方)
+      <span class="text-slate-500 text-[11px]">持倉市值</span>
+      <span class="text-slate-300 font-mono font-semibold">${fmtInt(s.total_value)}</span>
+      <span class="text-slate-500 text-[11px] ml-1">損益</span>
+      <span class="font-mono font-bold ${pnlColorClass}">${pnlSign}${fmtInt(netPnl)} (${pctSign}${fmt(netPnlPct)}%)</span>
+    `;
   }  // end if (inlineSummary)
 
   if (data.positions) {
@@ -4299,6 +4344,12 @@ async function openSettings() {
   $('role-reviewer-model').value = r.roles.reviewer.model;
   $('role-reviewer-mode').value = r.roles.reviewer.mode || 'cli';
 
+  // Auto refresh
+  const savedInterval = localStorage.getItem('auto_refresh_interval');
+  if (savedInterval !== null) {
+    $('auto-refresh').value = savedInterval;
+  }
+
   // Obsidian
   $('obsidian-vault-path').value = r.obsidian_vault_path || '';
 
@@ -4366,6 +4417,8 @@ async function saveSettings() {
     body: JSON.stringify(body)
   }).then(r=>r.json());
   if (r.ok) {
+    localStorage.setItem('auto_refresh_interval', $('auto-refresh').value);
+    setupAutoRefresh();
     closeSettings();
     // 更新底部 hint
     fetch('/api/settings').then(r=>r.json()).then(s => updateLLMHint(s.roles));
@@ -5421,24 +5474,6 @@ let _daytradeMa60Series = {};
 let _daytradeVolSeries = {};
 let _daytradeInFlight = false;
 
-function adjustMarketBarPosition(tabName) {
-  const marketBar = $('market-bar');
-  if (!marketBar) return;
-  if (tabName === 'daytrade') {
-    const daytradeTab = $('tab-daytrade');
-    if (daytradeTab) {
-      daytradeTab.appendChild(marketBar);
-      marketBar.style.marginTop = '24px';
-    }
-  } else {
-    const tooltip = $('intraday-tooltip');
-    if (tooltip && tooltip.parentNode) {
-      tooltip.parentNode.insertBefore(marketBar, tooltip);
-      marketBar.style.marginTop = '';
-    }
-  }
-}
-
 function initDaytrade() {
   const saved = localStorage.getItem('daytrade_symbols');
   if (saved) {
@@ -5840,6 +5875,10 @@ window.addEventListener('keydown', (e) => {
 
 initDaytrade();
 loadAll();
+const savedInterval = localStorage.getItem('auto_refresh_interval');
+if (savedInterval !== null) {
+  $('auto-refresh').value = savedInterval;
+}
 setupAutoRefresh();
 </script>
 </body>

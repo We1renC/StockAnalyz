@@ -565,7 +565,12 @@ def fetch_intraday_history(symbol: str, period: str, interval: str) -> pd.DataFr
         h = yf.Ticker(symbol).history(period=period, interval=interval)
         if len(h) == 0:
             return pd.DataFrame()
-        h.index = h.index.tz_localize(None)
+        # tz_localize(None) on a tz-aware index preserves wall-clock values
+        # without converting to UTC first (pandas 3 behaviour).  We must
+        # tz_convert('UTC') first so that .timestamp() later yields the correct
+        # Unix epoch regardless of the server's local timezone.
+        if h.index.tz is not None:
+            h.index = h.index.tz_convert('UTC').tz_localize(None)
         return h
     except Exception:
         return pd.DataFrame()
@@ -2901,9 +2906,13 @@ def api_history(symbol: str, period: str = "6mo"):
         if len(h) == 0:
             return {"error": "no data"}
             
-        # 統一將 index 轉為 naive datetime
+        # 統一將 index 轉為 naive UTC datetime
+        # Must tz_convert('UTC') before tz_localize(None): pandas 3 preserves
+        # wall-clock values (e.g. 09:00 Asia/Taipei) without converting, which
+        # makes .timestamp() return wrong Unix values on non-UTC machines.
         h = h.copy()
-        h.index = h.index.tz_localize(None)
+        if h.index.tz is not None:
+            h.index = h.index.tz_convert('UTC').tz_localize(None)
         
         # 在完整歷史上計算滾動平均線
         close = h["Close"]
@@ -3158,7 +3167,8 @@ def api_intraday(symbol: str, interval: str = "5m"):
         h = h.dropna(subset=["Close"])
         if len(h) == 0:
             return {"error": "no intraday data"}
-        h.index = h.index.tz_localize(None)
+        if h.index.tz is not None:
+            h.index = h.index.tz_convert('UTC').tz_localize(None)
         points = [
             {"time": int(ts.timestamp()), "value": round(float(row["Close"]), 2)}
             for ts, row in h.iterrows()
