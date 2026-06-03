@@ -167,6 +167,14 @@ def init_db():
         PRIMARY KEY (symbol, date, period)
     );
     CREATE INDEX IF NOT EXISTS idx_matrix_symbol ON technical_matrix_snapshots(symbol, date);
+    CREATE TABLE IF NOT EXISTS financial_reports (
+        symbol TEXT NOT NULL,
+        period TEXT NOT NULL,
+        period_type TEXT NOT NULL DEFAULT 'quarter',
+        data TEXT,
+        PRIMARY KEY (symbol, period, period_type)
+    );
+    CREATE INDEX IF NOT EXISTS idx_financials_symbol ON financial_reports(symbol, period);
     CREATE TABLE IF NOT EXISTS price_cache (
         symbol TEXT PRIMARY KEY,
         ts TEXT,
@@ -682,6 +690,91 @@ def fetch_fundamentals(symbol: str) -> dict:
     }
     _FUNDAMENTALS_CACHE[symbol] = (time.time() + _FUNDAMENTALS_TTL, out)
     return out
+
+
+_FINANCIALS_CACHE: dict[str, tuple[float, list]] = {}
+_FINANCIALS_TTL = 21600  # quarterly reports change only a few times/year; 6h cache
+
+
+def fetch_financial_history(symbol: str, max_quarters: int = 8) -> list[dict]:
+    """Pull historical quarterly financial statements from yfinance.
+
+    yfinance exposes the same Yahoo Finance backend the web pages render, so we
+    use the structured API instead of scraping fragile HTML. Returns a list of
+    period records (newest first) with revenue / net income / EPS / margins and
+    YoY growth where two years of the same quarter are available.
+
+    ETFs and funds have no income statement → returns []. Cached 6h.
+    """
+    entry = _FINANCIALS_CACHE.get(symbol)
+    if entry and time.time() < entry[0]:
+        return entry[1]
+
+    records: list[dict] = []
+    try:
+        t = yf.Ticker(symbol)
+        qi = t.quarterly_income_stmt
+    except Exception:
+        _FINANCIALS_CACHE[symbol] = (time.time() + _FINANCIALS_TTL, [])
+        return []
+    if qi is None or qi.empty:
+        _FINANCIALS_CACHE[symbol] = (time.time() + _FINANCIALS_TTL, [])
+        return []
+
+    def _row(name):
+        return qi.loc[name] if name in qi.index else None
+
+    rev = _row("Total Revenue")
+    ni = _row("Net Income")
+    eps = _row("Diluted EPS") if "Diluted EPS" in qi.index else _row("Basic EPS")
+    gp = _row("Gross Profit")
+    oi = _row("Operating Income")
+
+    def _val(series, col):
+        if series is None:
+            return None
+        try:
+            v = series.get(col)
+            v = float(v)
+            return v if math.isfinite(v) else None
+        except (TypeError, ValueError):
+            return None
+
+    cols = list(qi.columns)[:max_quarters]
+    # Map period -> revenue for YoY (same quarter previous year ≈ 4 columns back)
+    all_cols = list(qi.columns)
+    for idx, col in enumerate(cols):
+        period = col.date().isoformat() if hasattr(col, "date") else str(col)
+        revenue = _val(rev, col)
+        net_income = _val(ni, col)
+        gross_profit = _val(gp, col)
+        rec = {
+            "period": period,
+            "revenue": revenue,
+            "net_income": net_income,
+            "eps": _val(eps, col),
+            "gross_profit": gross_profit,
+            "operating_income": _val(oi, col),
+            "gross_margin": round(gross_profit / revenue * 100, 1) if (gross_profit and revenue) else None,
+            "net_margin": round(net_income / revenue * 100, 1) if (net_income and revenue) else None,
+        }
+        # YoY: same quarter previous year is ~4 columns later in the index
+        try:
+            yoy_idx = all_cols.index(col) + 4
+            if yoy_idx < len(all_cols):
+                prev_col = all_cols[yoy_idx]
+                prev_rev = _val(rev, prev_col)
+                prev_eps = _val(eps, prev_col)
+                if prev_rev and revenue:
+                    rec["revenue_yoy"] = round((revenue / prev_rev - 1) * 100, 1)
+                if prev_eps and rec["eps"] is not None and prev_eps != 0:
+                    rec["eps_yoy"] = round((rec["eps"] / prev_eps - 1) * 100, 1)
+        except (ValueError, IndexError):
+            pass
+        records.append(rec)
+
+    _FINANCIALS_CACHE[symbol] = (time.time() + _FINANCIALS_TTL, records)
+    return records
 
 
 _TW_BREADTH_CACHE: dict[str, tuple[float, dict]] = {}
@@ -4498,13 +4591,121 @@ updated: {today}
     note.write_text(content, encoding="utf-8")
 
 
-def _persist_symbol_research(symbol: str, fundamentals: dict, matrix: Optional[dict]) -> None:
-    """One-shot: persist fundamentals + 17D to SQL and (if configured) Obsidian."""
+def _store_financial_reports(symbol: str, records: list[dict], conn=None) -> int:
+    """Persist quarterly financial reports to SQL. A reported quarter is final,
+    so (symbol, period) rows are written once and never change."""
+    if not records:
+        return 0
+    own = conn is None
+    if own:
+        conn = get_db()
+    n = 0
+    try:
+        for rec in records:
+            period = rec.get("period")
+            if not period:
+                continue
+            conn.execute(
+                """INSERT OR REPLACE INTO financial_reports (symbol, period, period_type, data)
+                   VALUES (?, ?, 'quarter', ?)""",
+                (symbol, period, json.dumps(sanitize_float_values(rec), ensure_ascii=False)),
+            )
+            n += 1
+        conn.commit()
+    finally:
+        if own:
+            conn.close()
+    return n
+
+
+def _load_financial_reports(symbol: str, limit: int = 8) -> list[dict]:
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT data FROM financial_reports WHERE symbol=? ORDER BY period DESC LIMIT ?",
+            (symbol, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        try:
+            out.append(json.loads(r["data"]))
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def _build_financials_history_text(symbol: str, records: Optional[list] = None) -> str:
+    """LLM-readable historical financial-report trend block."""
+    recs = records if records is not None else _load_financial_reports(symbol, limit=6)
+    if not recs:
+        return ""  # ETF / no income statement — omit silently
+    lines = ["【歷史財報趨勢（近幾季）】"]
+    for r in recs[:6]:
+        rev = r.get("revenue")
+        rev_txt = f"{rev/1e8:.1f}億" if rev else "—"
+        parts = [f"{r.get('period')}：營收 {rev_txt}"]
+        if r.get("revenue_yoy") is not None:
+            parts.append(f"YoY {r['revenue_yoy']:+.1f}%")
+        if r.get("eps") is not None:
+            parts.append(f"EPS {r['eps']}")
+        if r.get("eps_yoy") is not None:
+            parts.append(f"EPS YoY {r['eps_yoy']:+.1f}%")
+        if r.get("gross_margin") is not None:
+            parts.append(f"毛利率 {r['gross_margin']}%")
+        if r.get("net_margin") is not None:
+            parts.append(f"淨利率 {r['net_margin']}%")
+        lines.append("・" + "，".join(parts))
+    return "\n".join(lines)
+
+
+def _obsidian_write_financials(vault: Path, symbol: str, records: list[dict]) -> None:
+    """Write/update a per-symbol historical-financials note in Obsidian."""
+    if not records:
+        return
+    safe = _safe_obsidian_name(symbol)
+    fdir = vault / "Fundamentals"
+    fdir.mkdir(parents=True, exist_ok=True)
+    note = fdir / f"{safe}_財報歷史.md"
+    rows_md = []
+    for r in records:
+        rev = r.get("revenue")
+        rev_txt = f"{rev/1e8:.1f}" if rev else "—"
+        rows_md.append(
+            f"| {r.get('period')} | {rev_txt} | {_fmt(r.get('revenue_yoy'))} | {_fmt(r.get('eps'))} | "
+            f"{_fmt(r.get('eps_yoy'))} | {_fmt(r.get('gross_margin'))} | {_fmt(r.get('net_margin'))} |"
+        )
+    content = f"""---
+type: financial-history
+symbol: {symbol}
+updated: {date.today().isoformat()}
+quarters: {len(records)}
+---
+
+# {symbol} 歷史財報（季度）
+
+| 期別 | 營收(億) | 營收YoY% | EPS | EPS YoY% | 毛利率% | 淨利率% |
+|------|---------:|---------:|----:|---------:|--------:|--------:|
+{chr(10).join(rows_md)}
+
+## 連結
+[[Fundamentals/{safe}|{symbol} 基本面快照]]
+[[Portfolio/Positions/{safe}|{symbol} 持倉]]
+"""
+    note.write_text(content, encoding="utf-8")
+
+
+def _persist_symbol_research(symbol: str, fundamentals: dict, matrix: Optional[dict],
+                            financials: Optional[list] = None) -> None:
+    """One-shot: persist fundamentals + 17D + 財報歷史 to SQL and (if configured) Obsidian."""
     try:
         conn = get_db()
         _store_fundamentals_snapshot(symbol, fundamentals, conn)
         if matrix and not matrix.get("error"):
             _store_technical_matrix_snapshot(symbol, matrix, "6mo", conn)
+        if financials:
+            _store_financial_reports(symbol, financials, conn)
         conn.close()
     except Exception as e:
         print(f"  [WARN] persist {symbol} to SQL failed: {e}")
@@ -4513,6 +4714,8 @@ def _persist_symbol_research(symbol: str, fundamentals: dict, matrix: Optional[d
         return
     try:
         _obsidian_write_fundamentals(vault, symbol, fundamentals)
+        if financials:
+            _obsidian_write_financials(vault, symbol, financials)
         if matrix and not matrix.get("error"):
             _obsidian_write_technical_matrix(vault, matrix)
     except Exception as e:
@@ -4553,8 +4756,9 @@ def _build_context(symbol: str) -> dict:
     except Exception:
         matrix = None
     fundamentals = fetch_fundamentals(symbol)
+    financials = fetch_financial_history(symbol)
     try:
-        _persist_symbol_research(symbol, fundamentals, matrix)
+        _persist_symbol_research(symbol, fundamentals, matrix, financials)
     except Exception as e:
         print(f"  [WARN] persist research {symbol} failed: {e}")
 
@@ -4586,6 +4790,12 @@ def _build_context(symbol: str) -> dict:
     # 基本面與估值（核心新增）
     parts.append("")
     parts.append(_build_fundamentals_text(symbol, price, fundamentals=fundamentals))
+
+    # 歷史財報趨勢（季度營收/EPS YoY，供 AI 看基本面動能）
+    fin_text = _build_financials_history_text(symbol, records=financials)
+    if fin_text:
+        parts.append("")
+        parts.append(fin_text)
 
     parts.append("")
     if pos:
