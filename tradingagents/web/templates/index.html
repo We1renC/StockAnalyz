@@ -2583,7 +2583,7 @@ function renderPortfolio(data) {
       <td><span class="pill ${recPill} text-[11px]">${rec.action||'—'}</span>${rec.reason ? `<div class="text-[10px] text-slate-500 mt-1 leading-tight max-w-[180px]">${rec.reason}</div>` : ''}${targetInfo ? `<div class="text-[10px] mt-0.5">${targetInfo}</div>` : ''}</td>
       <td class="text-center whitespace-nowrap">
         <button onclick="diagnose('${p.symbol}','${(p.name||'').replace(/'/g,"\\\'")}')" class="btn-action" data-tip="分析">分析</button>
-        <button onclick="editPosition(${p.id},'${p.symbol}','${(p.name||'').replace(/'/g,"\\\'")}',${p.shares},${p.cost_price},'${p.category||''}','${p.currency||'TWD'}',${p.target_profit||'null'},${p.target_stop||'null'},'${p.purchase_date||''}')" class="btn-action" data-tip="編輯">編輯</button>
+        <button onclick="editPosition(${p.id},'${p.symbol}','${(p.name||'').replace(/'/g,"\\\'")}',${p.shares},${p.cost_price},'${p.category||''}','${p.currency||'TWD'}',${p.target_profit||'null'},${p.target_stop||'null'},'${p.purchase_date||''}',${p.current_price||'null'})" class="btn-action" data-tip="編輯">編輯</button>
         <button onclick="deletePosition(${p.id})" class="btn-action-danger" data-tip="刪除">刪除</button>
       </td>
     </tr>`;
@@ -4998,11 +4998,13 @@ let _editPosId = null;
 let _editPosSymbol = null;
 let _editPosName = null;
 let _posActionType = null;
+let _editPosCurrentPrice = null;
 
-function editPosition(id, symbol, name, shares, cost, category, currency, target_profit, target_stop, purchase_date) {
+function editPosition(id, symbol, name, shares, cost, category, currency, target_profit, target_stop, purchase_date, currentPrice) {
   _editPosId = id;
   _editPosSymbol = symbol;
   _editPosName = name;
+  _editPosCurrentPrice = currentPrice || cost;
   $('edit-pos-symbol-label').textContent = `${symbol} (${name})`;
   $('edit-pos-shares').value = shares;
   $('edit-pos-cost').value = cost;
@@ -5059,8 +5061,10 @@ async function sellPartialPosition() {
   $('pos-action-title').textContent = '賣出部分持倉';
   $('pos-action-title').className = 'text-xl font-bold text-red-500';
   $('pos-action-symbol-label').textContent = `${_editPosSymbol} (${_editPosName})`;
-  $('pos-action-shares').value = '';
-  $('pos-action-price').value = '';
+  
+  // 預設為全部的股數與當前價格
+  $('pos-action-shares').value = parseFloat($('edit-pos-shares').value);
+  $('pos-action-price').value = _editPosCurrentPrice;
   
   const today = new Date();
   const yyyy = today.getFullYear();
@@ -5081,8 +5085,10 @@ async function buyMorePosition() {
   $('pos-action-title').textContent = '加碼買入持倉';
   $('pos-action-title').className = 'text-xl font-bold text-blue-500';
   $('pos-action-symbol-label').textContent = `${_editPosSymbol} (${_editPosName})`;
-  $('pos-action-shares').value = '';
-  $('pos-action-price').value = '';
+  
+  // 預設為全部的股數與當前價格
+  $('pos-action-shares').value = parseFloat($('edit-pos-shares').value);
+  $('pos-action-price').value = _editPosCurrentPrice;
   
   const today = new Date();
   const yyyy = today.getFullYear();
