@@ -2864,6 +2864,212 @@ def build_chart_layers(
     return layers
 
 
+TRADE_RECORD_SCHEMA_VERSION = 1
+
+
+def build_trade_record(
+    entry: dict,
+    *,
+    trade_outcome: dict,
+    symbol: str,
+    market: Optional[str] = None,
+    timeframe: str = "1d",
+    trade_id: Optional[str] = None,
+    entry_time: Optional[str] = None,
+    exit_time: Optional[str] = None,
+    crypto_factors: Optional[dict] = None,
+    regime: Optional[dict] = None,
+) -> dict:
+    """§18.2 — normalize an entry + outcome into the canonical trade record.
+
+    The schema is the same for backtest, paper and live execution so the
+    §18.3 attribution pipeline can join across sources. All factor flags
+    are stored as booleans; numeric fields use plain floats so the record
+    serializes cleanly to JSONL / parquet.
+    """
+    factors = dict(entry.get("factors") or {})
+    conf = dict(entry.get("confluence") or {})
+    dol = dict(entry.get("dol_target") or {}) if entry.get("dol_target") else {}
+    return {
+        "schema_version": TRADE_RECORD_SCHEMA_VERSION,
+        "trade_id": trade_id or f"{symbol}:{entry.get('model')}:{entry.get('entry')}:{trade_outcome.get('entry_index')}",
+        "symbol": symbol,
+        "market": market or infer_market(symbol),
+        "timeframe": timeframe,
+        "direction": int(entry.get("direction", 0)),
+        "model": entry.get("model"),
+        "entry_time": entry_time or entry.get("time"),
+        "exit_time": exit_time,
+        # Features X (§18.2)
+        "confluence_score": conf.get("score"),
+        "confluence_triggered": bool(entry.get("triggered")),
+        "factors": factors,
+        "crypto_factors": dict(crypto_factors or {}),
+        "regime": dict(regime or {}),
+        "dol_kind": dol.get("target_kind"),
+        "dol_distance": dol.get("distance"),
+        # Execution levels
+        "entry_price": float(entry.get("entry", 0)),
+        "stop": float(entry.get("stop", 0)),
+        "target": float(entry.get("target", 0)),
+        "rr_planned": float(entry.get("rr", 0)),
+        # Outcome Y (§18.2)
+        "outcome": trade_outcome.get("outcome"),
+        "r_multiple": float(trade_outcome.get("r_multiple", 0)),
+        "bars_held": trade_outcome.get("bars_held"),
+        "mae": trade_outcome.get("mae"),
+        "mfe": trade_outcome.get("mfe"),
+        "dol_hit": trade_outcome.get("dol_hit"),
+    }
+
+
+def annotate_mae_mfe(df: pd.DataFrame, trades: list[dict]) -> list[dict]:
+    """Compute Maximum Adverse / Favorable Excursion in R units per trade.
+
+    Walks the bars between ``entry_index`` and ``settled_index`` (inclusive)
+    and reports the worst drawdown vs. entry (MAE) and best run vs. entry
+    (MFE), both expressed in R-multiples. Mutates a copy of each trade
+    dict (the input list is untouched).
+    """
+    if df is None or len(df) == 0:
+        return list(trades or [])
+    out: list[dict] = []
+    for t in trades or []:
+        tt = dict(t)
+        start = int(tt.get("entry_index", -1))
+        end = int(tt.get("settled_index", -1))
+        if start < 0 or end < 0 or end >= len(df) or end < start:
+            tt["mae"] = None; tt["mfe"] = None
+            out.append(tt); continue
+        entry_price = float(tt.get("entry", 0))
+        stop = float(tt.get("stop", 0))
+        risk = abs(entry_price - stop)
+        if risk <= 0:
+            tt["mae"] = None; tt["mfe"] = None
+            out.append(tt); continue
+        direction = int(tt.get("direction", 0))
+        window = df.iloc[start : end + 1]
+        if direction == 1:
+            mae_price = float(window["low"].min())
+            mfe_price = float(window["high"].max())
+            mae = (mae_price - entry_price) / risk   # negative when adverse
+            mfe = (mfe_price - entry_price) / risk
+        else:
+            mae_price = float(window["high"].max())
+            mfe_price = float(window["low"].min())
+            mae = (entry_price - mae_price) / risk
+            mfe = (entry_price - mfe_price) / risk
+        tt["mae"] = round(mae, 3)
+        tt["mfe"] = round(mfe, 3)
+        out.append(tt)
+    return out
+
+
+def persist_trade_records(records: list[dict], path: str) -> int:
+    """Append-write trade records as JSONL (one row per line).
+
+    Parquet is the §18.2 preferred format but we keep the default to
+    JSONL to avoid a hard dependency on pyarrow in this engine; callers
+    that want parquet can pass ``path.endswith('.parquet')`` and we'll
+    use pandas to_parquet if pyarrow is importable.
+    """
+    import json, os
+    if not records:
+        return 0
+    parent = os.path.dirname(path)
+    if parent and not os.path.exists(parent):
+        os.makedirs(parent, exist_ok=True)
+    if path.endswith(".parquet"):
+        try:
+            import pyarrow  # noqa: F401
+            existing = []
+            if os.path.exists(path):
+                existing = pd.read_parquet(path).to_dict(orient="records")
+            pd.DataFrame(existing + list(records)).to_parquet(path, index=False)
+            return len(records)
+        except Exception:
+            # Fall back to JSONL with adjusted extension so the user knows.
+            path = path[:-len(".parquet")] + ".jsonl"
+    with open(path, "a", encoding="utf-8") as fh:
+        for r in records:
+            fh.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
+    return len(records)
+
+
+def load_trade_records(path: str) -> list[dict]:
+    """Read a JSONL or parquet trade ledger back into a list of dicts."""
+    import json, os
+    if not os.path.exists(path):
+        return []
+    if path.endswith(".parquet"):
+        try:
+            return pd.read_parquet(path).to_dict(orient="records")
+        except Exception:
+            return []
+    records: list[dict] = []
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except Exception:
+                continue
+    return records
+
+
+def compute_expectancy(trade_records: list[dict]) -> dict:
+    """§18.3 — expected-R + per-factor lift over a trade ledger.
+
+    expected_R = win_rate * avg_win_R - loss_rate * avg_loss_R
+    lift[name] = expected_R_with_factor / expected_R_overall (1.0 = neutral)
+    """
+    if not trade_records:
+        return {"sample_size": 0, "expected_R": 0.0, "lift": {}}
+    rs = [float(t.get("r_multiple", 0)) for t in trade_records]
+    wins = [r for r in rs if r > 0]
+    losses = [r for r in rs if r < 0]
+    win_rate = len(wins) / len(rs) if rs else 0.0
+    loss_rate = len(losses) / len(rs) if rs else 0.0
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = -sum(losses) / len(losses) if losses else 0.0   # positive magnitude
+    expected_R = round(win_rate * avg_win - loss_rate * avg_loss, 4)
+    lift: dict[str, dict] = {}
+    factor_names: set[str] = set()
+    for t in trade_records:
+        for k in (t.get("factors") or {}).keys():
+            factor_names.add(k)
+        for k in (t.get("crypto_factors") or {}).keys():
+            factor_names.add(f"crypto:{k}")
+    overall_E = expected_R if expected_R != 0 else 1e-9
+    for name in factor_names:
+        key, ns = name, "factors"
+        if name.startswith("crypto:"):
+            key = name.split(":", 1)[1]; ns = "crypto_factors"
+        bucket = [float(t.get("r_multiple", 0)) for t in trade_records if (t.get(ns) or {}).get(key)]
+        if not bucket:
+            continue
+        w = [r for r in bucket if r > 0]; l = [r for r in bucket if r < 0]
+        wr = len(w) / len(bucket); lr = len(l) / len(bucket)
+        aw = sum(w) / len(w) if w else 0.0
+        al = -sum(l) / len(l) if l else 0.0
+        e_with = wr * aw - lr * al
+        lift[name] = {
+            "sample_size": len(bucket),
+            "expected_R": round(e_with, 4),
+            "lift": round(e_with / overall_E, 3),
+        }
+    return {
+        "sample_size": len(rs),
+        "expected_R": expected_R,
+        "win_rate": round(win_rate, 4),
+        "avg_win_R": round(avg_win, 3),
+        "avg_loss_R": round(avg_loss, 3),
+        "lift": lift,
+    }
+
+
 def rule_enforcement_snapshot(
     account_equity: float,
     daily_realized_pnl: float = 0,
@@ -3137,11 +3343,16 @@ def build_smc_analysis(
                 "silver_bullet": silver_bullet_entries,
                 "power_of_three": power_of_three_entries,
                 "backtest_replay": (
-                    _bt := evaluate_entry_models(
+                    _bt := (
+                        lambda raw: {
+                            **raw,
+                            "trades": annotate_mae_mfe(h, raw.get("trades", [])),
+                        }
+                    )(evaluate_entry_models(
                         h,
                         sweep_reversal_entries + continuation_entries + ote_entries
                         + unicorn_entries + silver_bullet_entries + power_of_three_entries,
-                    )
+                    ))
                 ),
                 "factor_edge": (
                     _edge := extract_factor_edge(

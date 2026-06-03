@@ -928,3 +928,83 @@ def test_build_smc_analysis_routes_crypto_inputs_into_overlay():
     assert cd["status"] == "ok"
     assert "factors" in cd
     assert "weights" in cd
+
+
+def test_trade_record_schema_captures_features_and_outcome():
+    """§18.2: normalized trade record must carry features X + outcome Y."""
+    from smc_quant import build_trade_record
+    entry = {
+        "model": "sweep_reversal", "direction": 1,
+        "entry": 100, "stop": 99, "target": 110, "rr": 10,
+        "triggered": True, "time": "2026-01-01T09:30",
+        "factors": {"htf_bias_aligned": True, "killzone": False},
+        "confluence": {"score": 11},
+        "dol_target": {"target_kind": "BSL", "distance": 5},
+    }
+    outcome = {"outcome": "target", "r_multiple": 10.0, "bars_held": 4, "mae": -0.4, "mfe": 10.2, "entry_index": 5}
+    rec = build_trade_record(entry, trade_outcome=outcome, symbol="AAPL")
+    assert rec["schema_version"] == 1
+    assert rec["model"] == "sweep_reversal"
+    assert rec["confluence_score"] == 11
+    assert rec["dol_kind"] == "BSL"
+    assert rec["r_multiple"] == 10.0
+    assert rec["mae"] == -0.4 and rec["mfe"] == 10.2
+    assert rec["factors"]["htf_bias_aligned"] is True
+
+
+def test_annotate_mae_mfe_reports_R_units():
+    from smc_quant import annotate_mae_mfe
+    rows = [
+        (100, 102, 99.6, 101, 100),
+        (101, 105, 99.5, 104, 110),
+        (104, 110, 103, 109, 120),
+    ]
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(len(rows))]
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    trades = [{
+        "model": "x", "direction": 1, "entry": 100, "stop": 99,
+        "entry_index": 0, "settled_index": 2,
+    }]
+    out = annotate_mae_mfe(df, trades)
+    assert out[0]["mae"] == -0.5
+    assert out[0]["mfe"] == 10.0
+
+
+def test_persist_then_load_trade_records_roundtrip(tmp_path):
+    from smc_quant import persist_trade_records, load_trade_records
+    records = [
+        {"trade_id": "AAPL:1", "r_multiple": 2.0, "factors": {"htf_bias_aligned": True}},
+        {"trade_id": "AAPL:2", "r_multiple": -1.0, "factors": {"htf_bias_aligned": False}},
+    ]
+    path = tmp_path / "trades.jsonl"
+    n = persist_trade_records(records, str(path))
+    assert n == 2
+    loaded = load_trade_records(str(path))
+    assert len(loaded) == 2
+    persist_trade_records([{"trade_id": "AAPL:3", "r_multiple": 0.0}], str(path))
+    assert len(load_trade_records(str(path))) == 3
+
+
+def test_compute_expectancy_reports_lift_per_factor():
+    from smc_quant import compute_expectancy
+    records = [
+        {"r_multiple": 2.0, "factors": {"htf_bias_aligned": True}},
+        {"r_multiple": 2.0, "factors": {"htf_bias_aligned": True}},
+        {"r_multiple": -1.0, "factors": {"htf_bias_aligned": False}},
+        {"r_multiple": -1.0, "factors": {"htf_bias_aligned": False}},
+    ]
+    rep = compute_expectancy(records)
+    assert rep["sample_size"] == 4
+    assert rep["expected_R"] == 0.5
+    assert "htf_bias_aligned" in rep["lift"]
+    assert rep["lift"]["htf_bias_aligned"]["expected_R"] == 2.0
+    assert rep["lift"]["htf_bias_aligned"]["lift"] > 1.0
+
+
+def test_backtest_replay_attaches_mae_mfe_to_each_trade():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    for t in result["concepts"]["entry_models"]["backtest_replay"]["trades"]:
+        assert "mae" in t and "mfe" in t
