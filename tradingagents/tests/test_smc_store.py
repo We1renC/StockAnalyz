@@ -3,6 +3,7 @@ from unittest.mock import patch
 import pandas as pd
 
 import app
+from smc_report import build_smc_report_html
 from smc_store import persist_backtest_run, summarize_backtest_report
 
 
@@ -157,5 +158,34 @@ def test_api_smc_backtest_batch_stores_and_ranks_results(tmp_path):
         count = conn.execute("SELECT COUNT(*) FROM smc_backtest_runs").fetchone()[0]
         conn.close()
         assert count == 2
+    finally:
+        app.DB = original
+
+
+def test_build_smc_report_html_renders_key_sections():
+    html = build_smc_report_html(
+        {
+            "run_count": 1,
+            "trade_count": 2,
+            "symbols": [{"symbol": "AAA", "market": "us", "trade_count": 2, "win_rate": 0.5, "expectancy_r": 0.2, "pnl": 20, "avg_holding_bars": 2.5}],
+            "latest_runs": [{"symbol": "AAA", "period": "6mo", "total_trades": 2, "win_rate": 0.5, "profit_factor": 1.4, "expectancy_r": 0.2, "created_at": "2026-06-04T09:00:00Z"}],
+        },
+        title="Custom SMC Report",
+    )
+    assert "Custom SMC Report" in html
+    assert "Symbol Summary" in html
+    assert "AAA" in html
+
+
+def test_api_smc_backtest_report_html_returns_html(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        conn = app.get_db()
+        persist_backtest_run(conn, _sample_backtest_result("AAA"), period="6mo", source="test")
+        conn.close()
+
+        response = app.api_smc_backtest_report_html(symbol="AAA", limit_runs=10)
+        assert "SMC Backtest Report - AAA" in response.body.decode("utf-8")
+        assert "AAA" in response.body.decode("utf-8")
     finally:
         app.DB = original

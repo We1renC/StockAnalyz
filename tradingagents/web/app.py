@@ -36,6 +36,7 @@ from technical_matrix import build_technical_matrix
 from smc_quant import SMCConfig, build_smc_analysis
 from smc_backtest import SMCBacktestConfig, run_smc_event_backtest
 from smc_store import persist_backtest_run, summarize_backtest_report
+from smc_report import build_smc_report_html
 
 warnings.filterwarnings("ignore")
 
@@ -3544,6 +3545,17 @@ def api_smc_backtest_report(symbol: Optional[str] = None, limit_runs: int = 200)
         return sanitize_float_values(report)
     finally:
         conn.close()
+
+
+@app.get("/api/smc-backtest/report/html", response_class=HTMLResponse)
+def api_smc_backtest_report_html(symbol: Optional[str] = None, limit_runs: int = 200):
+    conn = get_db()
+    try:
+        report = summarize_backtest_report(conn, symbol=symbol, limit_runs=max(1, min(int(limit_runs), 1000)))
+    finally:
+        conn.close()
+    title = f"SMC Backtest Report - {symbol.upper()}" if symbol else "SMC Backtest Report"
+    return HTMLResponse(build_smc_report_html(report, title=title))
 
 
 @app.post("/api/research/backfill/{symbol}")
