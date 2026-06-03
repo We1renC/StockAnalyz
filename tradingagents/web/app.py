@@ -35,6 +35,7 @@ from llm_providers import (
 from technical_matrix import build_technical_matrix
 from smc_quant import SMCConfig, build_smc_analysis
 from smc_backtest import SMCBacktestConfig, run_smc_event_backtest
+from smc_store import persist_backtest_run, summarize_backtest_report
 
 warnings.filterwarnings("ignore")
 
@@ -235,6 +236,55 @@ def init_db():
     );
     CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
     CREATE INDEX IF NOT EXISTS idx_trades_date   ON trades(trade_date DESC);
+    CREATE TABLE IF NOT EXISTS smc_backtest_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT NOT NULL,
+        market TEXT,
+        timeframe TEXT,
+        period TEXT NOT NULL,
+        source TEXT DEFAULT '',
+        generated_at TEXT,
+        bars INTEGER,
+        total_trades INTEGER,
+        win_rate REAL,
+        profit_factor REAL,
+        expectancy_r REAL,
+        max_drawdown REAL,
+        ending_equity REAL,
+        payload TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_smc_runs_symbol_created
+        ON smc_backtest_runs(symbol, created_at DESC);
+    CREATE TABLE IF NOT EXISTS smc_backtest_trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL,
+        symbol TEXT NOT NULL,
+        market TEXT,
+        timeframe TEXT,
+        trade_id TEXT,
+        direction TEXT,
+        model TEXT,
+        entry_time TEXT,
+        exit_time TEXT,
+        entry_price REAL,
+        exit_price REAL,
+        stop_price REAL,
+        tp1_price REAL,
+        qty REAL,
+        pnl REAL,
+        r_multiple REAL,
+        score REAL,
+        threshold REAL,
+        feature_vector TEXT,
+        dol_target TEXT,
+        exit_reason TEXT,
+        holding_bars INTEGER,
+        win INTEGER DEFAULT 0,
+        FOREIGN KEY(run_id) REFERENCES smc_backtest_runs(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_smc_trades_symbol_entry
+        ON smc_backtest_trades(symbol, entry_time DESC);
     """)
     conn.commit()
 
@@ -3343,6 +3393,157 @@ def api_smc_backtest(
         raise
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+@app.post("/api/smc-backtest/{symbol}/store")
+def api_smc_backtest_store(
+    symbol: str,
+    period: str = "1y",
+    swing_length: int = 5,
+    internal_swing_length: int = 3,
+    min_bars: int = 60,
+    max_hold_bars: int = 20,
+    entry_threshold: int = 8,
+    account_equity: float = 100_000,
+    risk_pct: float = 0.01,
+    require_qualified: bool = True,
+):
+    payload = api_smc_backtest(
+        symbol=symbol,
+        period=period,
+        swing_length=swing_length,
+        internal_swing_length=internal_swing_length,
+        min_bars=min_bars,
+        max_hold_bars=max_hold_bars,
+        entry_threshold=entry_threshold,
+        account_equity=account_equity,
+        risk_pct=risk_pct,
+        require_qualified=require_qualified,
+    )
+    conn = get_db()
+    try:
+        run_id = persist_backtest_run(conn, payload, period=period, source=payload.get("source", ""))
+    finally:
+        conn.close()
+    return {"ok": True, "run_id": run_id, "summary": payload.get("metrics") or {}, "symbol": payload.get("symbol")}
+
+
+@app.post("/api/smc-backtest/batch")
+def api_smc_backtest_batch(
+    scope: str = "watchlist",
+    period: str = "6mo",
+    limit: int = 20,
+    entry_threshold: int = 8,
+    account_equity: float = 100_000,
+    risk_pct: float = 0.01,
+    store_runs: bool = True,
+    require_qualified: bool = True,
+):
+    limit = max(1, min(int(limit), 100))
+    conn = get_db()
+    try:
+        if scope == "positions":
+            rows = conn.execute("SELECT symbol, name, category FROM positions ORDER BY id DESC").fetchall()
+        elif scope == "all":
+            rows = conn.execute(
+                """SELECT symbol, name, category FROM positions
+                   UNION
+                   SELECT symbol, name, category FROM watchlist"""
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT symbol, name, category FROM watchlist ORDER BY id DESC").fetchall()
+        candidates = []
+        seen = set()
+        for row in rows:
+            symbol = (row["symbol"] or "").strip().upper()
+            if not symbol or symbol in seen or _is_test_symbol(symbol, row["name"], row["category"]):
+                continue
+            seen.add(symbol)
+            candidates.append({"symbol": symbol, "name": row["name"] or symbol})
+            if len(candidates) >= limit:
+                break
+
+        cfg = _chart_period_config(period)
+        calc_period = cfg["period"]
+        interval = cfg.get("interval", "1d")
+        smc_cfg = SMCConfig(entry_threshold=max(1, min(int(entry_threshold), 20)))
+        bt_cfg = SMCBacktestConfig(
+            min_bars=60,
+            max_hold_bars=20,
+            account_equity=max(float(account_equity), 0),
+            risk_pct=max(0, min(float(risk_pct), 0.05)),
+            require_qualified=bool(require_qualified),
+        )
+        items = []
+        stored = 0
+        for item in candidates:
+            symbol = item["symbol"]
+            if interval == "1d":
+                h, source = fetch_history(symbol, period=calc_period)
+            else:
+                h = fetch_intraday_history(symbol, period=calc_period, interval=interval)
+                source = "yfinance_intraday"
+            if h is None or len(h) == 0:
+                items.append({"symbol": symbol, "name": item["name"], "error": "No price history"})
+                continue
+            result = run_smc_event_backtest(
+                h,
+                symbol=symbol,
+                timeframe=period,
+                smc_config=smc_cfg,
+                backtest_config=bt_cfg,
+            )
+            result["source"] = source
+            metrics = result.get("metrics") or {}
+            run_id = None
+            if store_runs:
+                run_id = persist_backtest_run(conn, result, period=period, source=source)
+                stored += 1
+            items.append(
+                {
+                    "symbol": symbol,
+                    "name": item["name"],
+                    "run_id": run_id,
+                    "source": source,
+                    "market": result.get("market"),
+                    "total_trades": metrics.get("total_trades"),
+                    "win_rate": metrics.get("win_rate"),
+                    "profit_factor": metrics.get("profit_factor"),
+                    "expectancy_r": metrics.get("expectancy_r"),
+                    "max_drawdown": metrics.get("max_drawdown"),
+                    "ending_equity": metrics.get("ending_equity"),
+                }
+            )
+        ranked = sorted(
+            [x for x in items if not x.get("error")],
+            key=lambda x: (
+                x.get("expectancy_r") if x.get("expectancy_r") is not None else -999,
+                x.get("profit_factor") if x.get("profit_factor") is not None else -999,
+            ),
+            reverse=True,
+        )
+        return sanitize_float_values(
+            {
+                "scope": scope,
+                "period": period,
+                "requested": len(candidates),
+                "stored_runs": stored,
+                "items": items,
+                "ranking": ranked,
+            }
+        )
+    finally:
+        conn.close()
+
+
+@app.get("/api/smc-backtest/report")
+def api_smc_backtest_report(symbol: Optional[str] = None, limit_runs: int = 200):
+    conn = get_db()
+    try:
+        report = summarize_backtest_report(conn, symbol=symbol, limit_runs=max(1, min(int(limit_runs), 1000)))
+        return sanitize_float_values(report)
+    finally:
+        conn.close()
 
 
 @app.post("/api/research/backfill/{symbol}")
