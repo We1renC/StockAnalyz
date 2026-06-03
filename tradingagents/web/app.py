@@ -5915,7 +5915,18 @@ def api_tradingagents(symbol: str, mode: str = "full"):
 # ─────────────── CLI 深度分析 (多代理人模擬，走訂閱免費) ───────────────
 
 def _fetch_stock_context(symbol: str) -> str:
-    """用 yfinance 抓取即時股票數據，組成分析上下文文字。"""
+    """Build the richest available analysis context for CLI deep-analysis agents."""
+    try:
+        rich = _build_context(symbol)
+        if isinstance(rich, dict) and rich.get("context"):
+            return rich["context"]
+    except Exception:
+        pass
+    return _fetch_stock_context_fallback(symbol)
+
+
+def _fetch_stock_context_fallback(symbol: str) -> str:
+    """Fallback context builder using direct yfinance pulls."""
     try:
         tk = yf.Ticker(symbol)
         info = tk.info or {}
@@ -6012,6 +6023,20 @@ _CLI_DEEP_STEPS = [
 5. 短期技術面結論（看多/看空/中性）""",
     },
     {
+        "key": "smc_report",
+        "label": "SMC 結構分析師",
+        "prompt": """你是專業的 Smart Money Concept (SMC) 結構分析師。根據以下股票數據與上下文，產出**繁體中文** SMC 分析報告（markdown）：
+
+{context}
+
+請涵蓋：
+1. 結構偏向（BOS / CHoCH / Premium-Discount / session）
+2. 關鍵 POI（Order Block / FVG / Liquidity / OTE）
+3. 目前最重要的 SMC 訊號（model / direction / entry / stop / tp / DOL）
+4. 最近回測或結構驗證證據如何支持或削弱這筆交易
+5. SMC 結論（看多 / 看空 / 等待結構確認）""",
+    },
+    {
         "key": "fundamentals_report",
         "label": "基本面分析師",
         "prompt": """你是專業的基本面分析師。根據以下股票數據，產出**繁體中文**基本面分析報告（markdown）：
@@ -6062,6 +6087,9 @@ _CLI_DEEP_STEPS = [
 [技術分析報告]
 {market_report}
 
+[SMC 結構分析]
+{smc_report}
+
 [基本面分析報告]
 {fundamentals_report}
 
@@ -6073,13 +6101,13 @@ _CLI_DEEP_STEPS = [
 
 請以**繁體中文** markdown 格式回應。禁止出現「綜上所述」「核心結論是」「修訂後」「基於以上分析」等贅詞，直接呈現內容。所有條列或序列內容強制用編號（1. 2. 3.）呈現：
 ## 多頭論點
-（整合分析師報告中的正面因素，給出 3 個最強看多理由）
+（整合技術、SMC、基本面、新聞、情緒中的正面因素，給出 3 個最強看多理由）
 
 ## 空頭論點
-（整合報告中的風險與負面因素，給出 3 個最強看空理由）
+（整合技術、SMC、基本面、新聞、情緒中的風險與負面因素，給出 3 個最強看空理由）
 
 ## 辯論結論
-（判定哪方論點更有力，給出多空比例如 60:40）""",
+（判定哪方論點更有力，並說明 SMC 結構是否支持該結論，給出多空比例如 60:40）""",
     },
     {
         "key": "risk_debate_state",
@@ -6091,6 +6119,9 @@ _CLI_DEEP_STEPS = [
 
 [多空辯論]
 {investment_debate_state}
+
+[SMC 結構分析]
+{smc_report}
 
 請以**繁體中文** markdown 格式回應。禁止出現「綜上所述」「核心結論是」「修訂後」「基於以上分析」等贅詞，直接呈現內容。所有條列或序列內容強制用編號（1. 2. 3.）呈現：
 ## 主要風險因素
@@ -6116,6 +6147,9 @@ _CLI_DEEP_STEPS = [
 [技術分析]
 {market_report}
 
+[SMC 結構分析]
+{smc_report}
+
 [基本面分析]
 {fundamentals_report}
 
@@ -6139,12 +6173,20 @@ _CLI_DEEP_STEPS = [
 （短線 / 波段 / 長期）
 
 ## 信心度
-（1~10 分，並說明理由）
+（1~10 分，並說明理由；若 SMC 與基本面/技術背離要明講）
 
 ## 一句話摘要
 （用一句話概括你的建議）""",
     },
 ]
+
+
+def _cli_step_keys(mode: str = "full") -> list[str]:
+    return (
+        ["market_report", "smc_report", "fundamentals_report", "investment_debate_state", "final_trade_decision"]
+        if mode == "quick"
+        else [s["key"] for s in _CLI_DEEP_STEPS]
+    )
 
 
 @app.get("/api/tradingagents-cli/{symbol}")
@@ -6160,10 +6202,7 @@ def api_tradingagents_cli_stream(symbol: str, mode: str = "full"):
         t0 = _time.time()
 
         # 決定要跑哪些步驟
-        if mode == "quick":
-            step_keys = ["market_report", "fundamentals_report", "investment_debate_state", "final_trade_decision"]
-        else:
-            step_keys = [s["key"] for s in _CLI_DEEP_STEPS]
+        step_keys = _cli_step_keys(mode)
 
         steps = [s for s in _CLI_DEEP_STEPS if s["key"] in step_keys]
 
