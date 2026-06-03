@@ -1199,6 +1199,8 @@ body { background: var(--bg-base); color: var(--text-primary); }
         </div>
       </div>
       <div id="diag-body" class="diag-side-stage text-sm"></div>
+      <div id="smc-analysis-panel" class="diag-matrix-stage glass-card-sm p-3 text-xs text-slate-300"></div>
+      <div id="smc-backtest-panel" class="diag-matrix-stage glass-card-sm p-3 text-xs text-slate-300"></div>
       <div id="technical-matrix-panel" class="diag-matrix-stage glass-card-sm p-3 text-xs text-slate-300"></div>
     </div>
     <div class="mt-4 pt-4 border-t border-gray-700">
@@ -3065,6 +3067,8 @@ let _chartMa60Series = null;
 let _chartVolSeries = null;
 let _diagRefreshTimer = null;
 let _technicalMatrix = null;
+let _smcAnalysis = null;
+let _smcBacktest = null;
 let _technicalMarkerFilter = 'all';
 let _includeHistoryMarkers = false;
 let _chartLastPeriod = '6mo';
@@ -4010,6 +4014,9 @@ function renderSmcAnalysisPanel(smc) {
       <span class="text-slate-500">PD ${escHtml(summary.premium_discount || '—')}</span>
       <span class="text-slate-500">時段 ${escHtml(summary.session || '—')}</span>
       <button onclick="setTechnicalMarkerFilter('smc')" class="btn-secondary text-xs ml-auto" style="padding:2px 8px">只看 SMC</button>
+      <button onclick="runSmcBacktest(false)" class="btn-secondary text-xs" style="padding:2px 8px">執行回測</button>
+      <button onclick="runSmcBacktest(true)" class="btn-secondary text-xs" style="padding:2px 8px">回測落庫</button>
+      <button onclick="openSmcBacktestReport()" class="btn-secondary text-xs" style="padding:2px 8px">回測報表</button>
     </div>
     <div class="mt-2 grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px]">
       <div class="rounded border border-slate-800 bg-slate-950/50 px-2 py-1">BOS <span class="tabular-nums text-sky-300">${counts.bos}</span></div>
@@ -4045,6 +4052,87 @@ function renderSmcAnalysisPanel(smc) {
         <div class="mt-2 flex flex-wrap gap-1.5 text-[11px]">${renderSmcFactors(signal)}</div>
       </div>` : `<div class="mt-2 text-slate-500">尚無 SMC 交易信號。</div>`}
     <div class="mt-2 text-[11px] text-slate-500">防重繪：Swing 使用 confirmation index；訊號只使用已確認結構。Crypto 清算/OI/Funding/CVD 已保留擴充欄位。</div>`;
+}
+
+function renderSmcBacktestPanel(backtest) {
+  const panel = $('smc-backtest-panel');
+  if (!panel) return;
+  if (!backtest) {
+    panel.innerHTML = `
+      <div class="flex items-center gap-2 flex-wrap">
+        <div class="font-semibold text-cyan-300">SMC 回測</div>
+        <span class="text-slate-500">尚未執行</span>
+        <button onclick="runSmcBacktest(false)" class="btn-secondary text-xs ml-auto" style="padding:2px 8px">執行</button>
+        <button onclick="openSmcBacktestReport()" class="btn-secondary text-xs" style="padding:2px 8px">HTML 報表</button>
+      </div>
+      <div class="mt-2 text-[11px] text-slate-500">以事件式逐 bar 切片回測，訊號只能看見當下已確認資料。</div>`;
+    return;
+  }
+  if (backtest.loading) {
+    panel.innerHTML = '<div class="text-slate-500">SMC 回測執行中...</div>';
+    return;
+  }
+  if (backtest.error || backtest.detail) {
+    panel.innerHTML = `<div class="text-red-400">SMC 回測錯誤：${escHtml(backtest.error || backtest.detail)}</div>`;
+    return;
+  }
+  const metrics = backtest.metrics || {};
+  const trades = backtest.trades || [];
+  const latest = trades[0] || null;
+  panel.innerHTML = `
+    <div class="flex items-center gap-2 flex-wrap">
+      <div class="font-semibold text-cyan-300">SMC 回測</div>
+      <span class="text-slate-500">Trades ${fmt(metrics.total_trades || 0, 0)}</span>
+      <span class="${(metrics.expectancy_r || 0) > 0 ? 'text-emerald-300' : (metrics.expectancy_r || 0) < 0 ? 'text-red-300' : 'text-slate-400'}">Expectancy ${fmt(metrics.expectancy_r, 2)}</span>
+      <span class="text-slate-500">PF ${fmt(metrics.profit_factor, 2)}</span>
+      <button onclick="runSmcBacktest(false)" class="btn-secondary text-xs ml-auto" style="padding:2px 8px">重跑</button>
+      <button onclick="runSmcBacktest(true)" class="btn-secondary text-xs" style="padding:2px 8px">落庫</button>
+      <button onclick="openSmcBacktestReport()" class="btn-secondary text-xs" style="padding:2px 8px">HTML 報表</button>
+    </div>
+    <div class="mt-2 grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px]">
+      <div class="rounded border border-slate-800 bg-slate-950/50 px-2 py-1">勝率 <span class="tabular-nums text-slate-200">${fmt((metrics.win_rate || 0) * 100, 1)}%</span></div>
+      <div class="rounded border border-slate-800 bg-slate-950/50 px-2 py-1">PF <span class="tabular-nums text-slate-200">${fmt(metrics.profit_factor, 2)}</span></div>
+      <div class="rounded border border-slate-800 bg-slate-950/50 px-2 py-1">Avg R <span class="tabular-nums text-slate-200">${fmt(metrics.avg_r, 2)}</span></div>
+      <div class="rounded border border-slate-800 bg-slate-950/50 px-2 py-1">MDD <span class="tabular-nums text-red-300">${fmt(metrics.max_drawdown, 2)}</span></div>
+      <div class="rounded border border-slate-800 bg-slate-950/50 px-2 py-1">Ending <span class="tabular-nums text-slate-200">${fmt(metrics.ending_equity, 0)}</span></div>
+    </div>
+    ${latest ? `
+      <div class="mt-2 rounded border border-slate-800 bg-slate-950/40 p-2">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="font-semibold">${escHtml(latest.model || 'Trade')}</span>
+          <span class="${latest.direction === 'long' ? 'text-red-400' : 'text-emerald-400'}">${smcDirectionLabel(latest.direction)}</span>
+          <span class="text-slate-500">PnL</span>
+          <span class="${(latest.pnl || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'} tabular-nums">${fmt(latest.pnl, 2)}</span>
+          <span class="text-slate-500">R</span>
+          <span class="${(latest.r_multiple || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'} tabular-nums">${fmt(latest.r_multiple, 2)}</span>
+          <span class="text-slate-500 ml-auto">${escHtml(latest.exit_reason || '—')}</span>
+        </div>
+      </div>` : '<div class="mt-2 text-slate-500">此期間尚未生成交易。</div>'}
+    <div id="smc-backtest-status" class="mt-2 text-[11px] text-slate-500">${backtest.store_message ? escHtml(backtest.store_message) : '可將回測結果落庫，供 HTML 報表與後續校準共用。'}</div>`;
+}
+
+async function runSmcBacktest(store = false) {
+  if (!_currentSymbol) return;
+  const period = $('chart-period').value;
+  renderSmcBacktestPanel({ loading: true });
+  try {
+    const query = `period=${encodeURIComponent(period)}&entry_threshold=1&require_qualified=false`;
+    if (store) {
+      const stored = await fetch(`/api/smc-backtest/${encodeURIComponent(_currentSymbol)}/store?${query}`, { method: 'POST' }).then(r => r.json());
+      const backtest = await fetch(`/api/smc-backtest/${encodeURIComponent(_currentSymbol)}?${query}`).then(r => r.json());
+      _smcBacktest = { ...backtest, store_message: stored.ok ? `已落庫 run #${stored.run_id}` : (stored.error || stored.detail || '落庫失敗') };
+    } else {
+      _smcBacktest = await fetch(`/api/smc-backtest/${encodeURIComponent(_currentSymbol)}?${query}`).then(r => r.json());
+    }
+    renderSmcBacktestPanel(_smcBacktest);
+  } catch (e) {
+    renderSmcBacktestPanel({ error: String(e) });
+  }
+}
+
+function openSmcBacktestReport() {
+  if (!_currentSymbol) return;
+  window.open(`/api/smc-backtest/report/html?symbol=${encodeURIComponent(_currentSymbol)}&limit_runs=200`, '_blank');
 }
 
 function matrixPeriodForChartPeriod(period) {
@@ -4172,8 +4260,10 @@ async function drawChart(symbol, period, isRefresh = false) {
     _chartVolSeries = null;
     _technicalMarkerFilter = 'all';
     _smcAnalysis = null;
+    _smcBacktest = null;
     renderTechnicalMatrixPanel(null);
     renderSmcAnalysisPanel(null);
+    renderSmcBacktestPanel(null);
     if (_chart) {
       try { _chart.remove(); } catch(e) {}
       _chart = null;
@@ -4280,6 +4370,7 @@ async function drawChart(symbol, period, isRefresh = false) {
       container.innerHTML = `<div class="text-red-400">圖表錯誤: ${e}</div>`;
       renderTechnicalMatrixPanel({ error: String(e) });
       renderSmcAnalysisPanel({ error: String(e) });
+      renderSmcBacktestPanel({ error: String(e) });
     }
   }
 }
@@ -4304,6 +4395,7 @@ function closeDiag() {
   _chartVolSeries = null;
   _technicalMatrix = null;
   _smcAnalysis = null;
+  _smcBacktest = null;
   _technicalMarkerFilter = 'all';
 }
 
