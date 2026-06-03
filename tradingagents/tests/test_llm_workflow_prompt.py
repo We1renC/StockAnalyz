@@ -4,6 +4,20 @@ from unittest.mock import patch
 import llm_providers
 
 
+def test_prompt_builders_include_smc_and_reviewer_sections():
+    analyst_prompt = llm_providers.build_analyst_prompt("CTX")
+    reviewer_prompt = llm_providers.build_reviewer_prompt("CTX", "REPORT")
+
+    assert "SMC 結構與回測摘要" in analyst_prompt
+    assert "財報 × 估值 × 17D 技術 × SMC" in analyst_prompt
+    assert "SMC POI" in analyst_prompt
+    assert "DOL" in analyst_prompt
+
+    assert "[原始數據]\nCTX" in reviewer_prompt
+    assert "[分析師報告]\nREPORT" in reviewer_prompt
+    assert "修正後的建議" in reviewer_prompt
+
+
 def test_run_workflow_analyst_prompt_includes_smc_context():
     captured = {}
 

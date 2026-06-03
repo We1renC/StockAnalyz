@@ -30,7 +30,7 @@ from pydantic import BaseModel
 from llm_providers import (
     load_settings, save_settings, mask_key,
     run_workflow, AVAILABLE_MODELS, detect_cli_availability,
-    call_llm, call_cli,
+    call_llm, call_cli, build_analyst_prompt, build_reviewer_prompt,
 )
 from technical_matrix import build_technical_matrix
 from smc_quant import SMCConfig, build_smc_analysis
@@ -6083,23 +6083,7 @@ def api_llm_analyze_stream(symbol: str, mode: str = "both"):
                 "elapsed": round(_time.time() - t0, 1),
             })
 
-            analyst_prompt = f"""你是專業金融分析師。我提供你以下這檔標的的完整資料：歷史財報與基本面估值、17D 全景技術矩陣（含歷史偏向變化）、即時技術指標、持倉與大盤環境。請你**交叉判讀**這些資料後，給出操作建議與投資建議。請用**繁體中文**。
-
-{ctx["context"]}
-
-**請這樣分析**：
-- 把財報（營收/EPS/毛利趨勢與成長性）、估值（本益比/PEG/賣方目標價）、17D 技術（共振區、各維度偏向、歷史偏向變化）三者**交叉比對**，而不是各看各的。
-- 重點在三者的**關係**：基本面與技術面是同向強化，還是彼此背離？若背離（例如財報轉弱但技術轉強、或基本面紮實但技術破位），請明確指出並說明你怎麼權衡。
-- 操作點位要有依據：進場參考技術共振區與估值是否合理；停損依結構失效（跌破支撐/共振區）；停利對照賣方目標價與壓力共振區。
-- 資料缺口（17D 標示未接外部 feed 的維度、或財報缺漏）請降權，不要過度解讀。
-
-直接給出結論，禁止「綜上所述」「核心結論是」等贅詞。請涵蓋（markdown，條列用編號）：
-
-1. **交叉判讀** — 財報 × 估值 × 17D 技術三者的關係與你的綜合研判（這是核心）
-2. **操作建議** — 買/賣/持有，以及有依據的進場、停損、停利價位
-3. **投資建議** — 對不同時間框架（短線 / 中線 / 長線）的部位與策略建議
-4. **風險與失效條件** — 什麼情況代表這個判斷失效、需要重新評估
-"""
+            analyst_prompt = build_analyst_prompt(ctx["context"])
             try:
                 analyst_text = call_llm(
                     analyst["provider"], analyst["model"],
@@ -6137,28 +6121,7 @@ def api_llm_analyze_stream(symbol: str, mode: str = "both"):
                     "elapsed": round(_time.time() - t0, 1),
                 })
 
-                reviewer_prompt = f"""你是嚴格的投資審查員，負責**找出分析師報告的盲點與弱點**。
-
-[原始數據]
-{ctx["context"]}
-
-[分析師報告]
-{analyst_text}
-
-請以**繁體中文** markdown 格式給出**犀利但建設性**的審查意見。禁止出現「綜上所述」「核心結論是」「修訂後」「基於以上分析」等贅詞，直接呈現內容。所有條列或序列內容強制用編號（1. 2. 3.）呈現：
-
-## 一、分析師說對的地方
-（簡述 1~2 點）
-
-## 二、我有疑慮的地方
-（指出邏輯漏洞、忽略的風險、過度樂觀/悲觀）
-
-## 三、我認為錯誤或缺失的部分
-（具體指出）
-
-## 四、修正後的建議
-（給出你認為更穩健的操作版本）
-"""
+                reviewer_prompt = build_reviewer_prompt(ctx["context"], analyst_text)
                 try:
                     reviewer_text = call_llm(
                         reviewer["provider"], reviewer["model"],

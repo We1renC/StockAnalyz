@@ -135,6 +135,47 @@ AVAILABLE_MODELS = {
 }
 
 
+def build_analyst_prompt(context: str) -> str:
+    return f"""你是專業金融分析師。我提供你這檔標的的歷史財報與基本面、17D 全景技術矩陣（含歷史偏向）、SMC 結構與回測摘要、即時技術指標與大盤環境。請**交叉判讀**後給出操作建議與投資建議。用**繁體中文**。
+
+{context}
+
+**方法**：把財報（營收/EPS/毛利趨勢）、估值（本益比/成長/賣方目標價）、17D 技術（共振區、各維度偏向、歷史偏向變化）、SMC（結構方向、DOL、回測樣本）四者交叉比對，重點在四者是同向強化還是背離；背離時明確指出並權衡。點位要有依據（進場=技術共振區或 SMC POI 且估值合理；停損=結構失效；停利=目標價/壓力/DOL 共振區）。資料缺口降權。
+
+直接給結論（markdown，條列用編號）：
+
+1. **交叉判讀** — 財報 × 估值 × 17D 技術 × SMC 四者的關係與綜合研判（核心）
+2. **操作建議** — 買/賣/持有 + 有依據的進場/停損/停利
+3. **投資建議** — 短/中/長線的部位與策略
+4. **風險與失效條件**
+"""
+
+
+def build_reviewer_prompt(context: str, analyst_text: str) -> str:
+    return f"""你是嚴格的投資審查員，負責**找出分析師報告的盲點與弱點**。
+
+[原始數據]
+{context}
+
+[分析師報告]
+{analyst_text}
+
+請以**繁體中文** markdown 格式給出**犀利但建設性**的審查意見，不超過 400 字：
+
+## 一、分析師說對的地方
+（簡述 1~2 點）
+
+## 二、我有疑慮的地方
+（指出邏輯漏洞、忽略的風險、過度樂觀/悲觀）
+
+## 三、我認為錯誤或缺失的部分
+（具體指出）
+
+## 四、修正後的建議
+（給出你認為更穩健的操作版本）
+"""
+
+
 def load_settings() -> dict:
     if SETTINGS_FILE.exists():
         try:
@@ -366,19 +407,7 @@ def run_workflow(context: str, mode: str = "both") -> dict:
     # Step 1: 分析師
     if mode in ("analyst", "both"):
         analyst = roles["analyst"]
-        analyst_prompt = f"""你是專業金融分析師。我提供你這檔標的的歷史財報與基本面、17D 全景技術矩陣（含歷史偏向）、SMC 結構與回測摘要、即時技術指標與大盤環境。請**交叉判讀**後給出操作建議與投資建議。用**繁體中文**。
-
-{context}
-
-**方法**：把財報（營收/EPS/毛利趨勢）、估值（本益比/成長/賣方目標價）、17D 技術（共振區、各維度偏向、歷史偏向變化）、SMC（結構方向、DOL、回測樣本）四者交叉比對，重點在四者是同向強化還是背離；背離時明確指出並權衡。點位要有依據（進場=技術共振區或 SMC POI 且估值合理；停損=結構失效；停利=目標價/壓力/DOL 共振區）。資料缺口降權。
-
-直接給結論（markdown，條列用編號）：
-
-1. **交叉判讀** — 財報 × 估值 × 17D 技術 × SMC 四者的關係與綜合研判（核心）
-2. **操作建議** — 買/賣/持有 + 有依據的進場/停損/停利
-3. **投資建議** — 短/中/長線的部位與策略
-4. **風險與失效條件**
-"""
+        analyst_prompt = build_analyst_prompt(context)
         try:
             analyst_text = call_llm(
                 analyst["provider"], analyst["model"],
@@ -407,28 +436,7 @@ def run_workflow(context: str, mode: str = "both") -> dict:
     if mode == "both":
         reviewer = roles["reviewer"]
         analyst_text = result["steps"][0].get("output", "")
-        reviewer_prompt = f"""你是嚴格的投資審查員，負責**找出分析師報告的盲點與弱點**。
-
-[原始數據]
-{context}
-
-[分析師報告]
-{analyst_text}
-
-請以**繁體中文** markdown 格式給出**犀利但建設性**的審查意見，不超過 400 字：
-
-## 一、分析師說對的地方
-（簡述 1~2 點）
-
-## 二、我有疑慮的地方
-（指出邏輯漏洞、忽略的風險、過度樂觀/悲觀）
-
-## 三、我認為錯誤或缺失的部分
-（具體指出）
-
-## 四、修正後的建議
-（給出你認為更穩健的操作版本）
-"""
+        reviewer_prompt = build_reviewer_prompt(context, analyst_text)
         try:
             reviewer_text = call_llm(
                 reviewer["provider"], reviewer["model"],
