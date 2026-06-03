@@ -1302,6 +1302,107 @@ def detect_ote_entries(
     return out
 
 
+def detect_unicorn_entries(
+    df: pd.DataFrame,
+    breaker_blocks: list[dict],
+    fvgs: list[dict],
+    smt_events: list[dict],
+    pd_zone: dict,
+    bias: str,
+    session: Optional[dict] = None,
+    weights: Optional[dict[str, int]] = None,
+    threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
+) -> list[dict]:
+    """§5.3 Unicorn Model — Breaker Block ∩ FVG (+ SMT divergence bonus).
+
+    Highest-confluence reversal: a flipped Breaker Block overlapping with
+    an unfilled FVG in the same direction. SMT divergence on a correlated
+    asset, if present and aligned, adds the optional bonus weight.
+    """
+    out: list[dict] = []
+    if df is None or len(df) == 0 or not breaker_blocks or not fvgs:
+        return out
+    bias_dir = 1 if "bull" in (bias or "") else (-1 if "bear" in (bias or "") else 0)
+    pd_state = (pd_zone or {}).get("state")
+    smt_by_dir: dict[int, list[dict]] = {1: [], -1: []}
+    for ev in smt_events or []:
+        smt_by_dir.setdefault(int(ev.get("smt") or ev.get("direction") or 0), []).append(ev)
+
+    def _overlap(a_top: float, a_bottom: float, b_top: float, b_bottom: float) -> Optional[tuple[float, float]]:
+        top = min(a_top, b_top)
+        bottom = max(a_bottom, b_bottom)
+        return (top, bottom) if top >= bottom else None
+
+    for br in breaker_blocks:
+        direction = int(br.get("direction", 0))
+        if direction == 0:
+            continue
+        for f in fvgs:
+            if int(f.get("direction", 0)) != direction or f.get("mitigated"):
+                continue
+            ov = _overlap(float(br["top"]), float(br["bottom"]), float(f["top"]), float(f["bottom"]))
+            if ov is None:
+                continue
+            top, bottom = ov
+            entry = round((top + bottom) / 2, 4)
+            if direction == 1:
+                stop = bottom - max(0.0, (entry - bottom) * 0.05)
+            else:
+                stop = top + max(0.0, (top - entry) * 0.05)
+            risk = abs(entry - stop)
+            if risk <= 0:
+                continue
+            target = entry + 2 * risk * direction
+            rr = abs(target - entry) / risk if risk else 0.0
+            smt_match = smt_by_dir.get(direction, [])
+            factors = {
+                "htf_bias_aligned": bias_dir == direction,
+                "premium_discount_side": (
+                    (direction == 1 and pd_state == "discount")
+                    or (direction == -1 and pd_state == "premium")
+                ),
+                "unmitigated_ob": False,  # Breaker is role-reversed, not unmitigated OB
+                "unfilled_fvg": True,
+                "liquidity_swept": True,  # Breaker implies an earlier sweep+fail
+                "ltf_choch": True,        # Direction flip requires CHoCH
+                "ote_zone": False,
+                "killzone": bool((session or {}).get("killzone")),
+                "volume_displacement": bool(f.get("displacement_confirmed")),
+            }
+            scoring = score_confluence(factors, weights=weights, threshold=threshold)
+            out.append(
+                {
+                    "model": "unicorn",
+                    "direction": direction,
+                    "entry": entry,
+                    "stop": round(stop, 4),
+                    "target": round(target, 4),
+                    "risk": round(risk, 4),
+                    "rr": round(rr, 2),
+                    "poi_kind": "breaker_fvg_overlap",
+                    "poi_top": round(top, 4),
+                    "poi_bottom": round(bottom, 4),
+                    "breaker_index": int(br.get("index", -1)),
+                    "fvg_index": int(f.get("index", -1)),
+                    "smt_confirmed": bool(smt_match),
+                    "smt_paired_symbol": (smt_match[-1]["paired_symbol"] if smt_match else None),
+                    "confluence": scoring,
+                    "factors": factors,
+                    "triggered": scoring["triggered"],
+                }
+            )
+    # Dedup by overlap window so multiple FVGs hitting the same breaker collapse to one row.
+    seen = set()
+    deduped: list[dict] = []
+    for e in out:
+        key = (e["breaker_index"], e["direction"], e["poi_top"], e["poi_bottom"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(e)
+    return deduped
+
+
 def retracement_state(df: pd.DataFrame, swings: list[dict]) -> dict:
     highs = [s for s in swings if s["type"] == "high"]
     lows = [s for s in swings if s["type"] == "low"]
@@ -1886,6 +1987,9 @@ def build_smc_analysis(
     ote_entries = detect_ote_entries(
         h, ote, obs, fvgs, pd_zone, bias, session, weights=weights,
     )
+    unicorn_entries = detect_unicorn_entries(
+        h, breaker_blocks, fvgs, smt_events, pd_zone, bias, session, weights=weights,
+    )
     retracement = retracement_state(h, swings)
     generated_at = datetime.now().isoformat(timespec="seconds")
     signals = build_signals(
@@ -1974,12 +2078,13 @@ def build_smc_analysis(
                 "sweep_reversal": sweep_reversal_entries,
                 "ob_fvg_continuation": continuation_entries,
                 "ote_retracement": ote_entries,
+                "unicorn": unicorn_entries,
                 "triggered": [
-                    e for e in (sweep_reversal_entries + continuation_entries + ote_entries)
+                    e for e in (sweep_reversal_entries + continuation_entries + ote_entries + unicorn_entries)
                     if e.get("triggered")
                 ],
-                "latest": (sweep_reversal_entries + continuation_entries + ote_entries)[-1]
-                if (sweep_reversal_entries or continuation_entries or ote_entries) else None,
+                "latest": (sweep_reversal_entries + continuation_entries + ote_entries + unicorn_entries)[-1]
+                if (sweep_reversal_entries or continuation_entries or ote_entries or unicorn_entries) else None,
             },
         },
         "signals": signals,

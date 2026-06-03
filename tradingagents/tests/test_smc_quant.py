@@ -515,3 +515,44 @@ def test_build_smc_analysis_exposes_ote_retracement_block():
     )
     em = result["concepts"]["entry_models"]
     assert "ote_retracement" in em and isinstance(em["ote_retracement"], list)
+
+
+def test_unicorn_entries_require_breaker_fvg_overlap():
+    """§5.3: Unicorn = Breaker ∩ FVG in the same direction. Without overlap → []."""
+    from smc_quant import detect_unicorn_entries
+    # Hand-craft: a bullish breaker [10, 12] and an overlapping bullish FVG [11, 12.5]
+    breakers = [{"index": 5, "direction": 1, "top": 12.0, "bottom": 10.0, "block_type": "breaker", "grade": "C"}]
+    fvgs = [{"index": 7, "direction": 1, "top": 12.5, "bottom": 11.0, "mid": 11.75, "mitigated": False, "displacement_confirmed": True}]
+    h = normalize_ohlcv(_sample_ohlcv())
+    entries = detect_unicorn_entries(h, breakers, fvgs, [], {"state": "discount"}, "bullish")
+    assert len(entries) == 1
+    e = entries[0]
+    assert e["model"] == "unicorn"
+    assert e["direction"] == 1
+    assert e["poi_kind"] == "breaker_fvg_overlap"
+    assert e["poi_bottom"] == 11.0 and e["poi_top"] == 12.0
+    assert e["rr"] >= 1.99
+    # Non-overlapping FVG must not trigger.
+    fvgs2 = [{"index": 7, "direction": 1, "top": 9.0, "bottom": 8.0, "mid": 8.5, "mitigated": False, "displacement_confirmed": False}]
+    assert detect_unicorn_entries(h, breakers, fvgs2, [], {}, "neutral") == []
+
+
+def test_unicorn_smt_confirmation_flag_propagates():
+    from smc_quant import detect_unicorn_entries
+    breakers = [{"index": 5, "direction": 1, "top": 12.0, "bottom": 10.0}]
+    fvgs = [{"index": 7, "direction": 1, "top": 12.5, "bottom": 11.0, "mid": 11.75, "mitigated": False, "displacement_confirmed": True}]
+    smt = [{"smt": 1, "direction": 1, "paired_symbol": "NQ=F"}]
+    h = normalize_ohlcv(_sample_ohlcv())
+    entries = detect_unicorn_entries(h, breakers, fvgs, smt, {"state": "discount"}, "bullish")
+    assert entries
+    assert entries[0]["smt_confirmed"] is True
+    assert entries[0]["smt_paired_symbol"] == "NQ=F"
+
+
+def test_build_smc_analysis_exposes_unicorn_block():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    em = result["concepts"]["entry_models"]
+    assert "unicorn" in em and isinstance(em["unicorn"], list)
