@@ -2419,6 +2419,94 @@ def evaluate_entry_models(
     }
 
 
+def extract_factor_edge(
+    entries: list[dict],
+    trades: list[dict],
+) -> dict:
+    """§10.6 Closed-loop learning — per-factor edge attribution.
+
+    Join each settled trade back to its source entry's ``factors`` map and
+    compute, for every confluence factor:
+      - n_with / n_without: sample counts when the factor was True / False
+      - avg_R_with / avg_R_without
+      - edge = avg_R_with - avg_R_without (positive ⇒ factor adds expectancy)
+      - win_rate_with / win_rate_without
+
+    Returns ``{factors: {name: stats}, ranked: [(name, edge), ...]}`` —
+    consumable by ``suggest_confluence_weights`` to nudge §5.2 weights
+    toward what actually generated R.
+    """
+    if not entries or not trades:
+        return {"factors": {}, "ranked": [], "sample_size": 0}
+    # Join by (model, entry, stop) — stable identifying tuple within one run.
+    by_key: dict[tuple, dict] = {}
+    for e in entries:
+        if not e.get("triggered"):
+            continue
+        key = (e.get("model"), round(float(e.get("entry", 0)), 4), round(float(e.get("stop", 0)), 4))
+        by_key[key] = e
+    samples: list[tuple[dict, float]] = []
+    for t in trades:
+        key = (t.get("model"), round(float(t.get("entry", 0)), 4), round(float(t.get("stop", 0)), 4))
+        e = by_key.get(key)
+        if e and isinstance(e.get("factors"), dict):
+            samples.append((e["factors"], float(t.get("r_multiple", 0.0))))
+    if not samples:
+        return {"factors": {}, "ranked": [], "sample_size": 0}
+    factor_names: set[str] = set()
+    for fdict, _ in samples:
+        factor_names.update(fdict.keys())
+    stats: dict[str, dict] = {}
+    for name in factor_names:
+        with_ = [r for f, r in samples if f.get(name)]
+        without_ = [r for f, r in samples if not f.get(name)]
+        def _avg(xs: list[float]) -> float:
+            return round(sum(xs) / len(xs), 3) if xs else 0.0
+        def _wr(xs: list[float]) -> float:
+            return round(sum(1 for x in xs if x > 0) / len(xs), 3) if xs else 0.0
+        avg_with = _avg(with_)
+        avg_without = _avg(without_)
+        stats[name] = {
+            "n_with": len(with_),
+            "n_without": len(without_),
+            "avg_R_with": avg_with,
+            "avg_R_without": avg_without,
+            "edge": round(avg_with - avg_without, 3),
+            "win_rate_with": _wr(with_),
+            "win_rate_without": _wr(without_),
+        }
+    ranked = sorted(((n, s["edge"]) for n, s in stats.items()), key=lambda x: x[1], reverse=True)
+    return {"factors": stats, "ranked": ranked, "sample_size": len(samples)}
+
+
+def suggest_confluence_weights(
+    factor_edge: dict,
+    base_weights: Optional[dict[str, int]] = None,
+    *,
+    min_sample: int = 5,
+    edge_step: float = 0.5,
+) -> dict[str, int]:
+    """Propose §5.2 weight tweaks from §10.6 factor-edge stats.
+
+    Positive edge ≥ ``edge_step`` → +1 weight; negative edge ≤ -edge_step
+    → -1 (floor 0). Only adjusts factors with at least ``min_sample``
+    observations on both sides — otherwise the suggestion is unsupported.
+    Returns a *new* weights dict, never mutates the input.
+    """
+    base = {**CONFLUENCE_WEIGHTS_DEFAULT, **(base_weights or {})}
+    stats = (factor_edge or {}).get("factors", {})
+    suggested = dict(base)
+    for name, s in stats.items():
+        if s.get("n_with", 0) < min_sample or s.get("n_without", 0) < min_sample:
+            continue
+        edge = float(s.get("edge", 0))
+        if edge >= edge_step:
+            suggested[name] = int(base.get(name, 0)) + 1
+        elif edge <= -edge_step:
+            suggested[name] = max(0, int(base.get(name, 0)) - 1)
+    return suggested
+
+
 def rule_enforcement_snapshot(
     account_equity: float,
     daily_realized_pnl: float = 0,
@@ -2673,11 +2761,21 @@ def build_smc_analysis(
                 "unicorn": unicorn_entries,
                 "silver_bullet": silver_bullet_entries,
                 "power_of_three": power_of_three_entries,
-                "backtest_replay": evaluate_entry_models(
-                    h,
-                    sweep_reversal_entries + continuation_entries + ote_entries
-                    + unicorn_entries + silver_bullet_entries + power_of_three_entries,
+                "backtest_replay": (
+                    _bt := evaluate_entry_models(
+                        h,
+                        sweep_reversal_entries + continuation_entries + ote_entries
+                        + unicorn_entries + silver_bullet_entries + power_of_three_entries,
+                    )
                 ),
+                "factor_edge": (
+                    _edge := extract_factor_edge(
+                        sweep_reversal_entries + continuation_entries + ote_entries
+                        + unicorn_entries + silver_bullet_entries + power_of_three_entries,
+                        _bt.get("trades", []),
+                    )
+                ),
+                "suggested_weights": suggest_confluence_weights(_edge),
                 "risk_gated": apply_risk_pipeline(
                     sweep_reversal_entries + continuation_entries + ote_entries
                     + unicorn_entries + silver_bullet_entries + power_of_three_entries,

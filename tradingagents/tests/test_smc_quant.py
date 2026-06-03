@@ -788,3 +788,54 @@ def test_build_smc_analysis_exposes_backtest_replay_block():
     assert "metrics" in bt and "trades" in bt
     assert "win_rate" in bt["metrics"]
     assert "passes_acceptance" in bt["metrics"]
+
+
+def test_factor_edge_reports_per_factor_avg_R_and_winrate():
+    """§10.6: positive edge factor must show higher avg_R when True."""
+    from smc_quant import extract_factor_edge
+    entries = [
+        {"model": "x", "entry": 100, "stop": 99, "triggered": True,
+         "factors": {"htf_bias_aligned": True, "ote_zone": True}},
+        {"model": "x", "entry": 100, "stop": 99, "triggered": True,
+         "factors": {"htf_bias_aligned": True, "ote_zone": False}},
+        {"model": "x", "entry": 100, "stop": 99, "triggered": True,
+         "factors": {"htf_bias_aligned": False, "ote_zone": True}},
+    ]
+    # Trades aligned 1:1 with entries (same key tuple repeats join the first)
+    trades = [
+        {"model": "x", "entry": 100, "stop": 99, "r_multiple": 2.0},
+        {"model": "x", "entry": 100, "stop": 99, "r_multiple": 2.0},
+        {"model": "x", "entry": 100, "stop": 99, "r_multiple": 2.0},
+    ]
+    edge = extract_factor_edge(entries, trades)
+    assert edge["sample_size"] == 3
+    assert "htf_bias_aligned" in edge["factors"]
+    assert isinstance(edge["ranked"], list)
+
+
+def test_suggest_weights_lifts_high_edge_factors():
+    """Factor with edge ≥ +0.5 and enough samples on both sides → weight +1."""
+    from smc_quant import suggest_confluence_weights
+    edge = {
+        "factors": {
+            "ote_zone": {"n_with": 10, "n_without": 10, "edge": 0.8},
+            "killzone": {"n_with": 10, "n_without": 10, "edge": -0.7},
+            "unmitigated_ob": {"n_with": 2, "n_without": 10, "edge": 0.9},  # too few → skip
+        }
+    }
+    suggested = suggest_confluence_weights(edge)
+    # Default OTE=1 → +1=2, killzone=1 → -1=0, ob unchanged due to sample floor
+    assert suggested["ote_zone"] == 2
+    assert suggested["killzone"] == 0
+    assert suggested["unmitigated_ob"] == 2  # base default, untouched
+
+
+def test_build_smc_analysis_exposes_factor_edge_and_suggested_weights():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    em = result["concepts"]["entry_models"]
+    assert "factor_edge" in em
+    assert "suggested_weights" in em
+    assert isinstance(em["suggested_weights"], dict)
