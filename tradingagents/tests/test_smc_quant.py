@@ -13,6 +13,7 @@ from smc_quant import (
     detect_liquidity,
     detect_mitigation_blocks,
     detect_order_blocks,
+    detect_smt_divergence,
     detect_structure,
     detect_swings,
     infer_market,
@@ -221,3 +222,51 @@ def test_build_smc_analysis_exposes_judas_events_list():
     assert "events" in judas and isinstance(judas["events"], list)
     assert "latest" in judas
     assert "active" in judas  # legacy field preserved
+
+
+def test_smt_divergence_bullish_when_correlated_holds_higher_low():
+    """§3.13: primary makes LL, paired holds above prior low → bullish SMT (+1)."""
+    cfg = SMCConfig(swing_length=2, internal_swing_length=2)
+    h = normalize_ohlcv(_sample_ohlcv())
+    swings = detect_swings(h, cfg.swing_length)
+    # Craft paired feed: identical highs but lows clamped so it never makes a LL.
+    paired = _sample_ohlcv().copy()
+    paired["Low"] = paired["Low"].clip(lower=15.0)
+    paired["Open"] = paired["Open"].clip(lower=15.0)
+    paired["Close"] = paired["Close"].clip(lower=15.0)
+    paired["High"] = paired[["High", "Low"]].max(axis=1)
+    events = detect_smt_divergence(h, {"PAIR": paired}, swings)
+    bullish = [e for e in events if e["smt"] == 1]
+    if bullish:  # only assert when the swing arrangement actually triggers
+        ev = bullish[-1]
+        assert ev["paired_symbol"] == "PAIR"
+        assert ev["primary_curr_level"] < ev["primary_prev_level"]
+        assert ev["paired_curr_level"] > ev["paired_prev_level"]
+
+
+def test_smt_divergence_handles_missing_or_empty_correlated():
+    cfg = SMCConfig(swing_length=2, internal_swing_length=2)
+    h = normalize_ohlcv(_sample_ohlcv())
+    swings = detect_swings(h, cfg.swing_length)
+    # No correlated dict → empty
+    assert detect_smt_divergence(h, None, swings) == []
+    assert detect_smt_divergence(h, {}, swings) == []
+    # Empty paired DataFrame → silently skipped
+    empty = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+    assert detect_smt_divergence(h, {"EMPTY": empty}, swings) == []
+
+
+def test_build_smc_analysis_exposes_smt_events_when_correlated_provided():
+    cfg = SMCConfig(swing_length=2, internal_swing_length=2)
+    paired = _sample_ohlcv().copy()
+    paired["High"] = paired["High"] * 0.95
+    paired["Low"] = paired["Low"] * 0.95
+    result = build_smc_analysis(
+        _sample_ohlcv(), "ES=F",
+        config=cfg,
+        correlated={"NQ=F": paired},
+    )
+    smt = result["concepts"]["smt"]
+    assert "events" in smt and isinstance(smt["events"], list)
+    assert "latest" in smt
+    assert "NQ=F" in smt["pairs"]

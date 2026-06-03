@@ -719,6 +719,106 @@ def detect_judas_swings(
     return out
 
 
+def detect_smt_divergence(
+    df: pd.DataFrame,
+    correlated: Optional[dict[str, pd.DataFrame]],
+    swings: list[dict],
+    *,
+    lookback_bars: int = 30,
+) -> list[dict]:
+    """Detect Smart Money Technique (SMT) divergence per §3.13.
+
+    For each correlated asset, compare the two most-recent swing highs (and
+    lows) within ``lookback_bars`` of the primary feed. A new HH on the
+    primary that the correlated asset *fails* to confirm → bearish SMT (-1);
+    a new LL on the primary that the correlated asset holds above →
+    bullish SMT (+1).
+    """
+    out: list[dict] = []
+    if df is None or len(df) == 0 or not correlated or not swings:
+        return out
+    cutoff = max(0, len(df) - lookback_bars)
+    recent_highs = sorted(
+        [s for s in swings if s["type"] == "high" and int(s["index"]) >= cutoff],
+        key=lambda s: int(s["index"]),
+    )
+    recent_lows = sorted(
+        [s for s in swings if s["type"] == "low" and int(s["index"]) >= cutoff],
+        key=lambda s: int(s["index"]),
+    )
+    for paired_symbol, df_b_raw in correlated.items():
+        if df_b_raw is None or len(df_b_raw) == 0:
+            continue
+        try:
+            df_b = normalize_ohlcv(df_b_raw)
+        except Exception:
+            continue
+        aligned = df_b.reindex(df.index).ffill()
+        if aligned.empty or aligned["high"].isna().all():
+            continue
+        # Bearish SMT: primary makes new HH, correlated fails to make new HH.
+        if len(recent_highs) >= 2:
+            a, b = recent_highs[-2], recent_highs[-1]
+            try:
+                a_high_b_asset = float(aligned["high"].iloc[int(a["index"])])
+                b_high_b_asset = float(aligned["high"].iloc[int(b["index"])])
+            except Exception:
+                a_high_b_asset = b_high_b_asset = float("nan")
+            if (
+                b["level"] > a["level"]
+                and pd.notna(a_high_b_asset)
+                and pd.notna(b_high_b_asset)
+                and b_high_b_asset < a_high_b_asset
+            ):
+                out.append(
+                    {
+                        "smt": -1,
+                        "direction": -1,
+                        "kind": "bearish",
+                        "paired_symbol": paired_symbol,
+                        "divergence_level": round(float(b["level"]), 4),
+                        "primary_prev_index": int(a["index"]),
+                        "primary_curr_index": int(b["index"]),
+                        "primary_prev_level": round(float(a["level"]), 4),
+                        "primary_curr_level": round(float(b["level"]), 4),
+                        "paired_prev_level": round(a_high_b_asset, 4),
+                        "paired_curr_level": round(b_high_b_asset, 4),
+                        "time": _record_time(df.index[int(b["index"])]),
+                    }
+                )
+        # Bullish SMT: primary makes new LL, correlated holds above.
+        if len(recent_lows) >= 2:
+            a, b = recent_lows[-2], recent_lows[-1]
+            try:
+                a_low_b_asset = float(aligned["low"].iloc[int(a["index"])])
+                b_low_b_asset = float(aligned["low"].iloc[int(b["index"])])
+            except Exception:
+                a_low_b_asset = b_low_b_asset = float("nan")
+            if (
+                b["level"] < a["level"]
+                and pd.notna(a_low_b_asset)
+                and pd.notna(b_low_b_asset)
+                and b_low_b_asset > a_low_b_asset
+            ):
+                out.append(
+                    {
+                        "smt": 1,
+                        "direction": 1,
+                        "kind": "bullish",
+                        "paired_symbol": paired_symbol,
+                        "divergence_level": round(float(b["level"]), 4),
+                        "primary_prev_index": int(a["index"]),
+                        "primary_curr_index": int(b["index"]),
+                        "primary_prev_level": round(float(a["level"]), 4),
+                        "primary_curr_level": round(float(b["level"]), 4),
+                        "paired_prev_level": round(a_low_b_asset, 4),
+                        "paired_curr_level": round(b_low_b_asset, 4),
+                        "time": _record_time(df.index[int(b["index"])]),
+                    }
+                )
+    return out
+
+
 def retracement_state(df: pd.DataFrame, swings: list[dict]) -> dict:
     highs = [s for s in swings if s["type"] == "high"]
     lows = [s for s in swings if s["type"] == "low"]
@@ -1087,6 +1187,7 @@ def build_smc_analysis(
     prev = previous_levels(h)
     session = session_state(h, symbol)
     judas_events = detect_judas_swings(h, structure, liquidity, displacements, symbol)
+    smt_events = detect_smt_divergence(h, correlated, swings)
     retracement = retracement_state(h, swings)
     generated_at = datetime.now().isoformat(timespec="seconds")
     signals = build_signals(h, bias, obs, fvgs, liquidity, pd_zone, ote, structure, displacements, session, prev, cfg, weights)
@@ -1145,8 +1246,10 @@ def build_smc_analysis(
                 "note": "session fakeout requires sweep plus later CHoCH confirmation",
             },
             "smt": {
-                "status": "not_configured" if not correlated else "provided",
+                "status": "not_configured" if not correlated else ("detected" if smt_events else "provided"),
                 "pairs": list((correlated or {}).keys()),
+                "events": smt_events,
+                "latest": smt_events[-1] if smt_events else None,
             },
             "crypto_derivatives": {
                 "status": "extension_point",
