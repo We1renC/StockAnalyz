@@ -839,3 +839,36 @@ def test_build_smc_analysis_exposes_factor_edge_and_suggested_weights():
     assert "factor_edge" in em
     assert "suggested_weights" in em
     assert isinstance(em["suggested_weights"], dict)
+
+
+def test_chart_layers_include_all_documented_chart_codes():
+    """§6.1 Appendix A: each chart code must be present in the layer map."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    layers = result["visualization"]["chart_layers"]
+    for code in ("C1_structure", "C2_order_blocks", "C3_fvgs", "C4_liquidity",
+                 "C7_session_judas", "C8_sweep_reversal", "C10_signals", "C12_smt"):
+        assert code in layers, f"chart layer {code} missing"
+
+
+def test_chart_layers_carry_renderable_primitives():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    layers = result["visualization"]["chart_layers"]
+    c1 = layers["C1_structure"]
+    assert "swings" in c1 and "events" in c1
+    # C2 rectangles
+    for r in layers["C2_order_blocks"]["rects"]:
+        assert r["top"] >= r["bottom"]
+        assert r["direction"] in (1, -1)
+        assert r["status"] in {"unmitigated", "mitigation", "breaker"}
+    # C10 signals must mirror entry_models_combined
+    trade_models = {t["model"] for t in layers["C10_signals"]["trades"]}
+    assert trade_models.issubset({
+        "sweep_reversal", "ob_fvg_continuation", "ote_retracement",
+        "unicorn", "silver_bullet", "power_of_three",
+    })

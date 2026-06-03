@@ -2507,6 +2507,179 @@ def suggest_confluence_weights(
     return suggested
 
 
+def build_chart_layers(
+    df: pd.DataFrame,
+    *,
+    swings: list[dict],
+    structure: list[dict],
+    order_blocks: list[dict],
+    mitigation_blocks: list[dict],
+    breaker_blocks: list[dict],
+    fvgs: list[dict],
+    liquidity: list[dict],
+    pd_zone: dict,
+    ote: dict,
+    judas_events: list[dict],
+    smt_events: list[dict],
+    entry_models_combined: list[dict],
+) -> dict:
+    """§6.1 / Appendix A chart-layer annotations (C1–C12).
+
+    Returns a flat mapping ``{chart_code: {kind, layers: [...]}}`` where
+    each layer is a UI-renderable primitive (rect / line / marker /
+    arrow) carrying coordinates from the *current* analysis. The UI is
+    expected to convert price/index pairs into pixels.
+    """
+
+    def _ts(i: int):
+        try:
+            return _record_time(df.index[int(i)])
+        except Exception:
+            return None
+
+    layers: dict[str, dict] = {}
+
+    # C1 Structure Map — swings + BOS / CHoCH markers
+    layers["C1_structure"] = {
+        "kind": "structure_map",
+        "swings": [
+            {"index": int(s["index"]), "time": _ts(s["index"]), "level": s["level"], "type": s["type"]}
+            for s in (swings or [])
+        ],
+        "events": [
+            {
+                "index": int(ev["index"]), "time": _ts(ev["index"]),
+                "type": ev["type"], "direction": ev["direction"], "level": ev["level"],
+            }
+            for ev in (structure or [])
+        ],
+    }
+    # C2 Order Block Map — color codes:
+    #   unmitigated → solid; mitigation → striped; breaker → dashed-flip
+    obs_combined = list(order_blocks or []) + list(mitigation_blocks or []) + list(breaker_blocks or [])
+    layers["C2_order_blocks"] = {
+        "kind": "rect_overlay",
+        "rects": [
+            {
+                "index": int(ob.get("index", 0)),
+                "time": _ts(ob.get("index", 0)),
+                "top": ob.get("top"),
+                "bottom": ob.get("bottom"),
+                "direction": ob.get("direction"),
+                "status": ob.get("status"),
+                "grade": ob.get("grade"),
+                "refined_entry": ob.get("refined_entry"),
+            }
+            for ob in obs_combined
+        ],
+    }
+    # C3 FVG Map
+    layers["C3_fvgs"] = {
+        "kind": "rect_overlay",
+        "rects": [
+            {
+                "index": int(f["index"]), "time": _ts(f["index"]),
+                "top": f["top"], "bottom": f["bottom"],
+                "direction": f["direction"], "mitigated": f["mitigated"],
+                "displacement_confirmed": f.get("displacement_confirmed"),
+            }
+            for f in (fvgs or [])
+        ],
+    }
+    # C4 Liquidity Map — horizontal lines, marked swept
+    layers["C4_liquidity"] = {
+        "kind": "level_overlay",
+        "levels": [
+            {
+                "type": l["type"], "level": l["level"],
+                "start_index": l["start_index"], "end_index": l["end_index"],
+                "swept": l["swept"], "swept_index": l.get("swept_index"),
+            }
+            for l in (liquidity or [])
+        ],
+    }
+    # C5 Premium / Discount zone rectangle (split by equilibrium)
+    if pd_zone:
+        layers["C5_premium_discount"] = {
+            "kind": "zone_overlay",
+            "range_high": pd_zone.get("range_high"),
+            "range_low": pd_zone.get("range_low"),
+            "equilibrium": pd_zone.get("equilibrium"),
+            "state": pd_zone.get("state"),
+        }
+    # C6 OTE Map — 0.62–0.79 band + 0.705 ideal line
+    if ote:
+        layers["C6_ote"] = {
+            "kind": "zone_overlay",
+            "top": ote.get("top"), "bottom": ote.get("bottom"),
+            "entry_0705": ote.get("entry_0705"),
+            "stop_ref": ote.get("stop_ref"),
+            "tp1": ote.get("tp1"), "tp2": ote.get("tp2"),
+            "direction": ote.get("direction"),
+        }
+    # C7 Session / Judas Map — fake-move arrow + real-move arrow
+    layers["C7_session_judas"] = {
+        "kind": "marker_overlay",
+        "judas": [
+            {
+                "sweep_index": ev["sweep_index"], "sweep_time": ev.get("sweep_time"),
+                "confirm_index": ev["confirm_index"], "confirm_time": ev.get("confirm_time"),
+                "false_move_high": ev["false_move_high"], "false_move_low": ev["false_move_low"],
+                "real_direction": ev["real_direction"],
+                "session": ev.get("session_at_sweep"), "killzone": ev.get("killzone"),
+            }
+            for ev in (judas_events or [])
+        ],
+    }
+    # C8 Sweep Reversal Confirmation Map — 1) sweep, 2) displacement, 3) CHoCH
+    sweep_reversals = [e for e in entry_models_combined if e.get("model") == "sweep_reversal"]
+    layers["C8_sweep_reversal"] = {
+        "kind": "numbered_sequence",
+        "sequences": [
+            {
+                "step_1_sweep": {"index": e.get("sweep_index"), "level": e.get("sweep_level")},
+                "step_2_displacement": {"confirmed": e.get("factors", {}).get("volume_displacement")},
+                "step_3_choch": {"index": e.get("judas_index")},
+                "entry": e.get("entry"), "stop": e.get("stop"), "target": e.get("target"),
+                "direction": e.get("direction"),
+            }
+            for e in sweep_reversals
+        ],
+    }
+    # C10 Signal Map — every entry as a labeled trade box
+    layers["C10_signals"] = {
+        "kind": "trade_overlay",
+        "trades": [
+            {
+                "model": e.get("model"),
+                "direction": e.get("direction"),
+                "entry": e.get("entry"), "stop": e.get("stop"), "target": e.get("target"),
+                "rr": e.get("rr"),
+                "score": (e.get("confluence") or {}).get("score"),
+                "triggered": e.get("triggered"),
+                "dol_target": e.get("dol_target"),
+            }
+            for e in entry_models_combined
+        ],
+    }
+    # C12 SMT Divergence overlay — paired-asset divergence connector
+    layers["C12_smt"] = {
+        "kind": "divergence_overlay",
+        "events": [
+            {
+                "kind": ev.get("kind"), "paired_symbol": ev.get("paired_symbol"),
+                "primary_prev_index": ev.get("primary_prev_index"),
+                "primary_curr_index": ev.get("primary_curr_index"),
+                "primary_prev_level": ev.get("primary_prev_level"),
+                "primary_curr_level": ev.get("primary_curr_level"),
+                "time": ev.get("time"),
+            }
+            for ev in (smt_events or [])
+        ],
+    }
+    return layers
+
+
 def rule_enforcement_snapshot(
     account_equity: float,
     daily_realized_pnl: float = 0,
@@ -2802,7 +2975,25 @@ def build_smc_analysis(
         "markers": markers,
         "visualization": {
             "enabled_charts": ["structure_map", "order_block_map", "fvg_map", "liquidity_map", "premium_discount_map", "ote_map"],
-            "future_charts": ["session_judas_map", "sweep_confirmation_map", "mtf_composite", "trade_setup_map", "crypto_liquidation_overlay"],
+            "future_charts": ["mtf_composite", "crypto_liquidation_overlay"],
+            "chart_layers": build_chart_layers(
+                h,
+                swings=swings,
+                structure=structure,
+                order_blocks=obs,
+                mitigation_blocks=mitigation_blocks,
+                breaker_blocks=breaker_blocks,
+                fvgs=fvgs,
+                liquidity=liquidity,
+                pd_zone=pd_zone,
+                ote=ote,
+                judas_events=judas_events,
+                smt_events=smt_events,
+                entry_models_combined=(
+                    sweep_reversal_entries + continuation_entries + ote_entries
+                    + unicorn_entries + silver_bullet_entries + power_of_three_entries
+                ),
+            ),
         },
         "config": cfg.__dict__,
         "confluence_weights": confluence_weights(weights),
