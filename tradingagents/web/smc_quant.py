@@ -42,6 +42,14 @@ DEFAULT_CONFLUENCE_WEIGHTS = {
     "smt_divergence_pattern": 2,
     "silver_bullet_pattern": 1,
     "power_of_three_pattern": 1,
+    # Crypto-Specific Confluence Factors
+    "liquidation_cluster_sweep": 2,
+    "oi_squeeze_confirm": 2,
+    "cvd_divergence_confirm": 2,
+    "extreme_funding_rate": 1,
+    "coinbase_premium_alignment": 1,
+    "alt_align_btc_bias": 2,
+    "cme_gap_hit": 1,
 }
 
 
@@ -1044,6 +1052,112 @@ def build_signals(
                     is_unicorn = True
                     break
 
+    # Crypto-Specific Enhancements
+    market = infer_market(symbol) if symbol else "us"
+    has_liq_sweep = False
+    has_oi_drop = False
+    has_cvd_divergence = False
+    has_extreme_funding = False
+    has_coinbase_premium_align = False
+    has_btc_alignment = True
+    has_cme_gap_hit = False
+
+    if market == "crypto":
+        try:
+            from crypto.liquidations import detect_liquidation_clusters
+            swings = detect_swings(df, cfg.swing_length, "swing")
+            clusters = detect_liquidation_clusters(df, swings)
+            for cl in clusters:
+                cl_level = cl["level"]
+                cl_type = cl["type"]
+                for idx_b in range(max(0, len(df) - 15), len(df)):
+                    bar_high = float(df["high"].iloc[idx_b])
+                    bar_low = float(df["low"].iloc[idx_b])
+                    bar_close = float(df["close"].iloc[idx_b])
+                    if cl_type == "BSL_LIQ" and bar_high > cl_level and bar_close < cl_level:
+                         has_liq_sweep = True
+                         break
+                    if cl_type == "SSL_LIQ" and bar_low < cl_level and bar_close > cl_level:
+                         has_liq_sweep = True
+                         break
+                if has_liq_sweep:
+                    break
+        except Exception:
+            pass
+
+        try:
+            oi_col = next((c for c in df.columns if c.lower() in ("oi", "open_interest", "openinterest")), None)
+            if oi_col is not None:
+                oi_series = df[oi_col]
+                if len(oi_series) >= 5:
+                    oi_change = (float(oi_series.iloc[-1]) - float(oi_series.iloc[-5])) / float(oi_series.iloc[-5])
+                    from crypto.liquidations import confirm_liquidation_sweep
+                    recent_sweep_item = next((l for l in reversed(liquidity) if l.get("swept")), None)
+                    if recent_sweep_item:
+                        is_confirmed, _ = confirm_liquidation_sweep(price, recent_sweep_item["level"], direction, oi_change)
+                        if is_confirmed:
+                            has_oi_drop = True
+            else:
+                if has_liq_sweep:
+                    has_oi_drop = True
+        except Exception:
+            pass
+
+        try:
+            cvd_col = next((c for c in df.columns if c.lower() in ("cvd", "spot_cvd", "perp_cvd")), None)
+            if cvd_col is not None:
+                from crypto.cvd import detect_cvd_divergence
+                div = detect_cvd_divergence(df["close"], df[cvd_col])
+                if direction == 1:
+                    has_cvd_divergence = div["bullish_cvd_divergence"]
+                else:
+                    has_cvd_divergence = div["bearish_cvd_divergence"]
+            else:
+                avg_vol = df["volume"].rolling(20).mean().iloc[-1]
+                if df["volume"].iloc[-1] > 1.5 * avg_vol and recent_sweep:
+                    has_cvd_divergence = True
+        except Exception:
+            pass
+
+        try:
+            fund_col = next((c for c in df.columns if c.lower() in ("funding_rate", "funding", "fundingrate")), None)
+            if fund_col is not None:
+                last_fund = float(df[fund_col].iloc[-1])
+                if direction == 1 and last_fund < -0.0005:
+                    has_extreme_funding = True
+                elif direction == -1 and last_fund > 0.0005:
+                    has_extreme_funding = True
+        except Exception:
+            pass
+
+        try:
+            cb_col = next((c for c in df.columns if "coinbase" in c.lower() or "premium" in c.lower()), None)
+            if cb_col is not None:
+                premium = float(df[cb_col].iloc[-1])
+                if direction == 1 and premium > 0:
+                    has_coinbase_premium_align = True
+                elif direction == -1 and premium < 0:
+                    has_coinbase_premium_align = True
+        except Exception:
+            pass
+
+        try:
+            if symbol:
+                from crypto.cross_market import align_altcoin_with_btc_bias
+                has_btc_alignment = align_altcoin_with_btc_bias(symbol, bias, direction)
+        except Exception:
+            pass
+
+        try:
+            from crypto.cross_market import detect_cme_gaps
+            gaps = detect_cme_gaps(df)
+            for gap in gaps:
+                if not gap["filled"] and gap["bottom"] <= price <= gap["top"]:
+                    has_cme_gap_hit = True
+                    break
+        except Exception:
+            pass
+
     factors = []
     score = 0
     w = confluence_weights(weights)
@@ -1061,6 +1175,14 @@ def build_signals(
         ("smt_divergence_pattern", is_smt_divergence_model, w["smt_divergence_pattern"], is_smt_divergence_model),
         ("silver_bullet_pattern", is_silver_bullet, w["silver_bullet_pattern"], is_silver_bullet),
         ("power_of_three_pattern", is_amd, w["power_of_three_pattern"], is_amd),
+        # Crypto-Specific Confluence Checks
+        ("liquidation_cluster_sweep", has_liq_sweep, w.get("liquidation_cluster_sweep", 2), has_liq_sweep),
+        ("oi_squeeze_confirm", has_oi_drop, w.get("oi_squeeze_confirm", 2), has_oi_drop),
+        ("cvd_divergence_confirm", has_cvd_divergence, w.get("cvd_divergence_confirm", 2), has_cvd_divergence),
+        ("extreme_funding_rate", has_extreme_funding, w.get("extreme_funding_rate", 1), has_extreme_funding),
+        ("coinbase_premium_alignment", has_coinbase_premium_align, w.get("coinbase_premium_alignment", 1), has_coinbase_premium_align),
+        ("alt_align_btc_bias", has_btc_alignment, w.get("alt_align_btc_bias", 2), has_btc_alignment and market == "crypto"),
+        ("cme_gap_hit", has_cme_gap_hit, w.get("cme_gap_hit", 1), has_cme_gap_hit),
     ]
     for key, value, weight, active in checks:
         if active:
@@ -1090,7 +1212,18 @@ def build_signals(
         entry_candidates.append({"source": "OTE 0.705", "price": ote.get("entry_0705")})
     entry = next((x for x in entry_candidates if x.get("price") is not None), {"source": "market", "price": round(price, 4)})
     entry_price = float(entry["price"])
-    if active_ob:
+    
+    if market == "crypto":
+        try:
+            from crypto.adaptive_params import calculate_adaptive_params, get_atr
+            adapt = calculate_adaptive_params(df, symbol or "BTC/USDT")
+            atr_series = get_atr(df)
+            last_atr = float(atr_series.iloc[-1]) if not atr_series.empty else (price * 0.02)
+            stop_dist = adapt["stop_atr_mult"] * last_atr
+            stop = entry_price - direction * stop_dist
+        except Exception:
+            stop = price * (0.97 if direction == 1 else 1.03)
+    elif active_ob:
         stop = active_ob[-1]["bottom"] if direction == 1 else active_ob[-1]["top"]
     elif ote:
         stop = ote["stop_ref"]
@@ -1297,6 +1430,23 @@ def build_smc_analysis(
     cfg = config or SMCConfig()
     market = infer_market(symbol)
     h = normalize_ohlcv(df)
+    
+    if market == "crypto" and len(h) >= 15:
+        try:
+            from crypto.adaptive_params import calculate_adaptive_params
+            adapt = calculate_adaptive_params(h, symbol)
+            cfg = SMCConfig(
+                swing_length=cfg.swing_length,
+                internal_swing_length=cfg.internal_swing_length,
+                close_break=cfg.close_break,
+                liquidity_range_percent=adapt["range_percent_dyn"],
+                displacement_atr_mult=cfg.displacement_atr_mult,
+                displacement_body_ratio=cfg.displacement_body_ratio,
+                min_rr=cfg.min_rr,
+                entry_threshold=cfg.entry_threshold,
+            )
+        except Exception:
+            pass
     if len(h) < max(20, cfg.swing_length * 2 + 5):
         return {
             "symbol": symbol,
