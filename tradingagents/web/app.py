@@ -3349,6 +3349,87 @@ def api_smc_analysis(
         raise HTTPException(500, str(e))
 
 
+@app.post("/api/smc-scan")
+def api_smc_scan(
+    period: str = "6mo",
+    swing_length: int = 5,
+    internal_swing_length: int = 3,
+    close_break: bool = True,
+    account_equity: float = 100_000,
+    risk_pct: float = 0.01,
+):
+    """Batch scanner to scan all watchlist and portfolio symbols and rank SMC signals."""
+    try:
+        conn = get_db()
+        watchlist_symbols = [r[0] for r in conn.execute("SELECT symbol FROM watchlist").fetchall()]
+        positions_symbols = [r[0] for r in conn.execute("SELECT symbol FROM positions").fetchall()]
+        symbols = sorted(list(set(watchlist_symbols + positions_symbols)))
+        
+        results = []
+        cfg = _chart_period_config(period)
+        calc_period = cfg["period"]
+        interval = cfg.get("interval", "1d")
+        
+        smc_cfg = SMCConfig(
+            swing_length=max(2, min(int(swing_length), 50)),
+            internal_swing_length=max(2, min(int(internal_swing_length), 20)),
+            close_break=bool(close_break),
+        )
+        
+        for symbol in symbols:
+            try:
+                if interval == "1d":
+                    h, source = fetch_history(symbol, period=calc_period)
+                else:
+                    h = fetch_intraday_history(symbol, period=calc_period, interval=interval)
+                    source = "yfinance_intraday"
+                
+                if h is None or len(h) == 0:
+                    continue
+                    
+                analysis = build_smc_analysis(
+                    h,
+                    symbol=symbol,
+                    timeframe=period,
+                    config=smc_cfg,
+                    account_equity=account_equity,
+                    risk_pct=risk_pct,
+                )
+                
+                for sig in analysis.get("signals", []):
+                    results.append({
+                        "symbol": symbol,
+                        "model": sig["model"],
+                        "direction": sig["direction"],
+                        "score": sig["score"],
+                        "qualified": sig["qualified"],
+                        "entry": sig["entry"],
+                        "stop": sig["stop"],
+                        "tp1": sig["tp1"],
+                        "tp2": sig["tp2"],
+                        "rr": sig["rr"],
+                        "dol_target": sig["dol_target"],
+                        "dol_distance": sig.get("dol_distance"),
+                        "dol_distance_pct": sig.get("dol_distance_pct"),
+                        "dol_direction": sig.get("dol_direction"),
+                        "status": sig.get("status", "watch"),
+                        "generated_at": sig.get("generated_at"),
+                    })
+            except Exception:
+                pass
+                
+        # Sort: qualified first, then highest score, then highest rr
+        results.sort(key=lambda x: (
+            1 if x["status"] == "qualified" else 0,
+            x["score"] or 0,
+            x["rr"] or 0
+        ), reverse=True)
+        
+        return sanitize_float_values({"results": results})
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 @app.get("/api/smc-backtest/{symbol}")
 def api_smc_backtest(
     symbol: str,

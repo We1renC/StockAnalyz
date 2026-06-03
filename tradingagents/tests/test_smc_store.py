@@ -189,3 +189,26 @@ def test_api_smc_backtest_report_html_returns_html(tmp_path):
         assert "AAA" in response.body.decode("utf-8")
     finally:
         app.DB = original
+
+
+def test_api_smc_scan_returns_ranked_results(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        conn = app.get_db()
+        conn.execute("INSERT INTO watchlist (symbol,name,category,currency) VALUES (?,?,?,?)", ("AAPL", "Apple", "us", "USD"))
+        conn.execute("INSERT INTO positions (symbol,name,category,shares,cost_price,currency,purchase_date) VALUES (?,?,?,1,100,?,?)", ("AAPL", "Apple", "us", "USD", "2026-06-04"))
+        conn.commit()
+        conn.close()
+
+        with patch.object(app, "fetch_history", return_value=(_sample_ohlcv(), "yfinance")):
+            result = app.api_smc_scan(period="6mo", swing_length=2, internal_swing_length=2)
+
+        assert "results" in result
+        assert isinstance(result["results"], list)
+        if result["results"]:
+            assert result["results"][0]["symbol"] == "AAPL"
+            assert "dol_distance" in result["results"][0]
+            assert "dol_direction" in result["results"][0]
+    finally:
+        app.DB = original
+

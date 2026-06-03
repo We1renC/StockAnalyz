@@ -1115,6 +1115,9 @@ def build_signals(
             "tp2": round(float(ote["tp2"]), 4) if ote and ote.get("tp2") is not None else None,
             "rr": round(rr, 2) if rr is not None else None,
             "dol_target": dol,
+            "dol_distance": round(abs(dol["level"] - entry_price), 4) if dol else None,
+            "dol_distance_pct": round(abs(dol["level"] - entry_price) / entry_price * 100, 2) if dol else None,
+            "dol_direction": "above" if direction == 1 else "below",
             "factors": factors,
             "risk": {
                 "min_rr": cfg.min_rr,

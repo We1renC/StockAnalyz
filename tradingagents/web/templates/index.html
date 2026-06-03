@@ -1285,6 +1285,44 @@ body { background: var(--bg-base); color: var(--text-primary); }
       </div>
       
     </div>
+
+    <!-- SMC Batch Scanner Stage -->
+    <div class="glass-card p-4 mt-6">
+      <div class="font-semibold text-cyan-400 mb-3 border-b border-slate-800/60 pb-2 flex justify-between items-center">
+        <div class="flex items-center gap-2">
+          <span>SMC 批次訊號掃描 (SMC Batch Signal Scanner)</span>
+          <span id="smc-scan-count-badge" class="pill pill-gray text-xs" style="font-size:10px;padding:2px 6px">0 筆訊號</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button onclick="runSmcBatchScan()" id="smc-scan-btn" class="btn-primary text-xs px-2.5 py-1.5" style="border-radius: 6px; padding: 4px 8px; font-size: 11px;">
+            開始掃描所有觀察/持倉
+          </button>
+        </div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs text-left text-slate-300">
+          <thead>
+            <tr class="text-slate-500 border-b border-slate-800/50">
+              <th class="py-2 text-left">代號</th>
+              <th class="py-2 text-left">入場模型 (Model)</th>
+              <th class="py-2 text-center">方向 (Dir)</th>
+              <th class="py-2 text-right">評分 (Score)</th>
+              <th class="py-2 text-right">建議入場 (Entry)</th>
+              <th class="py-2 text-right">結構停損 (Stop)</th>
+              <th class="py-2 text-right">目標停利 (TP)</th>
+              <th class="py-2 text-right">風險回報比 (RR)</th>
+              <th class="py-2 text-left">流動性目標 (DOL Target)</th>
+              <th class="py-2 text-right">DOL 距離 (Dist)</th>
+              <th class="py-2 text-center">狀態 (Status)</th>
+            </tr>
+          </thead>
+          <tbody id="smc-scan-tbody">
+            <tr><td colspan="11" class="py-6 text-center text-slate-500">點擊「開始掃描」以分析所有持倉與觀察清單商品...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
   </div>
 
 </div>
@@ -2473,6 +2511,98 @@ function refreshSmcAnalysis() {
   const select = $('smc-symbol-select');
   if (select) {
     drawSmcTabChart(select.value, $('smc-chart-period').value, true);
+  }
+}
+
+const escJs = v => String(v ?? '').replace(/['"\\]/g, '\\$&');
+
+async function runSmcBatchScan() {
+  const btn = $('smc-scan-btn');
+  const tbody = $('smc-scan-tbody');
+  const badge = $('smc-scan-count-badge');
+  const period = $('smc-chart-period').value;
+
+  if (!btn || !tbody) return;
+
+  btn.disabled = true;
+  btn.textContent = '掃描中...';
+  tbody.innerHTML = '<tr><td colspan="11" class="py-8 text-center text-slate-400">正在分析所有持倉與觀察清單商品，此操作可能需要 10-20 秒，請稍候...</td></tr>';
+  badge.textContent = '計算中...';
+
+  try {
+    const res = await fetch(`/api/smc-scan?period=${period}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    }).then(r => r.json());
+
+    if (res.error) {
+      tbody.innerHTML = `<tr><td colspan="11" class="py-8 text-center text-red-400">掃描錯誤: ${res.error}</td></tr>`;
+      badge.textContent = '0 筆訊號';
+      return;
+    }
+
+    const results = res.results || [];
+    badge.textContent = `${results.length} 筆訊號`;
+
+    if (results.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="11" class="py-8 text-center text-slate-500">掃描完成，未發現符合條件的 SMC 交易訊號。</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = results.map(sig => {
+      const isLong = sig.direction === 'long';
+      const statusColor = sig.status === 'qualified' ? 'text-cyan-400 font-bold' : 'text-slate-500';
+      const dirHtml = isLong 
+        ? `<span class="text-red-400 bg-red-950/40 border border-red-800/40 px-2 py-0.5 rounded font-bold">LONG</span>` 
+        : `<span class="text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 px-2 py-0.5 rounded font-bold">SHORT</span>`;
+      
+      const scoreColor = sig.score >= 8 ? 'text-cyan-400 font-bold' : 'text-amber-400';
+      
+      const dolType = sig.dol_target ? sig.dol_target.type : '—';
+      const dolLevel = sig.dol_target ? fmt(sig.dol_target.level) : '—';
+      const dolHtml = sig.dol_target 
+        ? `<span class="font-mono text-slate-300 font-semibold">${dolType}</span> <span class="text-slate-500">(${dolLevel})</span>`
+        : '<span class="text-slate-500">—</span>';
+
+      const distVal = sig.dol_distance ? fmt(sig.dol_distance) : '—';
+      const distPct = sig.dol_distance_pct ? `(${sig.dol_distance_pct}%)` : '';
+      const distHtml = sig.dol_target
+        ? `<span class="font-mono text-slate-300">${distVal}</span> <span class="text-xs text-slate-500">${distPct}</span>`
+        : '<span class="text-slate-500">—</span>';
+
+      return `<tr class="border-b border-slate-800/40 hover:bg-slate-800/20">
+        <td class="py-3 font-mono font-bold text-slate-200">
+          <a href="#" onclick="switchSmcSymbol('${escJs(sig.symbol)}'); return false;" class="text-cyan-400 hover:underline">${escHtml(sig.symbol)}</a>
+        </td>
+        <td class="py-3 font-mono text-slate-300">${escHtml(sig.model)}</td>
+        <td class="py-3 text-center">${dirHtml}</td>
+        <td class="py-3 text-right font-mono ${scoreColor}">${sig.score}</td>
+        <td class="py-3 text-right font-mono text-slate-200">${fmt(sig.entry)}</td>
+        <td class="py-3 text-right font-mono text-red-400">${fmt(sig.stop)}</td>
+        <td class="py-3 text-right font-mono text-emerald-400">${fmt(sig.tp1)}</td>
+        <td class="py-3 text-right font-mono text-cyan-400 font-bold">${sig.rr ? sig.rr + ' : 1' : '—'}</td>
+        <td class="py-3 text-left">${dolHtml}</td>
+        <td class="py-3 text-right">${distHtml}</td>
+        <td class="py-3 text-center ${statusColor}">${sig.status === 'qualified' ? '合格' : '觀察'}</td>
+      </tr>`;
+    }).join('');
+
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="11" class="py-8 text-center text-red-400">掃描錯誤: ${e}</td></tr>`;
+    badge.textContent = '0 筆訊號';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '開始掃描所有觀察/持倉';
+  }
+}
+
+function switchSmcSymbol(symbol) {
+  const select = $('smc-symbol-select');
+  if (select) {
+    select.value = symbol;
+    onSmcSymbolChange();
   }
 }
 
