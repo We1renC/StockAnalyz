@@ -607,6 +607,64 @@ def fetch_intraday_history(symbol: str, period: str, interval: str) -> pd.DataFr
         return pd.DataFrame()
 
 
+_FUNDAMENTALS_CACHE: dict[str, tuple[float, dict]] = {}
+_FUNDAMENTALS_TTL = 3600  # valuation/financials change slowly; 1h cache is safe
+
+
+def fetch_fundamentals(symbol: str) -> dict:
+    """Pull valuation + financial-health metrics from yfinance.info.
+
+    Returns a normalized dict (None for missing fields). Cached 1h. Empty
+    dict on failure so the LLM context still builds with technicals only.
+    """
+    entry = _FUNDAMENTALS_CACHE.get(symbol)
+    if entry and time.time() < entry[0]:
+        return entry[1]
+    out: dict = {}
+    try:
+        info = yf.Ticker(symbol).info or {}
+    except Exception:
+        _FUNDAMENTALS_CACHE[symbol] = (time.time() + _FUNDAMENTALS_TTL, {})
+        return {}
+
+    def _g(key):
+        v = info.get(key)
+        return v if isinstance(v, (int, float)) and not (isinstance(v, float) and (math.isnan(v) or math.isinf(v))) else None
+
+    out = {
+        "sector": info.get("sector"),
+        "industry": info.get("industry"),
+        "market_cap": _g("marketCap"),
+        # 估值
+        "trailing_pe": _g("trailingPE"),
+        "forward_pe": _g("forwardPE"),
+        "price_to_book": _g("priceToBook"),
+        "peg_ratio": _g("pegRatio"),
+        "trailing_eps": _g("trailingEps"),
+        "forward_eps": _g("forwardEps"),
+        # 成長
+        "revenue_growth": _g("revenueGrowth"),
+        "earnings_growth": _g("earningsGrowth"),
+        # 獲利能力
+        "gross_margins": _g("grossMargins"),
+        "operating_margins": _g("operatingMargins"),
+        "profit_margins": _g("profitMargins"),
+        "return_on_equity": _g("returnOnEquity"),
+        # 財務體質
+        "debt_to_equity": _g("debtToEquity"),
+        "free_cashflow": _g("freeCashflow"),
+        "dividend_yield": _g("dividendYield"),
+        # 賣方共識
+        "target_mean_price": _g("targetMeanPrice"),
+        "target_high_price": _g("targetHighPrice"),
+        "target_low_price": _g("targetLowPrice"),
+        "recommendation_key": info.get("recommendationKey"),
+        "num_analysts": _g("numberOfAnalystOpinions"),
+    }
+    _FUNDAMENTALS_CACHE[symbol] = (time.time() + _FUNDAMENTALS_TTL, out)
+    return out
+
+
 _TW_BREADTH_CACHE: dict[str, tuple[float, dict]] = {}
 _TW_BREADTH_TTL = 3600  # breadth updates once per trading day
 
@@ -4088,6 +4146,115 @@ def api_save_settings(req: SettingsUpdate):
     return {"ok": True}
 
 # ─────────────── LLM 深度分析 (多 Provider + Workflow) ───────────────
+def _fmt_pct(v, digits=1):
+    """yfinance ratios come as fractions (0.166 = 16.6%)."""
+    if v is None:
+        return "—"
+    return f"{v * 100:.{digits}f}%"
+
+
+def _fmt_num(v, digits=2):
+    if v is None:
+        return "—"
+    try:
+        return f"{float(v):.{digits}f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _build_fundamentals_text(symbol: str, price: Optional[float]) -> str:
+    """Human-readable fundamentals block for the LLM context."""
+    f = fetch_fundamentals(symbol)
+    if not f or all(v is None for k, v in f.items() if k not in ("sector", "industry")):
+        return "基本面數據：暫時無法取得（yfinance 無回應或標的無基本面）。"
+    lines = ["【基本面與估值】"]
+    if f.get("sector") or f.get("industry"):
+        lines.append(f"產業：{f.get('sector') or '—'} / {f.get('industry') or '—'}")
+    # 估值
+    lines.append(
+        f"估值：本益比 TTM {_fmt_num(f.get('trailing_pe'))} / 預估 {_fmt_num(f.get('forward_pe'))}，"
+        f"股價淨值比 {_fmt_num(f.get('price_to_book'))}，PEG {_fmt_num(f.get('peg_ratio'))}，"
+        f"EPS TTM {_fmt_num(f.get('trailing_eps'))} / 預估 {_fmt_num(f.get('forward_eps'))}"
+    )
+    # 成長 + 獲利
+    lines.append(
+        f"成長：營收年增 {_fmt_pct(f.get('revenue_growth'))}，盈餘年增 {_fmt_pct(f.get('earnings_growth'))}"
+    )
+    lines.append(
+        f"獲利能力：毛利率 {_fmt_pct(f.get('gross_margins'))}，營業利益率 {_fmt_pct(f.get('operating_margins'))}，"
+        f"淨利率 {_fmt_pct(f.get('profit_margins'))}，ROE {_fmt_pct(f.get('return_on_equity'))}"
+    )
+    # 注意：yfinance 此版的 dividendYield 已是百分比（0.34 = 0.34%），不像
+    # 其他 ratio 是分數，故直接顯示不再 ×100。
+    dy = f.get("dividend_yield")
+    dy_text = f"{_fmt_num(dy)}%" if dy is not None else "—"
+    lines.append(
+        f"財務體質：負債權益比 {_fmt_num(f.get('debt_to_equity'))}，殖利率 {dy_text}"
+    )
+    # 賣方共識 + 與現價相對位置
+    tgt = f.get("target_mean_price")
+    if tgt and price:
+        upside = (tgt / price - 1) * 100
+        lines.append(
+            f"賣方共識：目標均價 {_fmt_num(tgt)}（區間 {_fmt_num(f.get('target_low_price'))}~{_fmt_num(f.get('target_high_price'))}），"
+            f"相對現價 {upside:+.1f}%，評等 {f.get('recommendation_key') or '—'}（{f.get('num_analysts') or 0} 位分析師）"
+        )
+    elif f.get("recommendation_key"):
+        lines.append(f"賣方共識：評等 {f.get('recommendation_key')}（{f.get('num_analysts') or 0} 位分析師）")
+    return "\n".join(lines)
+
+
+def _build_technical_matrix_text(symbol: str) -> str:
+    """Condense the 17D technical matrix into an LLM-readable digest."""
+    try:
+        matrix = _build_technical_matrix_payload(symbol, "6mo")
+    except Exception:
+        return "17D 技術矩陣：暫時無法計算（資料不足或抓取失敗）。"
+    summary = matrix.get("summary") or {}
+    plan = matrix.get("execution_plan") or {}
+    confluence = matrix.get("confluence_zones") or []
+    dims = matrix.get("dimensions") or []
+    interactions = matrix.get("interactions") or []
+
+    lines = ["【17D 全景技術矩陣】"]
+    lines.append(
+        f"整體偏向：{summary.get('bias')}（淨分數 {summary.get('net_score')}，信心 {summary.get('confidence')}），"
+        f"風險等級 {summary.get('risk_level')}；維度狀態 computed {summary.get('computed_count')}/"
+        f"partial {summary.get('partial_count')}/unavailable {summary.get('unavailable_count')}"
+    )
+    # 各維度偏向（只列 computed 且非中性者，避免雜訊）
+    notable = []
+    for d in dims:
+        if d.get("status") == "unavailable":
+            continue
+        bias = d.get("bias")
+        if bias and bias != "neutral":
+            notable.append(f"{d.get('name', d.get('id'))}={bias}({d.get('score')})")
+    if notable:
+        lines.append("關鍵維度偏向：" + "；".join(notable[:10]))
+    # 交互關聯
+    inter_active = [f"{i.get('name')}={i.get('status')}" for i in interactions if i.get("status") not in ("inactive", "complete", "neutral")]
+    if inter_active:
+        lines.append("交互關聯訊號：" + "；".join(inter_active))
+    # 共振區
+    if confluence:
+        czs = [f"{c.get('center')}（score {c.get('score')}）" for c in confluence[:4]]
+        lines.append("價格共振區（多工具重疊，高機率支撐/壓力）：" + "；".join(czs))
+    # 執行計畫候選價位
+    def _levels(items):
+        return "；".join(f"{it.get('type')} {it.get('price')}" for it in (items or [])[:3]) or "—"
+    lines.append(f"系統建議進場區：{_levels(plan.get('entries'))}")
+    lines.append(f"系統建議停損區：{_levels(plan.get('stops'))}")
+    lines.append(f"系統建議停利區：{_levels(plan.get('targets'))}")
+    if plan.get("risk_notes"):
+        lines.append("風險備註：" + "；".join(plan["risk_notes"][:3]))
+    # 資料缺口透明化
+    gaps = matrix.get("data_gaps") or []
+    if gaps:
+        lines.append(f"（資料缺口 {len(gaps)} 項，部分機構級維度未接外部 feed，判讀時請降權）")
+    return "\n".join(lines)
+
+
 def _build_context(symbol: str) -> dict:
     conn = get_db()
     cache = conn.execute("SELECT * FROM price_cache WHERE symbol=?", (symbol,)).fetchone()
@@ -4100,26 +4267,42 @@ def _build_context(symbol: str) -> dict:
         return {"error": "無此標的快取資料，請先在儀表板按一次刷新"}
     ind = json.loads(dict(cache).get("data") or "{}")
     name = (dict(pos)["name"] if pos else (dict(watch)["name"] if watch else symbol))
+    price = ind.get("price")
 
     parts = [
         f"標的: {symbol} ({name})",
-        f"現價: {ind.get('price')}, RSI: {ind.get('rsi')}, β: {ind.get('beta')}",
+        "",
+        "【即時技術指標】",
+        f"現價: {price}, RSI: {ind.get('rsi')}, β: {ind.get('beta')}",
         f"MA20: {ind.get('ma20')}, MA60: {ind.get('ma60')}",
         f"52週高/低: {ind.get('high52')} / {ind.get('low52')}",
         f"今日漲跌: {ind.get('change_1d')}%, 1月漲跌: {ind.get('change_1m')}%",
     ]
+    if ind.get("nav"):
+        prem = (price / ind["nav"] - 1) * 100 if price else None
+        parts.append(f"ETF 折溢價: NAV {ind['nav']}，市價相對 NAV {prem:+.2f}%" if prem is not None else f"NAV {ind['nav']}")
+
+    # 17D 技術矩陣（核心新增）
+    parts.append("")
+    parts.append(_build_technical_matrix_text(symbol))
+
+    # 基本面與估值（核心新增）
+    parts.append("")
+    parts.append(_build_fundamentals_text(symbol, price))
+
+    parts.append("")
     if pos:
         d = dict(pos)
         ret_pct = (ind.get("price", d["cost_price"])/d["cost_price"]-1)*100
-        parts.append(f"持倉: {d['shares']} 股 @ 成本 {d['cost_price']} (報酬 {ret_pct:+.2f}%)")
+        parts.append(f"【持倉狀態】{d['shares']} 股 @ 成本 {d['cost_price']} (報酬 {ret_pct:+.2f}%)")
     if watch:
         d = dict(watch)
-        parts.append(f"進場目標: {d.get('target_entry')}, 停利: {d.get('target_profit')}, 停損: {d.get('target_stop')}")
+        parts.append(f"【觀察設定】進場目標: {d.get('target_entry')}, 停利: {d.get('target_profit')}, 停損: {d.get('target_stop')}")
         if d.get("notes"):
             parts.append(f"標的說明: {d['notes']}")
     if market:
         m = dict(market)
-        parts.append(f"大盤: VIX {m.get('vix')}, 風險等級 {m.get('risk_level')}, 警訊數 {m.get('warnings_count')}/3")
+        parts.append(f"【大盤環境】VIX {m.get('vix')}, 風險等級 {m.get('risk_level')}, 警訊數 {m.get('warnings_count')}/3")
 
     return {"context": "\n".join(parts), "symbol": symbol, "name": name}
 
@@ -4727,25 +4910,37 @@ def api_llm_analyze_stream(symbol: str, mode: str = "both"):
                 "elapsed": round(_time.time() - t0, 1),
             })
 
-            analyst_prompt = f"""你是專業金融分析師。基於以下即時數據，給出**繁體中文**深度分析報告：
+            analyst_prompt = f"""你是專業金融分析師。以下提供三層資訊：即時技術指標、17D 全景技術矩陣、基本面與估值。請做**繁體中文**深度分析報告。
 
 {ctx["context"]}
 
-請依以下結構回應（markdown 格式）。禁止出現「綜上所述」「核心結論是」「修訂後」「基於以上分析」等贅詞，直接呈現內容。所有條列或序列內容強制用編號（1. 2. 3.）呈現：
+**分析方法（重要）**：
+- 不要只看現價就在現價附近微調點位。請從「技術結構 × 基本面 × 估值」三者的**相對關係**推導觀點。
+- 技術面以 17D 矩陣的共振區、系統建議進出場區、各維度偏向為主要依據，而非單純用 MA/RSI 直覺。
+- 估值面請對照本益比、PEG、營收/盈餘成長與賣方目標價，判斷現價屬於便宜、合理或昂貴。
+- 點位建議必須有依據：進場優先落在「技術共振區」且「估值未過熱」的位置；停損依結構（跌破支撐/共振區失效）而非固定百分比；停利對照賣方目標價與 52 週高與壓力共振區。
+- 若技術面與基本面**背離**（例如技術轉強但估值已貴、或基本面好但技術破位），必須明確點出並說明你如何權衡。
+- 資料缺口（17D 標示未接外部 feed 的維度）請降權，不要過度解讀。
 
-## 1. 技術面解讀
-（趨勢、動能、支撐壓力）
+請依以下結構回應（markdown）。禁止出現「綜上所述」「核心結論是」「修訂後」「基於以上分析」等贅詞，直接呈現內容。條列強制用編號（1. 2. 3.）：
 
-## 2. 風險與機會
-（多空因素、催化劑）
+## 1. 技術結構解讀（以 17D 矩陣為主）
+（整體偏向、關鍵共振區、結構訊號；說明目前價格在結構中的位置）
 
-## 3. 操作建議
-（具體買/賣/持有 + 進出場價位）
+## 2. 基本面與估值定位
+（成長性、獲利能力、估值貴/便宜、與賣方目標價的距離）
 
-## 4. 時間框架
-（短/中/長線）
+## 3. 技術 × 基本面 的交叉判讀
+（兩者是否同向？若背離如何權衡？這是本報告的核心）
 
-## 5. 風險警示
+## 4. 操作建議（買/賣/持有 + 有依據的點位）
+（進場區、停損區、停利區，每個價位都要說明來自哪個技術或估值依據）
+
+## 5. 分時間框架觀點
+（短線 1 週 / 中線 3 個月 / 長線 1 年以上）
+
+## 6. 風險警示與失效條件
+（什麼情況代表這個判斷失效）
 """
             try:
                 analyst_text = call_llm(
