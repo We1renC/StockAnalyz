@@ -274,7 +274,7 @@ def test_build_smc_analysis_exposes_smt_events_when_correlated_provided():
 
 def test_unicorn_and_smt_divergence_entry_models():
     from smc_quant import build_signals, SMCConfig
-    df = _sample_ohlcv()
+    df = normalize_ohlcv(_sample_ohlcv())
     cfg = SMCConfig()
     
     # 1. Unicorn Model (Breaker Block + FVG overlap)
@@ -296,7 +296,7 @@ def test_unicorn_and_smt_divergence_entry_models():
         symbol="AAPL"
     )
     assert len(signals) > 0
-    assert signals[0]["entry_model"] == "Unicorn"
+    assert signals[0]["model"] == "Unicorn"
 
     # 2. SMT Divergence Model (SMT events present)
     signals_smt = build_signals(
@@ -316,7 +316,7 @@ def test_unicorn_and_smt_divergence_entry_models():
         symbol="AAPL"
     )
     assert len(signals_smt) > 0
-    assert signals_smt[0]["entry_model"] == "SMT Divergence Model"
+    assert signals_smt[0]["model"] == "SMT Divergence Model"
 
 
 def test_silver_bullet_and_power_of_three_entry_models():
@@ -351,7 +351,7 @@ def test_silver_bullet_and_power_of_three_entry_models():
         symbol="AAPL"
     )
     assert len(signals_sb) > 0
-    assert signals_sb[0]["entry_model"] == "Silver Bullet"
+    assert signals_sb[0]["model"] == "Silver Bullet"
 
     # 2. Power of Three (AMD) (Judas event present)
     signals_amd = build_signals(
@@ -371,5 +371,5 @@ def test_silver_bullet_and_power_of_three_entry_models():
         symbol="AAPL"
     )
     assert len(signals_amd) > 0
-    assert signals_amd[0]["entry_model"] == "Power of Three (AMD)"
+    assert signals_amd[0]["model"] == "Power of Three (AMD)"
 
