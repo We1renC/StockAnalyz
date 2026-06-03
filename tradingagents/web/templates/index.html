@@ -3937,6 +3937,109 @@ function renderPlanGroup(label, items, emptyText, accentClass) {
     </div>`;
 }
 
+function smcBiasLabel(bias) {
+  return {
+    strong_bullish: '強多',
+    bullish: '偏多',
+    neutral: '中性',
+    bearish: '偏空',
+    strong_bearish: '強空',
+  }[bias] || '中性';
+}
+
+function smcDirectionLabel(direction) {
+  return direction === 'long' ? '做多' : direction === 'short' ? '做空' : '觀察';
+}
+
+function renderSmcFactors(signal) {
+  const factors = (signal && signal.factors) || [];
+  if (!factors.length) return '<span class="text-slate-500">尚無因子</span>';
+  const labels = {
+    htf_bias_alignment: 'HTF方向',
+    premium_discount_alignment: 'PD區',
+    unmitigated_ob: '未回補OB',
+    unfilled_fvg: '未填FVG',
+    liquidity_sweep: '掃流動性',
+    ltf_choch: 'LTF轉向',
+    ote_zone: 'OTE',
+    killzone: 'Killzone',
+    displacement: 'Displacement',
+  };
+  return factors.map(f => `
+    <span class="inline-flex items-center gap-1 px-2 py-1 rounded border ${f.active ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-slate-800 bg-slate-950/50 text-slate-500'}">
+      ${escHtml(labels[f.id] || f.id)}
+      <span class="tabular-nums">${f.active ? '+' + f.weight : '0'}</span>
+    </span>`).join('');
+}
+
+function renderSmcAnalysisPanel(smc) {
+  const panel = $('smc-analysis-panel');
+  if (!panel) return;
+  if (!smc) {
+    panel.innerHTML = '<div class="text-slate-500">SMC 結構載入中...</div>';
+    return;
+  }
+  if (smc.error || smc.detail) {
+    panel.innerHTML = `<div class="text-red-400">SMC 錯誤：${escHtml(smc.error || smc.detail)}</div>`;
+    return;
+  }
+  const summary = smc.summary || {};
+  const concepts = smc.concepts || {};
+  const signal = (smc.signals || [])[0] || null;
+  const pd = concepts.premium_discount || {};
+  const ote = concepts.ote || {};
+  const counts = {
+    bos: (concepts.structure || []).filter(x => x.type === 'BOS').length,
+    choch: (concepts.structure || []).filter(x => x.type === 'CHOCH').length,
+    ob: (concepts.order_blocks || []).length,
+    fvg: (concepts.fvgs || []).length,
+    liq: (concepts.liquidity || []).length,
+  };
+  panel.innerHTML = `
+    <div class="flex items-center gap-2 flex-wrap">
+      <div class="font-semibold text-sky-300">SMC 量化結構</div>
+      <span class="${technicalBiasClass(summary.bias)} font-semibold">${smcBiasLabel(summary.bias)}</span>
+      <span class="text-slate-500 tabular-nums">分數 ${fmt(summary.confluence_score || 0, 0)}/${summary.entry_threshold || 8}</span>
+      <span class="text-slate-500">PD ${escHtml(summary.premium_discount || '—')}</span>
+      <span class="text-slate-500">時段 ${escHtml(summary.session || '—')}</span>
+      <button onclick="setTechnicalMarkerFilter('smc')" class="btn-secondary text-xs ml-auto" style="padding:2px 8px">只看 SMC</button>
+    </div>
+    <div class="mt-2 grid grid-cols-2 md:grid-cols-5 gap-2 text-[11px]">
+      <div class="rounded border border-slate-800 bg-slate-950/50 px-2 py-1">BOS <span class="tabular-nums text-sky-300">${counts.bos}</span></div>
+      <div class="rounded border border-slate-800 bg-slate-950/50 px-2 py-1">CHoCH <span class="tabular-nums text-amber-300">${counts.choch}</span></div>
+      <div class="rounded border border-slate-800 bg-slate-950/50 px-2 py-1">OB <span class="tabular-nums text-emerald-300">${counts.ob}</span></div>
+      <div class="rounded border border-slate-800 bg-slate-950/50 px-2 py-1">FVG <span class="tabular-nums text-fuchsia-300">${counts.fvg}</span></div>
+      <div class="rounded border border-slate-800 bg-slate-950/50 px-2 py-1">流動性 <span class="tabular-nums text-yellow-300">${counts.liq}</span></div>
+    </div>
+    <div class="mt-2 grid grid-cols-1 md:grid-cols-3 gap-2">
+      <div class="rounded border border-slate-800 bg-slate-950/40 p-2">
+        <div class="text-slate-500 mb-1">Dealing Range</div>
+        <div class="tabular-nums">Low ${fmt(pd.range_low)} / EQ ${fmt(pd.equilibrium)} / High ${fmt(pd.range_high)}</div>
+      </div>
+      <div class="rounded border border-slate-800 bg-slate-950/40 p-2">
+        <div class="text-slate-500 mb-1">OTE</div>
+        <div class="tabular-nums">${ote.entry_0705 ? `${fmt(ote.bottom)} ~ ${fmt(ote.top)} / 0.705 ${fmt(ote.entry_0705)}` : '—'}</div>
+      </div>
+      <div class="rounded border border-slate-800 bg-slate-950/40 p-2">
+        <div class="text-slate-500 mb-1">DOL / RR</div>
+        <div class="tabular-nums">${signal ? `${fmt(signal.tp1)} / RR ${fmt(signal.rr, 2)}` : '—'}</div>
+      </div>
+    </div>
+    ${signal ? `
+      <div class="mt-2 rounded border ${signal.qualified ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-slate-800 bg-slate-950/40'} p-2">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="font-semibold">${escHtml(signal.model)}</span>
+          <span class="${signal.direction === 'long' ? 'text-red-400' : 'text-emerald-400'}">${smcDirectionLabel(signal.direction)}</span>
+          <span class="tabular-nums text-slate-300">Entry ${fmt(signal.entry)}</span>
+          <span class="tabular-nums text-emerald-300">SL ${fmt(signal.stop)}</span>
+          <span class="tabular-nums text-red-300">TP ${fmt(signal.tp1)}</span>
+          <span class="ml-auto ${signal.qualified ? 'text-emerald-300' : 'text-slate-500'}">${signal.qualified ? '達標' : '未達標'}</span>
+        </div>
+        <div class="mt-2 flex flex-wrap gap-1.5 text-[11px]">${renderSmcFactors(signal)}</div>
+      </div>` : `<div class="mt-2 text-slate-500">尚無 SMC 交易信號。</div>`}
+    <div class="mt-2 text-[11px] text-slate-500">防重繪：Swing 使用 confirmation index；訊號只使用已確認結構。Crypto 清算/OI/Funding/CVD 已保留擴充欄位。</div>`;
+}
+
 function matrixPeriodForChartPeriod(period) {
   return period;
 }
@@ -4061,7 +4164,9 @@ async function drawChart(symbol, period, isRefresh = false) {
     _chartMa60Series = null;
     _chartVolSeries = null;
     _technicalMarkerFilter = 'all';
+    _smcAnalysis = null;
     renderTechnicalMatrixPanel(null);
+    renderSmcAnalysisPanel(null);
     if (_chart) {
       try { _chart.remove(); } catch(e) {}
       _chart = null;
@@ -4069,9 +4174,10 @@ async function drawChart(symbol, period, isRefresh = false) {
   }
   try {
     const matrixPeriod = matrixPeriodForChartPeriod(period);
-    const [r, matrix] = await Promise.all([
+    const [r, matrix, smc] = await Promise.all([
       fetch(`/api/history/${encodeURIComponent(symbol)}?period=${period}`).then(r=>r.json()),
       fetch(`/api/technical-matrix/${encodeURIComponent(symbol)}?period=${matrixPeriod}&include_history_markers=${_includeHistoryMarkers ? 'true' : 'false'}`).then(r=>r.json()).catch(() => null),
+      fetch(`/api/smc-analysis/${encodeURIComponent(symbol)}?period=${period}`).then(r=>r.json()).catch(() => null),
     ]);
     if (r.error) {
       if (!isRefresh) {
@@ -4129,12 +4235,20 @@ async function drawChart(symbol, period, isRefresh = false) {
     if (matrix && !matrix.error && !matrix.detail && Array.isArray(matrix.markers)) {
       _technicalMatrix = matrix;
       renderTechnicalMatrixPanel(matrix);
-      applyTechnicalMarkers();
     } else if (matrix && (matrix.error || matrix.detail)) {
       renderTechnicalMatrixPanel({ error: matrix.error || matrix.detail });
     } else {
       renderTechnicalMatrixPanel({ error: '未取得 17D 矩陣資料' });
     }
+    if (smc && !smc.error && !smc.detail && Array.isArray(smc.markers)) {
+      _smcAnalysis = smc;
+      renderSmcAnalysisPanel(smc);
+    } else if (smc && (smc.error || smc.detail)) {
+      renderSmcAnalysisPanel({ error: smc.error || smc.detail });
+    } else {
+      renderSmcAnalysisPanel({ error: '未取得 SMC 結構資料' });
+    }
+    applyTechnicalMarkers();
     if (!isRefresh) {
       _chart.timeScale().fitContent();
       const dynamicOffset = Math.min(10, Math.max(2, Math.floor(r.candles.length * 0.08)));
@@ -4158,6 +4272,7 @@ async function drawChart(symbol, period, isRefresh = false) {
       const container = $('chart-container');
       container.innerHTML = `<div class="text-red-400">圖表錯誤: ${e}</div>`;
       renderTechnicalMatrixPanel({ error: String(e) });
+      renderSmcAnalysisPanel({ error: String(e) });
     }
   }
 }
@@ -4181,6 +4296,7 @@ function closeDiag() {
   _chartMa60Series = null;
   _chartVolSeries = null;
   _technicalMatrix = null;
+  _smcAnalysis = null;
   _technicalMarkerFilter = 'all';
 }
 

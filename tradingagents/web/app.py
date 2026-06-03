@@ -33,6 +33,7 @@ from llm_providers import (
     call_llm, call_cli,
 )
 from technical_matrix import build_technical_matrix
+from smc_quant import SMCConfig, build_smc_analysis
 
 warnings.filterwarnings("ignore")
 
@@ -3253,6 +3254,45 @@ def api_technical_matrix(symbol: str, period: str = "1y", include_history_marker
         return sanitize_float_values(matrix)
     except ValueError as e:
         raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/smc-analysis/{symbol}")
+def api_smc_analysis(
+    symbol: str,
+    period: str = "6mo",
+    swing_length: int = 5,
+    internal_swing_length: int = 3,
+    close_break: bool = True,
+):
+    """Quantified Smart Money Concept analysis for one symbol.
+
+    This exposes deterministic SMC concepts and markers so UI, reports, and
+    future backtests can share the same output contract.
+    """
+    try:
+        cfg = _chart_period_config(period)
+        calc_period = cfg["period"]
+        interval = cfg.get("interval", "1d")
+        if interval == "1d":
+            h, source = fetch_history(symbol, period=calc_period)
+        else:
+            h = fetch_intraday_history(symbol, period=calc_period, interval=interval)
+            source = "yfinance_intraday"
+        if h is None or len(h) == 0:
+            raise HTTPException(404, "No price history")
+        smc_cfg = SMCConfig(
+            swing_length=max(2, min(int(swing_length), 50)),
+            internal_swing_length=max(2, min(int(internal_swing_length), 20)),
+            close_break=bool(close_break),
+        )
+        payload = build_smc_analysis(h, symbol=symbol, timeframe=period, config=smc_cfg)
+        payload["source"] = source
+        payload["period"] = period
+        return sanitize_float_values(payload)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, str(e))
 
