@@ -1671,9 +1671,16 @@ body { background: var(--bg-base); color: var(--text-primary); }
         分析所有持倉與觀察清單中的個股，並依技術指標智慧推薦點位。<br>
         <span class="text-xs text-gray-400">（進場點、停損點、停利點。您可自由微調，並選擇性套用回資料庫中）</span>
       </div>
-      <div>
+      <div class="flex gap-2 items-center">
+        <select id="batch-deep-mode" class="bg-gray-800 border border-gray-600 text-gray-200 text-xs rounded px-2 py-2">
+          <option value="analyst">只分析師（快）</option>
+          <option value="both">分析師+審查員（深）</option>
+        </select>
+        <button id="batch-deep-start-btn" onclick="startBatchDeepAnalyze()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold transition" title="對所有持倉+觀察清單平行跑 17D+財報 交叉判讀深度分析，結果存入各股歷史分析">
+          批次深度分析（17D+財報）
+        </button>
         <button id="batch-analyze-start-btn" onclick="startBatchAnalyze()" class="bg-teal-600 hover:bg-teal-700 text-white px-5 py-2 rounded-lg font-semibold transition">
-          開始 AI 批量分析
+          開始 AI 批量點位分析
         </button>
       </div>
     </div>
@@ -5573,6 +5580,71 @@ function closeBatchAnalyze() {
 function toggleSelectAllBatch(master) {
   const checkboxes = document.querySelectorAll('.batch-item-select');
   checkboxes.forEach(cb => cb.checked = master.checked);
+}
+
+async function startBatchDeepAnalyze() {
+  const deepBtn = $('batch-deep-start-btn');
+  const progressDiv = $('batch-analyze-progress');
+  const progressBar = $('batch-progress-bar');
+  const progressText = $('batch-progress-text');
+  const progressPercent = $('batch-progress-percent');
+  const tbody = $('batch-analyze-tbody');
+  const mode = ($('batch-deep-mode') || {}).value || 'analyst';
+
+  deepBtn.disabled = true;
+  deepBtn.textContent = '深度分析中...';
+  progressDiv.classList.remove('hidden');
+  progressBar.style.width = '3%';
+  progressPercent.textContent = '3%';
+  progressText.textContent = '啟動平行深度分析...';
+  tbody.innerHTML = `<tr><td colspan="7" class="px-3 py-8 text-center text-gray-400">AI 正在平行對所有標的做 17D + 財報交叉判讀，完成的會即時列出...</td></tr>`;
+
+  const rows = [];
+  try {
+    const resp = await fetch(`/api/batch-deep-analyze?mode=${mode}&max_workers=3&scope=all`, { method: 'POST' });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop();
+      for (const part of parts) {
+        for (const line of part.split('\n')) {
+          if (!line.startsWith('data:')) continue;
+          let data;
+          try { data = JSON.parse(line.substring(5).trim()); } catch { continue; }
+          if (data.status === 'progress') {
+            progressBar.style.width = `${data.percent}%`;
+            progressPercent.textContent = `${data.percent}%`;
+            progressText.textContent = data.message;
+            if (data.result) {
+              const r = data.result;
+              rows.push(r);
+              tbody.innerHTML = rows.map(x => `
+                <tr>
+                  <td class="px-3 py-2 font-mono text-slate-200">${x.symbol}</td>
+                  <td class="px-3 py-2 text-slate-300">${x.name || ''}</td>
+                  <td class="px-3 py-2 ${x.ok ? 'text-emerald-400' : 'text-red-400'}" colspan="4">${x.ok ? (x.decision_summary || '已完成') : ('失敗：' + (x.error || ''))}</td>
+                  <td class="px-3 py-2 text-slate-500">${x.elapsed != null ? x.elapsed + 's' : ''}</td>
+                </tr>`).join('');
+            }
+          } else if (data.status === 'done') {
+            progressBar.style.width = '100%';
+            progressPercent.textContent = '100%';
+            progressText.textContent = data.message;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    progressText.textContent = '深度分析失敗：' + e;
+  } finally {
+    deepBtn.disabled = false;
+    deepBtn.textContent = '批次深度分析（17D+財報）';
+  }
 }
 
 async function startBatchAnalyze() {
