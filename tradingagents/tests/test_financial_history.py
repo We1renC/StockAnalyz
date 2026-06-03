@@ -112,3 +112,45 @@ def test_obsidian_financials_note(tmp_path):
     text = note.read_text(encoding="utf-8")
     assert "type: financial-history" in text
     assert "2026-03-31" in text
+
+
+def test_etf_fundamentals_enriched(monkeypatch):
+    """ETF should get is_fund + etf block (category/assets/returns/holdings)."""
+    fake_info = {
+        "quoteType": "ETF", "category": "Large Blend", "fundFamily": "SSGA",
+        "totalAssets": 7.35e11, "navPrice": 758.3, "yield": 0.0103,
+        "ytdReturn": 5.68, "threeYearAverageReturn": 0.23, "fiveYearAverageReturn": 0.14,
+        "beta3Year": 1.0, "legalType": "Exchange Traded Fund",
+    }
+    fake_ticker = MagicMock()
+    fake_ticker.info = fake_info
+    # top_holdings DataFrame
+    th = pd.DataFrame(
+        {"Name": ["NVIDIA", "Apple"], "Holding Percent": [0.078, 0.064]},
+        index=["NVDA", "AAPL"],
+    )
+    fake_ticker.funds_data.top_holdings = th
+    with patch.object(app.yf, "Ticker", return_value=fake_ticker):
+        app._FUNDAMENTALS_CACHE.clear()
+        f = app.fetch_fundamentals("SPY")
+    assert f["is_fund"] is True
+    assert f["etf"]["category"] == "Large Blend"
+    assert f["etf"]["top_holdings"][0]["symbol"] == "NVDA"
+    assert f["etf"]["top_holdings"][0]["weight"] == 7.8
+
+
+def test_etf_fundamentals_text_block():
+    f = {
+        "is_fund": True,
+        "etf": {
+            "category": "Large Blend", "fund_family": "SSGA", "total_assets": 7.35e11,
+            "nav": 758.3, "yield": 0.0103, "ytd_return": 5.68,
+            "three_year_return": 0.23, "five_year_return": 0.14, "beta_3y": 1.0,
+            "top_holdings": [{"symbol": "NVDA", "name": "NVIDIA", "weight": 7.85}],
+        },
+    }
+    text = app._build_fundamentals_text("SPY", 760.0, fundamentals=f)
+    assert "ETF / 基金概況" in text
+    assert "Large Blend" in text
+    assert "前 5 大持股" in text
+    assert "NVDA 7.85%" in text
