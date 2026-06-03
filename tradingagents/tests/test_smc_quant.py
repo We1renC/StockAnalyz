@@ -8,8 +8,12 @@ from smc_quant import (
     build_smc_analysis,
     calculate_position_size,
     detect_breaker_blocks,
+    detect_displacement,
+    detect_judas_swings,
+    detect_liquidity,
     detect_mitigation_blocks,
     detect_order_blocks,
+    detect_structure,
     detect_swings,
     infer_market,
     normalize_ohlcv,
@@ -176,3 +180,44 @@ def test_mitigation_blocks_disjoint_from_unmitigated_and_breaker():
     mit_set = {(m["index"], m["event_index"]) for m in detect_mitigation_blocks(obs)}
     brk_set = {(b["index"], b["event_index"]) for b in detect_breaker_blocks(obs)}
     assert mit_set.isdisjoint(brk_set)
+
+
+def test_judas_swing_detects_sweep_then_choch_reversal():
+    """§3.12: BSL sweep + opposite-direction CHoCH within window = Judas confirmed."""
+    cfg = SMCConfig(swing_length=2, internal_swing_length=2)
+    h = normalize_ohlcv(_sample_ohlcv())
+    swings = detect_swings(h, cfg.swing_length)
+    structure = detect_structure(h, swings, cfg)
+    liquidity = detect_liquidity(h, swings, cfg)
+    displacements = detect_displacement(h, cfg)
+    events = detect_judas_swings(h, structure, liquidity, displacements, "AAPL")
+    # Algorithm should run without error on the synthetic frame
+    assert isinstance(events, list)
+    for ev in events:
+        # Mandatory output shape per §3.12
+        assert ev["judas"] in (1, -1)
+        assert ev["real_direction"] == -ev["fakeout_direction"]
+        assert ev["sweep_type"] in {"BSL", "SSL"}
+        assert ev["confirm_index"] > ev["sweep_index"]
+        # FalseMoveHigh ≥ FalseMoveLow within the fakeout window
+        assert ev["false_move_high"] >= ev["false_move_low"]
+
+
+def test_judas_swing_handles_empty_inputs_gracefully():
+    cfg = SMCConfig(swing_length=2, internal_swing_length=2)
+    h = normalize_ohlcv(_sample_ohlcv())
+    # No liquidity / no structure → no events, no exception
+    assert detect_judas_swings(h, [], [], [], "AAPL") == []
+    assert detect_judas_swings(h, [{"type": "CHOCH", "index": 5, "direction": 1}], [], [], "AAPL") == []
+
+
+def test_build_smc_analysis_exposes_judas_events_list():
+    """concepts.judas now carries an events list (not just a boolean)."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "BTCUSDT",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    judas = result["concepts"]["judas"]
+    assert "events" in judas and isinstance(judas["events"], list)
+    assert "latest" in judas
+    assert "active" in judas  # legacy field preserved

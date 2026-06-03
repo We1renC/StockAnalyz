@@ -649,6 +649,76 @@ def session_state(df: pd.DataFrame, symbol: str) -> dict:
     return {"market": market, "active": active, "killzone": killzone, "name": name}
 
 
+def detect_judas_swings(
+    df: pd.DataFrame,
+    structure: list[dict],
+    liquidity: list[dict],
+    displacements: list[dict],
+    symbol: str,
+    *,
+    reversal_lookahead: int = 8,
+) -> list[dict]:
+    """Detect Judas Swing fakeouts per §3.12.
+
+    Pattern: liquidity sweep (BSL/SSL) followed by an opposite-direction
+    CHoCH within ``reversal_lookahead`` bars → fakeout confirmed; real
+    direction is the opposite of the sweep direction.
+    """
+    out: list[dict] = []
+    if df is None or len(df) == 0 or not liquidity or not structure:
+        return out
+    disp_by_dir: dict[int, set[int]] = {1: set(), -1: set()}
+    for d in displacements or []:
+        disp_by_dir.setdefault(int(d["direction"]), set()).add(int(d["index"]))
+    for liq in liquidity:
+        swept = liq.get("swept_index")
+        if swept is None:
+            continue
+        swept = int(swept)
+        # BSL swept = bullish fakeout (real direction bearish); SSL = inverse.
+        fakeout_dir = 1 if liq.get("type") == "BSL" else -1
+        real_dir = -fakeout_dir
+        confirm = next(
+            (
+                ev for ev in structure
+                if ev.get("type") == "CHOCH"
+                and int(ev.get("direction", 0)) == real_dir
+                and swept < int(ev["index"]) <= swept + reversal_lookahead
+            ),
+            None,
+        )
+        if confirm is None:
+            continue
+        end = min(len(df) - 1, int(confirm["index"]))
+        window = df.iloc[swept : end + 1]
+        false_high = round(float(window["high"].max()), 4) if len(window) else None
+        false_low = round(float(window["low"].min()), 4) if len(window) else None
+        disp_confirmed = any(
+            swept < idx <= int(confirm["index"]) for idx in disp_by_dir.get(real_dir, set())
+        )
+        sess = session_state(df.iloc[: swept + 1], symbol)
+        out.append(
+            {
+                "judas": real_dir,
+                "real_direction": real_dir,
+                "fakeout_direction": fakeout_dir,
+                "sweep_type": liq.get("type"),
+                "sweep_level": liq.get("level"),
+                "sweep_index": swept,
+                "sweep_time": _record_time(df.index[swept]),
+                "false_move_high": false_high,
+                "false_move_low": false_low,
+                "confirm_index": int(confirm["index"]),
+                "confirm_time": confirm.get("time"),
+                "displacement_confirmed": disp_confirmed,
+                "session_at_sweep": sess.get("name"),
+                "killzone": bool(sess.get("killzone")),
+            }
+        )
+    out.sort(key=lambda r: r["sweep_index"])
+    return out
+
+
 def retracement_state(df: pd.DataFrame, swings: list[dict]) -> dict:
     highs = [s for s in swings if s["type"] == "high"]
     lows = [s for s in swings if s["type"] == "low"]
@@ -1016,6 +1086,7 @@ def build_smc_analysis(
     ote = ote_zone(swings, bias)
     prev = previous_levels(h)
     session = session_state(h, symbol)
+    judas_events = detect_judas_swings(h, structure, liquidity, displacements, symbol)
     retracement = retracement_state(h, swings)
     generated_at = datetime.now().isoformat(timespec="seconds")
     signals = build_signals(h, bias, obs, fvgs, liquidity, pd_zone, ote, structure, displacements, session, prev, cfg, weights)
@@ -1069,6 +1140,8 @@ def build_smc_analysis(
             "judas": {
                 "active": bool(session.get("killzone"))
                 and any(l.get("swept_index") is not None and int(l["swept_index"]) >= len(h) - 12 for l in liquidity),
+                "events": judas_events[-10:],
+                "latest": judas_events[-1] if judas_events else None,
                 "note": "session fakeout requires sweep plus later CHoCH confirmation",
             },
             "smt": {
