@@ -1502,6 +1502,39 @@ body { background: var(--bg-base); color: var(--text-primary); }
   </div>
 </div>
 
+<!-- Position Quick Trade Modal (加碼買入/賣出部分) -->
+<div id="pos-action-modal" class="modal-backdrop hidden">
+  <div class="modal-content p-6 max-w-md w-full">
+    <div class="flex justify-between items-center mb-4">
+      <h2 id="pos-action-title" class="text-xl font-bold">持倉交易</h2>
+      <button onclick="closePosActionModal()" class="text-gray-400 hover:text-white text-2xl">×</button>
+    </div>
+    <div class="text-sm text-gray-300 mb-4 font-mono" id="pos-action-symbol-label"></div>
+    <form onsubmit="submitPosAction(event)" class="space-y-4">
+      <div>
+        <label class="text-xs text-gray-400">股數</label>
+        <input id="pos-action-shares" type="number" step="any" min="0.0001" required class="input-field" placeholder="請輸入股數">
+      </div>
+      <div>
+        <label class="text-xs text-gray-400">交易價格</label>
+        <input id="pos-action-price" type="number" step="any" min="0.0001" required class="input-field" placeholder="請輸入價格">
+      </div>
+      <div>
+        <label class="text-xs text-gray-400">交易日期</label>
+        <input id="pos-action-date" type="date" required class="input-field">
+      </div>
+      <div>
+        <label class="text-xs text-gray-400">備註（可選）</label>
+        <input id="pos-action-notes" type="text" class="input-field" placeholder="例：加碼、減碼">
+      </div>
+      <div class="flex gap-3 mt-6">
+        <button type="button" onclick="closePosActionModal()" class="flex-1 bg-slate-700 hover:bg-slate-800 py-2 rounded font-semibold text-slate-300">取消</button>
+        <button type="submit" id="pos-action-submit-btn" class="flex-1 py-2 rounded font-semibold text-white">確認</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- Add Trade Modal -->
 <div id="add-trade-modal" class="modal-backdrop hidden">
   <div class="modal-content p-6 max-w-lg w-full">
@@ -4962,9 +4995,14 @@ async function deletePosition(id) {
 
 // ─── Edit Position Modal ───
 let _editPosId = null;
+let _editPosSymbol = null;
+let _editPosName = null;
+let _posActionType = null;
 
 function editPosition(id, symbol, name, shares, cost, category, currency, target_profit, target_stop, purchase_date) {
   _editPosId = id;
+  _editPosSymbol = symbol;
+  _editPosName = name;
   $('edit-pos-symbol-label').textContent = `${symbol} (${name})`;
   $('edit-pos-shares').value = shares;
   $('edit-pos-cost').value = cost;
@@ -5012,32 +5050,179 @@ async function submitEditPosition(e) {
   }
 }
 
+function closePosActionModal() {
+  $('pos-action-modal').classList.add('hidden');
+}
+
 async function sellPartialPosition() {
-  const sellShares = parseFloat(prompt('賣出多少股？'));
-  if (!sellShares || sellShares <= 0) return;
-  const currentShares = parseFloat($('edit-pos-shares').value);
-  if (sellShares >= currentShares) {
-    if (confirm(`賣出 ${sellShares} 股 ≥ 總持倉 ${currentShares} 股，將清倉刪除。確定？`)) {
-      await fetch(`/api/positions/${_editPosId}`, {method: 'DELETE'});
-      closeEditPos();
-      loadAll();
-    }
-  } else {
-    $('edit-pos-shares').value = currentShares - sellShares;
-  }
+  _posActionType = 'sell';
+  $('pos-action-title').textContent = '賣出部分持倉';
+  $('pos-action-title').className = 'text-xl font-bold text-red-500';
+  $('pos-action-symbol-label').textContent = `${_editPosSymbol} (${_editPosName})`;
+  $('pos-action-shares').value = '';
+  $('pos-action-price').value = '';
+  
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  $('pos-action-date').value = `${yyyy}-${mm}-${dd}`;
+  $('pos-action-notes').value = '賣出部分持倉';
+  
+  const submitBtn = $('pos-action-submit-btn');
+  submitBtn.textContent = '確認賣出';
+  submitBtn.className = 'flex-1 bg-red-600 hover:bg-red-700 py-2 rounded font-semibold text-white';
+  
+  $('pos-action-modal').classList.remove('hidden');
 }
 
 async function buyMorePosition() {
-  const addShares = parseFloat(prompt('加碼多少股？'));
-  if (!addShares || addShares <= 0) return;
-  const addCost = parseFloat(prompt('加碼成本價？'));
-  if (!addCost || addCost <= 0) return;
-  const oldShares = parseFloat($('edit-pos-shares').value);
-  const oldCost = parseFloat($('edit-pos-cost').value);
-  const newShares = oldShares + addShares;
-  const newCost = ((oldShares * oldCost) + (addShares * addCost)) / newShares;
-  $('edit-pos-shares').value = newShares;
-  $('edit-pos-cost').value = newCost.toFixed(2);
+  _posActionType = 'buy';
+  $('pos-action-title').textContent = '加碼買入持倉';
+  $('pos-action-title').className = 'text-xl font-bold text-blue-500';
+  $('pos-action-symbol-label').textContent = `${_editPosSymbol} (${_editPosName})`;
+  $('pos-action-shares').value = '';
+  $('pos-action-price').value = '';
+  
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  $('pos-action-date').value = `${yyyy}-${mm}-${dd}`;
+  $('pos-action-notes').value = '加碼買入持倉';
+  
+  const submitBtn = $('pos-action-submit-btn');
+  submitBtn.textContent = '確認買入';
+  submitBtn.className = 'flex-1 bg-blue-600 hover:bg-blue-700 py-2 rounded font-semibold text-white';
+  
+  $('pos-action-modal').classList.remove('hidden');
+}
+
+async function submitPosAction(e) {
+  e.preventDefault();
+  const actionShares = parseFloat($('pos-action-shares').value);
+  const actionPrice = parseFloat($('pos-action-price').value);
+  const actionDate = $('pos-action-date').value;
+  const actionNotes = $('pos-action-notes').value.trim();
+  
+  if (isNaN(actionShares) || actionShares <= 0) {
+    alert('請輸入有效的股數');
+    return;
+  }
+  if (isNaN(actionPrice) || actionPrice <= 0) {
+    alert('請輸入有效的交易價格');
+    return;
+  }
+  
+  const currentShares = parseFloat($('edit-pos-shares').value);
+  const currentCost = parseFloat($('edit-pos-cost').value);
+  const currentCurrency = $('edit-pos-currency').value;
+  
+  if (_posActionType === 'sell') {
+    if (actionShares > currentShares) {
+      alert(`賣出股數 (${actionShares}) 超過目前持倉股數 (${currentShares})`);
+      return;
+    }
+    
+    const isFullSell = (actionShares === currentShares);
+    if (isFullSell) {
+      if (!confirm(`賣出 ${actionShares} 股將清倉刪除此持倉。確定？`)) {
+        return;
+      }
+    }
+    
+    // 1. Post trade record (sell)
+    const tradeRes = await fetch('/api/trades', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        symbol: _editPosSymbol,
+        name: _editPosName,
+        action: 'sell',
+        shares: actionShares,
+        price: actionPrice,
+        trade_date: actionDate,
+        currency: currentCurrency,
+        notes: actionNotes,
+        auto_fee: true
+      })
+    }).then(r => r.json());
+    
+    if (!tradeRes.ok) {
+      alert('記錄交易失敗');
+      return;
+    }
+    
+    // 2. Update position
+    if (isFullSell) {
+      await fetch(`/api/positions/${_editPosId}`, { method: 'DELETE' });
+    } else {
+      const newShares = currentShares - actionShares;
+      const body = {
+        shares: newShares,
+        cost_price: currentCost,
+        name: $('edit-pos-name').value.trim(),
+        category: $('edit-pos-category').value.trim(),
+        currency: currentCurrency,
+        target_profit: $('edit-pos-profit').value ? parseFloat($('edit-pos-profit').value) : null,
+        target_stop: $('edit-pos-stop').value ? parseFloat($('edit-pos-stop').value) : null,
+        purchase_date: $('edit-pos-date').value,
+      };
+      await fetch(`/api/positions/${_editPosId}`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      });
+    }
+  } else {
+    // buy (加碼買入)
+    // 1. Post trade record (buy)
+    const tradeRes = await fetch('/api/trades', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        symbol: _editPosSymbol,
+        name: _editPosName,
+        action: 'buy',
+        shares: actionShares,
+        price: actionPrice,
+        trade_date: actionDate,
+        currency: currentCurrency,
+        notes: actionNotes,
+        auto_fee: true
+      })
+    }).then(r => r.json());
+    
+    if (!tradeRes.ok) {
+      alert('記錄交易失敗');
+      return;
+    }
+    
+    // 2. Update position
+    const newShares = currentShares + actionShares;
+    const newCost = ((currentShares * currentCost) + (actionShares * actionPrice)) / newShares;
+    
+    const body = {
+      shares: newShares,
+      cost_price: parseFloat(newCost.toFixed(4)),
+      name: $('edit-pos-name').value.trim(),
+      category: $('edit-pos-category').value.trim(),
+      currency: currentCurrency,
+      target_profit: $('edit-pos-profit').value ? parseFloat($('edit-pos-profit').value) : null,
+      target_stop: $('edit-pos-stop').value ? parseFloat($('edit-pos-stop').value) : null,
+      purchase_date: $('edit-pos-date').value,
+    };
+    await fetch(`/api/positions/${_editPosId}`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+  }
+  
+  closePosActionModal();
+  closeEditPos();
+  await fetch('/api/refresh', {method: 'POST'});
+  loadAll();
 }
 
 // ─── Add/Delete Watchlist ───

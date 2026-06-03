@@ -3240,6 +3240,21 @@ def api_add_position(p: PositionCreate):
         (p.symbol, p.name, p.category, p.shares, p.cost_price, p.currency, p_date, p.target_entry, p.target_profit, p.target_stop)
     )
     conn.commit()
+    # 新增持倉的部分視為買入交易記錄
+    try:
+        from datetime import datetime
+        created_at = datetime.utcnow().isoformat() + "Z"
+        fee, tax = _estimate_trade_fees("buy", p.shares, p.cost_price, p.currency)
+        conn.execute(
+            """INSERT INTO trades
+               (symbol, name, action, shares, price, fee, tax, trade_date, settle_date, currency, notes, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (p.symbol.upper(), p.name or "", "buy", p.shares, p.cost_price, fee, tax,
+             p_date, None, p.currency, "新增持倉自動導入", created_at)
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"  [WARN] auto trade record failed: {e}")
     # 立即抓一次該標的的報價並寫入 price_cache，這樣 UI 在新增後第一次
     # 重新整理就能看到正確的現價 / PnL，不必等下一輪 monitor_loop。
     try:

@@ -107,3 +107,32 @@ def test_api_update_position_date(temp_db):
         conn.close()
         
         assert updated_row["purchase_date"] == "2026-05-25"
+
+
+def test_api_add_position_creates_trade(temp_db):
+    """Test that adding a position automatically creates a corresponding buy trade record."""
+    p = PositionCreate(
+        symbol="TEST.TW",
+        name="測試",
+        category="測試股",
+        shares=15.0,
+        cost_price=120.0,
+        currency="TWD",
+        purchase_date="2026-05-20"
+    )
+    
+    with patch("app.DB", Path(temp_db)):
+        res = api_add_position(p)
+        assert res == {"ok": True}
+        
+        # Verify trade record exists
+        conn = app.get_db()
+        trade = conn.execute("SELECT * FROM trades WHERE symbol='TEST.TW'").fetchone()
+        conn.close()
+        
+        assert trade is not None
+        assert trade["action"] == "buy"
+        assert trade["shares"] == 15.0
+        assert trade["price"] == 120.0
+        assert trade["trade_date"] == "2026-05-20"
+        assert trade["notes"] == "新增持倉自動導入"
