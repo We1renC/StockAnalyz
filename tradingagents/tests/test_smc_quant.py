@@ -625,3 +625,42 @@ def test_build_smc_analysis_exposes_power_of_three_block():
     # Should also still expose all earlier models in a single block.
     for key in ("sweep_reversal", "ob_fvg_continuation", "ote_retracement", "unicorn", "silver_bullet"):
         assert key in em
+
+
+def test_risk_pipeline_filters_by_rr_then_sizes():
+    """§6: RR floor first, lock check next, then position-size."""
+    from smc_quant import apply_risk_pipeline
+    entries = [
+        {"model": "x", "entry": 100, "stop": 99, "rr": 2.0, "triggered": True},
+        {"model": "x", "entry": 100, "stop": 99.5, "rr": 1.0, "triggered": True},   # RR too low
+        {"model": "x", "entry": 100, "stop": 99, "rr": 2.0, "triggered": False},    # confluence fail
+    ]
+    out = apply_risk_pipeline(entries, account_equity=50_000, market="us")
+    reasons = {r["reject_reason"] for r in out["rejected"]}
+    assert any(r.startswith("rr_below_floor") for r in reasons)
+    assert "confluence_below_threshold" in reasons
+    assert out["ready"], "the valid entry should size up"
+    assert out["ready"][0]["sizing"]["qty"] > 0
+    assert out["lock"]["locked"] is False
+
+
+def test_risk_pipeline_blocks_when_account_locked():
+    from smc_quant import apply_risk_pipeline
+    entries = [{"model": "x", "entry": 100, "stop": 99, "rr": 2.0, "triggered": True}]
+    out = apply_risk_pipeline(
+        entries, account_equity=100_000,
+        daily_realized_pnl=-60_000,  # exceeds default 50k daily floor → locked
+    )
+    assert out["lock"]["locked"] is True
+    assert out["ready"] == []
+    assert "account_locked" in out["rejected"][0]["reject_reason"]
+
+
+def test_build_smc_analysis_exposes_risk_gated_block():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+        account_equity=25_000,
+    )
+    rg = result["concepts"]["entry_models"]["risk_gated"]
+    assert "ready" in rg and "rejected" in rg and "lock" in rg

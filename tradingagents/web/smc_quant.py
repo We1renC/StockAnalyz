@@ -2089,6 +2089,72 @@ def calculate_position_size(
     }
 
 
+def apply_risk_pipeline(
+    entries: list[dict],
+    *,
+    account_equity: Optional[float] = None,
+    risk_pct: float = 0.01,
+    market: Optional[str] = None,
+    min_rr: float = 1.5,
+    daily_realized_pnl: float = 0,
+    max_drawdown: float = 0,
+    active_days_traded: int = 0,
+    daily_loss_limit: float = 50_000,
+    max_drawdown_limit: float = 50_000,
+) -> dict:
+    """§6 Risk gating for §5 entry-model candidates.
+
+    Enforces in order:
+      1. §6.2 RR floor (default 1.5; spec preferred 2)
+      2. §6.4 account-level lockdown (daily / total max-loss)
+      3. §6.3 position sizing (1% equity / capped at 5% max-single-loss)
+
+    Returns ``{ready, rejected, lock}`` so the UI / signal layer can show
+    *why* a confluence-passing entry still didn't size up.
+    """
+    lock = rule_enforcement_snapshot(
+        account_equity or 0,
+        daily_realized_pnl=daily_realized_pnl,
+        max_drawdown=max_drawdown,
+        active_days_traded=active_days_traded,
+        daily_loss_limit=daily_loss_limit,
+        max_drawdown_limit=max_drawdown_limit,
+    )
+    ready: list[dict] = []
+    rejected: list[dict] = []
+    for e in entries or []:
+        rr = float(e.get("rr") or 0.0)
+        if rr < min_rr:
+            rejected.append({**e, "reject_reason": f"rr_below_floor:{rr:.2f}<{min_rr}"})
+            continue
+        if not e.get("triggered"):
+            rejected.append({**e, "reject_reason": "confluence_below_threshold"})
+            continue
+        if lock.get("locked"):
+            rejected.append({**e, "reject_reason": f"account_locked:{lock.get('lock_reason')}"})
+            continue
+        if account_equity and account_equity > 0:
+            sizing = calculate_position_size(
+                e,
+                account_equity=account_equity,
+                risk_pct=risk_pct,
+                market=market,
+            )
+            if sizing.get("blocked"):
+                rejected.append({**e, "reject_reason": f"sizing_blocked:{sizing.get('reason')}", "sizing": sizing})
+                continue
+            ready.append({**e, "sizing": sizing})
+        else:
+            ready.append({**e, "sizing": {"qty": 0, "risk_amount": 0, "reason": "no_equity_provided"}})
+    return {
+        "ready": ready,
+        "rejected": rejected,
+        "lock": lock,
+        "min_rr": min_rr,
+        "risk_pct": risk_pct,
+    }
+
+
 def rule_enforcement_snapshot(
     account_equity: float,
     daily_realized_pnl: float = 0,
@@ -2336,6 +2402,12 @@ def build_smc_analysis(
                 "unicorn": unicorn_entries,
                 "silver_bullet": silver_bullet_entries,
                 "power_of_three": power_of_three_entries,
+                "risk_gated": apply_risk_pipeline(
+                    sweep_reversal_entries + continuation_entries + ote_entries
+                    + unicorn_entries + silver_bullet_entries + power_of_three_entries,
+                    account_equity=account_equity,
+                    market=market,
+                ),
                 "triggered": [
                     e for e in (
                         sweep_reversal_entries + continuation_entries + ote_entries
