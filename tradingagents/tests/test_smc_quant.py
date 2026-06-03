@@ -1092,3 +1092,43 @@ def test_estimate_pbo_flags_overfit_when_ranks_invert():
     # Same rank → low PBO
     same = estimate_pbo(is_R, is_R)
     assert same["pbo"] is not None and same["pbo"] < 0.5
+
+
+def test_crypto_risk_check_blocks_excess_leverage():
+    """§17.8: leverage above per-bucket cap → reject."""
+    from smc_quant import crypto_risk_check
+    entry = {"direction": 1, "entry": 100, "stop": 99}
+    out = crypto_risk_check(entry, leverage=10, is_altcoin=False)
+    assert out["ok"] is False
+    assert any("leverage_exceeds_cap" in r for r in out["reasons"])
+    ok = crypto_risk_check(entry, leverage=3, is_altcoin=False)
+    assert ok["ok"] is True
+
+
+def test_crypto_risk_check_blocks_liquidation_too_close():
+    from smc_quant import crypto_risk_check
+    entry = {"direction": 1, "entry": 100, "stop": 99}
+    out = crypto_risk_check(entry, leverage=80, is_altcoin=False)
+    assert any("liquidation_too_close" in r for r in out["reasons"]) or \
+           any("leverage_exceeds_cap" in r for r in out["reasons"])
+
+
+def test_crypto_risk_check_warns_aligned_with_crowded_side():
+    from smc_quant import crypto_risk_check
+    entry = {"direction": 1, "entry": 100, "stop": 99}
+    out = crypto_risk_check(entry, funding_state="long_crowded")
+    assert "aligned_with_crowded_longs" in out["reasons"]
+    ok = crypto_risk_check({"direction": -1, "entry": 100, "stop": 101}, funding_state="long_crowded")
+    assert "aligned_with_crowded_longs" not in ok["reasons"]
+
+
+def test_apply_risk_pipeline_rejects_when_crypto_context_blocks():
+    from smc_quant import apply_risk_pipeline
+    entries = [{"model": "x", "direction": 1, "entry": 100, "stop": 99, "rr": 2.0, "triggered": True}]
+    out = apply_risk_pipeline(
+        entries,
+        account_equity=50_000,
+        crypto_context={"is_altcoin": True, "leverage": 20},
+    )
+    assert out["ready"] == []
+    assert "crypto_risk" in out["rejected"][0]["reject_reason"]

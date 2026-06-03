@@ -2491,6 +2491,67 @@ def calculate_position_size(
     }
 
 
+CRYPTO_LEVERAGE_CAP = {
+    "major": 5,        # BTC / ETH / SOL etc.
+    "altcoin": 3,
+    "smallcap": 2,
+}
+
+
+def crypto_risk_check(
+    entry: dict,
+    *,
+    is_altcoin: bool = False,
+    is_smallcap: bool = False,
+    leverage: Optional[float] = None,
+    funding_state: Optional[str] = None,
+    funding_settlement_minutes: Optional[int] = None,
+) -> dict:
+    """§17.8 — gate a crypto entry before sizing.
+
+    Checks:
+      1. Liquidation distance ≥ 2 × stop-loss distance (rough proxy
+         derived from ``leverage`` if supplied).
+      2. Leverage within per-bucket cap (major / altcoin / smallcap).
+      3. Reject if funding settlement is imminent (≤ 5 min by default).
+      4. Reject if funding regime is ``long_crowded`` / ``short_crowded``
+         AND the trade is *aligned* with the crowded side (chasing fuel).
+
+    Returns ``{ok, reasons, leverage_cap, liquidation_distance}``.
+    """
+    reasons: list[str] = []
+    direction = int(entry.get("direction", 0))
+    entry_px = float(entry.get("entry", 0))
+    stop_px = float(entry.get("stop", 0))
+    stop_distance = abs(entry_px - stop_px)
+    bucket = "smallcap" if is_smallcap else ("altcoin" if is_altcoin else "major")
+    cap = CRYPTO_LEVERAGE_CAP[bucket]
+    if leverage is not None and leverage > cap:
+        reasons.append(f"leverage_exceeds_cap:{leverage}>{cap}({bucket})")
+    liq_distance = None
+    if leverage and leverage > 0 and entry_px > 0:
+        # Rough isolated-margin liquidation distance ≈ entry / leverage
+        liq_distance = entry_px / leverage
+        if liq_distance < 2 * stop_distance:
+            reasons.append(
+                f"liquidation_too_close:{liq_distance:.4f}<{2*stop_distance:.4f}"
+            )
+    if funding_settlement_minutes is not None and funding_settlement_minutes <= 5:
+        reasons.append(f"funding_settlement_imminent:{funding_settlement_minutes}min")
+    if funding_state == "long_crowded" and direction == 1:
+        reasons.append("aligned_with_crowded_longs")
+    if funding_state == "short_crowded" and direction == -1:
+        reasons.append("aligned_with_crowded_shorts")
+    return {
+        "ok": not reasons,
+        "reasons": reasons,
+        "leverage_cap": cap,
+        "liquidation_distance": round(liq_distance, 4) if liq_distance else None,
+        "stop_distance": round(stop_distance, 4),
+        "bucket": bucket,
+    }
+
+
 def apply_risk_pipeline(
     entries: list[dict],
     *,
@@ -2503,6 +2564,7 @@ def apply_risk_pipeline(
     active_days_traded: int = 0,
     daily_loss_limit: float = 50_000,
     max_drawdown_limit: float = 50_000,
+    crypto_context: Optional[dict] = None,
 ) -> dict:
     """§6 Risk gating for §5 entry-model candidates.
 
@@ -2535,6 +2597,15 @@ def apply_risk_pipeline(
         if lock.get("locked"):
             rejected.append({**e, "reject_reason": f"account_locked:{lock.get('lock_reason')}"})
             continue
+        if crypto_context:
+            crypto_check = crypto_risk_check(e, **crypto_context)
+            if not crypto_check["ok"]:
+                rejected.append({
+                    **e,
+                    "reject_reason": "crypto_risk:" + ",".join(crypto_check["reasons"]),
+                    "crypto_check": crypto_check,
+                })
+                continue
         if account_equity and account_equity > 0:
             sizing = calculate_position_size(
                 e,
