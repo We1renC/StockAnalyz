@@ -556,3 +556,40 @@ def test_build_smc_analysis_exposes_unicorn_block():
     )
     em = result["concepts"]["entry_models"]
     assert "unicorn" in em and isinstance(em["unicorn"], list)
+
+
+def test_silver_bullet_entry_requires_sweep_then_fvg():
+    """§5.3 Silver Bullet: sweep within recent window followed by same-direction FVG."""
+    from smc_quant import detect_silver_bullet_entries
+    cfg = SMCConfig(swing_length=2, internal_swing_length=2)
+    h = normalize_ohlcv(_sample_ohlcv())
+    swings = detect_swings(h, cfg.swing_length)
+    liquidity = detect_liquidity(h, swings, cfg)
+    displacements = detect_displacement(h, cfg)
+    fvgs = []  # No FVG → no entries
+    assert detect_silver_bullet_entries(h, liquidity, fvgs, "AAPL", {}, "neutral") == []
+    # Daily data (no intraday filter) — time_filtered must be False
+    fvgs = [{"index": 22, "direction": 1, "top": 18.0, "bottom": 17.0, "mid": 17.5, "mitigated": False, "displacement_confirmed": True}]
+    entries = detect_silver_bullet_entries(h, liquidity, fvgs, "AAPL", {"state": "discount"}, "bullish")
+    for e in entries:
+        assert e["model"] == "silver_bullet"
+        assert e["direction"] in (1, -1)
+        assert e["fvg_index"] > e["sweep_index"]
+        assert e["time_filtered"] is False  # daily bars degrade gracefully
+        assert e["rr"] >= 1.99
+
+
+def test_silver_bullet_window_per_market():
+    from smc_quant import _silver_bullet_window_minutes
+    assert _silver_bullet_window_minutes("2330.TW") == (9 * 60, 10 * 60)
+    assert _silver_bullet_window_minutes("AAPL") == (10 * 60, 11 * 60)
+    assert _silver_bullet_window_minutes("BTCUSDT") == (10 * 60, 11 * 60)
+
+
+def test_build_smc_analysis_exposes_silver_bullet_block():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    em = result["concepts"]["entry_models"]
+    assert "silver_bullet" in em and isinstance(em["silver_bullet"], list)

@@ -1403,6 +1403,126 @@ def detect_unicorn_entries(
     return deduped
 
 
+def _silver_bullet_window_minutes(symbol: str) -> Optional[tuple[int, int]]:
+    """Return killzone (start, end) in minutes-of-day per §5.3 Silver Bullet."""
+    market = infer_market(symbol)
+    if market == "tw":
+        return (9 * 60, 10 * 60)
+    if market == "us":
+        return (10 * 60, 11 * 60)  # NY 10–11 a.m. window
+    # Crypto NY 10–11 (approximate to UTC by default), London 03–04 as secondary.
+    return (10 * 60, 11 * 60)
+
+
+def detect_silver_bullet_entries(
+    df: pd.DataFrame,
+    liquidity: list[dict],
+    fvgs: list[dict],
+    symbol: str,
+    pd_zone: dict,
+    bias: str,
+    session: Optional[dict] = None,
+    weights: Optional[dict[str, int]] = None,
+    threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
+    window_lookback: int = 20,
+) -> list[dict]:
+    """§5.3 Silver Bullet — time-windowed sweep → FVG → retest.
+
+    Detects the three-step Silver Bullet sequence inside the market's
+    killzone window. For intraday data, only bars falling inside the
+    Silver Bullet window are eligible; for daily data we degrade
+    gracefully (``time_filtered=False``) and require only the structural
+    sweep+FVG sequence in the most recent ``window_lookback`` bars.
+    """
+    out: list[dict] = []
+    if df is None or len(df) == 0 or not liquidity or not fvgs:
+        return out
+    bias_dir = 1 if "bull" in (bias or "") else (-1 if "bear" in (bias or "") else 0)
+    pd_state = (pd_zone or {}).get("state")
+    win = _silver_bullet_window_minutes(symbol)
+    intraday = False
+    try:
+        delta = df.index[-1] - df.index[-2] if len(df) >= 2 else None
+        intraday = bool(delta) and delta < pd.Timedelta(hours=12)
+    except Exception:
+        intraday = False
+    cutoff = max(0, len(df) - window_lookback)
+    for liq in liquidity:
+        swept = liq.get("swept_index")
+        if swept is None or int(swept) < cutoff:
+            continue
+        swept = int(swept)
+        time_filtered = False
+        if intraday and win is not None:
+            ts = pd.Timestamp(df.index[swept])
+            minute = ts.hour * 60 + ts.minute
+            if not (win[0] <= minute <= win[1]):
+                continue
+            time_filtered = True
+        # Real direction = opposite of sweep direction (BSL sweep → bearish, SSL sweep → bullish).
+        direction = 1 if liq.get("type") == "SSL" else -1
+        # Find a same-direction, unfilled FVG forming AFTER the sweep.
+        fvg = next(
+            (
+                f for f in fvgs
+                if int(f.get("direction", 0)) == direction
+                and int(f.get("index", -1)) > swept
+                and not f.get("mitigated")
+            ),
+            None,
+        )
+        if fvg is None:
+            continue
+        entry = float(fvg["mid"])
+        top, bottom = float(fvg["top"]), float(fvg["bottom"])
+        if direction == 1:
+            stop = bottom - max(0.0, (entry - bottom) * 0.05)
+        else:
+            stop = top + max(0.0, (top - entry) * 0.05)
+        risk = abs(entry - stop)
+        if risk <= 0:
+            continue
+        target = entry + 2 * risk * direction
+        rr = abs(target - entry) / risk if risk else 0.0
+        factors = {
+            "htf_bias_aligned": bias_dir == direction,
+            "premium_discount_side": (
+                (direction == 1 and pd_state == "discount")
+                or (direction == -1 and pd_state == "premium")
+            ),
+            "unmitigated_ob": False,
+            "unfilled_fvg": True,
+            "liquidity_swept": True,
+            "ltf_choch": False,  # Silver Bullet does not strictly require CHoCH
+            "ote_zone": False,
+            "killzone": time_filtered or bool((session or {}).get("killzone")),
+            "volume_displacement": bool(fvg.get("displacement_confirmed")),
+        }
+        scoring = score_confluence(factors, weights=weights, threshold=threshold)
+        out.append(
+            {
+                "model": "silver_bullet",
+                "direction": direction,
+                "entry": round(entry, 4),
+                "stop": round(stop, 4),
+                "target": round(target, 4),
+                "risk": round(risk, 4),
+                "rr": round(rr, 2),
+                "poi_kind": "fvg",
+                "poi_top": round(top, 4),
+                "poi_bottom": round(bottom, 4),
+                "sweep_index": swept,
+                "fvg_index": int(fvg.get("index", -1)),
+                "time_filtered": time_filtered,
+                "window": list(win) if win else None,
+                "confluence": scoring,
+                "factors": factors,
+                "triggered": scoring["triggered"],
+            }
+        )
+    return out
+
+
 def retracement_state(df: pd.DataFrame, swings: list[dict]) -> dict:
     highs = [s for s in swings if s["type"] == "high"]
     lows = [s for s in swings if s["type"] == "low"]
@@ -1990,6 +2110,9 @@ def build_smc_analysis(
     unicorn_entries = detect_unicorn_entries(
         h, breaker_blocks, fvgs, smt_events, pd_zone, bias, session, weights=weights,
     )
+    silver_bullet_entries = detect_silver_bullet_entries(
+        h, liquidity, fvgs, symbol, pd_zone, bias, session, weights=weights,
+    )
     retracement = retracement_state(h, swings)
     generated_at = datetime.now().isoformat(timespec="seconds")
     signals = build_signals(
@@ -2079,12 +2202,21 @@ def build_smc_analysis(
                 "ob_fvg_continuation": continuation_entries,
                 "ote_retracement": ote_entries,
                 "unicorn": unicorn_entries,
+                "silver_bullet": silver_bullet_entries,
                 "triggered": [
-                    e for e in (sweep_reversal_entries + continuation_entries + ote_entries + unicorn_entries)
+                    e for e in (
+                        sweep_reversal_entries + continuation_entries + ote_entries
+                        + unicorn_entries + silver_bullet_entries
+                    )
                     if e.get("triggered")
                 ],
-                "latest": (sweep_reversal_entries + continuation_entries + ote_entries + unicorn_entries)[-1]
-                if (sweep_reversal_entries or continuation_entries or ote_entries or unicorn_entries) else None,
+                "latest": (
+                    sweep_reversal_entries + continuation_entries + ote_entries
+                    + unicorn_entries + silver_bullet_entries
+                )[-1] if (
+                    sweep_reversal_entries or continuation_entries or ote_entries
+                    or unicorn_entries or silver_bullet_entries
+                ) else None,
             },
         },
         "signals": signals,
