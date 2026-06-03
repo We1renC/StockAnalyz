@@ -900,6 +900,190 @@ def detect_smt_divergence(
 
 
 # ---------------------------------------------------------------------------
+# §17 Crypto derivatives overlay (liquidations / OI / funding / CVD / premium)
+# ---------------------------------------------------------------------------
+
+CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT = {
+    "liquidation_cluster_sweep": 2,
+    "oi_drop_at_sweep": 2,
+    "cvd_divergence": 2,
+    "funding_extreme_contrarian": 1,
+    "coinbase_premium_aligned": 1,
+    "altcoin_btc_aligned": 2,
+    "cme_gap_hit": 1,
+}
+
+
+def build_crypto_overlay(
+    df: pd.DataFrame,
+    *,
+    liquidations: Optional[list[dict]] = None,
+    open_interest: Optional[pd.Series] = None,
+    funding_rate: Optional[pd.Series] = None,
+    cvd: Optional[pd.Series] = None,
+    coinbase_premium: Optional[pd.Series] = None,
+    btc_dominance: Optional[pd.Series] = None,
+    swings: Optional[list[dict]] = None,
+    liquidity: Optional[list[dict]] = None,
+    direction_bias: int = 0,
+    is_altcoin: bool = False,
+    cme_gaps: Optional[list[dict]] = None,
+    sweep_lookback: int = 12,
+    oi_drop_pct: float = 0.03,
+    funding_extreme: float = 0.0005,
+) -> dict:
+    """§17 Crypto-specific overlay — visible-liquidity + order-flow signals.
+
+    Returns a structured dict ready to plug into the §5.2 confluence
+    scorer. Every signal degrades gracefully when its input is missing
+    (returns ``status="no_data"`` for that subfield) so the caller can
+    keep using the rest.
+    """
+    out: dict = {"status": "ok", "factors": {}}
+    if df is None or len(df) == 0:
+        out["status"] = "no_data"
+        return out
+    n = len(df)
+    last_idx = n - 1
+
+    # C.1 Liquidation cluster sweep — convert clusters into high-priority BSL/SSL
+    cluster_liquidity: list[dict] = []
+    cluster_swept_recently = False
+    for cl in liquidations or []:
+        level = float(cl.get("level", 0))
+        kind = (cl.get("type") or "").upper()
+        if not level or kind not in {"BSL_LIQ", "SSL_LIQ"}:
+            continue
+        # Find sweep within the recent window
+        swept_at = None
+        for j in range(max(0, n - sweep_lookback), n):
+            high = float(df["high"].iloc[j])
+            low = float(df["low"].iloc[j])
+            close = float(df["close"].iloc[j])
+            if kind == "BSL_LIQ" and high > level and close < level:
+                swept_at = j; break
+            if kind == "SSL_LIQ" and low < level and close > level:
+                swept_at = j; break
+        if swept_at is not None:
+            cluster_swept_recently = True
+        cluster_liquidity.append({
+            "type": kind, "level": round(level, 4),
+            "size": cl.get("size"), "swept_index": swept_at, "swept": swept_at is not None,
+        })
+    out["liquidation_clusters"] = cluster_liquidity
+
+    # C.2 OI drop at sweep — measure pct change around the most recent sweep bar
+    oi_status = "no_data"
+    oi_drop_detected = False
+    if open_interest is not None and len(open_interest) > 1:
+        oi_aligned = open_interest.reindex(df.index).ffill()
+        sweep_idx = None
+        for liq in (liquidity or []):
+            si = liq.get("swept_index")
+            if si is not None and int(si) >= n - sweep_lookback:
+                sweep_idx = int(si); break
+        if sweep_idx is None and cluster_swept_recently:
+            sweep_idx = last_idx
+        if sweep_idx is not None and 0 < sweep_idx < len(oi_aligned):
+            before = float(oi_aligned.iloc[max(0, sweep_idx - 2)])
+            at = float(oi_aligned.iloc[sweep_idx])
+            if before > 0 and (before - at) / before >= oi_drop_pct:
+                oi_drop_detected = True
+                oi_status = "drop_at_sweep"
+            else:
+                oi_status = "no_drop_at_sweep"
+    out["oi"] = {"status": oi_status, "drop_at_sweep": oi_drop_detected}
+
+    # C.3 CVD divergence — last two same-type swings on price vs CVD
+    cvd_status = "no_data"
+    cvd_diverged = False
+    if cvd is not None and len(cvd) > 1 and swings:
+        cvd_aligned = cvd.reindex(df.index).ffill()
+        highs = [s for s in swings if s["type"] == "high"]
+        lows = [s for s in swings if s["type"] == "low"]
+        if len(highs) >= 2:
+            a, b = highs[-2], highs[-1]
+            try:
+                if (b["level"] > a["level"]
+                    and float(cvd_aligned.iloc[int(b["index"])]) < float(cvd_aligned.iloc[int(a["index"])])):
+                    cvd_diverged = True; cvd_status = "bearish_divergence"
+            except Exception:
+                pass
+        if not cvd_diverged and len(lows) >= 2:
+            a, b = lows[-2], lows[-1]
+            try:
+                if (b["level"] < a["level"]
+                    and float(cvd_aligned.iloc[int(b["index"])]) > float(cvd_aligned.iloc[int(a["index"])])):
+                    cvd_diverged = True; cvd_status = "bullish_divergence"
+            except Exception:
+                pass
+        if cvd_status == "no_data":
+            cvd_status = "no_divergence"
+    out["cvd"] = {"status": cvd_status, "diverged": cvd_diverged}
+
+    # Funding rate extreme — contrarian fuel
+    funding_state = "no_data"
+    if funding_rate is not None and len(funding_rate) > 0:
+        fr = float(funding_rate.iloc[-1])
+        if fr >= funding_extreme:
+            funding_state = "long_crowded"
+        elif fr <= -funding_extreme:
+            funding_state = "short_crowded"
+        else:
+            funding_state = "neutral"
+    out["funding"] = {"status": funding_state}
+
+    # Coinbase premium — institutional flow proxy
+    premium_state = "no_data"
+    if coinbase_premium is not None and len(coinbase_premium) > 0:
+        p = float(coinbase_premium.iloc[-1])
+        if p > 0:
+            premium_state = "bullish"
+        elif p < 0:
+            premium_state = "bearish"
+        else:
+            premium_state = "neutral"
+    out["coinbase_premium"] = {"status": premium_state}
+
+    # Altcoin / BTC alignment — only relevant when is_altcoin=True
+    btc_aligned = False
+    if is_altcoin and btc_dominance is not None and len(btc_dominance) > 1:
+        btc_change = float(btc_dominance.iloc[-1]) - float(btc_dominance.iloc[-2])
+        # Falling BTC.D + bullish bias → altseason tailwind
+        if direction_bias == 1 and btc_change < 0:
+            btc_aligned = True
+        elif direction_bias == -1 and btc_change > 0:
+            btc_aligned = True
+    out["btc_alignment"] = {"aligned": btc_aligned, "is_altcoin": is_altcoin}
+
+    # CME gap magnet
+    cme_hit = False
+    if cme_gaps:
+        last_close = float(df["close"].iloc[-1])
+        for g in cme_gaps:
+            top = float(g.get("top", 0)); bottom = float(g.get("bottom", 0))
+            if bottom <= last_close <= top and not g.get("filled"):
+                cme_hit = True; break
+    out["cme_gap"] = {"hit": cme_hit}
+
+    # §17.10 crypto-confluence factors (boolean view → mergeable into score_confluence)
+    out["factors"] = {
+        "liquidation_cluster_sweep": cluster_swept_recently,
+        "oi_drop_at_sweep": oi_drop_detected,
+        "cvd_divergence": cvd_diverged,
+        "funding_extreme_contrarian": funding_state in {"long_crowded", "short_crowded"},
+        "coinbase_premium_aligned": (
+            (direction_bias == 1 and premium_state == "bullish")
+            or (direction_bias == -1 and premium_state == "bearish")
+        ),
+        "altcoin_btc_aligned": btc_aligned,
+        "cme_gap_hit": cme_hit,
+    }
+    out["weights"] = dict(CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # §3.5 DOL — Draw-on-Liquidity / Liquidity Magnet target picker
 # ---------------------------------------------------------------------------
 
@@ -2770,6 +2954,7 @@ def build_smc_analysis(
     correlated: Optional[dict[str, pd.DataFrame]] = None,
     weights: Optional[dict[str, int]] = None,
     account_equity: Optional[float] = None,
+    crypto_inputs: Optional[dict] = None,
 ) -> dict:
     cfg = config or SMCConfig()
     market = infer_market(symbol)
@@ -2836,6 +3021,23 @@ def build_smc_analysis(
     power_of_three_entries = detect_power_of_three_entries(
         h, judas_events, obs, fvgs, pd_zone, bias, session, weights=weights,
     )
+    # §17 crypto overlay — only invoked when caller passes derivative data.
+    crypto_overlay = None
+    if crypto_inputs:
+        crypto_overlay = build_crypto_overlay(
+            h,
+            liquidations=crypto_inputs.get("liquidations"),
+            open_interest=crypto_inputs.get("open_interest"),
+            funding_rate=crypto_inputs.get("funding_rate"),
+            cvd=crypto_inputs.get("cvd"),
+            coinbase_premium=crypto_inputs.get("coinbase_premium"),
+            btc_dominance=crypto_inputs.get("btc_dominance"),
+            swings=swings,
+            liquidity=liquidity,
+            direction_bias=1 if "bull" in bias else (-1 if "bear" in bias else 0),
+            is_altcoin=bool(crypto_inputs.get("is_altcoin")),
+            cme_gaps=crypto_inputs.get("cme_gaps"),
+        )
     _last_close = float(h["close"].iloc[-1]) if len(h) else 0.0
     sweep_reversal_entries = attach_dol_targets(sweep_reversal_entries, liquidity, prev, fvgs, _last_close)
     continuation_entries = attach_dol_targets(continuation_entries, liquidity, prev, fvgs, _last_close)
@@ -2923,10 +3125,10 @@ def build_smc_analysis(
                 "events": smt_events,
                 "latest": smt_events[-1] if smt_events else None,
             },
-            "crypto_derivatives": {
+            "crypto_derivatives": (crypto_overlay or {
                 "status": "extension_point",
                 "fields": ["liquidation_clusters", "open_interest", "funding_rate", "cvd", "coinbase_premium"],
-            },
+            }),
             "entry_models": {
                 "sweep_reversal": sweep_reversal_entries,
                 "ob_fvg_continuation": continuation_entries,

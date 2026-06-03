@@ -872,3 +872,59 @@ def test_chart_layers_carry_renderable_primitives():
         "sweep_reversal", "ob_fvg_continuation", "ote_retracement",
         "unicorn", "silver_bullet", "power_of_three",
     })
+
+
+def test_crypto_overlay_detects_liquidation_sweep_and_oi_drop():
+    """§17.2: liquidation cluster swept + OI drop → both crypto factors active."""
+    from smc_quant import build_crypto_overlay
+    h = normalize_ohlcv(_sample_ohlcv())
+    # Sample bar -3 (idx 22): high 17.5, close 17.2 → BSL @ 17.3 is pierced then closed below
+    liqs = [{"type": "BSL_LIQ", "level": 17.3, "size": 1_000_000}]
+    # OI drops 5% across last bars
+    oi = pd.Series([100, 100, 95, 90], index=h.index[-4:])
+    overlay = build_crypto_overlay(h, liquidations=liqs, open_interest=oi)
+    assert overlay["status"] == "ok"
+    assert overlay["factors"]["liquidation_cluster_sweep"] is True
+    assert overlay["oi"]["drop_at_sweep"] is True
+    assert overlay["factors"]["oi_drop_at_sweep"] is True
+
+
+def test_crypto_overlay_funding_extreme_and_premium_alignment():
+    from smc_quant import build_crypto_overlay
+    h = normalize_ohlcv(_sample_ohlcv())
+    # Extreme positive funding → "long_crowded"
+    funding = pd.Series([0.0006], index=h.index[-1:])
+    premium = pd.Series([-0.1], index=h.index[-1:])  # bearish premium
+    overlay = build_crypto_overlay(
+        h, funding_rate=funding, coinbase_premium=premium, direction_bias=-1,
+    )
+    assert overlay["funding"]["status"] == "long_crowded"
+    assert overlay["factors"]["funding_extreme_contrarian"] is True
+    assert overlay["coinbase_premium"]["status"] == "bearish"
+    assert overlay["factors"]["coinbase_premium_aligned"] is True
+
+
+def test_crypto_overlay_no_inputs_returns_graceful_no_data_substates():
+    from smc_quant import build_crypto_overlay
+    h = normalize_ohlcv(_sample_ohlcv())
+    overlay = build_crypto_overlay(h)
+    assert overlay["status"] == "ok"
+    assert overlay["funding"]["status"] == "no_data"
+    assert overlay["coinbase_premium"]["status"] == "no_data"
+    assert overlay["cvd"]["status"] == "no_data"
+    assert overlay["oi"]["status"] == "no_data"
+    # Factors all default to False when no data is supplied
+    assert not any(overlay["factors"].values())
+
+
+def test_build_smc_analysis_routes_crypto_inputs_into_overlay():
+    funding = pd.Series([0.001])
+    result = build_smc_analysis(
+        _sample_ohlcv(), "BTCUSDT",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+        crypto_inputs={"funding_rate": funding},
+    )
+    cd = result["concepts"]["crypto_derivatives"]
+    assert cd["status"] == "ok"
+    assert "factors" in cd
+    assert "weights" in cd
