@@ -1523,6 +1523,135 @@ def detect_silver_bullet_entries(
     return out
 
 
+def detect_power_of_three_entries(
+    df: pd.DataFrame,
+    judas_events: list[dict],
+    order_blocks: list[dict],
+    fvgs: list[dict],
+    pd_zone: dict,
+    bias: str,
+    session: Optional[dict] = None,
+    weights: Optional[dict[str, int]] = None,
+    threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
+    accumulation_bars: int = 5,
+    range_atr_mult: float = 0.9,
+) -> list[dict]:
+    """§5.3 Power of Three (AMD) — Accumulation → Manipulation → Distribution.
+
+    Reuse the §3.12 Judas Swing as the Manipulation phase; additionally
+    require an Accumulation precondition: the ``accumulation_bars`` window
+    preceding the sweep is unusually tight (range ≤ range_atr_mult × ATR).
+    Distribution = the real-direction CHoCH already validated by the
+    Judas detector.
+    """
+    out: list[dict] = []
+    if df is None or len(df) == 0 or not judas_events:
+        return out
+    try:
+        from smc_quant import _atr  # type: ignore
+    except Exception:
+        _atr = None
+    bias_dir = 1 if "bull" in (bias or "") else (-1 if "bear" in (bias or "") else 0)
+    pd_state = (pd_zone or {}).get("state")
+    closes_high = df["high"].astype(float)
+    closes_low = df["low"].astype(float)
+    # Lightweight ATR proxy (avoids tight coupling to private helpers).
+    tr = (closes_high - closes_low).rolling(14, min_periods=1).mean()
+    for ev in judas_events:
+        sweep_idx = int(ev["sweep_index"])
+        start = sweep_idx - accumulation_bars
+        if start < 0:
+            continue
+        window = df.iloc[start:sweep_idx]
+        if len(window) < accumulation_bars:
+            continue
+        rng = float(window["high"].max() - window["low"].min())
+        atr = float(tr.iloc[sweep_idx]) if sweep_idx < len(tr) else 0.0
+        # Accumulation = tight range relative to ATR.
+        if atr <= 0 or rng > atr * accumulation_bars * range_atr_mult:
+            continue
+        direction = int(ev.get("judas") or ev.get("real_direction") or 0)
+        if direction == 0:
+            continue
+        # POI: same as Sweep Reversal — prefer OB then FVG.
+        ob = next(
+            (
+                o for o in order_blocks
+                if int(o.get("direction", 0)) == direction
+                and o.get("status") in {"unmitigated", "mitigation"}
+            ),
+            None,
+        )
+        fvg = next(
+            (
+                f for f in fvgs
+                if int(f.get("direction", 0)) == direction and not f.get("mitigated")
+            ),
+            None,
+        )
+        if ob is not None:
+            entry = float(ob["refined_entry"])
+            poi_kind = "order_block"
+            poi_top, poi_bottom = float(ob["top"]), float(ob["bottom"])
+        elif fvg is not None:
+            entry = float(fvg["mid"])
+            poi_kind = "fvg"
+            poi_top, poi_bottom = float(fvg["top"]), float(fvg["bottom"])
+        else:
+            # Fall back to mid of the accumulation range itself.
+            poi_top = float(window["high"].max())
+            poi_bottom = float(window["low"].min())
+            entry = (poi_top + poi_bottom) / 2
+            poi_kind = "accumulation_mid"
+        if direction == 1:
+            stop = float(ev["false_move_low"]) - max(0.0, (entry - float(ev["false_move_low"])) * 0.05)
+        else:
+            stop = float(ev["false_move_high"]) + max(0.0, (float(ev["false_move_high"]) - entry) * 0.05)
+        risk = abs(entry - stop)
+        if risk <= 0:
+            continue
+        target = entry + 2 * risk * direction
+        rr = abs(target - entry) / risk if risk else 0.0
+        factors = {
+            "htf_bias_aligned": bias_dir == direction,
+            "premium_discount_side": (
+                (direction == 1 and pd_state == "discount")
+                or (direction == -1 and pd_state == "premium")
+            ),
+            "unmitigated_ob": ob is not None and ob.get("status") == "unmitigated",
+            "unfilled_fvg": fvg is not None,
+            "liquidity_swept": True,
+            "ltf_choch": True,
+            "ote_zone": False,
+            "killzone": bool(ev.get("killzone")) or bool((session or {}).get("killzone")),
+            "volume_displacement": bool(ev.get("displacement_confirmed")),
+        }
+        scoring = score_confluence(factors, weights=weights, threshold=threshold)
+        out.append(
+            {
+                "model": "power_of_three",
+                "direction": direction,
+                "entry": round(entry, 4),
+                "stop": round(stop, 4),
+                "target": round(target, 4),
+                "risk": round(risk, 4),
+                "rr": round(rr, 2),
+                "poi_kind": poi_kind,
+                "poi_top": round(poi_top, 4),
+                "poi_bottom": round(poi_bottom, 4),
+                "accumulation_start": start,
+                "accumulation_end": sweep_idx - 1,
+                "accumulation_range": round(rng, 4),
+                "atr_at_sweep": round(atr, 4),
+                "judas_index": int(ev["confirm_index"]),
+                "confluence": scoring,
+                "factors": factors,
+                "triggered": scoring["triggered"],
+            }
+        )
+    return out
+
+
 def retracement_state(df: pd.DataFrame, swings: list[dict]) -> dict:
     highs = [s for s in swings if s["type"] == "high"]
     lows = [s for s in swings if s["type"] == "low"]
@@ -2113,6 +2242,9 @@ def build_smc_analysis(
     silver_bullet_entries = detect_silver_bullet_entries(
         h, liquidity, fvgs, symbol, pd_zone, bias, session, weights=weights,
     )
+    power_of_three_entries = detect_power_of_three_entries(
+        h, judas_events, obs, fvgs, pd_zone, bias, session, weights=weights,
+    )
     retracement = retracement_state(h, swings)
     generated_at = datetime.now().isoformat(timespec="seconds")
     signals = build_signals(
@@ -2203,19 +2335,20 @@ def build_smc_analysis(
                 "ote_retracement": ote_entries,
                 "unicorn": unicorn_entries,
                 "silver_bullet": silver_bullet_entries,
+                "power_of_three": power_of_three_entries,
                 "triggered": [
                     e for e in (
                         sweep_reversal_entries + continuation_entries + ote_entries
-                        + unicorn_entries + silver_bullet_entries
+                        + unicorn_entries + silver_bullet_entries + power_of_three_entries
                     )
                     if e.get("triggered")
                 ],
                 "latest": (
                     sweep_reversal_entries + continuation_entries + ote_entries
-                    + unicorn_entries + silver_bullet_entries
+                    + unicorn_entries + silver_bullet_entries + power_of_three_entries
                 )[-1] if (
                     sweep_reversal_entries or continuation_entries or ote_entries
-                    or unicorn_entries or silver_bullet_entries
+                    or unicorn_entries or silver_bullet_entries or power_of_three_entries
                 ) else None,
             },
         },

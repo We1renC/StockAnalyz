@@ -593,3 +593,35 @@ def test_build_smc_analysis_exposes_silver_bullet_block():
     )
     em = result["concepts"]["entry_models"]
     assert "silver_bullet" in em and isinstance(em["silver_bullet"], list)
+
+
+def test_power_of_three_requires_accumulation_then_judas():
+    """§5.3 Power of Three: Accumulation (tight pre-sweep range) + Judas + Distribution."""
+    from smc_quant import detect_power_of_three_entries
+    cfg = SMCConfig(swing_length=2, internal_swing_length=2)
+    h = normalize_ohlcv(_sample_ohlcv())
+    swings = detect_swings(h, cfg.swing_length)
+    structure = detect_structure(h, swings, cfg)
+    liquidity = detect_liquidity(h, swings, cfg)
+    displacements = detect_displacement(h, cfg)
+    judas = detect_judas_swings(h, structure, liquidity, displacements, "AAPL")
+    # No Judas → no entries
+    assert detect_power_of_three_entries(h, [], [], [], {}, "neutral") == []
+    entries = detect_power_of_three_entries(h, judas, [], [], {"state": "discount"}, "bullish")
+    for e in entries:
+        assert e["model"] == "power_of_three"
+        assert e["accumulation_end"] == e["judas_index"] - 1 or e["accumulation_end"] < e["judas_index"]
+        assert e["accumulation_range"] > 0
+        assert e["rr"] >= 1.99
+
+
+def test_build_smc_analysis_exposes_power_of_three_block():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    em = result["concepts"]["entry_models"]
+    assert "power_of_three" in em and isinstance(em["power_of_three"], list)
+    # Should also still expose all earlier models in a single block.
+    for key in ("sweep_reversal", "ob_fvg_continuation", "ote_retracement", "unicorn", "silver_bullet"):
+        assert key in em
