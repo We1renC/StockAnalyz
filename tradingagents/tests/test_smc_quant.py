@@ -270,3 +270,106 @@ def test_build_smc_analysis_exposes_smt_events_when_correlated_provided():
     assert "events" in smt and isinstance(smt["events"], list)
     assert "latest" in smt
     assert "NQ=F" in smt["pairs"]
+
+
+def test_unicorn_and_smt_divergence_entry_models():
+    from smc_quant import build_signals, SMCConfig
+    df = _sample_ohlcv()
+    cfg = SMCConfig()
+    
+    # 1. Unicorn Model (Breaker Block + FVG overlap)
+    obs = [{"direction": 1, "unmitigated": True, "breaker": True, "top": 12.0, "bottom": 10.0, "mid": 11.0, "body_top": 11.5, "body_bottom": 10.5, "index": 5, "event_index": 5}]
+    fvgs = [{"direction": 1, "mitigated": False, "displacement_confirmed": True, "top": 12.5, "bottom": 11.5, "mid": 12.0, "index": 20}]
+    signals = build_signals(
+        df=df,
+        bias="bullish",
+        order_blocks=obs,
+        fvgs=fvgs,
+        liquidity=[],
+        pd_zone={"zone": "discount"},
+        ote={},
+        structure=[],
+        displacements=[],
+        session={"name": "New York", "killzone": True},
+        prev={"previous_high": 15.0, "previous_low": 8.0},
+        cfg=cfg,
+        symbol="AAPL"
+    )
+    assert len(signals) > 0
+    assert signals[0]["entry_model"] == "Unicorn"
+
+    # 2. SMT Divergence Model (SMT events present)
+    signals_smt = build_signals(
+        df=df,
+        bias="bullish",
+        order_blocks=[],
+        fvgs=[],
+        liquidity=[],
+        pd_zone={"zone": "discount"},
+        ote={},
+        structure=[],
+        displacements=[],
+        session={"name": "New York", "killzone": True},
+        prev={"previous_high": 15.0, "previous_low": 8.0},
+        cfg=cfg,
+        smt_events=[{"index": len(df) - 5, "smt": 1, "paired_symbol": "QQQ"}],
+        symbol="AAPL"
+    )
+    assert len(signals_smt) > 0
+    assert signals_smt[0]["entry_model"] == "SMT Divergence Model"
+
+
+def test_silver_bullet_and_power_of_three_entry_models():
+    from smc_quant import build_signals, SMCConfig
+    cfg = SMCConfig()
+    
+    # 1. Silver Bullet Model (In specific time window + recent FVG)
+    base = datetime(2026, 1, 1, 10, 30, 0)
+    idx = [base - timedelta(minutes=i*5) for i in range(25)]
+    idx.reverse()
+    df = pd.DataFrame(
+        {"open": [10.0]*25, "high": [10.5]*25, "low": [9.5]*25, "close": [10.0]*25, "volume": [100]*25},
+        index=idx
+    )
+    df.index = pd.to_datetime(df.index).tz_localize("US/Eastern")
+    
+    fvgs = [{"direction": 1, "mitigated": False, "displacement_confirmed": True, "top": 10.2, "bottom": 9.8, "mid": 10.0, "index": len(df) - 2}]
+    
+    signals_sb = build_signals(
+        df=df,
+        bias="bullish",
+        order_blocks=[],
+        fvgs=fvgs,
+        liquidity=[],
+        pd_zone={"zone": "discount"},
+        ote={},
+        structure=[],
+        displacements=[],
+        session={"name": "New York", "killzone": True},
+        prev={"previous_high": 15.0, "previous_low": 8.0},
+        cfg=cfg,
+        symbol="AAPL"
+    )
+    assert len(signals_sb) > 0
+    assert signals_sb[0]["entry_model"] == "Silver Bullet"
+
+    # 2. Power of Three (AMD) (Judas event present)
+    signals_amd = build_signals(
+        df=df,
+        bias="bullish",
+        order_blocks=[],
+        fvgs=[],
+        liquidity=[],
+        pd_zone={"zone": "discount"},
+        ote={},
+        structure=[],
+        displacements=[],
+        session={"name": "New York", "killzone": True},
+        prev={"previous_high": 15.0, "previous_low": 8.0},
+        cfg=cfg,
+        judas_events=[{"index": len(df) - 5, "judas": 1}],
+        symbol="AAPL"
+    )
+    assert len(signals_amd) > 0
+    assert signals_amd[0]["entry_model"] == "Power of Three (AMD)"
+

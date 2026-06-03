@@ -38,6 +38,10 @@ DEFAULT_CONFLUENCE_WEIGHTS = {
     "ote_zone": 1,
     "killzone": 1,
     "displacement": 1,
+    "unicorn_pattern": 2,
+    "smt_divergence_pattern": 2,
+    "silver_bullet_pattern": 1,
+    "power_of_three_pattern": 1,
 }
 
 
@@ -638,14 +642,60 @@ def ote_zone(swings: list[dict], bias: str) -> dict:
 def previous_levels(df: pd.DataFrame) -> dict:
     if len(df) < 2:
         return {}
-    prev = df.iloc[-2]
+    prev_bar = df.iloc[-2]
     close = float(df["close"].iloc[-1])
-    return {
-        "previous_high": round(float(prev["high"]), 4),
-        "previous_low": round(float(prev["low"]), 4),
-        "broken_high": close > float(prev["high"]),
-        "broken_low": close < float(prev["low"]),
+    
+    res = {
+        "previous_high": round(float(prev_bar["high"]), 4),
+        "previous_low": round(float(prev_bar["low"]), 4),
+        "broken_high": bool(close > float(prev_bar["high"])),
+        "broken_low": bool(close < float(prev_bar["low"])),
+        
+        "pdh": round(float(prev_bar["high"]), 4),
+        "pdl": round(float(prev_bar["low"]), 4),
+        "pwh": round(float(prev_bar["high"]), 4),
+        "pwl": round(float(prev_bar["low"]), 4),
+        "pmh": round(float(prev_bar["high"]), 4),
+        "pml": round(float(prev_bar["low"]), 4),
+        "broken_pdh": False,
+        "broken_pdl": False,
+        "broken_pwh": False,
+        "broken_pwl": False,
+        "broken_pmh": False,
+        "broken_pml": False,
     }
+    
+    if not isinstance(df.index, pd.DatetimeIndex):
+        return res
+        
+    try:
+        # Resample daily:
+        df_d = df.resample("D").agg({"high": "max", "low": "min"}).dropna()
+        if len(df_d) >= 2:
+            res["pdh"] = round(float(df_d["high"].iloc[-2]), 4)
+            res["pdl"] = round(float(df_d["low"].iloc[-2]), 4)
+            res["broken_pdh"] = bool(close > res["pdh"])
+            res["broken_pdl"] = bool(close < res["pdl"])
+            
+        # Resample weekly:
+        df_w = df.resample("W").agg({"high": "max", "low": "min"}).dropna()
+        if len(df_w) >= 2:
+            res["pwh"] = round(float(df_w["high"].iloc[-2]), 4)
+            res["pwl"] = round(float(df_w["low"].iloc[-2]), 4)
+            res["broken_pwh"] = bool(close > res["pwh"])
+            res["broken_pwl"] = bool(close < res["pwl"])
+            
+        # Resample monthly:
+        df_m = df.resample("M").agg({"high": "max", "low": "min"}).dropna()
+        if len(df_m) >= 2:
+            res["pmh"] = round(float(df_m["high"].iloc[-2]), 4)
+            res["pml"] = round(float(df_m["low"].iloc[-2]), 4)
+            res["broken_pmh"] = bool(close > res["pmh"])
+            res["broken_pml"] = bool(close < res["pml"])
+    except Exception:
+        pass
+        
+    return res
 
 
 def session_state(df: pd.DataFrame, symbol: str) -> dict:
@@ -912,7 +962,7 @@ def build_signals(
     order_blocks: list[dict],
     fvgs: list[dict],
     liquidity: list[dict],
-    pd: dict,
+    pd_zone: dict,
     ote: dict,
     structure: list[dict],
     displacements: list[dict],
@@ -920,6 +970,9 @@ def build_signals(
     prev: dict,
     cfg: SMCConfig,
     weights: Optional[dict[str, int]] = None,
+    smt_events: Optional[list[dict]] = None,
+    judas_events: Optional[list[dict]] = None,
+    symbol: Optional[str] = None,
 ) -> list[dict]:
     if len(df) == 0:
         return []
@@ -940,16 +993,63 @@ def build_signals(
     )
     active_ob = [o for o in order_blocks if o["direction"] == direction and o["unmitigated"]]
     active_fvg = [f for f in fvgs if f["direction"] == direction and not f["mitigated"] and f["displacement_confirmed"]]
-    in_pd = (direction == 1 and pd.get("zone") == "discount") or (direction == -1 and pd.get("zone") == "premium")
+    in_pd = (direction == 1 and pd_zone.get("zone") == "discount") or (direction == -1 and pd_zone.get("zone") == "premium")
     in_ote = bool(ote) and ote.get("direction") == direction and _price_in_zone(price, ote)
     displacement_recent = any(d["direction"] == direction and d["index"] >= len(df) - 10 for d in displacements)
+
+    # Power of Three / AMD detection
+    is_amd = False
+    if judas_events:
+        recent_judas = [j for j in judas_events if j["index"] >= len(df) - 20]
+        if recent_judas:
+            is_amd = True
+
+    # SMT Divergence Model detection
+    is_smt_divergence_model = False
+    if smt_events:
+        recent_smt = [e for e in smt_events if e["index"] >= len(df) - 15]
+        if recent_smt:
+            is_smt_divergence_model = True
+
+    # Silver Bullet detection
+    is_silver_bullet = False
+    if len(df) > 0:
+        ts = pd.Timestamp(df.index[-1])
+        symbol_upper = (symbol or "").upper()
+        is_tw = symbol_upper.endswith((".TW", ".TWO")) or "TW" in symbol_upper
+        
+        in_window = False
+        if is_tw:
+            in_window = ts.hour == 9
+        else:
+            try:
+                eastern = ts.tz_convert("US/Eastern") if ts.tz is not None else ts.tz_localize("UTC").tz_convert("US/Eastern")
+                in_window = (eastern.hour == 10) or (eastern.hour == 15)
+            except Exception:
+                in_window = (14 <= ts.hour <= 15) or (19 <= ts.hour <= 20)
+                
+        if in_window:
+            recent_fvg_in_window = any(f["index"] >= len(df) - 12 for f in active_fvg)
+            if recent_fvg_in_window:
+                is_silver_bullet = True
+
+    # Unicorn detection
+    is_unicorn = False
+    if active_ob and active_fvg:
+        breakers = [o for o in active_ob if o.get("breaker")]
+        for b in breakers:
+            for f in active_fvg:
+                overlap = min(b["top"], f["top"]) >= max(b["bottom"], f["bottom"])
+                if overlap:
+                    is_unicorn = True
+                    break
 
     factors = []
     score = 0
     w = confluence_weights(weights)
     checks = [
         ("htf_bias_alignment", bias, w["htf_bias_alignment"], direction != 0),
-        ("premium_discount_alignment", pd.get("zone"), w["premium_discount_alignment"], in_pd),
+        ("premium_discount_alignment", pd_zone.get("zone"), w["premium_discount_alignment"], in_pd),
         ("unmitigated_ob", len(active_ob), w["unmitigated_ob"], bool(active_ob)),
         ("unfilled_fvg", len(active_fvg), w["unfilled_fvg"], bool(active_fvg)),
         ("liquidity_sweep", recent_sweep, w["liquidity_sweep"], recent_sweep),
@@ -957,6 +1057,10 @@ def build_signals(
         ("ote_zone", ote.get("entry_0705") if ote else None, w["ote_zone"], in_ote),
         ("killzone", session.get("name"), w["killzone"], bool(session.get("killzone"))),
         ("displacement", displacement_recent, w["displacement"], displacement_recent),
+        ("unicorn_pattern", is_unicorn, w["unicorn_pattern"], is_unicorn),
+        ("smt_divergence_pattern", is_smt_divergence_model, w["smt_divergence_pattern"], is_smt_divergence_model),
+        ("silver_bullet_pattern", is_silver_bullet, w["silver_bullet_pattern"], is_silver_bullet),
+        ("power_of_three_pattern", is_amd, w["power_of_three_pattern"], is_amd),
     ]
     for key, value, weight, active in checks:
         if active:
@@ -964,12 +1068,18 @@ def build_signals(
         factors.append({"id": key, "value": value, "weight": weight, "active": bool(active)})
 
     entry_model = "OB/FVG Continuation"
-    if recent_sweep and recent_choch:
+    if is_unicorn:
+        entry_model = "Unicorn"
+    elif is_smt_divergence_model:
+        entry_model = "SMT Divergence Model"
+    elif is_silver_bullet:
+        entry_model = "Silver Bullet"
+    elif is_amd:
+        entry_model = "Power of Three (AMD)"
+    elif recent_sweep and recent_choch:
         entry_model = "Sweep + CHoCH"
     elif in_ote:
         entry_model = "OTE Retracement"
-    elif active_ob and active_fvg and any(o.get("breaker") for o in active_ob):
-        entry_model = "Unicorn"
 
     entry_candidates = []
     if active_ob:
@@ -1212,7 +1322,24 @@ def build_smc_analysis(
     smt_events = detect_smt_divergence(h, correlated, swings)
     retracement = retracement_state(h, swings)
     generated_at = datetime.now().isoformat(timespec="seconds")
-    signals = build_signals(h, bias, obs, fvgs, liquidity, pd_zone, ote, structure, displacements, session, prev, cfg, weights)
+    signals = build_signals(
+        h,
+        bias,
+        obs,
+        fvgs,
+        liquidity,
+        pd_zone,
+        ote,
+        structure,
+        displacements,
+        session,
+        prev,
+        cfg,
+        weights,
+        smt_events=smt_events,
+        judas_events=judas_events,
+        symbol=symbol,
+    )
     signals = [
         standardize_signal(
             s,
