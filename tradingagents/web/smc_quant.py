@@ -1000,14 +1000,14 @@ def build_signals(
     # Power of Three / AMD detection
     is_amd = False
     if judas_events:
-        recent_judas = [j for j in judas_events if j["index"] >= len(df) - 20]
+        recent_judas = [j for j in judas_events if j.get("sweep_index", j.get("index", 0)) >= len(df) - 20]
         if recent_judas:
             is_amd = True
 
     # SMT Divergence Model detection
     is_smt_divergence_model = False
     if smt_events:
-        recent_smt = [e for e in smt_events if e["index"] >= len(df) - 15]
+        recent_smt = [e for e in smt_events if e.get("primary_curr_index", e.get("index", 0)) >= len(df) - 15]
         if recent_smt:
             is_smt_divergence_model = True
 
