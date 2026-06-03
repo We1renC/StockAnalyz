@@ -4980,6 +4980,83 @@ def _build_technical_matrix_text(symbol: str, matrix: Optional[dict] = None) -> 
     return "\n".join(lines)
 
 
+def _load_latest_smc_backtest_run(symbol: str) -> Optional[dict]:
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT symbol, market, period, source, total_trades, win_rate,
+                      profit_factor, expectancy_r, max_drawdown, ending_equity, created_at
+               FROM smc_backtest_runs
+               WHERE symbol=?
+               ORDER BY created_at DESC, id DESC
+               LIMIT 1""",
+            (symbol,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
+def _build_smc_text(symbol: str, analysis: Optional[dict] = None) -> str:
+    """Condense SMC structure + latest backtest evidence for LLM context."""
+    if analysis is None:
+        try:
+            h, _source = fetch_history(symbol, period="6mo")
+            if h is None or len(h) == 0:
+                return "SMC 結構：暫時無法計算（無價格歷史）。"
+            analysis = build_smc_analysis(h, symbol=symbol, timeframe="6mo")
+        except Exception:
+            return "SMC 結構：暫時無法計算（資料不足或抓取失敗）。"
+    if not analysis or analysis.get("error"):
+        return "SMC 結構：暫時無法計算（資料不足或抓取失敗）。"
+
+    summary = analysis.get("summary") or {}
+    concepts = analysis.get("concepts") or {}
+    signal = ((analysis.get("signals") or [None])[0]) or {}
+    top_down = analysis.get("top_down") or {}
+    lines = ["【SMC 結構與回測】"]
+    lines.append(
+        f"當前偏向：{summary.get('bias')}，分數 {summary.get('confluence_score')}/{summary.get('entry_threshold')}，"
+        f"PD 區 {summary.get('premium_discount')}，時段 {summary.get('session')}"
+    )
+    counts = {
+        "BOS": len([x for x in (concepts.get("structure") or []) if x.get("type") == "BOS"]),
+        "CHoCH": len([x for x in (concepts.get("structure") or []) if x.get("type") == "CHOCH"]),
+        "OB": len(concepts.get("order_blocks") or []),
+        "FVG": len(concepts.get("fvgs") or []),
+        "Liquidity": len(concepts.get("liquidity") or []),
+    }
+    lines.append("結構計數：" + "，".join(f"{k} {v}" for k, v in counts.items()))
+    if signal:
+        dol = signal.get("dol_target") or {}
+        lines.append(
+            f"當前訊號：{signal.get('model')} / {signal.get('direction')}，Entry {signal.get('entry')}，"
+            f"SL {signal.get('stop')}，TP {signal.get('tp1')}，RR {signal.get('rr')}，"
+            f"狀態 {'qualified' if signal.get('qualified') else 'watch'}"
+        )
+        if dol:
+            lines.append(f"DOL 目標：{dol.get('type')} {dol.get('level')}（來源 {dol.get('source')}）")
+        active_factors = [f.get("id") for f in signal.get("factors", []) if f.get("active")]
+        if active_factors:
+            lines.append("觸發因子：" + "、".join(active_factors))
+    if top_down:
+        lines.append(
+            f"多時框對齊：HTF {top_down.get('htf_bias')} / MTF {top_down.get('mtf_bias')} / "
+            f"LTF {top_down.get('ltf_bias')}，aligned={top_down.get('aligned')}"
+        )
+
+    latest_run = _load_latest_smc_backtest_run(symbol)
+    if latest_run:
+        lines.append(
+            f"最近回測：{latest_run.get('period')}，Trades {latest_run.get('total_trades')}，"
+            f"WinRate {latest_run.get('win_rate')}，PF {latest_run.get('profit_factor')}，"
+            f"Expectancy {latest_run.get('expectancy_r')}，MDD {latest_run.get('max_drawdown')}"
+        )
+    else:
+        lines.append("最近回測：尚無落庫樣本。")
+    return "\n".join(lines)
+
+
 # ─────────────── 財報 / 17D 落地（SQL + Obsidian） ───────────────
 
 def _store_fundamentals_snapshot(symbol: str, data: dict, conn=None) -> None:
@@ -5345,6 +5422,15 @@ def _build_context(symbol: str) -> dict:
     # 17D 技術矩陣（核心新增）
     parts.append("")
     parts.append(_build_technical_matrix_text(symbol, matrix=matrix))
+
+    # SMC 結構 + 回測摘要（供 AI 與 17D / 基本面交叉比對）
+    try:
+        smc_h, _smc_source = fetch_history(symbol, period="6mo")
+        smc_analysis = build_smc_analysis(smc_h, symbol=symbol, timeframe="6mo") if smc_h is not None and len(smc_h) else None
+    except Exception:
+        smc_analysis = None
+    parts.append("")
+    parts.append(_build_smc_text(symbol, analysis=smc_analysis))
 
     # 若該股 17D 歷史不足，先回填過去半年（每週取樣）讓 AI 立刻有趨勢可看
     try:

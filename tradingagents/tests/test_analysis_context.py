@@ -68,6 +68,53 @@ def test_technical_matrix_text_handles_failure():
     assert "暫時無法計算" in text
 
 
+def test_build_smc_text_formats_summary_and_backtest():
+    fake_analysis = {
+        "summary": {
+            "bias": "bullish",
+            "confluence_score": 5.2,
+            "entry_threshold": 3.0,
+            "premium_discount": "discount",
+            "session": "london",
+        },
+        "concepts": {
+            "structure": [{"type": "BOS"}, {"type": "CHOCH"}, {"type": "BOS"}],
+            "order_blocks": [{"side": "bullish"}],
+            "fvgs": [{"side": "bullish"}, {"side": "bearish"}],
+            "liquidity": [{"kind": "bsl"}],
+        },
+        "signals": [{
+            "model": "amd",
+            "direction": "long",
+            "entry": 100.5,
+            "stop": 96.0,
+            "tp1": 108.0,
+            "rr": 1.67,
+            "qualified": True,
+            "dol_target": {"type": "external_liquidity", "level": 109.0, "source": "BSL"},
+            "factors": [{"id": "bos", "active": True}, {"id": "fvg", "active": False}],
+        }],
+        "top_down": {"htf_bias": "bullish", "mtf_bias": "bullish", "ltf_bias": "neutral", "aligned": True},
+    }
+    fake_run = {
+        "period": "6mo",
+        "total_trades": 12,
+        "win_rate": 0.58,
+        "profit_factor": 1.42,
+        "expectancy_r": 0.27,
+        "max_drawdown": -0.09,
+    }
+    with patch.object(app, "_load_latest_smc_backtest_run", return_value=fake_run):
+        text = app._build_smc_text("TEST", analysis=fake_analysis)
+    assert "【SMC 結構與回測】" in text
+    assert "當前偏向：bullish" in text
+    assert "結構計數：BOS 2，CHoCH 1，OB 1，FVG 2，Liquidity 1" in text
+    assert "當前訊號：amd / long" in text
+    assert "DOL 目標：external_liquidity 109.0（來源 BSL）" in text
+    assert "觸發因子：bos" in text
+    assert "最近回測：6mo，Trades 12" in text
+
+
 def test_build_context_includes_all_layers(tmp_path):
     # Isolated DB with one position + price cache
     original = app.DB
@@ -85,12 +132,14 @@ def test_build_context_includes_all_layers(tmp_path):
         conn.close()
 
         with patch.object(app, "_build_technical_matrix_text", return_value="【17D 全景技術矩陣】mock"), \
+             patch.object(app, "_build_smc_text", return_value="【SMC 結構與回測】mock"), \
              patch.object(app, "_build_fundamentals_text", return_value="【基本面與估值】mock"):
             ctx = app._build_context("2330.TW")
         assert "error" not in ctx
         body = ctx["context"]
         assert "【即時技術指標】" in body
         assert "【17D 全景技術矩陣】" in body
+        assert "【SMC 結構與回測】" in body
         assert "【基本面與估值】" in body
         assert "【持倉狀態】" in body
     finally:
