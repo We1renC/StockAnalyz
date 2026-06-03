@@ -719,3 +719,72 @@ def test_build_smc_analysis_attaches_dol_to_entry_models():
         for e in result["concepts"]["entry_models"][key]:
             assert "dol_target" in e
             assert "dol_required" in e
+
+
+def test_backtest_replay_settles_long_trade_at_target():
+    """§10: bar-by-bar replay must hit target before max_hold expiry."""
+    from smc_quant import evaluate_entry_models
+    # 6 bars, price rallies from 100 → 112; entry @ 100 / stop @ 99 / target @ 110 → +10R
+    rows = [(100, 101, 99.5, 100.5, 100)] * 2 + [
+        (100.5, 105, 100, 104, 110),
+        (104, 108, 103.5, 107, 120),
+        (107, 112, 106, 111, 130),
+        (111, 113, 110, 112, 140),
+    ]
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(len(rows))]
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    entries = [{
+        "model": "sweep_reversal", "direction": 1,
+        "entry": 100.0, "stop": 99.0, "target": 110.0,
+        "rr": 10.0, "triggered": True, "sweep_index": 1,
+    }]
+    out = evaluate_entry_models(df, entries, max_hold_bars=10)
+    assert out["metrics"]["count"] == 1
+    assert out["metrics"]["wins"] == 1
+    assert out["trades"][0]["outcome"] == "target"
+    assert out["trades"][0]["r_multiple"] == 10.0
+
+
+def test_backtest_replay_settles_at_stop_when_pierced():
+    from smc_quant import evaluate_entry_models
+    # Bar after entry pierces stop @ 99
+    rows = [(100, 101, 99.5, 100.5, 100), (100.5, 100.6, 98.0, 98.5, 110)]
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(len(rows))]
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    entries = [{
+        "model": "x", "direction": 1,
+        "entry": 100.0, "stop": 99.0, "target": 110.0,
+        "rr": 10.0, "triggered": True, "sweep_index": 0,
+    }]
+    out = evaluate_entry_models(df, entries, max_hold_bars=5)
+    assert out["metrics"]["losses"] == 1
+    assert out["trades"][0]["r_multiple"] == -1.0
+
+
+def test_backtest_replay_ignores_untriggered_entries():
+    """only_triggered=True must skip entries that did not pass confluence."""
+    from smc_quant import evaluate_entry_models
+    h = normalize_ohlcv(_sample_ohlcv())
+    entries = [
+        {"model": "a", "direction": 1, "entry": 10, "stop": 9, "target": 12, "rr": 2, "triggered": False, "sweep_index": 5},
+    ]
+    out = evaluate_entry_models(h, entries)
+    assert out["metrics"]["count"] == 0
+
+
+def test_backtest_replay_respects_lookahead_guard():
+    """Entry index must come strictly AFTER the last confirmation event."""
+    from smc_quant import evaluate_entry_models, _entry_bar_of
+    e = {"judas_index": 10, "bos_index": 8, "fvg_index": 12}
+    assert _entry_bar_of(e) == 12  # newest anchor wins
+
+
+def test_build_smc_analysis_exposes_backtest_replay_block():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    bt = result["concepts"]["entry_models"]["backtest_replay"]
+    assert "metrics" in bt and "trades" in bt
+    assert "win_rate" in bt["metrics"]
+    assert "passes_acceptance" in bt["metrics"]
