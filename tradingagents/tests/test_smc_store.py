@@ -3,7 +3,7 @@ from unittest.mock import patch
 import pandas as pd
 
 import app
-from smc_report import build_smc_report_html
+from smc_report import build_smc_report_html, build_smc_scan_report_html
 from smc_store import persist_backtest_run, summarize_backtest_report
 
 
@@ -177,6 +177,47 @@ def test_build_smc_report_html_renders_key_sections():
     assert "AAA" in html
 
 
+def test_build_smc_scan_report_html_renders_key_sections():
+    html = build_smc_scan_report_html(
+        {
+            "scope": "all",
+            "period": "6mo",
+            "universe": [{"symbol": "AAA", "name": "Alpha"}, {"symbol": "BBB", "name": "Beta"}],
+            "summary": {
+                "symbol_count": 2,
+                "signal_count": 3,
+                "qualified_count": 1,
+                "avg_score": 8.3,
+                "avg_rr": 1.9,
+                "model_breakdown": {"AMD": 2, "Silver Bullet": 1},
+                "market_breakdown": {"us": 2, "tw": 1},
+            },
+            "results": [
+                {
+                    "symbol": "AAA",
+                    "name": "Alpha",
+                    "market": "us",
+                    "model": "AMD",
+                    "direction": "long",
+                    "score": 9,
+                    "entry": 100,
+                    "stop": 95,
+                    "tp1": 110,
+                    "rr": 2.0,
+                    "dol_target": {"type": "PDH", "level": 110},
+                    "status": "qualified",
+                }
+            ],
+        },
+        title="Custom SMC Scan",
+    )
+    assert "Custom SMC Scan" in html
+    assert "Signal Ranking" in html
+    assert "Scanned Universe" in html
+    assert "Model Breakdown" in html
+    assert "Alpha" in html
+
+
 def test_api_smc_backtest_report_html_returns_html(tmp_path):
     original = _temp_db(tmp_path)
     try:
@@ -204,11 +245,33 @@ def test_api_smc_scan_returns_ranked_results(tmp_path):
             result = app.api_smc_scan(period="6mo", swing_length=2, internal_swing_length=2)
 
         assert "results" in result
+        assert "summary" in result
         assert isinstance(result["results"], list)
+        assert result["summary"]["symbol_count"] == 1
         if result["results"]:
             assert result["results"][0]["symbol"] == "AAPL"
+            assert result["results"][0]["name"] == "Apple"
+            assert result["results"][0]["market"] == "us"
+            assert result["results"][0]["source"] == "yfinance"
             assert "dol_distance" in result["results"][0]
             assert "dol_direction" in result["results"][0]
     finally:
         app.DB = original
 
+
+def test_api_smc_scan_report_html_returns_html(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        conn = app.get_db()
+        conn.execute("INSERT INTO watchlist (symbol,name,category,currency) VALUES (?,?,?,?)", ("AAPL", "Apple", "us", "USD"))
+        conn.commit()
+        conn.close()
+
+        with patch.object(app, "fetch_history", return_value=(_sample_ohlcv(), "yfinance")):
+            response = app.api_smc_scan_report_html(scope="watchlist", period="6mo", swing_length=2, internal_swing_length=2)
+        body = response.body.decode("utf-8")
+        assert "SMC Scan Report - watchlist" in body
+        assert "Signal Ranking" in body
+        assert "AAPL" in body
+    finally:
+        app.DB = original

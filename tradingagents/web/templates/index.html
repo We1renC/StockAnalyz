@@ -1297,6 +1297,9 @@ body { background: var(--bg-base); color: var(--text-primary); }
           <button onclick="runSmcBatchScan()" id="smc-scan-btn" class="btn-primary text-xs px-2.5 py-1.5" style="border-radius: 6px; padding: 4px 8px; font-size: 11px;">
             開始掃描所有觀察/持倉
           </button>
+          <button onclick="openSmcScanReport()" class="btn-secondary text-xs px-2.5 py-1.5" style="border-radius: 6px; padding: 4px 8px; font-size: 11px;">
+            HTML 報表
+          </button>
         </div>
       </div>
       <div class="overflow-x-auto">
@@ -2596,6 +2599,11 @@ async function runSmcBatchScan() {
     btn.disabled = false;
     btn.textContent = '開始掃描所有觀察/持倉';
   }
+}
+
+function openSmcScanReport() {
+  const period = $('smc-chart-period')?.value || '6mo';
+  window.open(`/api/smc-scan/report/html?scope=all&period=${encodeURIComponent(period)}`, '_blank');
 }
 
 function switchSmcSymbol(symbol) {

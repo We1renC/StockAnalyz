@@ -36,7 +36,7 @@ from technical_matrix import build_technical_matrix
 from smc_quant import SMCConfig, build_smc_analysis
 from smc_backtest import SMCBacktestConfig, run_smc_event_backtest
 from smc_store import persist_backtest_run, summarize_backtest_report
-from smc_report import build_smc_report_html
+from smc_report import build_smc_report_html, build_smc_scan_report_html
 
 warnings.filterwarnings("ignore")
 
@@ -3361,6 +3361,7 @@ def api_smc_analysis(
 
 @app.post("/api/smc-scan")
 def api_smc_scan(
+    scope: str = "all",
     period: str = "6mo",
     swing_length: int = 5,
     internal_swing_length: int = 3,
@@ -3371,9 +3372,23 @@ def api_smc_scan(
     """Batch scanner to scan all watchlist and portfolio symbols and rank SMC signals."""
     try:
         conn = get_db()
-        watchlist_symbols = [r[0] for r in conn.execute("SELECT symbol FROM watchlist").fetchall()]
-        positions_symbols = [r[0] for r in conn.execute("SELECT symbol FROM positions").fetchall()]
-        symbols = sorted(list(set(watchlist_symbols + positions_symbols)))
+        if scope == "positions":
+            rows = conn.execute("SELECT symbol, name FROM positions").fetchall()
+        elif scope == "watchlist":
+            rows = conn.execute("SELECT symbol, name FROM watchlist").fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT symbol, name FROM positions
+                   UNION
+                   SELECT symbol, name FROM watchlist"""
+            ).fetchall()
+        symbol_meta = {}
+        for row in rows:
+            symbol = (row["symbol"] or "").strip().upper()
+            if not symbol:
+                continue
+            symbol_meta.setdefault(symbol, row["name"] or symbol)
+        symbols = sorted(symbol_meta.keys())
         
         results = []
         cfg = _chart_period_config(period)
@@ -3409,6 +3424,10 @@ def api_smc_scan(
                 for sig in analysis.get("signals", []):
                     results.append({
                         "symbol": symbol,
+                        "name": symbol_meta.get(symbol, symbol),
+                        "market": analysis.get("market"),
+                        "source": source,
+                        "period": period,
                         "model": sig["model"],
                         "direction": sig["direction"],
                         "score": sig["score"],
@@ -3434,8 +3453,33 @@ def api_smc_scan(
             x["score"] or 0,
             x["rr"] or 0
         ), reverse=True)
-        
-        return sanitize_float_values({"results": results})
+
+        qualified_count = sum(1 for x in results if x.get("status") == "qualified")
+        model_breakdown = {}
+        market_breakdown = {}
+        score_values = []
+        rr_values = []
+        for item in results:
+            model = item.get("model") or "unknown"
+            market = item.get("market") or "unknown"
+            model_breakdown[model] = model_breakdown.get(model, 0) + 1
+            market_breakdown[market] = market_breakdown.get(market, 0) + 1
+            if item.get("score") is not None:
+                score_values.append(float(item["score"]))
+            if item.get("rr") is not None:
+                rr_values.append(float(item["rr"]))
+
+        universe = [{"symbol": symbol, "name": symbol_meta.get(symbol, symbol)} for symbol in symbols]
+        summary = {
+            "symbol_count": len(symbols),
+            "signal_count": len(results),
+            "qualified_count": qualified_count,
+            "avg_score": round(sum(score_values) / len(score_values), 2) if score_values else None,
+            "avg_rr": round(sum(rr_values) / len(rr_values), 2) if rr_values else None,
+            "model_breakdown": model_breakdown,
+            "market_breakdown": market_breakdown,
+        }
+        return sanitize_float_values({"scope": scope, "period": period, "universe": universe, "results": results, "summary": summary})
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -3647,6 +3691,29 @@ def api_smc_backtest_report_html(symbol: Optional[str] = None, limit_runs: int =
         conn.close()
     title = f"SMC Backtest Report - {symbol.upper()}" if symbol else "SMC Backtest Report"
     return HTMLResponse(build_smc_report_html(report, title=title))
+
+
+@app.get("/api/smc-scan/report/html", response_class=HTMLResponse)
+def api_smc_scan_report_html(
+    scope: str = "all",
+    period: str = "6mo",
+    swing_length: int = 5,
+    internal_swing_length: int = 3,
+    close_break: bool = True,
+    account_equity: float = 100_000,
+    risk_pct: float = 0.01,
+):
+    scan = api_smc_scan(
+        scope=scope,
+        period=period,
+        swing_length=swing_length,
+        internal_swing_length=internal_swing_length,
+        close_break=close_break,
+        account_equity=account_equity,
+        risk_pct=risk_pct,
+    )
+    title = f"SMC Scan Report - {scope}"
+    return HTMLResponse(build_smc_scan_report_html(scan, title=title))
 
 
 @app.get("/api/smc-learning/attribution")
