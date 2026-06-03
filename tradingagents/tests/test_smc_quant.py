@@ -441,3 +441,39 @@ def test_build_smc_analysis_exposes_entry_models_block():
     assert "sweep_reversal" in em and isinstance(em["sweep_reversal"], list)
     assert "triggered" in em
     assert "latest" in em
+
+
+def test_continuation_entries_anchor_to_latest_bos():
+    """§5.1 Model 2: continuation entries must derive from a BOS event."""
+    from smc_quant import detect_continuation_entries
+    cfg = SMCConfig(swing_length=2, internal_swing_length=2)
+    h = normalize_ohlcv(_sample_ohlcv())
+    swings = detect_swings(h, cfg.swing_length)
+    structure = detect_structure(h, swings, cfg)
+    liquidity = detect_liquidity(h, swings, cfg)
+    displacements = detect_displacement(h, cfg)
+    obs = detect_order_blocks(h, structure, displacements, liquidity)
+    entries = detect_continuation_entries(h, structure, obs, [], {"state": "discount"}, "bullish")
+    bos_events = [ev for ev in structure if ev["type"] == "BOS"]
+    if not bos_events:
+        # If no BOS in sample → no entries (do not fabricate)
+        assert entries == []
+    else:
+        for e in entries:
+            assert e["model"] == "ob_fvg_continuation"
+            assert e["direction"] in (1, -1)
+            assert e["risk"] > 0 and e["rr"] >= 1.99
+            if e["direction"] == 1:
+                assert e["stop"] <= e["poi_bottom"]
+            else:
+                assert e["stop"] >= e["poi_top"]
+            assert e["bos_index"] == bos_events[-1]["index"]
+
+
+def test_build_smc_analysis_exposes_continuation_block():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    em = result["concepts"]["entry_models"]
+    assert "ob_fvg_continuation" in em and isinstance(em["ob_fvg_continuation"], list)

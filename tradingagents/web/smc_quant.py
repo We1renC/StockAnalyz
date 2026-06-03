@@ -1083,6 +1083,113 @@ def detect_sweep_reversal_entries(
     return deduped
 
 
+def detect_continuation_entries(
+    df: pd.DataFrame,
+    structure: list[dict],
+    order_blocks: list[dict],
+    fvgs: list[dict],
+    pd_zone: dict,
+    bias: str,
+    session: Optional[dict] = None,
+    weights: Optional[dict[str, int]] = None,
+    threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
+) -> list[dict]:
+    """§5.1 Entry Model 2 — OB/FVG Continuation.
+
+    HTF BOS confirms trend → retest of unmitigated OB or unfilled FVG
+    sitting in the *correct* premium/discount zone → trend-following entry.
+    """
+    out: list[dict] = []
+    if df is None or len(df) == 0 or not structure:
+        return out
+    bos_events = [ev for ev in structure if ev.get("type") == "BOS"]
+    if not bos_events:
+        return out
+    bos = bos_events[-1]
+    direction = int(bos.get("direction", 0))
+    if direction == 0:
+        return out
+    bos_idx = int(bos["index"])
+    pd_state = (pd_zone or {}).get("state")
+    bias_dir = 1 if "bull" in (bias or "") else (-1 if "bear" in (bias or "") else 0)
+    # Correct-side POIs: bullish trend → discount zone; bearish → premium.
+    correct_pd = ("discount" if direction == 1 else "premium")
+    ob_candidates = [
+        ob for ob in order_blocks
+        if int(ob.get("direction", 0)) == direction
+        and int(ob.get("index", 1_000_000)) <= bos_idx
+        and ob.get("status") in {"unmitigated", "mitigation"}
+    ]
+    fvg_candidates = [
+        f for f in fvgs
+        if int(f.get("direction", 0)) == direction
+        and int(f.get("index", 1_000_000)) <= bos_idx
+        and not f.get("mitigated")
+    ]
+    if not ob_candidates and not fvg_candidates:
+        return out
+    grade_rank = {"A": 0, "B": 1, "C": 2}
+    ob_candidates.sort(key=lambda o: (grade_rank.get(o.get("grade"), 9), -int(o.get("index", 0))))
+    last_price = float(df["close"].iloc[-1])
+    for poi in (ob_candidates[:1] + fvg_candidates[-1:])[:2]:
+        is_ob = "refined_entry" in poi
+        if is_ob:
+            entry = float(poi["refined_entry"])
+            top, bottom = float(poi["top"]), float(poi["bottom"])
+            poi_kind = "order_block"
+        else:
+            entry = float(poi["mid"])
+            top, bottom = float(poi["top"]), float(poi["bottom"])
+            poi_kind = "fvg"
+        # Stop = beyond POI boundary (structural invalidation).
+        if direction == 1:
+            stop = bottom - max(0.0, (entry - bottom) * 0.05)
+        else:
+            stop = top + max(0.0, (top - entry) * 0.05)
+        risk = abs(entry - stop)
+        if risk <= 0:
+            continue
+        # Target: BOS swing level extended 2R, or simply 2R fallback.
+        target = entry + 2 * risk * direction
+        rr = abs(target - entry) / risk if risk else 0.0
+        # Distance check — continuation expects price to retest the POI, not be far above/below.
+        zone_touched = bottom <= last_price <= top or abs(last_price - entry) / max(entry, 1e-9) <= 0.05
+        factors = {
+            "htf_bias_aligned": bias_dir == direction or bias_dir == 0,
+            "premium_discount_side": pd_state == correct_pd,
+            "unmitigated_ob": is_ob and poi.get("status") == "unmitigated",
+            "unfilled_fvg": (not is_ob),
+            "liquidity_swept": False,
+            "ltf_choch": False,
+            "ote_zone": False,
+            "killzone": bool((session or {}).get("killzone")),
+            "volume_displacement": bool(poi.get("displacement_confirmed", True)) if is_ob else bool(poi.get("displacement_confirmed")),
+        }
+        scoring = score_confluence(factors, weights=weights, threshold=threshold)
+        out.append(
+            {
+                "model": "ob_fvg_continuation",
+                "direction": direction,
+                "entry": round(entry, 4),
+                "stop": round(stop, 4),
+                "target": round(target, 4),
+                "risk": round(risk, 4),
+                "rr": round(rr, 2),
+                "poi_kind": poi_kind,
+                "poi_top": round(top, 4),
+                "poi_bottom": round(bottom, 4),
+                "bos_index": bos_idx,
+                "bos_level": bos.get("level"),
+                "zone_touched": zone_touched,
+                "confluence": scoring,
+                "factors": factors,
+                "triggered": scoring["triggered"],
+                "time": bos.get("time"),
+            }
+        )
+    return out
+
+
 def retracement_state(df: pd.DataFrame, swings: list[dict]) -> dict:
     highs = [s for s in swings if s["type"] == "high"]
     lows = [s for s in swings if s["type"] == "low"]
@@ -1661,6 +1768,9 @@ def build_smc_analysis(
         h, judas_events, obs, fvgs, pd_zone, bias, session,
         weights=weights,
     )
+    continuation_entries = detect_continuation_entries(
+        h, structure, obs, fvgs, pd_zone, bias, session, weights=weights,
+    )
     retracement = retracement_state(h, swings)
     generated_at = datetime.now().isoformat(timespec="seconds")
     signals = build_signals(
@@ -1747,8 +1857,13 @@ def build_smc_analysis(
             },
             "entry_models": {
                 "sweep_reversal": sweep_reversal_entries,
-                "triggered": [e for e in sweep_reversal_entries if e.get("triggered")],
-                "latest": sweep_reversal_entries[-1] if sweep_reversal_entries else None,
+                "ob_fvg_continuation": continuation_entries,
+                "triggered": [
+                    e for e in (sweep_reversal_entries + continuation_entries)
+                    if e.get("triggered")
+                ],
+                "latest": (sweep_reversal_entries + continuation_entries)[-1]
+                if (sweep_reversal_entries or continuation_entries) else None,
             },
         },
         "signals": signals,
