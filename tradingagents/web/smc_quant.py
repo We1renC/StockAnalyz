@@ -2957,6 +2957,112 @@ def build_chart_layers(
     return layers
 
 
+def walk_forward_evaluate(
+    trade_records: list[dict],
+    *,
+    folds: int = 4,
+    train_fraction: float = 0.6,
+) -> dict:
+    """§18.6 — walk-forward expectancy stability.
+
+    Slice the time-ordered ledger into ``folds`` consecutive blocks; for
+    each fold use the first ``train_fraction`` as in-sample and the
+    remainder as out-of-sample, reporting expected_R for each. Returns
+    ``{folds: [...], passes: bool}`` — passes is True only if every fold
+    keeps a positive OOS expectancy (no edge decay).
+    """
+    if not trade_records or folds < 1:
+        return {"folds": [], "passes": False, "sample_size": 0}
+    records = sorted(
+        trade_records,
+        key=lambda t: t.get("entry_time") or t.get("exit_time") or "",
+    )
+    n = len(records)
+    fold_size = max(2, n // folds)
+    out_folds: list[dict] = []
+    passes = True
+    for k in range(folds):
+        start = k * fold_size
+        end = min(n, start + fold_size)
+        if start >= n:
+            break
+        chunk = records[start:end]
+        if len(chunk) < 2:
+            continue
+        cut = max(1, int(len(chunk) * train_fraction))
+        in_sample = chunk[:cut]
+        oos = chunk[cut:]
+        is_E = compute_expectancy(in_sample).get("expected_R", 0.0)
+        oos_E = compute_expectancy(oos).get("expected_R", 0.0) if oos else 0.0
+        out_folds.append({
+            "fold": k,
+            "in_sample_size": len(in_sample),
+            "oos_size": len(oos),
+            "in_sample_expected_R": is_E,
+            "oos_expected_R": oos_E,
+            "edge_preserved": bool(oos_E > 0),
+        })
+        if oos and oos_E <= 0:
+            passes = False
+    return {
+        "folds": out_folds,
+        "passes": bool(passes and out_folds),
+        "sample_size": n,
+    }
+
+
+def purged_train_test_split(
+    trade_records: list[dict],
+    *,
+    train_fraction: float = 0.7,
+    embargo_pct: float = 0.01,
+) -> tuple[list[dict], list[dict]]:
+    """§18.6 — time-ordered split with a López-de-Prado-style embargo gap.
+
+    The embargo prevents target-label leakage by dropping
+    ``embargo_pct × N`` trades between the train and test blocks.
+    """
+    if not trade_records:
+        return [], []
+    records = sorted(
+        trade_records,
+        key=lambda t: t.get("entry_time") or t.get("exit_time") or "",
+    )
+    n = len(records)
+    cut = max(1, int(n * train_fraction))
+    embargo = max(1, int(n * embargo_pct)) if embargo_pct > 0 else 0
+    train = records[:cut]
+    test = records[cut + embargo:]
+    return train, test
+
+
+def estimate_pbo(in_sample_R: list[float], out_of_sample_R: list[float]) -> dict:
+    """§18.6 — minimal Backtest-Overfitting Probability approximation.
+
+    For each pair of (in-sample, out-of-sample) R values, count how often
+    a top-half in-sample observation does NOT rank in the top half
+    out-of-sample. The resulting fraction approximates PBO; high values
+    (≥ 0.5) flag overfitting risk.
+    """
+    pairs = list(zip(in_sample_R, out_of_sample_R))
+    if len(pairs) < 4:
+        return {"pbo": None, "sample_size": len(pairs), "note": "insufficient_samples"}
+    is_sorted = sorted(range(len(pairs)), key=lambda i: pairs[i][0], reverse=True)
+    median = len(pairs) // 2
+    top_is = set(is_sorted[:median])
+    misranks = 0
+    for i in top_is:
+        oos_rank = sum(1 for j in range(len(pairs)) if pairs[j][1] > pairs[i][1])
+        if oos_rank > median:
+            misranks += 1
+    pbo = misranks / max(1, len(top_is))
+    return {
+        "pbo": round(pbo, 3),
+        "sample_size": len(pairs),
+        "interpretation": "high_overfit_risk" if pbo >= 0.5 else "low_overfit_risk",
+    }
+
+
 TRADE_RECORD_SCHEMA_VERSION = 1
 
 

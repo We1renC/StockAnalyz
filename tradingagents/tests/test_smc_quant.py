@@ -1051,3 +1051,44 @@ def test_build_smc_analysis_static_config_disables_auto_adapt():
     result = build_smc_analysis(_sample_ohlcv(), "BTCUSDT", config=cfg)
     assert result["config"]["swing_length"] == 7
     assert result["config"]["internal_swing_length"] == 4
+
+
+def test_walk_forward_evaluate_returns_per_fold_metrics():
+    """§18.6: walk-forward should report IS / OOS expected_R per fold."""
+    from smc_quant import walk_forward_evaluate
+    records = []
+    base_t = datetime(2026, 1, 1)
+    for i in range(16):
+        r = 2.0 if i % 2 == 0 else -1.0
+        records.append({
+            "entry_time": (base_t + timedelta(days=i)).isoformat(),
+            "r_multiple": r,
+            "factors": {},
+        })
+    out = walk_forward_evaluate(records, folds=4)
+    assert out["sample_size"] == 16
+    assert len(out["folds"]) >= 2
+    for f in out["folds"]:
+        assert "in_sample_expected_R" in f and "oos_expected_R" in f
+
+
+def test_purged_train_test_split_drops_embargo_window():
+    from smc_quant import purged_train_test_split
+    records = [{"entry_time": f"2026-01-{i+1:02d}", "r_multiple": 1.0} for i in range(20)]
+    train, test = purged_train_test_split(records, train_fraction=0.5, embargo_pct=0.1)
+    assert len(train) == 10
+    # 10% embargo of 20 = 2 dropped
+    assert len(test) == 8
+
+
+def test_estimate_pbo_flags_overfit_when_ranks_invert():
+    from smc_quant import estimate_pbo
+    is_R = [5, 4, 3, 2, 1, 0]
+    # Out-of-sample inverts the rank entirely → high PBO
+    oos_R = [0, 1, 2, 3, 4, 5]
+    out = estimate_pbo(is_R, oos_R)
+    assert out["pbo"] is not None and out["pbo"] >= 0.5
+    assert out["interpretation"] == "high_overfit_risk"
+    # Same rank → low PBO
+    same = estimate_pbo(is_R, is_R)
+    assert same["pbo"] is not None and same["pbo"] < 0.5
