@@ -613,6 +613,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
       <button data-tab="backtest" class="tab-btn tab-item">回測</button>
       <button data-tab="domain-research" class="tab-btn tab-item">領域研究</button>
       <button data-tab="daytrade" class="tab-btn tab-item">當沖監控</button>
+      <button data-tab="smc-analysis" class="tab-btn tab-item">SMC 分析</button>
     </div>
     <div id="nav-market-info" class="flex items-center gap-3 flex-wrap ml-auto text-xs text-slate-400 pr-2">
       <button onclick="openBatchAnalyze()" class="btn-ai text-xs px-2.5 py-1 shrink-0" style="border-radius: 6px; padding: 4px 8px; font-size: 11px;" title="AI 智能點位調整">
@@ -1147,6 +1148,143 @@ body { background: var(--bg-base); color: var(--text-primary); }
 
     <!-- Daytrade Cards Grid (One stock per row) -->
     <div id="daytrade-grid" class="grid grid-cols-1 gap-6"></div>
+  </div>
+
+  <!-- SMC Quantitative Analysis Tab -->
+  <div id="tab-smc-analysis" class="tab-content hidden">
+    <!-- Top control bar -->
+    <div class="mb-4 glass-card-sm p-4 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3 flex-wrap">
+        <span class="text-xs text-slate-400">選擇商品:</span>
+        <select id="smc-symbol-select" onchange="onSmcSymbolChange()" class="input-field text-sm font-semibold" style="width:200px; padding:6px 12px; background:#1e293b; color:#fff; border-radius:6px; border:1px solid #475569;">
+          <!-- Will be dynamically populated -->
+        </select>
+        
+        <span class="text-xs text-slate-400 ml-2">時間級距:</span>
+        <select id="smc-chart-period" onchange="onSmcPeriodChange()" class="input-field text-xs" style="width:auto; padding:6px 12px; background:#1e293b; color:#fff; border-radius:6px; border:1px solid #475569;">
+          <option value="1h">1小時</option>
+          <option value="4h">4小時</option>
+          <option value="1d">1日</option>
+          <option value="5d">5日</option>
+          <option value="1mo">1月</option>
+          <option value="3mo">3月</option>
+          <option value="6mo" selected>6月</option>
+          <option value="1y">1年</option>
+          <option value="2y">2年</option>
+        </select>
+        
+        <button onclick="refreshSmcAnalysis()" class="btn-secondary text-xs px-3 py-1.5" style="height:32px;">
+          立即重整
+        </button>
+      </div>
+
+      <!-- Quick overview metrics -->
+      <div class="flex items-center gap-4 flex-wrap text-xs text-slate-300">
+        <div class="glass-card-sm px-3 py-1.5 flex items-center gap-1.5" style="border-radius:6px">
+          <span class="text-slate-500">結構偏向:</span>
+          <span id="smc-overview-bias" class="font-bold font-mono">—</span>
+        </div>
+        <div class="glass-card-sm px-3 py-1.5 flex items-center gap-1.5" style="border-radius:6px">
+          <span class="text-slate-500">當前區間:</span>
+          <span id="smc-overview-zone" class="font-bold font-mono text-amber-400">—</span>
+        </div>
+        <div class="glass-card-sm px-3 py-1.5 flex items-center gap-1.5" style="border-radius:6px">
+          <span class="text-slate-500">未緩解 OB:</span>
+          <span id="smc-overview-ob-count" class="font-bold font-mono text-emerald-400">—</span>
+        </div>
+        <div class="glass-card-sm px-3 py-1.5 flex items-center gap-1.5" style="border-radius:6px">
+          <span class="text-slate-500">未填補 FVG:</span>
+          <span id="smc-overview-fvg-count" class="font-bold font-mono text-purple-400">—</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- SMC Main Workspace: Chart + Analysis columns -->
+    <div class="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6">
+      
+      <!-- Chart Column (Left 2 cols on XL) -->
+      <div class="xl:col-span-2 glass-card p-4 flex flex-col" style="min-height:560px">
+        <div class="flex items-center justify-between mb-3 border-b border-slate-800/60 pb-2">
+          <div class="font-semibold text-emerald-400 flex items-center gap-2">
+            <span>SMC 量化圖表</span>
+            <span id="smc-chart-symbol-badge" class="text-xs font-mono text-slate-500 bg-slate-800/40 px-2 py-0.5 rounded"></span>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <button onclick="setSmcChartMarkerFilter('all')" id="smc-filter-btn-all" class="btn-secondary text-[11px] px-2 py-0.5 active">全部</button>
+            <button onclick="setSmcChartMarkerFilter('smc')" id="smc-filter-btn-smc" class="btn-secondary text-[11px] px-2 py-0.5">只看 SMC</button>
+          </div>
+        </div>
+        <div id="smc-main-chart" class="w-full flex-1" style="min-height:480px; background:#0a0f1a"></div>
+      </div>
+
+      <!-- Right Column: Signal Summary & Matrix (1 col on XL) -->
+      <div class="flex flex-col gap-6">
+        <!-- Signal Summary Card -->
+        <div class="glass-card p-4 flex-1 flex flex-col">
+          <div class="font-semibold text-cyan-300 mb-3 border-b border-slate-800/60 pb-2 flex items-center justify-between">
+            <span>SMC 交易訊號摘要</span>
+            <span id="smc-signal-score-badge" class="text-xs font-mono px-2 py-0.5 rounded bg-slate-800/40 font-bold"></span>
+          </div>
+          <div id="smc-signal-summary-content" class="flex-1 flex flex-col justify-center text-xs text-slate-300">
+            <div class="text-slate-500 text-center py-8">尚無交易訊號或正在載入...</div>
+          </div>
+        </div>
+      </div>
+      
+    </div>
+
+    <!-- Bottom Stage: Detection Panel List -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      
+      <!-- Left: Order Blocks & FVGs -->
+      <div class="glass-card p-4">
+        <div class="font-semibold text-emerald-400 mb-3 border-b border-slate-800/60 pb-2 flex justify-between items-center">
+          <span>機構訂單塊 (OB) 與 價值缺口 (FVG)</span>
+          <span class="text-[10px] text-slate-500">顯示最近 8 筆</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs text-left text-slate-300">
+            <thead>
+              <tr class="text-slate-500 border-b border-slate-800/50">
+                <th class="py-2">類型</th>
+                <th class="py-2">狀態</th>
+                <th class="py-2">區間價位</th>
+                <th class="py-2">形成時間</th>
+                <th class="py-2">緩解/填補</th>
+              </tr>
+            </thead>
+            <tbody id="smc-ob-fvg-tbody">
+              <tr><td colspan="5" class="py-4 text-center text-slate-500">載入中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Right: Market Structure & Liquidity -->
+      <div class="glass-card p-4">
+        <div class="font-semibold text-amber-400 mb-3 border-b border-slate-800/60 pb-2 flex justify-between items-center">
+          <span>市場結構 (BOS/CHoCH) 與 流動性 (BSL/SSL)</span>
+          <span class="text-[10px] text-slate-500">顯示最近 8 筆</span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs text-left text-slate-300">
+            <thead>
+              <tr class="text-slate-500 border-b border-slate-800/50">
+                <th class="py-2">事件類型</th>
+                <th class="py-2">方向</th>
+                <th class="py-2">價位</th>
+                <th class="py-2">時間</th>
+                <th class="py-2">狀態</th>
+              </tr>
+            </thead>
+            <tbody id="smc-structure-liq-tbody">
+              <tr><td colspan="5" class="py-4 text-center text-slate-500">載入中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      
+    </div>
   </div>
 
 </div>
@@ -1864,7 +2002,6 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     }
     if (tabName === 'daytrade') {
       renderDaytradeGrid();
-      // Delay slightly to ensure layout and width calculations are fully updated in the DOM
       setTimeout(() => {
         Object.keys(_daytradeCharts).forEach(sym => {
           const container = $(`daytrade-chart-${sym}`);
@@ -1877,6 +2014,14 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       refreshDaytradeAll();
     } else {
       stopDaytradeTimer();
+    }
+    if (tabName === 'smc-analysis') {
+      onSmcTabLoad();
+      setTimeout(() => {
+        if (_smcTabChart && $('smc-main-chart')) {
+          try { _smcTabChart.resize($('smc-main-chart').clientWidth, 480); } catch(e){}
+        }
+      }, 50);
     }
   });
 });
@@ -1925,6 +2070,8 @@ async function loadAll() {
   renderPortfolio(p);
   renderPortfolioTrend(t || { tw: [], us: [] });
   window._watchlist = w.watchlist;
+  window._portfolioData = p;
+  populateSmcSymbols();
   if (a.type_meta) _alertTypeMeta = a.type_meta;
   window._allAlerts = a.alerts || [];
   renderWatchlist(w.watchlist);
@@ -1940,6 +2087,393 @@ async function loadAll() {
       try { _usTrendChart.resize($('us-portfolio-trend-chart').clientWidth, 288); } catch(e){}
     }
   }, 100);
+}
+
+function populateSmcSymbols() {
+  const select = $('smc-symbol-select');
+  if (!select) return;
+  
+  const symbols = new Set();
+  if (window._portfolioData && Array.isArray(window._portfolioData.positions)) {
+    window._portfolioData.positions.forEach(p => symbols.add(p.symbol));
+  }
+  if (window._watchlist && Array.isArray(window._watchlist)) {
+    window._watchlist.forEach(w => symbols.add(w.symbol));
+  }
+  
+  if (symbols.size === 0) {
+    symbols.add('2330.TW');
+    symbols.add('AAPL');
+  }
+  
+  const sortedSymbols = Array.from(symbols).sort();
+  const currentSel = select.value || sortedSymbols[0];
+  select.innerHTML = sortedSymbols.map(sym => `<option value="${sym}" ${sym === currentSel ? 'selected' : ''}>${sym}</option>`).join('');
+}
+
+function onSmcTabLoad() {
+  populateSmcSymbols();
+  const select = $('smc-symbol-select');
+  if (select && select.value) {
+    drawSmcTabChart(select.value, $('smc-chart-period').value);
+  }
+}
+
+let _smcTabChart = null;
+let _smcTabCandleSeries = null;
+let _smcTabMa20Series = null;
+let _smcTabMa60Series = null;
+let _smcTabVolSeries = null;
+let _smcTabPrimitive = null;
+let _smcTabMarkerFilter = 'all';
+let _smcTabAnalysis = null;
+let _smcTabMatrix = null;
+
+async function drawSmcTabChart(symbol, period, isRefresh = false) {
+  if (!isRefresh) {
+    const container = $('smc-main-chart');
+    if (container) container.innerHTML = '<div class="flex items-center justify-center h-full text-gray-400">載入 K 線中...</div>';
+    _smcTabCandleSeries = null;
+    _smcTabMa20Series = null;
+    _smcTabMa60Series = null;
+    _smcTabVolSeries = null;
+    _smcTabPrimitive = null;
+    _smcTabAnalysis = null;
+    _smcTabMatrix = null;
+    if (_smcTabChart) {
+      try { _smcTabChart.remove(); } catch(e) {}
+      _smcTabChart = null;
+    }
+    $('smc-chart-symbol-badge').textContent = symbol;
+  }
+  
+  try {
+    const matrixPeriod = matrixPeriodForChartPeriod(period);
+    const [r, matrix, smc] = await Promise.all([
+      fetch(`/api/history/${encodeURIComponent(symbol)}?period=${period}`).then(r=>r.json()),
+      fetch(`/api/technical-matrix/${encodeURIComponent(symbol)}?period=${matrixPeriod}&include_history_markers=false`).then(r=>r.json()).catch(() => null),
+      fetch(`/api/smc-analysis/${encodeURIComponent(symbol)}?period=${period}`).then(r=>r.json()).catch(() => null),
+    ]);
+    
+    if (r.error) {
+      if (!isRefresh) {
+        const container = $('smc-main-chart');
+        if (container) container.innerHTML = `<div class="flex items-center justify-center h-full text-red-400">錯誤: ${r.error}</div>`;
+      }
+      return;
+    }
+    
+    if (!isRefresh || !_smcTabChart) {
+      const container = $('smc-main-chart');
+      if (!container) return;
+      container.innerHTML = '';
+      const chartHeight = container.clientHeight || 480;
+      _smcTabChart = LightweightCharts.createChart(container, {
+        width: container.clientWidth,
+        height: chartHeight,
+        layout: {
+          background: { color: '#0a0f1a' },
+          textColor: '#64748b',
+        },
+        grid: {
+          vertLines: { color: 'rgba(148,163,184,0.06)' },
+          horzLines: { color: 'rgba(148,163,184,0.06)' },
+        },
+        timeScale: {
+          timeVisible: ['1h', '4h', '1d', '5d'].includes(period),
+          secondsVisible: false,
+          borderColor: 'rgba(148,163,184,0.1)',
+          rightOffset: 10,
+          fixLeftEdge: true,
+          fixRightEdge: false,
+        },
+        rightPriceScale: { borderColor: 'rgba(148,163,184,0.1)' },
+        crosshair: {
+          vertLine: { color: 'rgba(148,163,184,0.18)' },
+          horzLine: { color: 'rgba(148,163,184,0.18)' },
+        },
+      });
+      _smcTabVolSeries = _smcTabChart.addHistogramSeries({
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+        scaleMargins: { top: 0.85, bottom: 0 },
+      });
+      _smcTabCandleSeries = _smcTabChart.addCandlestickSeries({
+        upColor: '#ef4444', downColor: '#10b981',
+        borderUpColor: '#ef4444', borderDownColor: '#10b981',
+        wickUpColor: '#ef4444', wickDownColor: '#10b981',
+      });
+      _smcTabMa20Series = _smcTabChart.addLineSeries({ color: '#facc15', lineWidth: 1, priceLineVisible: false });
+      _smcTabMa60Series = _smcTabChart.addLineSeries({ color: '#22d3ee', lineWidth: 1, priceLineVisible: false });
+      
+      _smcTabPrimitive = new SMCPrimitive();
+      _smcTabCandleSeries.attachPrimitive(_smcTabPrimitive);
+    }
+    
+    _smcTabCandleSeries.setData(r.candles);
+    _smcTabMa20Series.setData(r.ma20);
+    _smcTabMa60Series.setData(r.ma60);
+    _smcTabVolSeries.setData(r.volumes);
+    
+    if (matrix && !matrix.error && !matrix.detail) {
+      _smcTabMatrix = matrix;
+    }
+    
+    if (smc && !smc.error && !smc.detail) {
+      _smcTabAnalysis = smc;
+      if (_smcTabPrimitive) {
+        _smcTabPrimitive.update(smc.concepts);
+      }
+      renderSmcTabOverview(smc);
+      renderSmcTabDetails(smc);
+    } else {
+      renderSmcTabOverview(null);
+      renderSmcTabDetails(null);
+    }
+    
+    applySmcTabMarkers();
+    
+    if (!isRefresh) {
+      _smcTabChart.timeScale().fitContent();
+      const dynamicOffset = Math.min(10, Math.max(2, Math.floor(r.candles.length * 0.08)));
+      _smcTabChart.timeScale().applyOptions({ rightOffset: dynamicOffset });
+      
+      setTimeout(() => {
+        if (_smcTabChart && $('smc-main-chart')) {
+          const w = $('smc-main-chart').clientWidth;
+          const h = $('smc-main-chart').clientHeight || 480;
+          if (w > 0) {
+            _smcTabChart.resize(w, h);
+            _smcTabChart.timeScale().fitContent();
+            _smcTabChart.timeScale().applyOptions({ rightOffset: dynamicOffset });
+          }
+        }
+      }, 100);
+    }
+  } catch (e) {
+    if (!isRefresh) {
+      const container = $('smc-main-chart');
+      if (container) container.innerHTML = `<div class="text-red-400">圖表錯誤: ${e}</div>`;
+      renderSmcTabOverview(null);
+      renderSmcTabDetails(null);
+    }
+  }
+}
+
+function applySmcTabMarkers() {
+  if (!_smcTabCandleSeries) return;
+  let allMarkers = [];
+  if (_smcTabMatrix && Array.isArray(_smcTabMatrix.markers)) {
+    allMarkers = allMarkers.concat(_smcTabMatrix.markers);
+  }
+  if (_smcTabAnalysis && Array.isArray(_smcTabAnalysis.markers)) {
+    allMarkers = allMarkers.concat(_smcTabAnalysis.markers);
+  }
+  const markers = allMarkers
+    .filter(m => _smcTabMarkerFilter === 'all' || m.dimension === _smcTabMarkerFilter)
+    .map(m => ({
+      time: m.time,
+      position: m.position || 'inBar',
+      color: m.color || '#a78bfa',
+      shape: m.shape || 'circle',
+      text: m.dimension === 'smc' ? (m.text || '') : technicalMarkerTextLabel(m.text || ''),
+    }));
+  _smcTabCandleSeries.setMarkers(markers);
+}
+
+function setSmcChartMarkerFilter(filterVal) {
+  _smcTabMarkerFilter = filterVal;
+  document.querySelectorAll('[id^="smc-filter-btn-"]').forEach(btn => btn.classList.remove('active'));
+  $(`smc-filter-btn-${filterVal}`).classList.add('active');
+  applySmcTabMarkers();
+}
+
+function renderSmcTabOverview(smc) {
+  const biasEl = $('smc-overview-bias');
+  const zoneEl = $('smc-overview-zone');
+  const obEl = $('smc-overview-ob-count');
+  const fvgEl = $('smc-overview-fvg-count');
+  
+  if (!smc || !smc.summary || !smc.concepts) {
+    biasEl.textContent = '—';
+    biasEl.className = 'font-bold font-mono';
+    zoneEl.textContent = '—';
+    zoneEl.className = 'font-bold font-mono text-slate-400';
+    obEl.textContent = '—';
+    fvgEl.textContent = '—';
+    return;
+  }
+  
+  const summary = smc.summary;
+  const concepts = smc.concepts;
+  
+  biasEl.textContent = smcBiasLabel(summary.bias);
+  biasEl.className = `font-bold font-mono ${technicalBiasClass(summary.bias)}`;
+  
+  const zone = (concepts.premium_discount && concepts.premium_discount.zone) || 'unknown';
+  zoneEl.textContent = zone.toUpperCase();
+  zoneEl.className = `font-bold font-mono ${zone === 'discount' ? 'text-emerald-400' : zone === 'premium' ? 'text-red-400' : 'text-slate-400'}`;
+  
+  const unmitigatedObs = (concepts.order_blocks || []).filter(ob => !ob.mitigated).length;
+  obEl.textContent = unmitigatedObs;
+  
+  const unfilledFvgs = (concepts.fvgs || []).filter(fvg => !fvg.mitigated).length;
+  fvgEl.textContent = unfilledFvgs;
+}
+
+function renderSmcTabDetails(smc) {
+  const signalContainer = $('smc-signal-summary-content');
+  const signalScoreBadge = $('smc-signal-score-badge');
+  const obFvgTbody = $('smc-ob-fvg-tbody');
+  const structureLiqTbody = $('smc-structure-liq-tbody');
+  
+  if (!smc) {
+    signalContainer.innerHTML = '<div class="text-slate-500 text-center py-8">查無 SMC 資料。</div>';
+    signalScoreBadge.textContent = '';
+    obFvgTbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-slate-500">查無資料。</td></tr>';
+    structureLiqTbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-slate-500">查無資料。</td></tr>';
+    return;
+  }
+  
+  const signals = smc.signals || [];
+  const primarySignal = signals[0] || null;
+  
+  if (primarySignal) {
+    const isLong = primarySignal.direction === 'long';
+    const scoreColor = primarySignal.score >= 8 ? 'text-cyan-400' : 'text-amber-400';
+    signalScoreBadge.textContent = `Score: ${primarySignal.score}`;
+    signalScoreBadge.className = `text-xs font-mono px-2 py-0.5 rounded font-bold bg-slate-800/40 ${scoreColor}`;
+    
+    signalContainer.innerHTML = `
+      <div class="space-y-3 flex-1 flex flex-col justify-between">
+        <div class="space-y-2.5">
+          <div class="flex items-center justify-between">
+            <span class="text-slate-400">進場方向</span>
+            <span class="${isLong ? 'text-red-400 bg-red-950/40 border border-red-800/40' : 'text-emerald-400 bg-emerald-950/40 border border-emerald-800/40'} px-2 py-0.5 rounded font-bold">
+              ${smcDirectionLabel(primarySignal.direction)}
+            </span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-slate-400">進場模型</span>
+            <span class="font-semibold text-slate-200 font-mono">${escHtml(primarySignal.model_name || '三要素共振')}</span>
+          </div>
+          <div class="flex items-center justify-between border-t border-slate-800/50 pt-2 font-mono text-[13px]">
+            <span class="text-slate-400 text-xs">現價 / 建議進場</span>
+            <span class="text-slate-100 font-bold">${fmt(smc.summary.latest_close)} / ${fmt(primarySignal.entry_price)}</span>
+          </div>
+          <div class="flex items-center justify-between font-mono text-[13px]">
+            <span class="text-slate-400 text-xs">停損價位</span>
+            <span class="text-red-400 font-bold">${fmt(primarySignal.stop_loss)}</span>
+          </div>
+          <div class="flex items-center justify-between font-mono text-[13px]">
+            <span class="text-slate-400 text-xs">建議停利</span>
+            <span class="text-emerald-400 font-bold">${fmt(primarySignal.take_profit)}</span>
+          </div>
+          <div class="flex items-center justify-between font-mono text-[13px]">
+            <span class="text-slate-400 text-xs">風險回報比 (RR)</span>
+            <span class="text-cyan-400 font-bold">${fmt(primarySignal.risk_reward_ratio)} : 1</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-slate-400">訊號狀態</span>
+            <span class="${primarySignal.qualified ? 'text-cyan-400 font-bold' : 'text-slate-500'}">
+              ${primarySignal.qualified ? '合格 (Qualified)' : '觀察 (Watch)'}
+            </span>
+          </div>
+        </div>
+        
+        <div class="mt-4 pt-3 border-t border-slate-800/50">
+          <div class="text-[10px] text-slate-500 font-semibold mb-1.5 uppercase">Confluence Factors Checklist</div>
+          <div class="grid grid-cols-2 gap-1 text-[11px]">${renderSmcFactors(primarySignal)}</div>
+        </div>
+      </div>
+    `;
+  } else {
+    signalScoreBadge.textContent = 'Score: 0';
+    signalScoreBadge.className = 'text-xs font-mono px-2 py-0.5 rounded font-bold bg-slate-800/40 text-slate-500';
+    signalContainer.innerHTML = `
+      <div class="flex-1 flex flex-col items-center justify-center py-12 text-slate-500 text-center">
+        <svg class="w-8 h-8 mb-2 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+        <div>目前無合格交易信號。</div>
+        <div class="text-[10px] mt-1">Confluence Score 未達設定閾值 (${smc.summary.entry_threshold})。</div>
+      </div>
+    `;
+  }
+  
+  const concepts = smc.concepts || {};
+  let listOBs = (concepts.order_blocks || []).map(o => ({ ...o, type_label: `${o.breaker ? 'Breaker' : 'OB'} (${o.grade})`, class: o.direction > 0 ? 'text-emerald-400' : 'text-red-400' }));
+  let listFVGs = (concepts.fvgs || []).map(f => ({ ...f, type_label: f.inverse ? 'IFVG' : 'FVG', class: f.direction > 0 ? 'text-purple-400' : 'text-pink-400' }));
+  
+  let combinedObFvg = [...listOBs, ...listFVGs].sort((a, b) => b.index - a.index).slice(0, 8);
+  if (combinedObFvg.length > 0) {
+    obFvgTbody.innerHTML = combinedObFvg.map(item => {
+      const typeHtml = `<span class="${item.class} font-bold">${item.type_label}</span>`;
+      const statusHtml = item.mitigated 
+        ? `<span class="text-slate-500 line-through">Mitigated</span>` 
+        : `<span class="text-amber-400 font-semibold">Active</span>`;
+      const priceHtml = `<span class="font-mono">${fmt(item.bottom)} - ${fmt(item.top)}</span>`;
+      const timeHtml = `<span class="text-slate-500">${new Date(item.time).toLocaleDateString()}</span>`;
+      const actionHtml = item.mitigated 
+        ? `<span class="text-slate-500 font-mono">bar #${item.mitigated_index}</span>` 
+        : `<span class="text-slate-400">—</span>`;
+      return `<tr class="border-b border-slate-800/40 hover:bg-slate-800/20">
+        <td class="py-2.5">${typeHtml}</td>
+        <td class="py-2.5">${statusHtml}</td>
+        <td class="py-2.5">${priceHtml}</td>
+        <td class="py-2.5">${timeHtml}</td>
+        <td class="py-2.5">${actionHtml}</td>
+      </tr>`;
+    }).join('');
+  } else {
+    obFvgTbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-slate-500">尚無偵測到的 OB 或 FVG。</td></tr>';
+  }
+  
+  let listSt = (concepts.structure || []).map(s => ({ ...s, event_type: s.type, class: s.type === 'BOS' ? 'text-sky-400' : 'text-amber-400', level_val: s.level, state_label: s.broken_index ? `Broken (#${s.broken_index})` : 'Active' }));
+  let listLiq = (concepts.liquidity || []).map(l => ({ ...l, event_type: l.type, class: l.type === 'BSL' ? 'text-red-400' : 'text-emerald-400', level_val: l.level, state_label: l.swept ? `Swept (#${l.swept_index})` : 'Active' }));
+  
+  let combinedStLiq = [...listSt, ...listLiq].sort((a, b) => b.index - a.index).slice(0, 8);
+  if (combinedStLiq.length > 0) {
+    structureLiqTbody.innerHTML = combinedStLiq.map(item => {
+      const typeHtml = `<span class="${item.class} font-bold">${item.event_type}</span>`;
+      const dirHtml = item.direction > 0 
+        ? `<span class="text-emerald-500 font-semibold">Bullish</span>` 
+        : `<span class="text-red-500 font-semibold">Bearish</span>`;
+      const priceHtml = `<span class="font-mono">${fmt(item.level_val)}</span>`;
+      const timeHtml = `<span class="text-slate-500">${new Date(item.time).toLocaleDateString()}</span>`;
+      const stateHtml = item.swept || item.broken_index
+        ? `<span class="text-slate-500">${item.state_label}</span>`
+        : `<span class="text-amber-400 font-semibold">Active</span>`;
+      return `<tr class="border-b border-slate-800/40 hover:bg-slate-800/20">
+        <td class="py-2.5">${typeHtml}</td>
+        <td class="py-2.5">${dirHtml}</td>
+        <td class="py-2.5">${priceHtml}</td>
+        <td class="py-2.5">${timeHtml}</td>
+        <td class="py-2.5">${stateHtml}</td>
+      </tr>`;
+    }).join('');
+  } else {
+    structureLiqTbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-slate-500">尚無偵測到的結構或流動性。</td></tr>';
+  }
+}
+
+function onSmcSymbolChange() {
+  const select = $('smc-symbol-select');
+  if (select) {
+    drawSmcTabChart(select.value, $('smc-chart-period').value);
+  }
+}
+
+function onSmcPeriodChange() {
+  const select = $('smc-symbol-select');
+  if (select) {
+    drawSmcTabChart(select.value, $('smc-chart-period').value);
+  }
+}
+
+function refreshSmcAnalysis() {
+  const select = $('smc-symbol-select');
+  if (select) {
+    drawSmcTabChart(select.value, $('smc-chart-period').value, true);
+  }
 }
 
 let _twTrendChart = null;
