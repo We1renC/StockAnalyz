@@ -1132,3 +1132,38 @@ def test_apply_risk_pipeline_rejects_when_crypto_context_blocks():
     )
     assert out["ready"] == []
     assert "crypto_risk" in out["rejected"][0]["reject_reason"]
+
+
+def test_kelly_fraction_full_quarter_and_cap():
+    """§18.4: full Kelly + fractional scaling + hard cap."""
+    from smc_quant import kelly_fraction
+    # 60% win rate, +2R wins, -1R losses → b=2, f* = (0.6*2 - 0.4)/2 = 0.4
+    out = kelly_fraction(win_rate=0.6, avg_win_R=2.0, avg_loss_R=1.0, fractional=0.25)
+    assert out["f_kelly"] == 0.4
+    assert out["f_recommended"] == 0.05  # 0.4 * 0.25 = 0.10 → capped at 0.05
+    # Lower fractional still respects cap
+    aggressive = kelly_fraction(0.6, 2.0, 1.0, fractional=0.5, cap=0.10)
+    assert aggressive["f_recommended"] == 0.10
+    # Non-positive inputs
+    safe = kelly_fraction(0, 0, 0)
+    assert safe["f_recommended"] == 0
+
+
+def test_calibrate_kelly_falls_back_when_sample_too_small():
+    from smc_quant import calibrate_kelly_from_ledger
+    out = calibrate_kelly_from_ledger([{"r_multiple": 1.0}] * 5)
+    assert out["f_recommended"] == 0.01
+    assert "insufficient_samples" in out["note"]
+
+
+def test_calibrate_kelly_uses_ledger_expectancy_when_enough_samples():
+    from smc_quant import calibrate_kelly_from_ledger
+    records = []
+    for _ in range(20):
+        records.append({"r_multiple": 2.0})
+    for _ in range(15):
+        records.append({"r_multiple": -1.0})
+    # win_rate ≈ 0.57, b=2 → kelly ≈ 0.35; fractional 0.25 → 0.0875; capped 0.05
+    out = calibrate_kelly_from_ledger(records)
+    assert out["sample_size"] == 35
+    assert out["f_recommended"] <= 0.05

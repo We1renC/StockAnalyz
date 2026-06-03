@@ -2498,6 +2498,69 @@ CRYPTO_LEVERAGE_CAP = {
 }
 
 
+def kelly_fraction(
+    win_rate: float,
+    avg_win_R: float,
+    avg_loss_R: float,
+    *,
+    fractional: float = 0.25,
+    cap: float = 0.05,
+) -> dict:
+    """§18.4 — fractional Kelly position-sizing fraction.
+
+    Full Kelly: f* = (win_rate × b − loss_rate) / b, where b = avg_win_R /
+    avg_loss_R. Crypto/SMC literature warns full Kelly is too aggressive
+    given regime shifts; the design doc recommends 1/4–1/2 Kelly. The
+    output is hard-capped at ``cap`` (default 5% per-trade) so a bad
+    expectancy can't blow up risk-per-trade.
+    """
+    if avg_loss_R <= 0 or win_rate <= 0:
+        return {"f_kelly": 0.0, "f_recommended": 0.0, "note": "non_positive_inputs"}
+    loss_rate = max(0.0, 1.0 - win_rate)
+    b = avg_win_R / avg_loss_R
+    f_full = (win_rate * b - loss_rate) / b if b > 0 else 0.0
+    f_full = max(0.0, f_full)
+    f_rec = min(cap, f_full * fractional)
+    return {
+        "f_kelly": round(f_full, 4),
+        "fractional": fractional,
+        "f_recommended": round(f_rec, 4),
+        "cap": cap,
+        "b_ratio": round(b, 3),
+    }
+
+
+def calibrate_kelly_from_ledger(
+    trade_records: list[dict],
+    *,
+    fractional: float = 0.25,
+    cap: float = 0.05,
+    min_samples: int = 30,
+) -> dict:
+    """§18.4 — drive fractional Kelly from the §18.2 trade ledger.
+
+    Refuses to size aggressively unless ``min_samples`` (default 30,
+    §18.6) trades exist; otherwise returns the conservative 1% baseline.
+    """
+    if not trade_records or len(trade_records) < min_samples:
+        return {
+            "f_recommended": 0.01,
+            "sample_size": len(trade_records or []),
+            "note": "insufficient_samples_fallback_1pct",
+        }
+    expect = compute_expectancy(trade_records)
+    return {
+        **kelly_fraction(
+            win_rate=expect["win_rate"],
+            avg_win_R=expect["avg_win_R"],
+            avg_loss_R=expect["avg_loss_R"],
+            fractional=fractional, cap=cap,
+        ),
+        "sample_size": expect["sample_size"],
+        "source": "trade_ledger",
+    }
+
+
 def crypto_risk_check(
     entry: dict,
     *,
