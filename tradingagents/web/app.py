@@ -148,6 +148,25 @@ def init_db():
     );
     CREATE INDEX IF NOT EXISTS idx_intraday_snapshots_date_zone
         ON portfolio_intraday_snapshots(trade_date, zone, ts);
+    CREATE TABLE IF NOT EXISTS fundamentals_snapshots (
+        symbol TEXT NOT NULL,
+        date TEXT NOT NULL,
+        data TEXT,
+        PRIMARY KEY (symbol, date)
+    );
+    CREATE INDEX IF NOT EXISTS idx_fundamentals_symbol ON fundamentals_snapshots(symbol, date);
+    CREATE TABLE IF NOT EXISTS technical_matrix_snapshots (
+        symbol TEXT NOT NULL,
+        date TEXT NOT NULL,
+        period TEXT NOT NULL,
+        bias TEXT,
+        net_score REAL,
+        confidence REAL,
+        risk_level TEXT,
+        data TEXT,
+        PRIMARY KEY (symbol, date, period)
+    );
+    CREATE INDEX IF NOT EXISTS idx_matrix_symbol ON technical_matrix_snapshots(symbol, date);
     CREATE TABLE IF NOT EXISTS price_cache (
         symbol TEXT PRIMARY KEY,
         ts TEXT,
@@ -4162,9 +4181,9 @@ def _fmt_num(v, digits=2):
         return "—"
 
 
-def _build_fundamentals_text(symbol: str, price: Optional[float]) -> str:
+def _build_fundamentals_text(symbol: str, price: Optional[float], fundamentals: Optional[dict] = None) -> str:
     """Human-readable fundamentals block for the LLM context."""
-    f = fetch_fundamentals(symbol)
+    f = fundamentals if fundamentals is not None else fetch_fundamentals(symbol)
     if not f or all(v is None for k, v in f.items() if k not in ("sector", "industry")):
         return "基本面數據：暫時無法取得（yfinance 無回應或標的無基本面）。"
     lines = ["【基本面與估值】"]
@@ -4204,11 +4223,14 @@ def _build_fundamentals_text(symbol: str, price: Optional[float]) -> str:
     return "\n".join(lines)
 
 
-def _build_technical_matrix_text(symbol: str) -> str:
+def _build_technical_matrix_text(symbol: str, matrix: Optional[dict] = None) -> str:
     """Condense the 17D technical matrix into an LLM-readable digest."""
-    try:
-        matrix = _build_technical_matrix_payload(symbol, "6mo")
-    except Exception:
+    if matrix is None:
+        try:
+            matrix = _build_technical_matrix_payload(symbol, "6mo")
+        except Exception:
+            return "17D 技術矩陣：暫時無法計算（資料不足或抓取失敗）。"
+    if not matrix or matrix.get("error"):
         return "17D 技術矩陣：暫時無法計算（資料不足或抓取失敗）。"
     summary = matrix.get("summary") or {}
     plan = matrix.get("execution_plan") or {}
@@ -4255,6 +4277,143 @@ def _build_technical_matrix_text(symbol: str) -> str:
     return "\n".join(lines)
 
 
+# ─────────────── 財報 / 17D 落地（SQL + Obsidian） ───────────────
+
+def _store_fundamentals_snapshot(symbol: str, data: dict, conn=None) -> None:
+    """Persist today's fundamentals to SQL (idempotent per symbol+date)."""
+    if not data:
+        return
+    own = conn is None
+    if own:
+        conn = get_db()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO fundamentals_snapshots (symbol, date, data) VALUES (?, ?, ?)",
+            (symbol, date.today().isoformat(), json.dumps(sanitize_float_values(data), ensure_ascii=False)),
+        )
+        conn.commit()
+    finally:
+        if own:
+            conn.close()
+
+
+def _store_technical_matrix_snapshot(symbol: str, matrix: dict, period: str = "6mo", conn=None) -> None:
+    """Persist today's 17D matrix summary + full payload to SQL (idempotent)."""
+    if not matrix or matrix.get("error"):
+        return
+    summary = matrix.get("summary") or {}
+    own = conn is None
+    if own:
+        conn = get_db()
+    try:
+        conn.execute(
+            """INSERT OR REPLACE INTO technical_matrix_snapshots
+               (symbol, date, period, bias, net_score, confidence, risk_level, data)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (symbol, date.today().isoformat(), period,
+             summary.get("bias"), summary.get("net_score"), summary.get("confidence"),
+             summary.get("risk_level"),
+             json.dumps(sanitize_float_values(matrix), ensure_ascii=False)),
+        )
+        conn.commit()
+    finally:
+        if own:
+            conn.close()
+
+
+def _load_matrix_bias_history(symbol: str, limit: int = 7) -> list[dict]:
+    """Recent daily 17D bias/score history for temporal context in analysis."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """SELECT date, bias, net_score, confidence, risk_level
+               FROM technical_matrix_snapshots
+               WHERE symbol=? ORDER BY date DESC LIMIT ?""",
+            (symbol, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows][::-1]  # chronological
+
+
+def _obsidian_write_fundamentals(vault: Path, symbol: str, data: dict) -> None:
+    """Write/update a per-symbol fundamentals note in Obsidian."""
+    if not data:
+        return
+    safe = _safe_obsidian_name(symbol)
+    fdir = vault / "Fundamentals"
+    fdir.mkdir(parents=True, exist_ok=True)
+    note = fdir / f"{safe}.md"
+    today = date.today().isoformat()
+
+    def g(k):
+        v = data.get(k)
+        return "" if v is None else v
+
+    content = f"""---
+type: fundamentals
+symbol: {symbol}
+sector: {_fmt(data.get('sector'))}
+industry: {_fmt(data.get('industry'))}
+trailing_pe: {_fmt(data.get('trailing_pe'))}
+forward_pe: {_fmt(data.get('forward_pe'))}
+peg_ratio: {_fmt(data.get('peg_ratio'))}
+revenue_growth: {_fmt(data.get('revenue_growth'))}
+earnings_growth: {_fmt(data.get('earnings_growth'))}
+roe: {_fmt(data.get('return_on_equity'))}
+target_mean_price: {_fmt(data.get('target_mean_price'))}
+recommendation: {_fmt(data.get('recommendation_key'))}
+updated: {today}
+---
+
+# {symbol} 基本面快照
+
+> 更新：{today}
+
+| 指標 | 數值 |
+|------|------|
+| 產業 | {g('sector')} / {g('industry')} |
+| 本益比 TTM / 預估 | {g('trailing_pe')} / {g('forward_pe')} |
+| 股價淨值比 | {g('price_to_book')} |
+| PEG | {g('peg_ratio')} |
+| EPS TTM / 預估 | {g('trailing_eps')} / {g('forward_eps')} |
+| 營收年增 | {g('revenue_growth')} |
+| 盈餘年增 | {g('earnings_growth')} |
+| 毛利率 / 淨利率 | {g('gross_margins')} / {g('profit_margins')} |
+| ROE | {g('return_on_equity')} |
+| 負債權益比 | {g('debt_to_equity')} |
+| 殖利率 | {g('dividend_yield')} |
+| 賣方目標均價 | {g('target_mean_price')} |
+| 評等 | {g('recommendation_key')} ({g('num_analysts')} 位分析師) |
+
+## 連結
+[[Portfolio/Positions/{safe}|{symbol} 持倉]]
+[[TechnicalAnalysis/Symbols/{safe}/技術矩陣入口|{symbol} 17D 技術矩陣]]
+"""
+    note.write_text(content, encoding="utf-8")
+
+
+def _persist_symbol_research(symbol: str, fundamentals: dict, matrix: Optional[dict]) -> None:
+    """One-shot: persist fundamentals + 17D to SQL and (if configured) Obsidian."""
+    try:
+        conn = get_db()
+        _store_fundamentals_snapshot(symbol, fundamentals, conn)
+        if matrix and not matrix.get("error"):
+            _store_technical_matrix_snapshot(symbol, matrix, "6mo", conn)
+        conn.close()
+    except Exception as e:
+        print(f"  [WARN] persist {symbol} to SQL failed: {e}")
+    vault = _get_vault()
+    if not vault:
+        return
+    try:
+        _obsidian_write_fundamentals(vault, symbol, fundamentals)
+        if matrix and not matrix.get("error"):
+            _obsidian_write_technical_matrix(vault, matrix)
+    except Exception as e:
+        print(f"  [WARN] persist {symbol} to Obsidian failed: {e}")
+
+
 def _build_context(symbol: str) -> dict:
     conn = get_db()
     cache = conn.execute("SELECT * FROM price_cache WHERE symbol=?", (symbol,)).fetchone()
@@ -4282,13 +4441,33 @@ def _build_context(symbol: str) -> dict:
         prem = (price / ind["nav"] - 1) * 100 if price else None
         parts.append(f"ETF 折溢價: NAV {ind['nav']}，市價相對 NAV {prem:+.2f}%" if prem is not None else f"NAV {ind['nav']}")
 
+    # 計算一次 17D 矩陣與基本面，落地到 SQL + Obsidian 供日後資料流複用
+    matrix = None
+    try:
+        matrix = _build_technical_matrix_payload(symbol, "6mo")
+    except Exception:
+        matrix = None
+    fundamentals = fetch_fundamentals(symbol)
+    try:
+        _persist_symbol_research(symbol, fundamentals, matrix)
+    except Exception as e:
+        print(f"  [WARN] persist research {symbol} failed: {e}")
+
     # 17D 技術矩陣（核心新增）
     parts.append("")
-    parts.append(_build_technical_matrix_text(symbol))
+    parts.append(_build_technical_matrix_text(symbol, matrix=matrix))
+
+    # 過往數日 17D 偏向變化（供 AI 看趨勢，不只看當下）
+    history = _load_matrix_bias_history(symbol, limit=7)
+    if len(history) >= 2:
+        trail = "；".join(
+            f"{h['date'][5:]} {h.get('bias')}({h.get('net_score')})" for h in history
+        )
+        parts.append(f"【過往 17D 偏向變化】{trail}")
 
     # 基本面與估值（核心新增）
     parts.append("")
-    parts.append(_build_fundamentals_text(symbol, price))
+    parts.append(_build_fundamentals_text(symbol, price, fundamentals=fundamentals))
 
     parts.append("")
     if pos:
