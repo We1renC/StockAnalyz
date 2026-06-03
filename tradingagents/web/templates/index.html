@@ -1233,6 +1233,35 @@ body { background: var(--bg-base); color: var(--text-primary); }
       
     </div>
 
+    <div class="glass-card p-4 mb-6">
+      <div class="font-semibold text-cyan-300 mb-3 border-b border-slate-800/60 pb-2 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span>SMC 策略儀表板</span>
+          <span id="smc-dashboard-meta" class="text-[11px] text-slate-500">載入中...</span>
+        </div>
+        <button onclick="refreshSmcDashboard(true)" class="btn-secondary text-xs px-2.5 py-1.5" style="border-radius: 6px; padding: 4px 8px; font-size: 11px;">
+          更新儀表板
+        </button>
+      </div>
+      <div id="smc-dashboard-overview" class="grid grid-cols-2 xl:grid-cols-6 gap-3 mb-4">
+        <div class="rounded-lg border border-slate-800/70 bg-slate-950/40 p-3 text-center text-slate-500 text-xs">載入中...</div>
+      </div>
+      <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
+          <div class="text-xs font-semibold text-slate-300 mb-2">掃描摘要</div>
+          <div id="smc-dashboard-signals" class="text-xs text-slate-500">載入中...</div>
+        </div>
+        <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
+          <div class="text-xs font-semibold text-slate-300 mb-2">回測摘要</div>
+          <div id="smc-dashboard-backtests" class="text-xs text-slate-500">載入中...</div>
+        </div>
+        <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
+          <div class="text-xs font-semibold text-slate-300 mb-2">策略健康</div>
+          <div id="smc-dashboard-health" class="text-xs text-slate-500">載入中...</div>
+        </div>
+      </div>
+    </div>
+
     <!-- Bottom Stage: Detection Panel List -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
       
@@ -2164,6 +2193,7 @@ function onSmcTabLoad() {
   if (select && select.value) {
     drawSmcTabChart(select.value, $('smc-chart-period').value);
   }
+  refreshSmcDashboard();
 }
 
 let _smcTabChart = null;
@@ -2175,6 +2205,7 @@ let _smcTabPrimitive = null;
 let _smcTabMarkerFilter = 'all';
 let _smcTabAnalysis = null;
 let _smcTabMatrix = null;
+let _smcDashboardCache = new Map();
 
 async function drawSmcTabChart(symbol, period, isRefresh = false) {
   if (!isRefresh) {
@@ -2514,6 +2545,7 @@ function onSmcPeriodChange() {
   if (select) {
     drawSmcTabChart(select.value, $('smc-chart-period').value);
   }
+  refreshSmcDashboard();
 }
 
 function refreshSmcAnalysis() {
@@ -2521,9 +2553,203 @@ function refreshSmcAnalysis() {
   if (select) {
     drawSmcTabChart(select.value, $('smc-chart-period').value, true);
   }
+  refreshSmcDashboard(true);
 }
 
 const escJs = v => String(v ?? '').replace(/['"\\]/g, '\\$&');
+
+function smcDashboardMetric(label, value, tone = 'text-slate-100') {
+  return `
+    <div class="rounded-lg border border-slate-800/70 bg-slate-950/40 px-3 py-3 text-center">
+      <div class="text-[11px] text-slate-500 mb-1">${escHtml(label)}</div>
+      <div class="text-lg font-semibold font-mono ${tone}">${value}</div>
+    </div>
+  `;
+}
+
+function smcDashboardPct(value, digits = 1) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—';
+  return `${(Number(value) * 100).toFixed(digits)}%`;
+}
+
+function smcDashboardNum(value, digits = 2) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '—';
+  return Number(value).toFixed(digits);
+}
+
+function smcDashboardTone(value, positiveGood = true) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return 'text-slate-200';
+  const num = Number(value);
+  if (num === 0) return 'text-slate-200';
+  if (positiveGood) {
+    return num > 0 ? 'text-emerald-300' : 'text-red-300';
+  }
+  return num > 0 ? 'text-red-300' : 'text-emerald-300';
+}
+
+function smcDashboardList(items, emptyText) {
+  if (!items || !items.length) {
+    return `<div class="text-slate-500">${escHtml(emptyText)}</div>`;
+  }
+  return items.join('');
+}
+
+function renderSmcDashboardLoading(message = '載入中...') {
+  const overview = $('smc-dashboard-overview');
+  const signals = $('smc-dashboard-signals');
+  const backtests = $('smc-dashboard-backtests');
+  const health = $('smc-dashboard-health');
+  const meta = $('smc-dashboard-meta');
+  if (overview) {
+    overview.innerHTML = Array.from({ length: 6 }).map(() => (
+      '<div class="rounded-lg border border-slate-800/70 bg-slate-950/40 p-3 text-center text-slate-500 text-xs">載入中...</div>'
+    )).join('');
+  }
+  if (signals) signals.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
+  if (backtests) backtests.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
+  if (health) health.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
+  if (meta) meta.textContent = message;
+}
+
+function renderSmcDashboardError(message) {
+  const overview = $('smc-dashboard-overview');
+  const signals = $('smc-dashboard-signals');
+  const backtests = $('smc-dashboard-backtests');
+  const health = $('smc-dashboard-health');
+  const meta = $('smc-dashboard-meta');
+  const html = `<div class="text-red-400">${escHtml(message)}</div>`;
+  if (overview) {
+    overview.innerHTML = `<div class="rounded-lg border border-red-900/40 bg-red-950/10 p-3 text-center text-red-300 text-xs col-span-full">${escHtml(message)}</div>`;
+  }
+  if (signals) signals.innerHTML = html;
+  if (backtests) backtests.innerHTML = html;
+  if (health) health.innerHTML = html;
+  if (meta) meta.textContent = '讀取失敗';
+}
+
+function renderSmcDashboard(report, { cached = false } = {}) {
+  const overview = $('smc-dashboard-overview');
+  const signals = $('smc-dashboard-signals');
+  const backtests = $('smc-dashboard-backtests');
+  const health = $('smc-dashboard-health');
+  const meta = $('smc-dashboard-meta');
+  if (!overview || !signals || !backtests || !health || !meta) return;
+
+  const summary = report?.scan?.summary || {};
+  const reportOverview = report?.overview || {};
+  const healthOverview = report?.health?.overview || {};
+  const calibration = report?.health?.calibration || {};
+  const validation = report?.health?.validation || {};
+  const decay = report?.health?.decay || {};
+  const topSignals = report?.top_signals || [];
+  const topBacktests = report?.top_backtests || [];
+  const topPositive = (report?.health?.top_positive_factors || []).slice(0, 3);
+  const topNegative = (report?.health?.top_negative_factors || []).slice(0, 2);
+
+  overview.innerHTML = [
+    smcDashboardMetric('掃描標的', summary.symbol_count ?? 0),
+    smcDashboardMetric('訊號 / 合格', `${summary.signal_count ?? 0} / ${summary.qualified_count ?? 0}`, (summary.qualified_count || 0) > 0 ? 'text-cyan-300' : 'text-slate-100'),
+    smcDashboardMetric('平均分數', smcDashboardNum(summary.avg_score, 2), smcDashboardTone(summary.avg_score)),
+    smcDashboardMetric('平均 RR', smcDashboardNum(summary.avg_rr, 2), smcDashboardTone(summary.avg_rr)),
+    smcDashboardMetric('回測 Run / Trade', `${reportOverview.backtest_run_count ?? 0} / ${reportOverview.backtest_trade_count ?? 0}`),
+    smcDashboardMetric('Kelly 上限', smcDashboardPct(reportOverview.kelly_cap_pct, 1), smcDashboardTone(reportOverview.kelly_cap_pct)),
+  ].join('');
+
+  signals.innerHTML = smcDashboardList(
+    topSignals.slice(0, 4).map(sig => `
+      <div class="flex items-start justify-between gap-3 py-2 border-b border-slate-800/50 last:border-b-0">
+        <div class="min-w-0">
+          <div class="font-semibold text-slate-100">${escHtml(sig.symbol || '')}</div>
+          <div class="text-[11px] text-slate-500 truncate">${escHtml(sig.model || '—')} · ${escHtml(sig.market || '—')}</div>
+        </div>
+        <div class="text-right shrink-0">
+          <div class="font-mono ${sig.direction === 'long' ? 'text-red-300' : 'text-emerald-300'}">${escHtml(smcDirectionLabel(sig.direction))}</div>
+          <div class="text-[11px] font-mono text-cyan-300">S ${smcDashboardNum(sig.score, 0)} / RR ${smcDashboardNum(sig.rr, 2)}</div>
+        </div>
+      </div>
+    `),
+    '尚無掃描訊號。'
+  );
+
+  backtests.innerHTML = smcDashboardList(
+    topBacktests.slice(0, 4).map(item => `
+      <div class="flex items-start justify-between gap-3 py-2 border-b border-slate-800/50 last:border-b-0">
+        <div class="min-w-0">
+          <div class="font-semibold text-slate-100">${escHtml(item.symbol || '')}</div>
+          <div class="text-[11px] text-slate-500 truncate">${escHtml(item.market || '—')} · ${item.trade_count ?? 0} trades</div>
+        </div>
+        <div class="text-right shrink-0">
+          <div class="text-[11px] font-mono ${smcDashboardTone(item.expectancy_r)}">Exp ${smcDashboardNum(item.expectancy_r, 2)}</div>
+          <div class="text-[11px] font-mono ${smcDashboardTone(item.win_rate)}">WR ${smcDashboardPct(item.win_rate, 1)}</div>
+        </div>
+      </div>
+    `),
+    '尚無回測統計。'
+  );
+
+  const overfitLevel = validation.overfitting_risk_level || 'unknown';
+  const overfitTone = overfitLevel === 'high' ? 'text-red-300' : overfitLevel === 'medium' ? 'text-amber-300' : 'text-emerald-300';
+  const decayTone = decay.is_decaying ? 'text-red-300' : 'text-emerald-300';
+  const positiveHtml = topPositive.map(item => (
+    `<span class="inline-flex items-center px-2 py-1 rounded border border-emerald-800/30 bg-emerald-950/20 text-emerald-200">${escHtml(smcFactorLabel(item.factor || '—'))}</span>`
+  )).join('');
+  const negativeHtml = topNegative.map(item => (
+    `<span class="inline-flex items-center px-2 py-1 rounded border border-red-800/30 bg-red-950/20 text-red-200">${escHtml(smcFactorLabel(item.factor || '—'))}</span>`
+  )).join('');
+
+  health.innerHTML = `
+    <div class="grid grid-cols-2 gap-2 mb-3">
+      <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+        <div class="text-[10px] text-slate-500">勝率</div>
+        <div class="font-mono ${smcDashboardTone(healthOverview.win_rate)}">${smcDashboardPct(healthOverview.win_rate, 1)}</div>
+      </div>
+      <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+        <div class="text-[10px] text-slate-500">Expectancy R</div>
+        <div class="font-mono ${smcDashboardTone(healthOverview.expectancy_r)}">${smcDashboardNum(healthOverview.expectancy_r, 2)}</div>
+      </div>
+      <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+        <div class="text-[10px] text-slate-500">Overfit</div>
+        <div class="font-mono ${overfitTone}">${escHtml(overfitLevel)}</div>
+      </div>
+      <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+        <div class="text-[10px] text-slate-500">Edge Decay</div>
+        <div class="font-mono ${decayTone}">${decay.is_decaying ? '衰退' : '穩定'}</div>
+      </div>
+    </div>
+    <div class="text-[11px] text-slate-400 mb-2">${escHtml(decay.warning_message || '近期策略邊際穩定。')}</div>
+    <div class="text-[11px] text-slate-500 mb-1">正向因子</div>
+    <div class="flex flex-wrap gap-1.5 mb-3">${positiveHtml || '<span class="text-slate-500">尚無資料</span>'}</div>
+    <div class="text-[11px] text-slate-500 mb-1">待修正因子</div>
+    <div class="flex flex-wrap gap-1.5">${negativeHtml || '<span class="text-slate-500">尚無資料</span>'}</div>
+  `;
+
+  meta.textContent = `${report.scope || 'all'} · ${report.period || '6mo'} · ${cached ? '快取' : '即時'} · ${calibration.changes?.length || 0} 項校準建議`;
+}
+
+async function refreshSmcDashboard(force = false) {
+  const period = $('smc-chart-period')?.value || '6mo';
+  const cacheKey = `all:${period}`;
+  const cached = _smcDashboardCache.get(cacheKey);
+  const now = Date.now();
+  if (!force && cached && now - cached.fetchedAt < 60_000) {
+    renderSmcDashboard(cached.payload, { cached: true });
+    return cached.payload;
+  }
+
+  renderSmcDashboardLoading('讀取 scan / backtest / health 中...');
+  try {
+    const payload = await fetch(`/api/smc-daily-report?scope=all&period=${encodeURIComponent(period)}`).then(r => r.json());
+    if (payload.error || payload.detail) {
+      throw new Error(payload.error || payload.detail);
+    }
+    _smcDashboardCache.set(cacheKey, { fetchedAt: now, payload });
+    renderSmcDashboard(payload, { cached: false });
+    return payload;
+  } catch (e) {
+    renderSmcDashboardError(`SMC 儀表板讀取失敗：${e}`);
+    return null;
+  }
+}
 
 async function runSmcBatchScan() {
   const btn = $('smc-scan-btn');
@@ -2602,6 +2828,8 @@ async function runSmcBatchScan() {
     tbody.innerHTML = `<tr><td colspan="11" class="py-8 text-center text-red-400">掃描錯誤: ${e}</td></tr>`;
     badge.textContent = '0 筆訊號';
   } finally {
+    _smcDashboardCache.delete(`all:${period}`);
+    refreshSmcDashboard(true);
     btn.disabled = false;
     btn.textContent = '開始掃描所有觀察/持倉';
   }
@@ -4936,23 +5164,26 @@ function smcDirectionLabel(direction) {
   return direction === 'long' ? '做多' : direction === 'short' ? '做空' : '觀察';
 }
 
+function smcFactorLabel(id) {
+  return {
+    htf_bias_alignment: '高週期方向',
+    premium_discount_alignment: '折溢價區',
+    unmitigated_ob: '未回補訂單塊',
+    unfilled_fvg: '未填補 FVG',
+    liquidity_sweep: '流動性掃取',
+    ltf_choch: '低週期 CHoCH',
+    ote_zone: 'OTE 區',
+    killzone: 'Killzone',
+    displacement: '位移動能',
+  }[id] || id;
+}
+
 function renderSmcFactors(signal) {
   const factors = (signal && signal.factors) || [];
   if (!factors.length) return '<span class="text-slate-500">尚無因子</span>';
-  const labels = {
-    htf_bias_alignment: 'HTF方向',
-    premium_discount_alignment: 'PD區',
-    unmitigated_ob: '未回補OB',
-    unfilled_fvg: '未填FVG',
-    liquidity_sweep: '掃流動性',
-    ltf_choch: 'LTF轉向',
-    ote_zone: 'OTE',
-    killzone: 'Killzone',
-    displacement: 'Displacement',
-  };
   return factors.map(f => `
     <span class="inline-flex items-center gap-1 px-2 py-1 rounded border ${f.active ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-slate-800 bg-slate-950/50 text-slate-500'}">
-      ${escHtml(labels[f.id] || f.id)}
+      ${escHtml(smcFactorLabel(f.id))}
       <span class="tabular-nums">${f.active ? '+' + f.weight : '0'}</span>
     </span>`).join('');
 }
