@@ -9,12 +9,13 @@ import ssl
 import time
 import warnings
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import certifi
@@ -293,6 +294,41 @@ def init_db():
     );
     CREATE INDEX IF NOT EXISTS idx_smc_trades_symbol_entry
         ON smc_backtest_trades(symbol, entry_time DESC);
+    CREATE TABLE IF NOT EXISTS smc_trade_journal (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        journal_key TEXT NOT NULL UNIQUE,
+        symbol TEXT NOT NULL,
+        name TEXT DEFAULT '',
+        market TEXT,
+        environment TEXT NOT NULL DEFAULT 'paper',
+        status TEXT NOT NULL DEFAULT 'planned',
+        direction TEXT NOT NULL,
+        timeframe TEXT,
+        model TEXT,
+        entry_time TEXT,
+        exit_time TEXT,
+        entry_price REAL,
+        exit_price REAL,
+        stop_price REAL,
+        tp1_price REAL,
+        qty REAL,
+        pnl REAL,
+        r_multiple REAL,
+        confluence_score REAL,
+        emotion TEXT DEFAULT '',
+        rationale TEXT DEFAULT '',
+        notes TEXT DEFAULT '',
+        screenshots TEXT DEFAULT '[]',
+        tags TEXT DEFAULT '[]',
+        feature_vector TEXT DEFAULT '{}',
+        dol_target TEXT DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_smc_journal_symbol_entry
+        ON smc_trade_journal(symbol, entry_time DESC, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_smc_journal_status_env
+        ON smc_trade_journal(status, environment, created_at DESC);
     """)
     conn.commit()
 
@@ -4303,7 +4339,7 @@ def api_add_position(p: PositionCreate):
     # 新增持倉的部分視為買入交易記錄
     try:
         from datetime import datetime
-        created_at = datetime.utcnow().isoformat() + "Z"
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         fee, tax = _estimate_trade_fees("buy", p.shares, p.cost_price, p.currency)
         conn.execute(
             """INSERT INTO trades
@@ -4612,6 +4648,202 @@ class TradeUpdate(BaseModel):
     notes: Optional[str] = None
 
 
+class SMCJournalCreate(BaseModel):
+    symbol: str
+    name: Optional[str] = ""
+    market: Optional[str] = None
+    environment: str = "paper"   # paper | live
+    status: str = "planned"      # planned | open | closed | cancelled
+    direction: str               # long | short
+    timeframe: Optional[str] = None
+    model: Optional[str] = None
+    entry_time: Optional[str] = None
+    exit_time: Optional[str] = None
+    entry_price: Optional[float] = None
+    exit_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    tp1_price: Optional[float] = None
+    qty: Optional[float] = None
+    pnl: Optional[float] = None
+    r_multiple: Optional[float] = None
+    confluence_score: Optional[float] = None
+    emotion: Optional[str] = ""
+    rationale: Optional[str] = ""
+    notes: Optional[str] = ""
+    screenshots: Optional[list[str]] = None
+    tags: Optional[list[str]] = None
+    feature_vector: Optional[dict] = None
+    dol_target: Optional[dict] = None
+
+
+class SMCJournalUpdate(BaseModel):
+    name: Optional[str] = None
+    market: Optional[str] = None
+    environment: Optional[str] = None
+    status: Optional[str] = None
+    direction: Optional[str] = None
+    timeframe: Optional[str] = None
+    model: Optional[str] = None
+    entry_time: Optional[str] = None
+    exit_time: Optional[str] = None
+    entry_price: Optional[float] = None
+    exit_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    tp1_price: Optional[float] = None
+    qty: Optional[float] = None
+    pnl: Optional[float] = None
+    r_multiple: Optional[float] = None
+    confluence_score: Optional[float] = None
+    emotion: Optional[str] = None
+    rationale: Optional[str] = None
+    notes: Optional[str] = None
+    screenshots: Optional[list[str]] = None
+    tags: Optional[list[str]] = None
+    feature_vector: Optional[dict] = None
+    dol_target: Optional[dict] = None
+
+
+def _json_dumps_compact(value, fallback):
+    if value is None:
+        value = fallback
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _json_loads_safe(value, fallback):
+    if not value:
+        return fallback
+    try:
+        return json.loads(value)
+    except Exception:
+        return fallback
+
+
+def _calc_journal_outcome(direction: str, entry_price, exit_price, qty, stop_price):
+    if entry_price in (None, 0) or exit_price is None or qty in (None, 0):
+        return None, None
+    direction = (direction or "").lower()
+    if direction == "short":
+        pnl = (float(entry_price) - float(exit_price)) * float(qty)
+        risk_per_unit = float(stop_price - entry_price) if stop_price is not None else None
+    else:
+        pnl = (float(exit_price) - float(entry_price)) * float(qty)
+        risk_per_unit = float(entry_price - stop_price) if stop_price is not None else None
+    r_multiple = None
+    if risk_per_unit not in (None, 0):
+        total_risk = abs(risk_per_unit) * float(qty)
+        if total_risk > 0:
+            r_multiple = pnl / total_risk
+    return round(pnl, 6), (round(r_multiple, 6) if r_multiple is not None else None)
+
+
+def _normalize_smc_journal_payload(payload: dict, existing: Optional[dict] = None) -> dict:
+    existing = existing or {}
+    out = dict(existing)
+    out.update(payload)
+    out["symbol"] = (out.get("symbol") or existing.get("symbol") or "").strip().upper()
+    out["name"] = out.get("name") or existing.get("name") or ""
+    out["market"] = out.get("market") or existing.get("market")
+    out["environment"] = (out.get("environment") or existing.get("environment") or "paper").lower()
+    out["status"] = (out.get("status") or existing.get("status") or "planned").lower()
+    out["direction"] = (out.get("direction") or existing.get("direction") or "").lower()
+    out["timeframe"] = out.get("timeframe") or existing.get("timeframe")
+    out["model"] = out.get("model") or existing.get("model")
+    out["entry_time"] = out.get("entry_time") or existing.get("entry_time")
+    out["exit_time"] = out.get("exit_time") or existing.get("exit_time")
+    for field in ("entry_price", "exit_price", "stop_price", "tp1_price", "qty", "pnl", "r_multiple", "confluence_score"):
+        out[field] = _safe_float(out.get(field))
+    out["emotion"] = out.get("emotion") or existing.get("emotion") or ""
+    out["rationale"] = out.get("rationale") or existing.get("rationale") or ""
+    out["notes"] = out.get("notes") or existing.get("notes") or ""
+    out["screenshots"] = list(out.get("screenshots") or existing.get("screenshots") or [])
+    out["tags"] = list(out.get("tags") or existing.get("tags") or [])
+    out["feature_vector"] = dict(out.get("feature_vector") or existing.get("feature_vector") or {})
+    out["dol_target"] = dict(out.get("dol_target") or existing.get("dol_target") or {})
+
+    if out["environment"] not in ("paper", "live"):
+        raise HTTPException(400, "environment must be 'paper' or 'live'")
+    if out["status"] not in ("planned", "open", "closed", "cancelled"):
+        raise HTTPException(400, "status must be one of planned/open/closed/cancelled")
+    if out["direction"] not in ("long", "short"):
+        raise HTTPException(400, "direction must be 'long' or 'short'")
+
+    auto_pnl, auto_r = _calc_journal_outcome(
+        out["direction"], out.get("entry_price"), out.get("exit_price"), out.get("qty"), out.get("stop_price")
+    )
+    if out.get("pnl") is None:
+        out["pnl"] = auto_pnl
+    if out.get("r_multiple") is None:
+        out["r_multiple"] = auto_r
+    return out
+
+
+def _journal_row_to_dict(row) -> dict:
+    data = dict(row)
+    for field, fallback in (
+        ("screenshots", []),
+        ("tags", []),
+        ("feature_vector", {}),
+        ("dol_target", {}),
+    ):
+        data[field] = _json_loads_safe(data.get(field), fallback)
+    return sanitize_float_values(data)
+
+
+def _smc_journal_summary(rows: list[dict]) -> dict:
+    closed = [row for row in rows if row.get("status") == "closed"]
+    wins = 0
+    pnl_values = []
+    r_values = []
+    by_emotion = {}
+    by_model = {}
+    by_environment = {}
+    for row in rows:
+        env = row.get("environment") or "unknown"
+        by_environment[env] = by_environment.get(env, 0) + 1
+        if row.get("emotion"):
+            by_emotion[row["emotion"]] = by_emotion.get(row["emotion"], 0) + 1
+    for row in closed:
+        pnl = row.get("pnl")
+        r_multiple = row.get("r_multiple")
+        if pnl is not None:
+            pnl_values.append(float(pnl))
+            if float(pnl) > 0:
+                wins += 1
+        elif r_multiple is not None and float(r_multiple) > 0:
+            wins += 1
+        if r_multiple is not None:
+            r_values.append(float(r_multiple))
+        model = row.get("model") or "unknown"
+        bucket = by_model.setdefault(model, {"count": 0, "wins": 0, "r_total": 0.0})
+        bucket["count"] += 1
+        if (pnl is not None and float(pnl) > 0) or (r_multiple is not None and float(r_multiple) > 0):
+            bucket["wins"] += 1
+        bucket["r_total"] += float(r_multiple or 0)
+    top_models = []
+    for model, bucket in by_model.items():
+        count = bucket["count"] or 1
+        top_models.append({
+            "model": model,
+            "count": bucket["count"],
+            "win_rate": round(bucket["wins"] / count, 4),
+            "expectancy_r": round(bucket["r_total"] / count, 4),
+        })
+    top_models.sort(key=lambda item: (item["expectancy_r"], item["count"]), reverse=True)
+    return sanitize_float_values({
+        "total_entries": len(rows),
+        "closed_entries": len(closed),
+        "open_entries": sum(1 for row in rows if row.get("status") == "open"),
+        "planned_entries": sum(1 for row in rows if row.get("status") == "planned"),
+        "cancelled_entries": sum(1 for row in rows if row.get("status") == "cancelled"),
+        "win_rate": round(wins / len(closed), 4) if closed else None,
+        "avg_pnl": round(sum(pnl_values) / len(pnl_values), 4) if pnl_values else None,
+        "avg_r": round(sum(r_values) / len(r_values), 4) if r_values else None,
+        "emotion_breakdown": by_emotion,
+        "environment_breakdown": by_environment,
+        "top_models": top_models[:10],
+    })
+
+
 @app.get("/api/trades")
 def api_get_trades(
     symbol: Optional[str] = None,
@@ -4661,7 +4893,7 @@ def api_add_trade(t: TradeCreate):
     fee = fee or 0.0
     tax = tax or 0.0
 
-    created_at = datetime.utcnow().isoformat() + "Z"
+    created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     conn = get_db()
 
     # 以持股頁面中的成本價格為準：若賣出時交易紀錄無足夠的買入額度，自動以持倉成本補登買入明細
@@ -4786,6 +5018,182 @@ def api_trades_timeline(symbol: str):
     fifo = _compute_fifo_pnl(symbol, conn)
     conn.close()
     return sanitize_float_values({"symbol": symbol, "trades": rows, "fifo_summary": fifo})
+
+
+@app.get("/api/smc-journal/summary")
+def api_smc_journal_summary(
+    symbol: Optional[str] = None,
+    environment: Optional[str] = None,
+    limit: int = 500,
+):
+    conn = get_db()
+    query = "SELECT * FROM smc_trade_journal WHERE 1=1"
+    params: list = []
+    if symbol:
+        query += " AND symbol = ?"
+        params.append(symbol.upper())
+    if environment:
+        query += " AND environment = ?"
+        params.append(environment.lower())
+    query += " ORDER BY COALESCE(entry_time, created_at) DESC, id DESC LIMIT ?"
+    params.append(limit)
+    rows = [_journal_row_to_dict(r) for r in conn.execute(query, params).fetchall()]
+    conn.close()
+    summary = _smc_journal_summary(rows)
+    return {"rows": rows, "summary": summary}
+
+
+@app.get("/api/smc-journal")
+def api_get_smc_journal(
+    symbol: Optional[str] = None,
+    status: Optional[str] = None,
+    environment: Optional[str] = None,
+    limit: int = 200,
+):
+    conn = get_db()
+    query = "SELECT * FROM smc_trade_journal WHERE 1=1"
+    params: list = []
+    if symbol:
+        query += " AND symbol = ?"
+        params.append(symbol.upper())
+    if status:
+        query += " AND status = ?"
+        params.append(status.lower())
+    if environment:
+        query += " AND environment = ?"
+        params.append(environment.lower())
+    query += " ORDER BY COALESCE(entry_time, created_at) DESC, id DESC LIMIT ?"
+    params.append(limit)
+    rows = [_journal_row_to_dict(r) for r in conn.execute(query, params).fetchall()]
+    conn.close()
+    return {"entries": rows, "count": len(rows)}
+
+
+@app.post("/api/smc-journal")
+def api_add_smc_journal(entry: SMCJournalCreate):
+    payload = _normalize_smc_journal_payload(entry.model_dump())
+    created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    updated_at = created_at
+    journal_key = f"{payload['symbol']}-{uuid4().hex[:12]}"
+    conn = get_db()
+    conn.execute(
+        """INSERT INTO smc_trade_journal
+           (journal_key, symbol, name, market, environment, status, direction, timeframe, model,
+            entry_time, exit_time, entry_price, exit_price, stop_price, tp1_price, qty, pnl,
+            r_multiple, confluence_score, emotion, rationale, notes, screenshots, tags,
+            feature_vector, dol_target, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            journal_key,
+            payload["symbol"],
+            payload["name"],
+            payload.get("market"),
+            payload["environment"],
+            payload["status"],
+            payload["direction"],
+            payload.get("timeframe"),
+            payload.get("model"),
+            payload.get("entry_time"),
+            payload.get("exit_time"),
+            payload.get("entry_price"),
+            payload.get("exit_price"),
+            payload.get("stop_price"),
+            payload.get("tp1_price"),
+            payload.get("qty"),
+            payload.get("pnl"),
+            payload.get("r_multiple"),
+            payload.get("confluence_score"),
+            payload.get("emotion"),
+            payload.get("rationale"),
+            payload.get("notes"),
+            _json_dumps_compact(payload.get("screenshots"), []),
+            _json_dumps_compact(payload.get("tags"), []),
+            _json_dumps_compact(payload.get("feature_vector"), {}),
+            _json_dumps_compact(payload.get("dol_target"), {}),
+            created_at,
+            updated_at,
+        ),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM smc_trade_journal WHERE journal_key=?", (journal_key,)).fetchone()
+    vault = _get_vault()
+    if vault and row:
+        _obsidian_write_smc_journal_snapshot(vault, conn)
+        _obsidian_post_write_sync(vault, kinds=("smc_journal",))
+    conn.close()
+    return {"ok": True, "journal_key": journal_key}
+
+
+@app.put("/api/smc-journal/{journal_key}")
+def api_update_smc_journal(journal_key: str, entry: SMCJournalUpdate):
+    conn = get_db()
+    existing = conn.execute("SELECT * FROM smc_trade_journal WHERE journal_key=?", (journal_key,)).fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(404, "SMC journal entry not found")
+    existing_dict = _journal_row_to_dict(existing)
+    payload = _normalize_smc_journal_payload(entry.model_dump(exclude_unset=True), existing=existing_dict)
+    updated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    conn.execute(
+        """UPDATE smc_trade_journal
+           SET symbol=?, name=?, market=?, environment=?, status=?, direction=?, timeframe=?, model=?,
+               entry_time=?, exit_time=?, entry_price=?, exit_price=?, stop_price=?, tp1_price=?, qty=?,
+               pnl=?, r_multiple=?, confluence_score=?, emotion=?, rationale=?, notes=?, screenshots=?,
+               tags=?, feature_vector=?, dol_target=?, updated_at=?
+           WHERE journal_key=?""",
+        (
+            payload["symbol"],
+            payload["name"],
+            payload.get("market"),
+            payload["environment"],
+            payload["status"],
+            payload["direction"],
+            payload.get("timeframe"),
+            payload.get("model"),
+            payload.get("entry_time"),
+            payload.get("exit_time"),
+            payload.get("entry_price"),
+            payload.get("exit_price"),
+            payload.get("stop_price"),
+            payload.get("tp1_price"),
+            payload.get("qty"),
+            payload.get("pnl"),
+            payload.get("r_multiple"),
+            payload.get("confluence_score"),
+            payload.get("emotion"),
+            payload.get("rationale"),
+            payload.get("notes"),
+            _json_dumps_compact(payload.get("screenshots"), []),
+            _json_dumps_compact(payload.get("tags"), []),
+            _json_dumps_compact(payload.get("feature_vector"), {}),
+            _json_dumps_compact(payload.get("dol_target"), {}),
+            updated_at,
+            journal_key,
+        ),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM smc_trade_journal WHERE journal_key=?", (journal_key,)).fetchone()
+    vault = _get_vault()
+    if vault and row:
+        _obsidian_write_smc_journal_snapshot(vault, conn)
+        _obsidian_post_write_sync(vault, kinds=("smc_journal",))
+    conn.close()
+    return {"ok": True}
+
+
+@app.delete("/api/smc-journal/{journal_key}")
+def api_delete_smc_journal(journal_key: str):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM smc_trade_journal WHERE journal_key=?", (journal_key,)).fetchone()
+    conn.execute("DELETE FROM smc_trade_journal WHERE journal_key=?", (journal_key,))
+    conn.commit()
+    vault = _get_vault()
+    if vault and row:
+        _obsidian_delete_smc_journal(vault, _journal_row_to_dict(row))
+        _obsidian_write_smc_journal_snapshot(vault, conn)
+        _obsidian_post_write_sync(vault, kinds=("smc_journal",))
+    conn.close()
+    return {"ok": True}
 
 
 # ─────────────── 警報歷史篩選 ───────────────
@@ -7423,6 +7831,134 @@ def _obsidian_delete_analysis(vault: Path, analysis: dict) -> None:
         note.unlink()
 
 
+def _obsidian_smc_journal_root(vault: Path) -> Path:
+    return vault / "SMCJournal"
+
+
+def _obsidian_smc_journal_index_path(vault: Path) -> Path:
+    return _obsidian_smc_journal_root(vault) / "交易日誌總覽.md"
+
+
+def _obsidian_smc_journal_note_path(vault: Path, entry: dict) -> Path:
+    symbol = _safe_obsidian_name(entry.get("symbol", "UNKNOWN"))
+    key = _safe_obsidian_name(entry.get("journal_key", "journal"))
+    return _obsidian_smc_journal_root(vault) / symbol / f"{key}.md"
+
+
+def _obsidian_write_smc_journal(vault: Path, entry: dict) -> None:
+    note = _obsidian_smc_journal_note_path(vault, entry)
+    note.parent.mkdir(parents=True, exist_ok=True)
+    screenshots = entry.get("screenshots") or []
+    tags = entry.get("tags") or []
+    feature_vector = json.dumps(entry.get("feature_vector") or {}, ensure_ascii=False, indent=2)
+    dol_target = json.dumps(entry.get("dol_target") or {}, ensure_ascii=False, indent=2)
+    screenshot_lines = "\n".join(f"- {item}" for item in screenshots) or "（無）"
+    tag_line = ", ".join(str(item) for item in tags) or "—"
+    content = f"""---
+type: smc-journal
+journal_key: {_fmt(entry.get('journal_key'))}
+symbol: {_fmt(entry.get('symbol'))}
+name: {_fmt(entry.get('name'))}
+market: {_fmt(entry.get('market'))}
+environment: {_fmt(entry.get('environment'))}
+status: {_fmt(entry.get('status'))}
+direction: {_fmt(entry.get('direction'))}
+timeframe: {_fmt(entry.get('timeframe'))}
+model: {_fmt(entry.get('model'))}
+entry_time: {_fmt(entry.get('entry_time'))}
+exit_time: {_fmt(entry.get('exit_time'))}
+entry_price: {_fmt(entry.get('entry_price'))}
+exit_price: {_fmt(entry.get('exit_price'))}
+stop_price: {_fmt(entry.get('stop_price'))}
+tp1_price: {_fmt(entry.get('tp1_price'))}
+qty: {_fmt(entry.get('qty'))}
+pnl: {_fmt(entry.get('pnl'))}
+r_multiple: {_fmt(entry.get('r_multiple'))}
+confluence_score: {_fmt(entry.get('confluence_score'))}
+emotion: {_fmt(entry.get('emotion'))}
+created_at: {_fmt(entry.get('created_at'))}
+updated_at: {_fmt(entry.get('updated_at'))}
+tags: {_fmt(tag_line)}
+---
+
+# {_fmt(entry.get('symbol'))} SMC Journal
+
+## Trade Rationale
+
+{entry.get('rationale') or '—'}
+
+## Notes
+
+{entry.get('notes') or '—'}
+
+## Screenshots
+
+{screenshot_lines}
+
+## Feature Vector JSON
+
+```json
+{feature_vector}
+```
+
+## DOL JSON
+
+```json
+{dol_target}
+```
+"""
+    note.write_text(content, encoding="utf-8")
+
+    root = _obsidian_smc_journal_root(vault)
+    root.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for path in sorted(root.rglob("*.md"), reverse=True):
+        if path == _obsidian_smc_journal_index_path(vault):
+            continue
+        parsed = _obsidian_parse_smc_journal(path)
+        if not parsed:
+            continue
+        rel = path.relative_to(vault).as_posix()
+        entries.append(
+            f"- [[{rel}|{parsed.get('symbol')} {parsed.get('entry_time') or parsed.get('created_at') or parsed.get('journal_key')}]]"
+            f" · {parsed.get('environment')} · {parsed.get('status')} · {parsed.get('direction')} · R {parsed.get('r_multiple', '—')}"
+        )
+    _obsidian_smc_journal_index_path(vault).write_text(
+        f"---\n"
+        f"type: smc-journal-index\n"
+        f"updated: {date.today().isoformat()}\n"
+        f"---\n\n"
+        f"# SMC 交易日誌總覽\n\n"
+        f"{chr(10).join(entries) or '（無日誌）'}\n",
+        encoding="utf-8",
+    )
+
+
+def _obsidian_delete_smc_journal(vault: Path, entry: dict) -> None:
+    note = _obsidian_smc_journal_note_path(vault, entry)
+    if note.exists():
+        note.unlink()
+
+
+def _obsidian_write_smc_journal_snapshot(vault: Path, conn) -> None:
+    rows = [_journal_row_to_dict(r) for r in conn.execute(
+        "SELECT * FROM smc_trade_journal ORDER BY COALESCE(entry_time, created_at) DESC, id DESC"
+    ).fetchall()]
+    for row in rows:
+        _obsidian_write_smc_journal(vault, row)
+    if not rows:
+        root = _obsidian_smc_journal_root(vault)
+        root.mkdir(parents=True, exist_ok=True)
+        _obsidian_smc_journal_index_path(vault).write_text(
+            f"---\n"
+            f"type: smc-journal-index\n"
+            f"updated: {date.today().isoformat()}\n"
+            f"---\n\n"
+            f"# SMC 交易日誌總覽\n\n（無日誌）\n",
+            encoding="utf-8",
+        )
+
+
 def _obsidian_domain_dir(vault: Path, domain: str, ts_value: str) -> Path:
     safe_domain = _safe_obsidian_name(domain)
     safe_ts = _safe_obsidian_name(ts_value.replace(":", "-").replace(" ", "_"))
@@ -7552,6 +8088,60 @@ def _obsidian_parse_analysis(note_path: Path) -> Optional[dict]:
             "elapsed": _safe_float(meta.get("elapsed")),
             "decision_summary": _extract_md_section(body, "決策摘要") or meta.get("decision_summary", ""),
             "sections": json.dumps(sections, ensure_ascii=False),
+        }
+    except Exception:
+        return None
+
+
+def _obsidian_parse_smc_journal(note_path: Path) -> Optional[dict]:
+    try:
+        text = note_path.read_text(encoding="utf-8")
+        meta, body = _parse_obsidian_frontmatter(text)
+        if meta.get("type") != "smc-journal":
+            return None
+        journal_key = meta.get("journal_key")
+        symbol = meta.get("symbol")
+        if not journal_key or not symbol:
+            return None
+        screenshots_section = _extract_md_section(body, "Screenshots")
+        screenshots = []
+        for line in (screenshots_section or "").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                screenshots.append(stripped[2:].strip())
+        feature_vector = _extract_json_codeblock(_extract_md_section(body, "Feature Vector JSON")) or {}
+        dol_target = _extract_json_codeblock(_extract_md_section(body, "DOL JSON")) or {}
+        tags_raw = meta.get("tags", "")
+        tags = [item.strip() for item in str(tags_raw).split(",") if item.strip() and item.strip() != "—"]
+        return {
+            "journal_key": journal_key,
+            "symbol": symbol,
+            "name": meta.get("name", ""),
+            "market": meta.get("market", ""),
+            "environment": meta.get("environment", "paper"),
+            "status": meta.get("status", "planned"),
+            "direction": meta.get("direction", ""),
+            "timeframe": meta.get("timeframe", ""),
+            "model": meta.get("model", ""),
+            "entry_time": meta.get("entry_time", ""),
+            "exit_time": meta.get("exit_time", ""),
+            "entry_price": _safe_float(meta.get("entry_price")),
+            "exit_price": _safe_float(meta.get("exit_price")),
+            "stop_price": _safe_float(meta.get("stop_price")),
+            "tp1_price": _safe_float(meta.get("tp1_price")),
+            "qty": _safe_float(meta.get("qty")),
+            "pnl": _safe_float(meta.get("pnl")),
+            "r_multiple": _safe_float(meta.get("r_multiple")),
+            "confluence_score": _safe_float(meta.get("confluence_score")),
+            "emotion": meta.get("emotion", ""),
+            "rationale": _extract_md_section(body, "Trade Rationale") or "",
+            "notes": _extract_md_section(body, "Notes") or "",
+            "screenshots": screenshots,
+            "tags": tags,
+            "feature_vector": feature_vector,
+            "dol_target": dol_target,
+            "created_at": meta.get("created_at", ""),
+            "updated_at": meta.get("updated_at", ""),
         }
     except Exception:
         return None
@@ -7763,6 +8353,89 @@ def _obsidian_sync_analysis(vault: Path) -> dict:
     return {"synced": synced, "errors": errors}
 
 
+def _obsidian_sync_smc_journal(vault: Path) -> dict:
+    root = _obsidian_smc_journal_root(vault)
+    if not root.is_dir():
+        return {"synced": 0, "errors": 0}
+    synced = 0
+    errors = 0
+    seen_keys = set()
+    conn = get_db()
+    for note_path in root.rglob("*.md"):
+        if note_path == _obsidian_smc_journal_index_path(vault):
+            continue
+        parsed = _obsidian_parse_smc_journal(note_path)
+        if not parsed:
+            continue
+        key = parsed["journal_key"]
+        seen_keys.add(key)
+        try:
+            payload = _normalize_smc_journal_payload(parsed)
+            existing = conn.execute(
+                "SELECT id FROM smc_trade_journal WHERE journal_key=?",
+                (key,),
+            ).fetchone()
+            row_payload = (
+                payload["symbol"],
+                payload["name"],
+                payload.get("market"),
+                payload["environment"],
+                payload["status"],
+                payload["direction"],
+                payload.get("timeframe"),
+                payload.get("model"),
+                payload.get("entry_time"),
+                payload.get("exit_time"),
+                payload.get("entry_price"),
+                payload.get("exit_price"),
+                payload.get("stop_price"),
+                payload.get("tp1_price"),
+                payload.get("qty"),
+                payload.get("pnl"),
+                payload.get("r_multiple"),
+                payload.get("confluence_score"),
+                payload.get("emotion"),
+                payload.get("rationale"),
+                payload.get("notes"),
+                _json_dumps_compact(payload.get("screenshots"), []),
+                _json_dumps_compact(payload.get("tags"), []),
+                _json_dumps_compact(payload.get("feature_vector"), {}),
+                _json_dumps_compact(payload.get("dol_target"), {}),
+                payload.get("created_at") or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                payload.get("updated_at") or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            )
+            if existing:
+                conn.execute(
+                    """UPDATE smc_trade_journal
+                       SET symbol=?, name=?, market=?, environment=?, status=?, direction=?, timeframe=?, model=?,
+                           entry_time=?, exit_time=?, entry_price=?, exit_price=?, stop_price=?, tp1_price=?, qty=?,
+                           pnl=?, r_multiple=?, confluence_score=?, emotion=?, rationale=?, notes=?, screenshots=?,
+                           tags=?, feature_vector=?, dol_target=?, created_at=?, updated_at=?
+                       WHERE journal_key=?""",
+                    row_payload + (key,),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO smc_trade_journal
+                       (symbol, name, market, environment, status, direction, timeframe, model,
+                        entry_time, exit_time, entry_price, exit_price, stop_price, tp1_price, qty,
+                        pnl, r_multiple, confluence_score, emotion, rationale, notes, screenshots,
+                        tags, feature_vector, dol_target, created_at, updated_at, journal_key)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    row_payload + (key,),
+                )
+            synced += 1
+        except Exception:
+            errors += 1
+    existing_rows = conn.execute("SELECT id, journal_key FROM smc_trade_journal").fetchall()
+    for row in existing_rows:
+        if (row["journal_key"] or "") not in seen_keys:
+            conn.execute("DELETE FROM smc_trade_journal WHERE id=?", (row["id"],))
+    conn.commit()
+    conn.close()
+    return {"synced": synced, "errors": errors}
+
+
 def _obsidian_sync_domain_research(vault: Path) -> dict:
     research_dir = vault / "Research"
     if not research_dir.is_dir():
@@ -7840,6 +8513,7 @@ def _obsidian_post_write_sync(vault: Optional[Path], kinds: tuple[str, ...] = ("
         "watchlist": _obsidian_sync_watchlist,
         "alerts": _obsidian_sync_alerts,
         "analysis": _obsidian_sync_analysis,
+        "smc_journal": _obsidian_sync_smc_journal,
         "domain_research": _obsidian_sync_domain_research,
     }
     result = {"ok": True}
@@ -7861,6 +8535,7 @@ def api_obsidian_sync():
     wl_result = _obsidian_sync_watchlist(vault)
     alert_result = _obsidian_sync_alerts(vault)
     analysis_result = _obsidian_sync_analysis(vault)
+    journal_result = _obsidian_sync_smc_journal(vault)
     domain_result = _obsidian_sync_domain_research(vault)
     return {
         "ok": True,
@@ -7868,6 +8543,7 @@ def api_obsidian_sync():
         "watchlist": wl_result,
         "alerts": alert_result,
         "analysis": analysis_result,
+        "smc_journal": journal_result,
         "domain_research": domain_result,
     }
 
@@ -7885,6 +8561,7 @@ def api_obsidian_export():
         "SELECT * FROM alerts ORDER BY ts DESC"
     ).fetchall()]
     analyses = [dict(r) for r in conn.execute("SELECT * FROM analysis_results ORDER BY ts DESC").fetchall()]
+    journals = [_journal_row_to_dict(r) for r in conn.execute("SELECT * FROM smc_trade_journal ORDER BY COALESCE(entry_time, created_at) DESC, id DESC").fetchall()]
     research_rows = [dict(r) for r in conn.execute("SELECT * FROM domain_research ORDER BY ts DESC").fetchall()]
     conn.close()
 
@@ -7901,6 +8578,9 @@ def api_obsidian_export():
 
     for analysis in analyses:
         _obsidian_write_analysis(vault, analysis)
+
+    for journal in journals:
+        _obsidian_write_smc_journal(vault, journal)
 
     exported_research = 0
     for row in research_rows:
@@ -7922,7 +8602,7 @@ def api_obsidian_export():
 
     sync_result = _obsidian_post_write_sync(
         vault,
-        kinds=("positions", "watchlist", "alerts", "analysis", "domain_research"),
+        kinds=("positions", "watchlist", "alerts", "analysis", "smc_journal", "domain_research"),
     )
 
     return {
@@ -7932,6 +8612,7 @@ def api_obsidian_export():
             "watchlist": len(watchlist),
             "alerts": len(alerts),
             "analysis": len(analyses),
+            "smc_journal": len(journals),
             "domain_research": exported_research,
         },
         "sync": sync_result,

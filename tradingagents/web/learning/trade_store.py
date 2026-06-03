@@ -11,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 
-def load_trades_from_db(conn, symbol: str | None = None) -> pd.DataFrame:
+def load_trades_from_db(conn, symbol: str | None = None, include_journal: bool = False) -> pd.DataFrame:
     """Load trades from the SQLite database and flatten the features.
     
     Args:
@@ -28,8 +28,67 @@ def load_trades_from_db(conn, symbol: str | None = None) -> pd.DataFrame:
         params.append(symbol.upper())
         
     df = pd.read_sql_query(query, conn, params=params)
+    if include_journal:
+        journal_query = """
+            SELECT
+                NULL AS id,
+                NULL AS run_id,
+                symbol,
+                market,
+                timeframe,
+                journal_key AS trade_id,
+                direction,
+                model,
+                entry_time,
+                exit_time,
+                entry_price,
+                exit_price,
+                stop_price,
+                tp1_price,
+                qty,
+                pnl,
+                r_multiple,
+                confluence_score AS score,
+                NULL AS threshold,
+                feature_vector,
+                dol_target,
+                status AS exit_reason,
+                NULL AS holding_bars,
+                CASE
+                    WHEN pnl IS NOT NULL AND pnl > 0 THEN 1
+                    WHEN pnl IS NULL AND r_multiple IS NOT NULL AND r_multiple > 0 THEN 1
+                    ELSE 0
+                END AS win,
+                NULL AS mae,
+                NULL AS mfe,
+                environment,
+                emotion,
+                'journal' AS sample_source
+            FROM smc_trade_journal
+            WHERE status = 'closed'
+        """
+        journal_params = []
+        if symbol:
+            journal_query += " AND symbol = ?"
+            journal_params.append(symbol.upper())
+        journal_df = pd.read_sql_query(journal_query, conn, params=journal_params)
+        if not journal_df.empty:
+            if df.empty:
+                df = journal_df
+            else:
+                if "sample_source" not in df.columns:
+                    df["sample_source"] = "backtest"
+                for col in journal_df.columns:
+                    if col not in df.columns:
+                        df[col] = None
+                for col in df.columns:
+                    if col not in journal_df.columns:
+                        journal_df[col] = None
+                df = pd.concat([df[df.columns], journal_df[df.columns]], ignore_index=True)
     if df.empty:
         return pd.DataFrame()
+    if "sample_source" not in df.columns:
+        df["sample_source"] = "backtest"
         
     # Unpack JSON columns
     feature_list = []
@@ -70,7 +129,8 @@ def load_trades_from_db(conn, symbol: str | None = None) -> pd.DataFrame:
             features_df[col] = features_df[col].fillna(False).astype(bool)
             
     # Combine back into a single flat DataFrame
-    flat_df = pd.concat([df.drop(columns=["feature_vector"]), features_df], axis=1)
+    drop_cols = ["feature_vector"] if "feature_vector" in df.columns else []
+    flat_df = pd.concat([df.drop(columns=drop_cols), features_df], axis=1)
     
     # Add flattened DOL columns for easier analysis
     flat_df["dol_type"] = [d.get("type") for d in dol_list]
