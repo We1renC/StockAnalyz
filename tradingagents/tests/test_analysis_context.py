@@ -115,6 +115,55 @@ def test_build_smc_text_formats_summary_and_backtest():
     assert "最近回測：6mo，Trades 12" in text
 
 
+def test_build_smc_snapshot_payload_is_structured():
+    fake_analysis = {
+        "summary": {
+            "bias": "bullish",
+            "confluence_score": 5.2,
+            "entry_threshold": 3.0,
+            "premium_discount": "discount",
+            "session": "london",
+        },
+        "concepts": {
+            "structure": [{"type": "BOS"}, {"type": "CHOCH"}],
+            "order_blocks": [{"side": "bullish"}],
+            "fvgs": [{"side": "bullish"}],
+            "liquidity": [{"kind": "bsl"}],
+        },
+        "signals": [{
+            "model": "silver_bullet",
+            "direction": "long",
+            "entry": 100.5,
+            "stop": 96.0,
+            "tp1": 108.0,
+            "rr": 1.67,
+            "qualified": True,
+            "dol_target": {"type": "external_liquidity", "level": 109.0, "source": "BSL"},
+            "factors": [{"id": "bos", "active": True}, {"id": "fvg", "active": False}],
+        }],
+        "top_down": {"htf_bias": "bullish", "mtf_bias": "bullish", "ltf_bias": "neutral", "aligned": True},
+    }
+    fake_run = {
+        "period": "6mo",
+        "total_trades": 12,
+        "win_rate": 0.58,
+        "profit_factor": 1.42,
+        "expectancy_r": 0.27,
+        "max_drawdown": -0.09,
+        "ending_equity": 1.12,
+        "created_at": "2026-06-04T00:00:00",
+    }
+    with patch.object(app, "_load_latest_smc_backtest_run", return_value=fake_run):
+        payload = app._build_smc_snapshot_payload("TEST", analysis=fake_analysis)
+    assert payload["available"] is True
+    assert payload["bias"] == "bullish"
+    assert payload["counts"]["BOS"] == 1
+    assert payload["signal"]["model"] == "silver_bullet"
+    assert payload["signal"]["active_factors"] == ["bos"]
+    assert payload["top_down"]["aligned"] is True
+    assert payload["backtest"]["period"] == "6mo"
+
+
 def test_build_context_includes_all_layers(tmp_path):
     # Isolated DB with one position + price cache
     original = app.DB

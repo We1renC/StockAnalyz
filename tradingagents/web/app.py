@@ -4997,28 +4997,23 @@ def _load_latest_smc_backtest_run(symbol: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def _build_smc_text(symbol: str, analysis: Optional[dict] = None) -> str:
-    """Condense SMC structure + latest backtest evidence for LLM context."""
+def _build_smc_snapshot_payload(symbol: str, analysis: Optional[dict] = None) -> dict:
+    """Return a structured SMC snapshot for storage and note rendering."""
     if analysis is None:
         try:
             h, _source = fetch_history(symbol, period="6mo")
             if h is None or len(h) == 0:
-                return "SMC 結構：暫時無法計算（無價格歷史）。"
+                return {"available": False, "error": "無價格歷史"}
             analysis = build_smc_analysis(h, symbol=symbol, timeframe="6mo")
         except Exception:
-            return "SMC 結構：暫時無法計算（資料不足或抓取失敗）。"
+            return {"available": False, "error": "資料不足或抓取失敗"}
     if not analysis or analysis.get("error"):
-        return "SMC 結構：暫時無法計算（資料不足或抓取失敗）。"
+        return {"available": False, "error": "資料不足或抓取失敗"}
 
     summary = analysis.get("summary") or {}
     concepts = analysis.get("concepts") or {}
     signal = ((analysis.get("signals") or [None])[0]) or {}
     top_down = analysis.get("top_down") or {}
-    lines = ["【SMC 結構與回測】"]
-    lines.append(
-        f"當前偏向：{summary.get('bias')}，分數 {summary.get('confluence_score')}/{summary.get('entry_threshold')}，"
-        f"PD 區 {summary.get('premium_discount')}，時段 {summary.get('session')}"
-    )
     counts = {
         "BOS": len([x for x in (concepts.get("structure") or []) if x.get("type") == "BOS"]),
         "CHoCH": len([x for x in (concepts.get("structure") or []) if x.get("type") == "CHOCH"]),
@@ -5026,26 +5021,88 @@ def _build_smc_text(symbol: str, analysis: Optional[dict] = None) -> str:
         "FVG": len(concepts.get("fvgs") or []),
         "Liquidity": len(concepts.get("liquidity") or []),
     }
+    payload = {
+        "available": True,
+        "symbol": symbol,
+        "bias": summary.get("bias"),
+        "confluence_score": summary.get("confluence_score"),
+        "entry_threshold": summary.get("entry_threshold"),
+        "premium_discount": summary.get("premium_discount"),
+        "session": summary.get("session"),
+        "counts": counts,
+    }
+    if signal:
+        dol = signal.get("dol_target") or {}
+        payload["signal"] = {
+            "model": signal.get("model"),
+            "direction": signal.get("direction"),
+            "entry": signal.get("entry"),
+            "stop": signal.get("stop"),
+            "tp1": signal.get("tp1"),
+            "rr": signal.get("rr"),
+            "status": "qualified" if signal.get("qualified") else "watch",
+            "dol_target": dol if dol else None,
+            "active_factors": [f.get("id") for f in signal.get("factors", []) if f.get("active")],
+        }
+    if top_down:
+        payload["top_down"] = {
+            "htf_bias": top_down.get("htf_bias"),
+            "mtf_bias": top_down.get("mtf_bias"),
+            "ltf_bias": top_down.get("ltf_bias"),
+            "aligned": top_down.get("aligned"),
+        }
+
+    latest_run = _load_latest_smc_backtest_run(symbol)
+    if latest_run:
+        payload["backtest"] = {
+            "period": latest_run.get("period"),
+            "total_trades": latest_run.get("total_trades"),
+            "win_rate": latest_run.get("win_rate"),
+            "profit_factor": latest_run.get("profit_factor"),
+            "expectancy_r": latest_run.get("expectancy_r"),
+            "max_drawdown": latest_run.get("max_drawdown"),
+            "ending_equity": latest_run.get("ending_equity"),
+            "created_at": latest_run.get("created_at"),
+        }
+    return sanitize_float_values(payload)
+
+
+def _build_smc_text(symbol: str, analysis: Optional[dict] = None) -> str:
+    """Condense SMC structure + latest backtest evidence for LLM context."""
+    snapshot = _build_smc_snapshot_payload(symbol, analysis=analysis)
+    if not snapshot.get("available"):
+        if snapshot.get("error") == "無價格歷史":
+            return "SMC 結構：暫時無法計算（無價格歷史）。"
+        return "SMC 結構：暫時無法計算（資料不足或抓取失敗）。"
+
+    lines = ["【SMC 結構與回測】"]
+    lines.append(
+        f"當前偏向：{snapshot.get('bias')}，分數 {snapshot.get('confluence_score')}/{snapshot.get('entry_threshold')}，"
+        f"PD 區 {snapshot.get('premium_discount')}，時段 {snapshot.get('session')}"
+    )
+    counts = snapshot.get("counts") or {}
     lines.append("結構計數：" + "，".join(f"{k} {v}" for k, v in counts.items()))
+    signal = snapshot.get("signal") or {}
     if signal:
         dol = signal.get("dol_target") or {}
         lines.append(
             f"當前訊號：{signal.get('model')} / {signal.get('direction')}，Entry {signal.get('entry')}，"
             f"SL {signal.get('stop')}，TP {signal.get('tp1')}，RR {signal.get('rr')}，"
-            f"狀態 {'qualified' if signal.get('qualified') else 'watch'}"
+            f"狀態 {signal.get('status')}"
         )
         if dol:
             lines.append(f"DOL 目標：{dol.get('type')} {dol.get('level')}（來源 {dol.get('source')}）")
-        active_factors = [f.get("id") for f in signal.get("factors", []) if f.get("active")]
+        active_factors = signal.get("active_factors") or []
         if active_factors:
             lines.append("觸發因子：" + "、".join(active_factors))
+    top_down = snapshot.get("top_down") or {}
     if top_down:
         lines.append(
             f"多時框對齊：HTF {top_down.get('htf_bias')} / MTF {top_down.get('mtf_bias')} / "
             f"LTF {top_down.get('ltf_bias')}，aligned={top_down.get('aligned')}"
         )
 
-    latest_run = _load_latest_smc_backtest_run(symbol)
+    latest_run = snapshot.get("backtest") or {}
     if latest_run:
         lines.append(
             f"最近回測：{latest_run.get('period')}，Trades {latest_run.get('total_trades')}，"
@@ -6211,6 +6268,7 @@ def _run_deep_analysis(symbol: str, mode: str = "analyst") -> dict:
     sections = {"analyst": analyst_step.get("output", "")}
     if reviewer_step and reviewer_step.get("output"):
         sections["reviewer"] = reviewer_step["output"]
+    sections["smc"] = _build_smc_snapshot_payload(symbol)
     # 一句話摘要
     decision_summary = ""
     for line in (analyst_step.get("output", "") or "").split("\n"):
@@ -6744,6 +6802,30 @@ def _obsidian_write_analysis(vault: Path, analysis: dict) -> None:
         except Exception:
             sections = {}
     sections_json = json.dumps(sections or {}, ensure_ascii=False, indent=2)
+    smc = sections.get("smc") if isinstance(sections, dict) else None
+    smc_section = ""
+    if isinstance(smc, dict) and smc.get("available"):
+        counts = smc.get("counts") or {}
+        signal = smc.get("signal") or {}
+        backtest = smc.get("backtest") or {}
+        lines = [
+            "## SMC 快照",
+            "",
+            f"- 偏向：{smc.get('bias')} / score {smc.get('confluence_score')} / threshold {smc.get('entry_threshold')}",
+            f"- PD 區：{smc.get('premium_discount')} / 時段：{smc.get('session')}",
+            f"- 結構計數：BOS {counts.get('BOS', 0)} / CHoCH {counts.get('CHoCH', 0)} / OB {counts.get('OB', 0)} / FVG {counts.get('FVG', 0)} / Liquidity {counts.get('Liquidity', 0)}",
+        ]
+        if signal:
+            lines.append(
+                f"- 訊號：{signal.get('model')} / {signal.get('direction')} / "
+                f"Entry {signal.get('entry')} / SL {signal.get('stop')} / TP {signal.get('tp1')} / RR {signal.get('rr')} / {signal.get('status')}"
+            )
+        if backtest:
+            lines.append(
+                f"- 回測：{backtest.get('period')} / Trades {backtest.get('total_trades')} / "
+                f"WinRate {backtest.get('win_rate')} / PF {backtest.get('profit_factor')} / MDD {backtest.get('max_drawdown')}"
+            )
+        smc_section = "\n".join(lines) + "\n\n"
     content = f"""---
 type: analysis-result
 symbol: {_fmt(analysis.get('symbol'))}
@@ -6763,7 +6845,7 @@ updated: {date.today().isoformat()}
 
 {analysis.get('decision_summary') or '—'}
 
-## Sections JSON
+{smc_section}## Sections JSON
 
 ```json
 {sections_json}

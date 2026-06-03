@@ -35,6 +35,7 @@ def test_run_deep_analysis_stores_result(tmp_path):
     try:
         _seed(["AAA"])
         with patch.object(app, "_build_context", return_value={"context": "c", "name": "AAA", "symbol": "AAA"}), \
+             patch.object(app, "_build_smc_snapshot_payload", return_value={"available": True, "bias": "bullish"}), \
              patch.object(app, "run_workflow", return_value={"steps": [
                  {"role": "analyst", "output": "## 操作建議\n買進 AAA", "provider": "p", "model": "m"}]}):
             res = app._run_deep_analysis("AAA", "analyst")
@@ -43,7 +44,9 @@ def test_run_deep_analysis_stores_result(tmp_path):
         row = conn.execute("SELECT symbol, sections FROM analysis_results WHERE symbol='AAA'").fetchone()
         conn.close()
         assert row is not None
-        assert "analyst" in json.loads(row["sections"])
+        sections = json.loads(row["sections"])
+        assert "analyst" in sections
+        assert sections["smc"]["bias"] == "bullish"
     finally:
         app.DB = original
 
