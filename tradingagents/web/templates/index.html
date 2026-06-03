@@ -4270,12 +4270,7 @@ function renderPastAnalysis(analyses) {
   const container = $('past-analysis');
   container.classList.remove('hidden');
 
-  const sectionLabels = {
-    market_report: '技術分析', fundamentals_report: '基本面分析',
-    news_report: '新聞分析', sentiment_report: '情緒分析',
-    investment_debate_state: '多空辯論', risk_debate_state: '風險委員會',
-    final_trade_decision: '最終決策',
-  };
+  const sectionLabels = ANALYSIS_SECTION_LABELS;
 
   const cards = analyses.map((a, idx) => {
     const ts = (a.ts || '').replace('T', ' ').substring(0, 16);
@@ -4287,7 +4282,7 @@ function renderPastAnalysis(analyses) {
     const sectionHTML = Object.entries(sections).map(([key, value]) => `
       <div class="bg-gray-900 bg-opacity-40 p-3 rounded mt-2">
         <div class="text-xs text-teal-300 font-semibold mb-1">${sectionLabels[key] || key}</div>
-        <div class="prose prose-invert prose-sm max-w-none">${marked.parse(String(value || ''))}</div>
+        ${renderAnalysisSectionContent(key, value)}
       </div>`).join('');
 
     return `<div class="glass-card-sm p-3">
@@ -5475,24 +5470,60 @@ function rerenderLLM(steps) {
   $('llm-result').innerHTML = steps.map(renderStep).join('<div class="h-2"></div>');
 }
 
+const ANALYSIS_SECTION_LABELS = {
+  final_trade_decision: '最終決策',
+  trader_proposal: '交易員提案',
+  risk_debate_state: '風險委員會',
+  investment_debate_state: '多空辯論',
+  market_report: '技術分析',
+  sentiment_report: '情緒分析',
+  news_report: '新聞分析',
+  fundamentals_report: '基本面分析',
+  smc_report: 'SMC 結構分析',
+  smc: 'SMC 快照',
+  analyst: '分析師',
+  reviewer: '審查員',
+};
+
+function renderStoredSmcSnapshot(smc) {
+  if (!smc || typeof smc !== 'object') return '<div class="text-slate-500">無 SMC 快照</div>';
+  if (!smc.available) {
+    return `<div class="text-slate-500">SMC 不可用：${escHtml(smc.error || '資料不足')}</div>`;
+  }
+  const counts = smc.counts || {};
+  const signal = smc.signal || {};
+  const backtest = smc.backtest || {};
+  const dol = signal.dol_target || {};
+  const topDown = smc.top_down || {};
+  return `
+    <div class="space-y-2 text-sm text-slate-200">
+      <div>偏向 <span class="${technicalBiasClass(smc.bias)} font-semibold">${smcBiasLabel(smc.bias)}</span> · 分數 <span class="tabular-nums">${fmt(smc.confluence_score, 2)}/${fmt(smc.entry_threshold, 0)}</span> · PD ${escHtml(smc.premium_discount || '—')} · 時段 ${escHtml(smc.session || '—')}</div>
+      <div class="text-xs text-slate-400">BOS ${fmt(counts.BOS, 0)} / CHoCH ${fmt(counts.CHoCH, 0)} / OB ${fmt(counts.OB, 0)} / FVG ${fmt(counts.FVG, 0)} / Liquidity ${fmt(counts.Liquidity, 0)}</div>
+      ${signal.model ? `<div>訊號 ${escHtml(signal.model)} / ${smcDirectionLabel(signal.direction)} · Entry ${fmt(signal.entry)} · SL ${fmt(signal.stop)} · TP ${fmt(signal.tp1)} · RR ${fmt(signal.rr, 2)} · ${escHtml(signal.status || 'watch')}</div>` : ''}
+      ${dol.type ? `<div class="text-xs text-slate-400">DOL ${escHtml(dol.type)} ${fmt(dol.level)}${dol.source ? `（${escHtml(dol.source)}）` : ''}</div>` : ''}
+      ${topDown.htf_bias ? `<div class="text-xs text-slate-400">多時框 HTF ${escHtml(topDown.htf_bias)} / MTF ${escHtml(topDown.mtf_bias)} / LTF ${escHtml(topDown.ltf_bias)} · aligned=${escHtml(String(topDown.aligned))}</div>` : ''}
+      ${backtest.period ? `<div class="text-xs text-slate-400">回測 ${escHtml(backtest.period)} · Trades ${fmt(backtest.total_trades, 0)} · WinRate ${fmt((backtest.win_rate || 0) * 100, 1)}% · PF ${fmt(backtest.profit_factor, 2)} · Expectancy ${fmt(backtest.expectancy_r, 2)}</div>` : ''}
+    </div>`;
+}
+
+function renderAnalysisSectionContent(key, value) {
+  if (key === 'smc' && value && typeof value === 'object') {
+    return renderStoredSmcSnapshot(value);
+  }
+  const text = typeof value === 'string'
+    ? value
+    : `\`\`\`json\n${JSON.stringify(value ?? {}, null, 2)}\n\`\`\``;
+  return `<div class="prose prose-invert prose-sm max-w-none">${marked.parse(String(text || ''))}</div>`;
+}
+
 function renderTradingAgentsResult(data) {
   if (data.error) {
     return `<div class="bg-red-900 bg-opacity-30 p-3 rounded text-sm text-red-200">${data.error}</div>`;
   }
-  const sectionLabels = {
-    final_trade_decision: '最終決策',
-    trader_proposal: '交易員提案',
-    risk_debate_state: '風險委員會',
-    investment_debate_state: '多空辯論',
-    market_report: '技術分析',
-    sentiment_report: '情緒分析',
-    news_report: '新聞分析',
-    fundamentals_report: '基本面分析',
-  };
   const sections = Object.entries(data.sections || {}).map(([key, value]) => `
     <div class="bg-gray-900 bg-opacity-40 p-3 rounded">
-      <div class="text-xs text-emerald-300 font-semibold mb-1">${sectionLabels[key] || key}</div>
-      <div class="prose prose-invert prose-sm max-w-none">${marked.parse(String(value || ''))}</div>
+      <div class="text-xs text-emerald-300 font-semibold mb-1">${ANALYSIS_SECTION_LABELS[key] || key}</div>
+      ${renderAnalysisSectionContent(key, value)}
     </div>`).join('');
   return `<div class="bg-emerald-900 bg-opacity-20 p-3 rounded text-sm">
       <div class="font-semibold text-emerald-300 mb-1">TradingAgents ${data.mode === 'quick' ? '快速版' : '深度分析'}</div>
@@ -5569,13 +5600,7 @@ function runTradingAgentsCLI(mode) {
         </div>`;
       }
       // 成功
-      const sectionLabels = {
-        market_report: '技術分析', fundamentals_report: '基本面分析',
-        news_report: '新聞分析', sentiment_report: '情緒分析',
-        investment_debate_state: '多空辯論', risk_debate_state: '風險委員會',
-        final_trade_decision: '最終決策',
-      };
-      const title = sectionLabels[s.key] || s.label;
+      const title = ANALYSIS_SECTION_LABELS[s.key] || s.label;
       const bgClass = s.key === 'final_trade_decision' ? 'bg-emerald-900 bg-opacity-30' : 'bg-gray-900 bg-opacity-40';
       const titleClass = s.key === 'final_trade_decision' ? 'text-emerald-300' : 'text-teal-300';
       return `<div class="${bgClass} p-3 rounded">
@@ -5583,7 +5608,7 @@ function runTradingAgentsCLI(mode) {
           <span class="text-xs ${titleClass} font-semibold">[${s.step_index}/${startInfo.total_steps}] ${title}</span>
           <span class="text-xs text-gray-500 ml-auto">${s.elapsed}s</span>
         </div>
-        <div class="prose prose-invert prose-sm max-w-none">${marked.parse(String(s.output || ''))}</div>
+        ${renderAnalysisSectionContent(s.key, s.output)}
       </div>`;
     }).join('<div class="h-2"></div>');
 

@@ -39,3 +39,16 @@ def test_fetch_stock_context_falls_back_when_rich_context_missing():
          patch.object(app, "_fetch_stock_context_fallback", return_value="FALLBACK"):
         text = app._fetch_stock_context("AAPL")
     assert text == "FALLBACK"
+
+
+def test_augment_sections_with_smc_injects_when_missing():
+    with patch.object(app, "_build_smc_text", return_value="【SMC 結構與回測】mock"):
+        sections = app._augment_sections_with_smc("AAPL", {"market_report": "市場"})
+    assert sections["market_report"] == "市場"
+    assert sections["smc_report"] == "【SMC 結構與回測】mock"
+
+
+def test_augment_sections_with_smc_preserves_existing_report():
+    with patch.object(app, "_build_smc_text", return_value="SHOULD_NOT_USE"):
+        sections = app._augment_sections_with_smc("AAPL", {"smc_report": "已有 SMC"})
+    assert sections["smc_report"] == "已有 SMC"

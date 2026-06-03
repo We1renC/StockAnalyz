@@ -5862,6 +5862,14 @@ def _extract_tradingagents_sections(final_state) -> dict:
             out[key] = str(value)[:2500]
     return out
 
+
+def _augment_sections_with_smc(symbol: str, sections: Optional[dict] = None) -> dict:
+    out = dict(sections or {})
+    if out.get("smc_report"):
+        return out
+    out["smc_report"] = _build_smc_text(symbol)
+    return out
+
 def _run_tradingagents(symbol: str, mode: str = "full") -> dict:
     try:
         from tradingagents.default_config import DEFAULT_CONFIG
@@ -5895,13 +5903,14 @@ def _run_tradingagents(symbol: str, mode: str = "full") -> dict:
         graph = TradingAgentsGraph(selected_analysts=analysts, debug=False, config=config)
         trade_date = str(date.today() - timedelta(days=1))
         final_state, decision = graph.propagate(symbol, trade_date)
+        sections = _augment_sections_with_smc(symbol, _extract_tradingagents_sections(final_state))
         return {
             "symbol": symbol,
             "mode": mode,
             "trade_date": trade_date,
             "decision": decision,
             "analysts": analysts,
-            "sections": _extract_tradingagents_sections(final_state),
+            "sections": sections,
         }
     except Exception as exc:
         return {"error": str(exc), "symbol": symbol, "mode": mode}
