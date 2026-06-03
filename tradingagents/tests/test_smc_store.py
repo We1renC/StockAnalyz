@@ -3,7 +3,7 @@ from unittest.mock import patch
 import pandas as pd
 
 import app
-from smc_report import build_smc_report_html, build_smc_scan_report_html
+from smc_report import build_smc_report_html, build_smc_scan_report_html, build_smc_learning_health_report_html
 from smc_store import persist_backtest_run, summarize_backtest_report
 
 
@@ -218,6 +218,27 @@ def test_build_smc_scan_report_html_renders_key_sections():
     assert "Alpha" in html
 
 
+def test_build_smc_learning_health_report_html_renders_key_sections():
+    html = build_smc_learning_health_report_html(
+        {
+            "symbol": "AAA",
+            "overview": {"total_trades": 18, "win_rate": 0.61, "expectancy_r": 0.42, "profit_factor": 1.8},
+            "decay": {"is_decaying": False, "recent_expectancy": 0.38, "warning_message": None},
+            "calibration": {"changes": ["Adjusted killzone (weight 1 -> 2)"], "kelly_cap_pct": 0.015, "proposed_weights": {"killzone": 2}},
+            "validation": {"overfitting_risk_level": "low"},
+            "top_positive_factors": [{"factor": "killzone", "count": 10, "win_rate": 0.7, "expected_r": 0.8, "diff_expectancy": 0.3}],
+            "top_negative_factors": [{"factor": "ote_zone", "count": 6, "win_rate": 0.3, "expected_r": -0.4, "diff_expectancy": -0.5}],
+            "model_ranking": [{"model": "AMD", "count": 8, "win_rate": 0.62, "expected_r": 0.7}],
+            "feature_importance": [{"feature": "killzone", "importance": 0.42, "direction": 1}],
+        },
+        title="Custom SMC Health",
+    )
+    assert "Custom SMC Health" in html
+    assert "Top Positive Factors" in html
+    assert "Calibration Changes" in html
+    assert "AMD" in html
+
+
 def test_api_smc_backtest_report_html_returns_html(tmp_path):
     original = _temp_db(tmp_path)
     try:
@@ -273,5 +294,30 @@ def test_api_smc_scan_report_html_returns_html(tmp_path):
         assert "SMC Scan Report - watchlist" in body
         assert "Signal Ranking" in body
         assert "AAPL" in body
+    finally:
+        app.DB = original
+
+
+def test_api_smc_learning_health_and_html(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        conn = app.get_db()
+        persist_backtest_run(conn, _sample_backtest_result("AAA"), period="6mo", source="test")
+        persist_backtest_run(conn, _sample_backtest_result("BBB"), period="6mo", source="test")
+        persist_backtest_run(conn, _sample_backtest_result("CCC"), period="6mo", source="test")
+        conn.close()
+
+        payload = app.api_smc_learning_health()
+        assert payload["ok"] is True
+        assert payload["overview"]["total_trades"] == 6
+        assert "top_positive_factors" in payload
+        assert "calibration" in payload
+        assert "decay" in payload
+
+        response = app.api_smc_learning_report_html()
+        body = response.body.decode("utf-8")
+        assert "SMC Strategy Health Report" in body
+        assert "Top Positive Factors" in body
+        assert "Calibration Changes" in body
     finally:
         app.DB = original

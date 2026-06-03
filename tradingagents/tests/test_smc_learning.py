@@ -185,3 +185,13 @@ def test_decay_monitor(sample_trades_df):
     res = detect_edge_decay(decay_df, window_size=4)
     assert res["is_decaying"] is True
     assert "Edge decay detected!" in res["warning_message"]
+
+
+def test_attribution_handles_missing_mae_mfe(sample_trades_df):
+    df = sample_trades_df.copy()
+    df.loc[0, "mae"] = None
+    df.loc[1, "mfe"] = None
+    report = generate_attribution_report(df)
+    assert report["total_trades"] == 10
+    assert "overall" in report
+    assert isinstance(report["mae_mfe_recommendations"], dict)

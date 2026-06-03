@@ -147,14 +147,21 @@ def generate_attribution_report(df: pd.DataFrame) -> dict:
     # Let's check if we have entry_price, stop_price, mae, and mfe columns
     req_mae_mfe = {"entry_price", "stop_price", "mae", "mfe"}
     if req_mae_mfe.issubset(df.columns):
+        numeric_cols = ["entry_price", "stop_price", "mae", "mfe", "win"]
+        df_num = df.copy()
+        for col in numeric_cols:
+            df_num[col] = pd.to_numeric(df_num[col], errors="coerce")
+
         # Calculate stop loss distance for each trade
-        stop_dist = (df["entry_price"] - df["stop_price"]).abs()
+        stop_dist = (df_num["entry_price"] - df_num["stop_price"]).abs()
         
         # Valid trades where stop distance is positive
-        valid_idx = stop_dist > 0.0001
+        valid_idx = (
+            stop_dist > 0.0001
+        ) & df_num["mae"].notna() & df_num["mfe"].notna()
         
         if valid_idx.sum() >= 3:
-            df_v = df[valid_idx].copy()
+            df_v = df_num[valid_idx].copy()
             df_v["stop_dist"] = stop_dist[valid_idx]
             
             # MAE is stored as negative for long drawdown, let's normalize MAE to positive distance

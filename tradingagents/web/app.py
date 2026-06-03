@@ -36,7 +36,11 @@ from technical_matrix import build_technical_matrix
 from smc_quant import SMCConfig, build_smc_analysis
 from smc_backtest import SMCBacktestConfig, run_smc_event_backtest
 from smc_store import persist_backtest_run, summarize_backtest_report
-from smc_report import build_smc_report_html, build_smc_scan_report_html
+from smc_report import (
+    build_smc_report_html,
+    build_smc_scan_report_html,
+    build_smc_learning_health_report_html,
+)
 
 warnings.filterwarnings("ignore")
 
@@ -3730,6 +3734,131 @@ def api_smc_learning_attribution(symbol: Optional[str] = None):
         raise HTTPException(status_code=500, detail=f"Failed to generate attribution: {str(e)}")
     finally:
         conn.close()
+
+
+def _build_smc_learning_health_payload(conn, symbol: Optional[str] = None, decay_window: int = 20) -> dict:
+    from learning.trade_store import load_trades_from_db
+    from learning.attribution import generate_attribution_report
+    from learning.calibration import calibrate_confluence_weights, calculate_kelly_fraction
+    from learning.decay_monitor import detect_edge_decay
+    from learning.cross_val import purged_train_test_split, estimate_backtest_overfitting
+    from learning.feature_importance import calculate_feature_importance
+
+    df = load_trades_from_db(conn, symbol=symbol)
+    if df.empty or len(df) < 5:
+        return {
+            "ok": False,
+            "symbol": symbol,
+            "reason": "Insufficient trade data for health report (need at least 5 trades)",
+            "overview": {"total_trades": len(df)},
+            "top_positive_factors": [],
+            "top_negative_factors": [],
+            "model_ranking": [],
+            "feature_importance": [],
+            "calibration": {"changes": [], "proposed_weights": {}, "kelly_cap_pct": 0.01},
+            "validation": {},
+            "decay": detect_edge_decay(df, window_size=max(2, decay_window)),
+        }
+
+    report = generate_attribution_report(df)
+    calibration = calibrate_confluence_weights(report)
+    wins_df = df[df["win"] == 1]
+    losses_df = df[df["win"] == 0]
+    win_rate = len(wins_df) / len(df)
+    avg_win_pnl = float(wins_df["pnl"].mean()) if not wins_df.empty else 0.0
+    avg_loss_pnl = float(losses_df["pnl"].mean()) if not losses_df.empty else 0.0
+    kelly_cap = calculate_kelly_fraction(
+        win_rate=win_rate,
+        avg_win_pnl=avg_win_pnl,
+        avg_loss_pnl=avg_loss_pnl,
+        fraction=0.25,
+    )
+
+    train_df, test_df = purged_train_test_split(df)
+    validation = {}
+    if not train_df.empty and not test_df.empty:
+        validation = estimate_backtest_overfitting(train_df["r_multiple"], test_df["r_multiple"])
+
+    importance = calculate_feature_importance(df)
+    decay = detect_edge_decay(df, window_size=max(2, decay_window))
+
+    factors = report.get("factors") or {}
+    factor_rows = []
+    for factor, metrics in factors.items():
+        factor_rows.append(
+            {
+                "factor": factor,
+                "count": metrics.get("count"),
+                "win_rate": metrics.get("win_rate"),
+                "expected_r": metrics.get("expected_r"),
+                "diff_expectancy": metrics.get("diff_expectancy"),
+            }
+        )
+    factor_rows.sort(key=lambda item: (item.get("diff_expectancy") if item.get("diff_expectancy") is not None else -999), reverse=True)
+    top_positive = [x for x in factor_rows if (x.get("diff_expectancy") or 0) >= 0][:5]
+    top_negative = sorted(
+        [x for x in factor_rows if (x.get("diff_expectancy") or 0) < 0],
+        key=lambda item: item.get("diff_expectancy") or 0,
+    )[:5]
+
+    models = report.get("models") or {}
+    model_rows = [
+        {
+            "model": model,
+            "count": metrics.get("count"),
+            "win_rate": metrics.get("win_rate"),
+            "expected_r": metrics.get("expected_r"),
+        }
+        for model, metrics in models.items()
+    ]
+    model_rows.sort(key=lambda item: (item.get("expected_r") if item.get("expected_r") is not None else -999), reverse=True)
+
+    return sanitize_float_values(
+        {
+            "ok": True,
+            "symbol": symbol,
+            "overview": {
+                "total_trades": report.get("total_trades"),
+                "win_rate": report.get("overall", {}).get("win_rate"),
+                "expectancy_r": report.get("overall", {}).get("expectancy_r"),
+                "profit_factor": report.get("overall", {}).get("profit_factor"),
+            },
+            "top_positive_factors": top_positive,
+            "top_negative_factors": top_negative,
+            "model_ranking": model_rows,
+            "feature_importance": importance.get("importances", []),
+            "feature_importance_method": importance.get("method", "insufficient_data"),
+            "calibration": {
+                "changes": calibration.get("changes", []),
+                "proposed_weights": calibration.get("proposed_weights", {}),
+                "kelly_cap_pct": kelly_cap,
+            },
+            "validation": validation,
+            "decay": decay,
+        }
+    )
+
+
+@app.get("/api/smc-learning/health")
+def api_smc_learning_health(symbol: Optional[str] = None, decay_window: int = 20):
+    conn = get_db()
+    try:
+        return _build_smc_learning_health_payload(conn, symbol=symbol, decay_window=max(2, min(int(decay_window), 200)))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build health report: {str(e)}")
+    finally:
+        conn.close()
+
+
+@app.get("/api/smc-learning/report/html", response_class=HTMLResponse)
+def api_smc_learning_report_html(symbol: Optional[str] = None, decay_window: int = 20):
+    conn = get_db()
+    try:
+        payload = _build_smc_learning_health_payload(conn, symbol=symbol, decay_window=max(2, min(int(decay_window), 200)))
+    finally:
+        conn.close()
+    title = f"SMC Strategy Health Report - {symbol.upper()}" if symbol else "SMC Strategy Health Report"
+    return HTMLResponse(build_smc_learning_health_report_html(payload, title=title))
 
 
 @app.post("/api/smc-learning/calibrate")
