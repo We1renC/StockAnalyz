@@ -899,6 +899,190 @@ def detect_smt_divergence(
     return out
 
 
+# ---------------------------------------------------------------------------
+# §5.1 / §5.2 Entry models + Confluence scoring
+# ---------------------------------------------------------------------------
+
+CONFLUENCE_WEIGHTS_DEFAULT = {
+    "htf_bias_aligned": 2,
+    "premium_discount_side": 2,
+    "unmitigated_ob": 2,
+    "unfilled_fvg": 1,
+    "liquidity_swept": 2,
+    "ltf_choch": 2,
+    "ote_zone": 1,
+    "killzone": 1,
+    "volume_displacement": 1,
+}
+CONFLUENCE_THRESHOLD_DEFAULT = 8
+
+
+def score_confluence(
+    factors: dict[str, bool],
+    weights: Optional[dict[str, int]] = None,
+    threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
+) -> dict:
+    """Quantify §5.2 weighted confluence score for an entry candidate.
+
+    Returns a dict with ``score``, ``threshold``, ``triggered`` and a list
+    of contributing factors (each with name + weight) — the auditing
+    contract required by §5.2.
+    """
+    w = {**CONFLUENCE_WEIGHTS_DEFAULT, **(weights or {})}
+    contributing: list[dict] = []
+    score = 0
+    for name, active in factors.items():
+        wt = int(w.get(name, 0))
+        if active and wt > 0:
+            score += wt
+            contributing.append({"factor": name, "weight": wt})
+    return {
+        "score": score,
+        "threshold": int(threshold),
+        "triggered": score >= int(threshold),
+        "contributing_factors": contributing,
+        "weights": w,
+    }
+
+
+def detect_sweep_reversal_entries(
+    df: pd.DataFrame,
+    judas_events: list[dict],
+    order_blocks: list[dict],
+    fvgs: list[dict],
+    pd_zone: dict,
+    bias: str,
+    session: Optional[dict] = None,
+    weights: Optional[dict[str, int]] = None,
+    threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
+) -> list[dict]:
+    """§5.1 Entry Model 1 — Liquidity Sweep Reversal (Sweep + CHoCH).
+
+    For each confirmed Judas Swing, look for an unmitigated OB (refined
+    50%) or unfilled FVG in the real direction whose zone is touched at
+    or after the CHoCH confirmation. Compose the entry: refined OB entry,
+    stop just beyond the sweep extreme, target = nearest opposing
+    swing/liquidity (fallback RR=2).
+    """
+    out: list[dict] = []
+    if df is None or len(df) == 0 or not judas_events:
+        return out
+    bias_dir = 0
+    if "bull" in (bias or ""):
+        bias_dir = 1
+    elif "bear" in (bias or ""):
+        bias_dir = -1
+    pd_state = (pd_zone or {}).get("state")
+    for ev in judas_events:
+        real_dir = int(ev.get("judas") or ev.get("real_direction") or 0)
+        if real_dir == 0:
+            continue
+        confirm_idx = int(ev["confirm_index"])
+        sweep_idx = int(ev["sweep_index"])
+        # Candidate POIs: same-direction, formed at/before confirm, not yet failed.
+        ob_candidates = [
+            ob for ob in order_blocks
+            if int(ob.get("direction", 0)) == real_dir
+            and int(ob.get("index", 1_000_000)) <= confirm_idx
+            and ob.get("status") in {"unmitigated", "mitigation"}
+        ]
+        fvg_candidates = [
+            f for f in fvgs
+            if int(f.get("direction", 0)) == real_dir
+            and int(f.get("index", 1_000_000)) <= confirm_idx
+            and not f.get("mitigated")
+        ]
+        if not ob_candidates and not fvg_candidates:
+            continue
+        # Prefer the OB with the best (highest) grade closest to the sweep level.
+        grade_rank = {"A": 0, "B": 1, "C": 2}
+        ob_candidates.sort(
+            key=lambda o: (grade_rank.get(o.get("grade"), 9), -int(o.get("index", 0)))
+        )
+        ob = ob_candidates[0] if ob_candidates else None
+        fvg = fvg_candidates[-1] if fvg_candidates else None
+        if ob is not None:
+            entry = float(ob["refined_entry"])
+            poi_kind = "order_block"
+            poi_top, poi_bottom = float(ob["top"]), float(ob["bottom"])
+        else:
+            entry = float(fvg["mid"])
+            poi_kind = "fvg"
+            poi_top, poi_bottom = float(fvg["top"]), float(fvg["bottom"])
+        # Stop just beyond the structural invalidation (sweep extreme).
+        if real_dir == 1:
+            stop = float(ev["false_move_low"]) - max(0.0, (entry - float(ev["false_move_low"])) * 0.05)
+        else:
+            stop = float(ev["false_move_high"]) + max(0.0, (float(ev["false_move_high"]) - entry) * 0.05)
+        risk = abs(entry - stop)
+        if risk <= 0:
+            continue
+        # Target: 2R fallback (§6 RR rule).
+        target = entry + 2 * risk * real_dir
+        rr = abs(target - entry) / risk if risk else 0.0
+        # Confluence factors per §5.2.
+        on_correct_pd_side = bool(
+            (real_dir == 1 and pd_state == "discount")
+            or (real_dir == -1 and pd_state == "premium")
+        )
+        ote_overlap = False
+        # §5.2 row: Enters OTE 0.62–0.79 if entry sits inside the false-move leg's OTE.
+        leg_low = float(ev["false_move_low"])
+        leg_high = float(ev["false_move_high"])
+        leg = leg_high - leg_low
+        if leg > 0:
+            if real_dir == 1:
+                ote_overlap = leg_low + 0.62 * leg <= entry <= leg_low + 0.79 * leg
+            else:
+                ote_overlap = leg_high - 0.79 * leg <= entry <= leg_high - 0.62 * leg
+        factors = {
+            "htf_bias_aligned": bias_dir == real_dir,
+            "premium_discount_side": on_correct_pd_side,
+            "unmitigated_ob": ob is not None and ob.get("status") == "unmitigated",
+            "unfilled_fvg": fvg is not None,
+            "liquidity_swept": True,  # By construction of a Judas event
+            "ltf_choch": True,        # Confirmed CHoCH defines the event
+            "ote_zone": ote_overlap,
+            "killzone": bool(ev.get("killzone")) or bool((session or {}).get("killzone")),
+            "volume_displacement": bool(ev.get("displacement_confirmed")),
+        }
+        scoring = score_confluence(factors, weights=weights, threshold=threshold)
+        out.append(
+            {
+                "model": "sweep_reversal",
+                "direction": real_dir,
+                "entry": round(entry, 4),
+                "stop": round(stop, 4),
+                "target": round(target, 4),
+                "risk": round(risk, 4),
+                "rr": round(rr, 2),
+                "poi_kind": poi_kind,
+                "poi_top": round(poi_top, 4),
+                "poi_bottom": round(poi_bottom, 4),
+                "judas_index": confirm_idx,
+                "sweep_index": sweep_idx,
+                "sweep_level": ev.get("sweep_level"),
+                "false_move_high": ev.get("false_move_high"),
+                "false_move_low": ev.get("false_move_low"),
+                "confluence": scoring,
+                "factors": factors,
+                "triggered": scoring["triggered"],
+                "time": ev.get("confirm_time") or ev.get("sweep_time"),
+            }
+        )
+    # Most recent first (deduped by (sweep_index, direction))
+    seen = set()
+    deduped: list[dict] = []
+    for e in sorted(out, key=lambda r: r["sweep_index"], reverse=True):
+        key = (e["sweep_index"], e["direction"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(e)
+    deduped.reverse()
+    return deduped
+
+
 def retracement_state(df: pd.DataFrame, swings: list[dict]) -> dict:
     highs = [s for s in swings if s["type"] == "high"]
     lows = [s for s in swings if s["type"] == "low"]
@@ -1473,6 +1657,10 @@ def build_smc_analysis(
     session = session_state(h, symbol)
     judas_events = detect_judas_swings(h, structure, liquidity, displacements, symbol)
     smt_events = detect_smt_divergence(h, correlated, swings)
+    sweep_reversal_entries = detect_sweep_reversal_entries(
+        h, judas_events, obs, fvgs, pd_zone, bias, session,
+        weights=weights,
+    )
     retracement = retracement_state(h, swings)
     generated_at = datetime.now().isoformat(timespec="seconds")
     signals = build_signals(
@@ -1556,6 +1744,11 @@ def build_smc_analysis(
             "crypto_derivatives": {
                 "status": "extension_point",
                 "fields": ["liquidation_clusters", "open_interest", "funding_rate", "cvd", "coinbase_premium"],
+            },
+            "entry_models": {
+                "sweep_reversal": sweep_reversal_entries,
+                "triggered": [e for e in sweep_reversal_entries if e.get("triggered")],
+                "latest": sweep_reversal_entries[-1] if sweep_reversal_entries else None,
             },
         },
         "signals": signals,

@@ -373,3 +373,71 @@ def test_silver_bullet_and_power_of_three_entry_models():
     assert len(signals_amd) > 0
     assert signals_amd[0]["model"] == "Power of Three (AMD)"
 
+
+
+def test_confluence_scorer_obeys_threshold_and_weights():
+    """§5.2 scorer must respect weights, threshold, and surface contributing factors."""
+    from smc_quant import score_confluence
+    factors = {
+        "htf_bias_aligned": True,
+        "premium_discount_side": True,
+        "unmitigated_ob": True,
+        "unfilled_fvg": False,
+        "liquidity_swept": True,
+        "ltf_choch": True,
+        "ote_zone": False,
+        "killzone": True,
+        "volume_displacement": True,
+    }
+    s = score_confluence(factors)
+    # 2+2+2+0+2+2+0+1+1 = 12 → over the 8-point threshold
+    assert s["score"] == 12
+    assert s["triggered"] is True
+    names = {f["factor"] for f in s["contributing_factors"]}
+    assert "htf_bias_aligned" in names and "ote_zone" not in names
+    # Below threshold case
+    cold = {k: False for k in factors}
+    cold["liquidity_swept"] = True
+    cold["ltf_choch"] = True  # 4 only
+    s2 = score_confluence(cold)
+    assert s2["score"] == 4 and s2["triggered"] is False
+
+
+def test_sweep_reversal_entries_produce_rr_and_scored_signals():
+    """§5.1 Model 1 chains Judas → POI → entry/stop/target with §5.2 score attached."""
+    from smc_quant import detect_sweep_reversal_entries
+    cfg = SMCConfig(swing_length=2, internal_swing_length=2)
+    h = normalize_ohlcv(_sample_ohlcv())
+    swings = detect_swings(h, cfg.swing_length)
+    structure = detect_structure(h, swings, cfg)
+    liquidity = detect_liquidity(h, swings, cfg)
+    displacements = detect_displacement(h, cfg)
+    obs = detect_order_blocks(h, structure, displacements, liquidity)
+    fvgs = []  # exercise the OB-only branch
+    judas = detect_judas_swings(h, structure, liquidity, displacements, "AAPL")
+    entries = detect_sweep_reversal_entries(h, judas, obs, fvgs, {"state": "discount"}, "bullish")
+    assert isinstance(entries, list)
+    for e in entries:
+        # Mandatory shape per §5.1 + §5.2
+        assert e["model"] == "sweep_reversal"
+        assert e["direction"] in (1, -1)
+        assert e["risk"] > 0 and e["rr"] >= 1.99  # 2R fallback
+        # Stop sits beyond the structural invalidation point
+        if e["direction"] == 1:
+            assert e["stop"] <= e["false_move_low"]
+        else:
+            assert e["stop"] >= e["false_move_high"]
+        # Confluence contract
+        assert "score" in e["confluence"] and "threshold" in e["confluence"]
+        assert set(e["factors"]).issuperset({"htf_bias_aligned", "liquidity_swept", "ltf_choch"})
+
+
+def test_build_smc_analysis_exposes_entry_models_block():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "BTCUSDT",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    em = result["concepts"]["entry_models"]
+    assert "sweep_reversal" in em and isinstance(em["sweep_reversal"], list)
+    assert "triggered" in em
+    assert "latest" in em
