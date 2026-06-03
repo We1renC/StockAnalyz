@@ -5545,6 +5545,8 @@ async function runTradingAgents(mode) {
   try {
     const data = await fetch(`/api/tradingagents/${encodeURIComponent(_currentSymbol)}?mode=${mode}`).then(r=>r.json());
     $('llm-result').innerHTML = renderTradingAgentsResult(data);
+    const r = await fetch(`/api/analysis/${encodeURIComponent(_currentSymbol)}?limit=5`).then(r=>r.json()).catch(()=>({analyses:[]}));
+    if (r.analyses && r.analyses.length) renderPastAnalysis(r.analyses);
   } catch (e) {
     $('llm-result').innerHTML = `<div class="text-red-400 p-3">錯誤: ${e}</div>`;
   } finally {

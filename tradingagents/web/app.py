@@ -5870,6 +5870,151 @@ def _augment_sections_with_smc(symbol: str, sections: Optional[dict] = None) -> 
     out["smc_report"] = _build_smc_text(symbol)
     return out
 
+
+def _prepare_analysis_sections(symbol: str, sections: Optional[dict] = None) -> dict:
+    out = _augment_sections_with_smc(symbol, sections)
+    if "smc" not in out:
+        out["smc"] = _build_smc_snapshot_payload(symbol)
+    return out
+
+
+def _extract_decision_summary(text: str) -> str:
+    for line in (text or "").split("\n"):
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and not stripped.startswith("*"):
+            return stripped[:200]
+    return ""
+
+
+def _extract_trade_levels_from_text(text: str) -> dict:
+    import re as _re
+
+    prices = {}
+    clean = (text or "").replace("**", "")
+    m = _re.search(r'進場.*?(\d+(?:\.\d+)?)\s*[~～\-至到]+\s*(\d+(?:\.\d+)?)', clean)
+    if m:
+        prices["entry"] = float(m.group(1))
+        prices["add"] = float(m.group(2))
+    else:
+        m = _re.search(r'(?:進場|買入|回測)\D{0,30}?(\d+(?:\.\d+)?)', clean)
+        if m:
+            prices["entry"] = float(m.group(1))
+
+    m = _re.search(r'停損\D{0,20}?(\d+(?:\.\d+)?)', clean)
+    if m:
+        prices["stop"] = float(m.group(1))
+
+    m = _re.search(r'停利\D{0,20}?(\d+(?:\.\d+)?)', clean)
+    if m:
+        prices["profit"] = float(m.group(1))
+
+    return prices
+
+
+def _store_analysis_result(
+    symbol: str,
+    mode: str,
+    provider: str,
+    model: str,
+    elapsed: float,
+    sections: Optional[dict] = None,
+    decision_text: str = "",
+) -> dict:
+    sections_to_save = _prepare_analysis_sections(symbol, sections)
+    decision_summary = _extract_decision_summary(
+        decision_text
+        or sections_to_save.get("final_trade_decision")
+        or sections_to_save.get("analyst")
+        or ""
+    )
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT name FROM positions WHERE symbol=? UNION SELECT name FROM watchlist WHERE symbol=?",
+            (symbol, symbol),
+        ).fetchone()
+        sym_name = dict(row)["name"] if row else symbol
+        conn.execute(
+            """INSERT INTO analysis_results
+               (symbol, name, ts, mode, provider, model, elapsed, decision_summary, sections)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                symbol,
+                sym_name,
+                datetime.now().isoformat(),
+                mode,
+                provider,
+                model,
+                elapsed,
+                decision_summary,
+                json.dumps(sections_to_save, ensure_ascii=False),
+            ),
+        )
+        analysis_ts = conn.execute(
+            "SELECT ts FROM analysis_results WHERE rowid = last_insert_rowid()"
+        ).fetchone()[0]
+
+        wrote_watchlist_levels = False
+        extracted = _extract_trade_levels_from_text(decision_text)
+        if extracted:
+            watch_row = conn.execute(
+                "SELECT id, target_entry, target_stop, target_profit FROM watchlist WHERE symbol=?",
+                (symbol,),
+            ).fetchone()
+            if watch_row:
+                wd = dict(watch_row)
+                updates = []
+                params = []
+                if extracted.get("entry"):
+                    updates.append("target_entry=?")
+                    params.append(extracted["entry"])
+                if extracted.get("add"):
+                    updates.append("target_add=?")
+                    params.append(extracted["add"])
+                if extracted.get("stop"):
+                    updates.append("target_stop=?")
+                    params.append(extracted["stop"])
+                if extracted.get("profit"):
+                    updates.append("target_profit=?")
+                    params.append(extracted["profit"])
+                if updates:
+                    params.append(wd["id"])
+                    conn.execute(f"UPDATE watchlist SET {', '.join(updates)} WHERE id=?", params)
+                    wrote_watchlist_levels = True
+
+        conn.commit()
+        vault = _get_vault()
+        if vault:
+            _obsidian_write_analysis(
+                vault,
+                {
+                    "symbol": symbol,
+                    "name": sym_name,
+                    "ts": analysis_ts,
+                    "mode": mode,
+                    "provider": provider,
+                    "model": model,
+                    "elapsed": elapsed,
+                    "decision_summary": decision_summary,
+                    "sections": sections_to_save,
+                },
+            )
+            sync_kinds = ["analysis"]
+            if wrote_watchlist_levels:
+                _obsidian_write_watchlist_snapshot(vault, conn, symbol)
+                sync_kinds.append("watchlist")
+            _obsidian_post_write_sync(vault, kinds=tuple(sync_kinds))
+        return {
+            "symbol": symbol,
+            "name": sym_name,
+            "analysis_ts": analysis_ts,
+            "decision_summary": decision_summary,
+            "sections": sections_to_save,
+            "wrote_watchlist_levels": wrote_watchlist_levels,
+        }
+    finally:
+        conn.close()
+
 def _run_tradingagents(symbol: str, mode: str = "full") -> dict:
     try:
         from tradingagents.default_config import DEFAULT_CONFIG
@@ -5902,15 +6047,27 @@ def _run_tradingagents(symbol: str, mode: str = "full") -> dict:
 
         graph = TradingAgentsGraph(selected_analysts=analysts, debug=False, config=config)
         trade_date = str(date.today() - timedelta(days=1))
+        ta_t0 = time.time()
         final_state, decision = graph.propagate(symbol, trade_date)
-        sections = _augment_sections_with_smc(symbol, _extract_tradingagents_sections(final_state))
+        sections = _prepare_analysis_sections(symbol, _extract_tradingagents_sections(final_state))
+        stored = _store_analysis_result(
+            symbol=symbol,
+            mode=f"tradingagents_{mode}",
+            provider="anthropic",
+            model=config.get("deep_think_llm") if mode != "quick" else config.get("deep_think_llm"),
+            elapsed=round(time.time() - ta_t0, 1),
+            sections=sections,
+            decision_text=str(decision or sections.get("final_trade_decision") or ""),
+        )
         return {
             "symbol": symbol,
             "mode": mode,
             "trade_date": trade_date,
             "decision": decision,
             "analysts": analysts,
-            "sections": sections,
+            "sections": stored["sections"],
+            "analysis_ts": stored["analysis_ts"],
+            "decision_summary": stored["decision_summary"],
         }
     except Exception as exc:
         return {"error": str(exc), "symbol": symbol, "mode": mode}
@@ -6285,112 +6442,17 @@ def api_tradingagents_cli_stream(symbol: str, mode: str = "full"):
 
         # ── 儲存分析結果到資料庫 ──
         sections_to_save = {k: v for k, v in results.items() if k != "context"}
-        decision_summary = ""
-        ftd = results.get("final_trade_decision", "")
-        # 嘗試擷取一句話摘要
-        for line in ftd.split("\n"):
-            stripped = line.strip()
-            if stripped and not stripped.startswith("#") and not stripped.startswith("*"):
-                decision_summary = stripped[:200]
-                break
-
         try:
-            # 查名稱
-            conn = get_db()
-            row = conn.execute(
-                "SELECT name FROM positions WHERE symbol=? UNION SELECT name FROM watchlist WHERE symbol=?",
-                (symbol, symbol)
-            ).fetchone()
-            sym_name = dict(row)["name"] if row else symbol
-            conn.execute(
-                """INSERT INTO analysis_results
-                   (symbol, name, ts, mode, provider, model, elapsed, decision_summary, sections)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (symbol, sym_name, datetime.now().isoformat(),
-                 mode, provider, model,
-                 round(_time.time() - t0, 1),
-                 decision_summary,
-                 json.dumps(sections_to_save, ensure_ascii=False))
+            stored = _store_analysis_result(
+                symbol=symbol,
+                mode=mode,
+                provider=provider,
+                model=model,
+                elapsed=round(_time.time() - t0, 1),
+                sections=sections_to_save,
+                decision_text=results.get("final_trade_decision", ""),
             )
-            analysis_ts = conn.execute(
-                "SELECT ts FROM analysis_results WHERE rowid = last_insert_rowid()"
-            ).fetchone()[0]
-
-            # ── 從最終決策中解析進出場價位，回寫到 watchlist ──
-            import re as _re
-            def _extract_prices(text):
-                """從決策文本中抓數字價位。先去掉 markdown 粗體標記再解析。"""
-                prices = {}
-                clean = text.replace('**', '')  # 去掉 markdown 粗體
-
-                # 進場 / 買入 — 嘗試抓「進場...數字～數字」的範圍格式
-                m = _re.search(r'進場.*?(\d+(?:\.\d+)?)\s*[~～\-至到]+\s*(\d+(?:\.\d+)?)', clean)
-                if m:
-                    prices['entry'] = float(m.group(1))
-                    prices['add'] = float(m.group(2))
-                else:
-                    # 退而求其次：抓「進場」或「買入」或「回測」後面第一個數字
-                    m = _re.search(r'(?:進場|買入|回測)\D{0,30}?(\d+(?:\.\d+)?)', clean)
-                    if m:
-                        prices['entry'] = float(m.group(1))
-
-                # 停損 — 「停損」後面最近的數字
-                m = _re.search(r'停損\D{0,20}?(\d+(?:\.\d+)?)', clean)
-                if m:
-                    prices['stop'] = float(m.group(1))
-
-                # 停利 — 「停利」後面最近的數字
-                m = _re.search(r'停利\D{0,20}?(\d+(?:\.\d+)?)', clean)
-                if m:
-                    prices['profit'] = float(m.group(1))
-
-                return prices
-
-            extracted = _extract_prices(ftd)
-            wrote_watchlist_levels = False
-            if extracted:
-                watch_row = conn.execute("SELECT id, target_entry, target_stop, target_profit FROM watchlist WHERE symbol=?", (symbol,)).fetchone()
-                if watch_row:
-                    wd = dict(watch_row)
-                    updates = []
-                    params = []
-                    if extracted.get('entry'):
-                        updates.append("target_entry=?")
-                        params.append(extracted['entry'])
-                    if extracted.get('add'):
-                        updates.append("target_add=?")
-                        params.append(extracted['add'])
-                    if extracted.get('stop'):
-                        updates.append("target_stop=?")
-                        params.append(extracted['stop'])
-                    if extracted.get('profit'):
-                        updates.append("target_profit=?")
-                        params.append(extracted['profit'])
-                    if updates:
-                        params.append(wd["id"])
-                        conn.execute(f"UPDATE watchlist SET {', '.join(updates)} WHERE id=?", params)
-                        wrote_watchlist_levels = True
-
-            conn.commit()
-            vault = _get_vault()
-            if vault:
-                _obsidian_write_analysis(vault, {
-                    "symbol": symbol,
-                    "name": sym_name,
-                    "ts": analysis_ts,
-                    "mode": mode,
-                    "provider": provider,
-                    "model": model,
-                    "elapsed": round(_time.time() - t0, 1),
-                    "decision_summary": decision_summary,
-                    "sections": sections_to_save,
-                })
-                sync_kinds = ["analysis"]
-                if wrote_watchlist_levels:
-                    _obsidian_write_watchlist_snapshot(vault, conn, symbol)
-                    sync_kinds.append("watchlist")
-                _obsidian_post_write_sync(vault, kinds=tuple(sync_kinds))
-            conn.close()
+            sections_to_save = stored["sections"]
         except Exception:
             pass  # 儲存失敗不影響串流
 
