@@ -176,8 +176,10 @@ def detect_swings(df: pd.DataFrame, swing_length: int = 5, label: str = "swing")
                 {
                     "index": i,
                     "time": _record_time(idx[i]),
+                    "time_unix": _ts_value(idx[i]),
                     "confirm_index": i + swing_length,
                     "confirm_time": _record_time(idx[i + swing_length]),
+                    "confirm_time_unix": _ts_value(idx[i + swing_length]),
                     "type": "high",
                     "direction": -1,
                     "level": round(float(highs[i]), 4),
@@ -190,8 +192,10 @@ def detect_swings(df: pd.DataFrame, swing_length: int = 5, label: str = "swing")
                 {
                     "index": i,
                     "time": _record_time(idx[i]),
+                    "time_unix": _ts_value(idx[i]),
                     "confirm_index": i + swing_length,
                     "confirm_time": _record_time(idx[i + swing_length]),
+                    "confirm_time_unix": _ts_value(idx[i + swing_length]),
                     "type": "low",
                     "direction": 1,
                     "level": round(float(lows[i]), 4),
@@ -260,11 +264,13 @@ def detect_structure(df: pd.DataFrame, swings: list[dict], cfg: SMCConfig) -> li
                 {
                     "index": i,
                     "time": _record_time(ts),
+                    "time_unix": _ts_value(ts),
                     "type": event_type,
                     "direction": 1,
                     "level": last_high["level"],
                     "swing_index": last_high["index"],
                     "broken_index": i,
+                    "broken_time_unix": _ts_value(ts),
                 }
             )
         if break_low and ("low", last_low["index"]) not in broken:
@@ -275,11 +281,13 @@ def detect_structure(df: pd.DataFrame, swings: list[dict], cfg: SMCConfig) -> li
                 {
                     "index": i,
                     "time": _record_time(ts),
+                    "time_unix": _ts_value(ts),
                     "type": event_type,
                     "direction": -1,
                     "level": last_low["level"],
                     "swing_index": last_low["index"],
                     "broken_index": i,
+                    "broken_time_unix": _ts_value(ts),
                 }
             )
     return events
@@ -323,12 +331,14 @@ def detect_fvgs(df: pd.DataFrame, displacements: list[dict]) -> list[dict]:
             {
                 "index": i,
                 "time": _record_time(idx[i]),
+                "time_unix": _ts_value(idx[i]),
                 "direction": direction,
                 "top": round(top, 4),
                 "bottom": round(bottom, 4),
                 "mid": round((top + bottom) / 2, 4),
                 "mitigated_index": mitigated,
                 "mitigated": mitigated is not None,
+                "mitigated_time_unix": _ts_value(idx[mitigated]) if mitigated is not None else None,
                 "inverse": inverse,
                 "displacement_confirmed": i in disp_indexes,
                 "middle_body": round(abs(float(mid["close"] - mid["open"])), 4),
@@ -373,6 +383,8 @@ def detect_liquidity(df: pd.DataFrame, swings: list[dict], cfg: SMCConfig) -> li
                     "swept_index": swept,
                     "swept": swept is not None,
                     "time": _record_time(df.index[end_index]),
+                    "time_unix": _ts_value(df.index[end_index]),
+                    "swept_time_unix": _ts_value(df.index[swept]) if swept is not None else None,
                 }
             )
     return out
@@ -476,6 +488,7 @@ def detect_order_blocks(
             {
                 "index": candidate,
                 "time": _record_time(df.index[candidate]),
+                "time_unix": _ts_value(df.index[candidate]),
                 "direction": direction,
                 "top": round(top, 4),
                 "bottom": round(bottom, 4),
@@ -489,6 +502,7 @@ def detect_order_blocks(
                 "event_type": event["type"],
                 "mitigated_index": mitigated,
                 "mitigated": mitigated is not None,
+                "mitigated_time_unix": _ts_value(df.index[mitigated]) if mitigated is not None else None,
                 "unmitigated": unmitigated,
                 "breaker": breaker,
                 "status": status,                     # unmitigated / mitigation / breaker
@@ -564,6 +578,8 @@ def premium_discount(df: pd.DataFrame, swings: list[dict]) -> dict:
     eq = (high + low) / 2
     close = float(df["close"].iloc[-1])
     zone = "discount" if close < eq else ("premium" if close > eq else "equilibrium")
+    start_s = hi if hi["index"] < lo["index"] else lo
+    end_s = lo if hi["index"] < lo["index"] else hi
     return {
         "range_high": round(high, 4),
         "range_low": round(low, 4),
@@ -572,6 +588,12 @@ def premium_discount(df: pd.DataFrame, swings: list[dict]) -> dict:
         "fib_0_62": round(low + (high - low) * 0.62, 4),
         "fib_0_705": round(low + (high - low) * 0.705, 4),
         "fib_0_79": round(low + (high - low) * 0.79, 4),
+        "high": round(high, 4),
+        "low": round(low, 4),
+        "start_time": start_s["time"],
+        "start_time_unix": _ts_value(df.index[start_s["index"]]),
+        "end_time": end_s["time"],
+        "end_time_unix": _ts_value(df.index[end_s["index"]]),
     }
 
 

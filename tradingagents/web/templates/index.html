@@ -3077,6 +3077,289 @@ let _intradaySeries = null;
 let _intradayHoverSymbol = null;
 let _intradayHoverTimer = null;
 const _intradayCache = {};
+let _smcPrimitive = null;
+
+// ================= SMC Lightweight Charts Overlay Primitive =================
+class SMCRenderer {
+  constructor(primitive) {
+    this._primitive = primitive;
+  }
+
+  draw(target) {
+    const param = this._primitive._param;
+    if (!param) return;
+    const { chart, series } = param;
+    const timeScale = chart.timeScale();
+    const options = this._primitive._options;
+    if (!options) return;
+
+    target.useMediaCoordinateSpace((scope) => {
+      const ctx = scope.context;
+
+      // 1. Premium / Discount Zones
+      if (options.premium_discount && options.premium_discount.high && options.premium_discount.low) {
+        const pd = options.premium_discount;
+        const yHigh = series.priceToCoordinate(pd.high);
+        const yLow = series.priceToCoordinate(pd.low);
+        const yEq = series.priceToCoordinate(pd.equilibrium);
+        
+        if (yHigh !== null && yEq !== null && yLow !== null) {
+          const startX = pd.start_time_unix ? timeScale.timeToCoordinate(pd.start_time_unix) : null;
+          const endX = pd.end_time_unix ? timeScale.timeToCoordinate(pd.end_time_unix) : null;
+          const left = startX !== null ? startX : 0;
+          const right = endX !== null ? endX : scope.mediaSize.width;
+          
+          if (right > left) {
+            ctx.fillStyle = 'rgba(239, 68, 68, 0.025)';
+            ctx.fillRect(left, yHigh, right - left, yEq - yHigh);
+            ctx.fillStyle = 'rgba(16, 185, 129, 0.025)';
+            ctx.fillRect(left, yEq, right - left, yLow - yEq);
+            
+            ctx.strokeStyle = 'rgba(148, 163, 184, 0.2)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(left, yEq);
+            ctx.lineTo(right, yEq);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            
+            ctx.fillStyle = 'rgba(148, 163, 184, 0.5)';
+            ctx.font = '10px sans-serif';
+            ctx.fillText('EQ 50%', left + 10, yEq - 3);
+          }
+        }
+      }
+
+      // 2. OTE Zone
+      if (options.ote && options.ote.top && options.ote.bottom) {
+        const ote = options.ote;
+        const yTop = series.priceToCoordinate(ote.top);
+        const yBottom = series.priceToCoordinate(ote.bottom);
+        const y0705 = series.priceToCoordinate(ote.entry_0705);
+        
+        if (yTop !== null && yBottom !== null) {
+          const startY = Math.min(yTop, yBottom);
+          const endY = Math.max(yTop, yBottom);
+          
+          ctx.fillStyle = 'rgba(245, 158, 11, 0.035)';
+          ctx.fillRect(0, startY, scope.mediaSize.width, endY - startY);
+          
+          if (y0705 !== null) {
+            ctx.strokeStyle = 'rgba(245, 158, 11, 0.25)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([2, 2]);
+            ctx.beginPath();
+            ctx.moveTo(0, y0705);
+            ctx.lineTo(scope.mediaSize.width, y0705);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            
+            ctx.fillStyle = 'rgba(245, 158, 11, 0.5)';
+            ctx.font = '10px sans-serif';
+            ctx.fillText('OTE 0.705', 15, y0705 - 3);
+          }
+        }
+      }
+
+      // 3. Order Blocks
+      if (options.order_blocks && Array.isArray(options.order_blocks)) {
+        options.order_blocks.forEach(ob => {
+          const startX = timeScale.timeToCoordinate(ob.time_unix);
+          if (startX === null) return;
+          
+          let endX = ob.mitigated_time_unix ? timeScale.timeToCoordinate(ob.mitigated_time_unix) : null;
+          if (endX === null) {
+            endX = scope.mediaSize.width;
+          }
+          
+          const yTop = series.priceToCoordinate(ob.top);
+          const yBottom = series.priceToCoordinate(ob.bottom);
+          
+          if (yTop !== null && yBottom !== null) {
+            const h = yBottom - yTop;
+            const w = endX - startX;
+            if (w <= 0) return;
+            
+            let color, isMitigated = ob.mitigated;
+            if (ob.breaker) {
+              color = '249, 115, 22';
+            } else if (ob.direction > 0) {
+              color = '16, 185, 129';
+            } else {
+              color = '239, 68, 68';
+            }
+            
+            ctx.fillStyle = isMitigated ? `rgba(${color}, 0.015)` : `rgba(${color}, 0.075)`;
+            ctx.fillRect(startX, yTop, w, h);
+            
+            ctx.strokeStyle = isMitigated ? `rgba(${color}, 0.1)` : `rgba(${color}, 0.45)`;
+            ctx.lineWidth = 1;
+            if (isMitigated || ob.breaker) {
+              ctx.setLineDash([3, 3]);
+            }
+            ctx.strokeRect(startX, yTop, w, h);
+            ctx.setLineDash([]);
+            
+            if (!isMitigated) {
+              ctx.fillStyle = `rgba(${color}, 0.7)`;
+              ctx.font = '9px sans-serif';
+              ctx.fillText(`${ob.breaker ? 'Breaker' : 'OB'} (${ob.grade})`, startX + 4, yTop + 11);
+            }
+          }
+        });
+      }
+
+      // 4. Fair Value Gaps
+      if (options.fvgs && Array.isArray(options.fvgs)) {
+        options.fvgs.forEach(fvg => {
+          const startX = timeScale.timeToCoordinate(fvg.time_unix);
+          if (startX === null) return;
+          
+          let endX = fvg.mitigated_time_unix ? timeScale.timeToCoordinate(fvg.mitigated_time_unix) : null;
+          if (endX === null) {
+            endX = scope.mediaSize.width;
+          }
+          
+          const yTop = series.priceToCoordinate(fvg.top);
+          const yBottom = series.priceToCoordinate(fvg.bottom);
+          
+          if (yTop !== null && yBottom !== null) {
+            const h = yBottom - yTop;
+            const w = endX - startX;
+            if (w <= 0) return;
+            
+            let color, isMitigated = fvg.mitigated;
+            if (fvg.inverse) {
+              color = '99, 102, 241';
+            } else if (fvg.direction > 0) {
+              color = '168, 85, 247';
+            } else {
+              color = '236, 72, 153';
+            }
+            
+            ctx.fillStyle = isMitigated ? `rgba(${color}, 0.01)` : `rgba(${color}, 0.055)`;
+            ctx.fillRect(startX, yTop, w, h);
+            
+            ctx.strokeStyle = isMitigated ? `rgba(${color}, 0.08)` : `rgba(${color}, 0.355)`;
+            ctx.lineWidth = 1;
+            if (isMitigated || fvg.inverse) {
+              ctx.setLineDash([2, 2]);
+            }
+            ctx.strokeRect(startX, yTop, w, h);
+            ctx.setLineDash([]);
+            
+            if (!isMitigated) {
+              ctx.fillStyle = `rgba(${color}, 0.6)`;
+              ctx.font = '9px sans-serif';
+              ctx.fillText(fvg.inverse ? 'IFVG' : 'FVG', startX + 4, yTop + 11);
+            }
+          }
+        });
+      }
+
+      // 5. Structure Lines
+      if (options.structure && Array.isArray(options.structure)) {
+        options.structure.forEach(st => {
+          const startX = timeScale.timeToCoordinate(st.time_unix);
+          if (startX === null) return;
+          
+          const yLevel = series.priceToCoordinate(st.level);
+          if (yLevel === null) return;
+          
+          let endX = st.broken_time_unix ? timeScale.timeToCoordinate(st.broken_time_unix) : null;
+          if (endX === null) {
+            endX = scope.mediaSize.width;
+          }
+          
+          const isBos = st.type === 'BOS';
+          ctx.strokeStyle = isBos ? 'rgba(56, 189, 248, 0.75)' : 'rgba(251, 191, 36, 0.85)';
+          ctx.lineWidth = isBos ? 1 : 1.5;
+          
+          ctx.beginPath();
+          ctx.moveTo(startX, yLevel);
+          ctx.lineTo(endX, yLevel);
+          ctx.stroke();
+          
+          ctx.fillStyle = ctx.strokeStyle;
+          ctx.font = 'bold 9px sans-serif';
+          ctx.fillText(`${st.type} (${st.direction > 0 ? '+' : '-'})`, startX + 4, yLevel - 3);
+        });
+      }
+
+      // 6. Liquidity Lines
+      if (options.liquidity && Array.isArray(options.liquidity)) {
+        options.liquidity.forEach(liq => {
+          const startX = timeScale.timeToCoordinate(liq.time_unix);
+          if (startX === null) return;
+          
+          const yLevel = series.priceToCoordinate(liq.level);
+          if (yLevel === null) return;
+          
+          let endX = liq.swept_time_unix ? timeScale.timeToCoordinate(liq.swept_time_unix) : null;
+          const isSwept = liq.swept;
+          if (endX === null) {
+            endX = scope.mediaSize.width;
+          }
+          
+          if (isSwept) {
+            ctx.strokeStyle = 'rgba(234, 179, 8, 0.45)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(startX, yLevel);
+            ctx.lineTo(endX, yLevel);
+            ctx.stroke();
+          } else {
+            ctx.strokeStyle = liq.type === 'BSL' ? 'rgba(239, 68, 68, 0.45)' : 'rgba(16, 185, 129, 0.45)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(startX, yLevel);
+            ctx.lineTo(endX, yLevel);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+          
+          ctx.fillStyle = ctx.strokeStyle;
+          ctx.font = '9px sans-serif';
+          ctx.fillText(`${liq.type} (${liq.touches}x)`, startX + 4, yLevel - 3);
+        });
+      }
+    });
+  }
+}
+
+class SMCPaneView {
+  constructor(primitive) {
+    this._primitive = primitive;
+  }
+  renderer() {
+    return new SMCRenderer(this._primitive);
+  }
+}
+
+class SMCPrimitive {
+  constructor(options) {
+    this._options = options || null;
+    this._param = null;
+    this._paneViews = [new SMCPaneView(this)];
+  }
+  attached(param) {
+    this._param = param;
+  }
+  detached() {
+    this._param = null;
+  }
+  paneViews() {
+    return this._paneViews;
+  }
+  update(options) {
+    this._options = options;
+    if (this._param && this._param.requestUpdate) {
+      this._param.requestUpdate();
+    }
+  }
+}
 
 function positionIntradayTooltip(event) {
   const tooltip = $('intraday-tooltip');
@@ -3775,15 +4058,24 @@ function technicalObservationFallback(dimId) {
 }
 
 function applyTechnicalMarkers() {
-  if (!_chartCandleSeries || !_technicalMatrix || !_technicalMatrix.markers) return;
-  const markers = (_technicalMatrix.markers || [])
+  if (!_chartCandleSeries) return;
+  
+  let allMarkers = [];
+  if (_technicalMatrix && Array.isArray(_technicalMatrix.markers)) {
+    allMarkers = allMarkers.concat(_technicalMatrix.markers);
+  }
+  if (_smcAnalysis && Array.isArray(_smcAnalysis.markers)) {
+    allMarkers = allMarkers.concat(_smcAnalysis.markers);
+  }
+  
+  const markers = allMarkers
     .filter(m => _technicalMarkerFilter === 'all' || m.dimension === _technicalMarkerFilter)
     .map(m => ({
       time: m.time,
       position: m.position || 'inBar',
       color: m.color || '#a78bfa',
       shape: m.shape || 'circle',
-      text: technicalMarkerTextLabel(m.text || ''),
+      text: m.dimension === 'smc' ? (m.text || '') : technicalMarkerTextLabel(m.text || ''),
     }));
   _chartCandleSeries.setMarkers(markers);
 }
@@ -4261,6 +4553,7 @@ async function drawChart(symbol, period, isRefresh = false) {
     _technicalMarkerFilter = 'all';
     _smcAnalysis = null;
     _smcBacktest = null;
+    _smcPrimitive = null;
     renderTechnicalMatrixPanel(null);
     renderSmcAnalysisPanel(null);
     renderSmcBacktestPanel(null);
@@ -4324,6 +4617,9 @@ async function drawChart(symbol, period, isRefresh = false) {
       });
       _chartMa20Series = _chart.addLineSeries({ color: '#facc15', lineWidth: 1, priceLineVisible: false });
       _chartMa60Series = _chart.addLineSeries({ color: '#22d3ee', lineWidth: 1, priceLineVisible: false });
+      
+      _smcPrimitive = new SMCPrimitive();
+      _chartCandleSeries.attachPrimitive(_smcPrimitive);
     }
     _chartCandleSeries.setData(r.candles);
     _chartMa20Series.setData(r.ma20);
@@ -4340,10 +4636,19 @@ async function drawChart(symbol, period, isRefresh = false) {
     if (smc && !smc.error && !smc.detail && Array.isArray(smc.markers)) {
       _smcAnalysis = smc;
       renderSmcAnalysisPanel(smc);
+      if (_smcPrimitive) {
+        _smcPrimitive.update(smc.concepts);
+      }
     } else if (smc && (smc.error || smc.detail)) {
       renderSmcAnalysisPanel({ error: smc.error || smc.detail });
+      if (_smcPrimitive) {
+        _smcPrimitive.update(null);
+      }
     } else {
       renderSmcAnalysisPanel({ error: '未取得 SMC 結構資料' });
+      if (_smcPrimitive) {
+        _smcPrimitive.update(null);
+      }
     }
     applyTechnicalMarkers();
     if (!isRefresh) {
@@ -4397,6 +4702,7 @@ function closeDiag() {
   _smcAnalysis = null;
   _smcBacktest = null;
   _technicalMarkerFilter = 'all';
+  _smcPrimitive = null;
 }
 
 function startDiagRefresh() {
