@@ -477,3 +477,41 @@ def test_build_smc_analysis_exposes_continuation_block():
     )
     em = result["concepts"]["entry_models"]
     assert "ob_fvg_continuation" in em and isinstance(em["ob_fvg_continuation"], list)
+
+
+def test_ote_entries_use_fib_band_and_optional_poi_overlap():
+    """§5.1 Model 3: OTE band 0.62–0.79 (ideal 0.705) drives the entry."""
+    from smc_quant import detect_ote_entries, ote_zone
+    cfg = SMCConfig(swing_length=2, internal_swing_length=2)
+    h = normalize_ohlcv(_sample_ohlcv())
+    swings = detect_swings(h, cfg.swing_length)
+    structure = detect_structure(h, swings, cfg)
+    liquidity = detect_liquidity(h, swings, cfg)
+    displacements = detect_displacement(h, cfg)
+    obs = detect_order_blocks(h, structure, displacements, liquidity)
+    bias = "bullish"
+    ote = ote_zone(swings, bias)
+    entries = detect_ote_entries(h, ote, obs, [], {"state": "discount"}, bias)
+    for e in entries:
+        assert e["model"] == "ote_retracement"
+        assert e["direction"] in (1, -1)
+        assert e["risk"] > 0 and e["rr"] >= 1.99
+        # Entry must lie within the 0.62–0.79 OTE band
+        assert e["ote_bottom"] <= e["entry"] <= e["ote_top"]
+        # OTE factor is always credited (band is the entry by construction)
+        assert e["factors"]["ote_zone"] is True
+
+
+def test_ote_entries_empty_when_ote_missing():
+    from smc_quant import detect_ote_entries
+    h = normalize_ohlcv(_sample_ohlcv())
+    assert detect_ote_entries(h, {}, [], [], {}, "neutral") == []
+
+
+def test_build_smc_analysis_exposes_ote_retracement_block():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    em = result["concepts"]["entry_models"]
+    assert "ote_retracement" in em and isinstance(em["ote_retracement"], list)

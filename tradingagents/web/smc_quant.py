@@ -1190,6 +1190,118 @@ def detect_continuation_entries(
     return out
 
 
+def detect_ote_entries(
+    df: pd.DataFrame,
+    ote: dict,
+    order_blocks: list[dict],
+    fvgs: list[dict],
+    pd_zone: dict,
+    bias: str,
+    session: Optional[dict] = None,
+    weights: Optional[dict[str, int]] = None,
+    threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
+) -> list[dict]:
+    """§5.1 Entry Model 3 — OTE Retracement (Fibonacci 0.62–0.79, ideal 0.705).
+
+    Use the existing ``ote_zone`` rectangle as the prime location; if an OB
+    or FVG overlaps the OTE band, raise the entry's confluence and pin
+    entry/stop/target to the structural levels.
+    """
+    out: list[dict] = []
+    if not ote or "direction" not in ote:
+        return out
+    direction = int(ote["direction"])
+    ote_top, ote_bottom = float(ote["top"]), float(ote["bottom"])
+    ideal = float(ote.get("entry_0705", (ote_top + ote_bottom) / 2))
+    stop_ref = float(ote["stop_ref"])
+    tp1 = float(ote.get("tp1", ideal + (ideal - stop_ref)))
+    bias_dir = 1 if "bull" in (bias or "") else (-1 if "bear" in (bias or "") else 0)
+    pd_state = (pd_zone or {}).get("state")
+    correct_pd = "discount" if direction == 1 else "premium"
+
+    def _overlaps(top: float, bottom: float) -> bool:
+        return not (top < ote_bottom or bottom > ote_top)
+
+    ob_overlap = next(
+        (
+            ob for ob in order_blocks
+            if int(ob.get("direction", 0)) == direction
+            and ob.get("status") in {"unmitigated", "mitigation"}
+            and _overlaps(float(ob["top"]), float(ob["bottom"]))
+        ),
+        None,
+    )
+    fvg_overlap = next(
+        (
+            f for f in fvgs
+            if int(f.get("direction", 0)) == direction
+            and not f.get("mitigated")
+            and _overlaps(float(f["top"]), float(f["bottom"]))
+        ),
+        None,
+    )
+    if ob_overlap is not None:
+        entry = float(ob_overlap["refined_entry"])
+        poi_kind = "order_block"
+        poi_top, poi_bottom = float(ob_overlap["top"]), float(ob_overlap["bottom"])
+    elif fvg_overlap is not None:
+        entry = float(fvg_overlap["mid"])
+        poi_kind = "fvg"
+        poi_top, poi_bottom = float(fvg_overlap["top"]), float(fvg_overlap["bottom"])
+    else:
+        entry = ideal
+        poi_kind = "ote_band"
+        poi_top, poi_bottom = ote_top, ote_bottom
+    # Stop = beyond leg origin (structural invalidation).
+    if direction == 1:
+        stop = min(stop_ref, poi_bottom) - max(0.0, (entry - poi_bottom) * 0.05)
+    else:
+        stop = max(stop_ref, poi_top) + max(0.0, (poi_top - entry) * 0.05)
+    risk = abs(entry - stop)
+    if risk <= 0:
+        return out
+    # Target: TP1 from ote_zone (Fib extension) if it improves on 2R, else 2R fallback.
+    fallback = entry + 2 * risk * direction
+    target = tp1 if (direction == 1 and tp1 > fallback) or (direction == -1 and tp1 < fallback) else fallback
+    rr = abs(target - entry) / risk if risk else 0.0
+    factors = {
+        "htf_bias_aligned": bias_dir == direction,
+        "premium_discount_side": pd_state == correct_pd,
+        "unmitigated_ob": ob_overlap is not None and ob_overlap.get("status") == "unmitigated",
+        "unfilled_fvg": fvg_overlap is not None,
+        "liquidity_swept": False,
+        "ltf_choch": False,
+        "ote_zone": True,  # By construction
+        "killzone": bool((session or {}).get("killzone")),
+        "volume_displacement": (
+            (ob_overlap is not None and ob_overlap.get("displacement_confirmed", True))
+            or (fvg_overlap is not None and fvg_overlap.get("displacement_confirmed"))
+        ),
+    }
+    scoring = score_confluence(factors, weights=weights, threshold=threshold)
+    out.append(
+        {
+            "model": "ote_retracement",
+            "direction": direction,
+            "entry": round(entry, 4),
+            "stop": round(stop, 4),
+            "target": round(target, 4),
+            "risk": round(risk, 4),
+            "rr": round(rr, 2),
+            "poi_kind": poi_kind,
+            "poi_top": round(poi_top, 4),
+            "poi_bottom": round(poi_bottom, 4),
+            "ote_top": round(ote_top, 4),
+            "ote_bottom": round(ote_bottom, 4),
+            "entry_0705": round(ideal, 4),
+            "confluence": scoring,
+            "factors": factors,
+            "triggered": scoring["triggered"],
+        }
+    )
+    return out
+
+
 def retracement_state(df: pd.DataFrame, swings: list[dict]) -> dict:
     highs = [s for s in swings if s["type"] == "high"]
     lows = [s for s in swings if s["type"] == "low"]
@@ -1771,6 +1883,9 @@ def build_smc_analysis(
     continuation_entries = detect_continuation_entries(
         h, structure, obs, fvgs, pd_zone, bias, session, weights=weights,
     )
+    ote_entries = detect_ote_entries(
+        h, ote, obs, fvgs, pd_zone, bias, session, weights=weights,
+    )
     retracement = retracement_state(h, swings)
     generated_at = datetime.now().isoformat(timespec="seconds")
     signals = build_signals(
@@ -1858,12 +1973,13 @@ def build_smc_analysis(
             "entry_models": {
                 "sweep_reversal": sweep_reversal_entries,
                 "ob_fvg_continuation": continuation_entries,
+                "ote_retracement": ote_entries,
                 "triggered": [
-                    e for e in (sweep_reversal_entries + continuation_entries)
+                    e for e in (sweep_reversal_entries + continuation_entries + ote_entries)
                     if e.get("triggered")
                 ],
-                "latest": (sweep_reversal_entries + continuation_entries)[-1]
-                if (sweep_reversal_entries or continuation_entries) else None,
+                "latest": (sweep_reversal_entries + continuation_entries + ote_entries)[-1]
+                if (sweep_reversal_entries or continuation_entries or ote_entries) else None,
             },
         },
         "signals": signals,
