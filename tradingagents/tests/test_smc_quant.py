@@ -7,6 +7,9 @@ from smc_quant import (
     build_mtf_analysis,
     build_smc_analysis,
     calculate_position_size,
+    detect_breaker_blocks,
+    detect_mitigation_blocks,
+    detect_order_blocks,
     detect_swings,
     infer_market,
     normalize_ohlcv,
@@ -111,3 +114,65 @@ def test_mtf_analysis_returns_top_down_alignment_and_poi_list():
     assert set(result["layers"]) == {"htf", "mtf", "ltf"}
     assert "aligned" in result["top_down"]
     assert isinstance(result["poi"], list)
+
+
+def test_order_block_has_refined_entry_and_volume_metrics():
+    """Per §3.3 each OB must expose Consequent Encroachment + OBVolume + Percentage."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    obs = result["concepts"]["order_blocks"]
+    assert obs, "expected at least one detected order block"
+    for ob in obs:
+        # Consequent Encroachment = 50% mid-line of the OB range
+        assert "refined_entry" in ob
+        assert ob["refined_entry"] == round((ob["top"] + ob["bottom"]) / 2, 4)
+        # OBVolume and Percentage per design doc
+        assert "ob_volume" in ob and ob["ob_volume"] >= 0
+        assert "ob_percentage" in ob and 0 <= ob["ob_percentage"] <= 100
+        # Lifecycle status replaces the prior boolean-only fields
+        assert ob.get("status") in {"unmitigated", "mitigation", "breaker"}
+        # Body range exposed for close_mitigation policy choice
+        assert ob["body_top"] >= ob["body_bottom"]
+
+
+def test_mitigation_and_breaker_blocks_extracted_from_order_blocks():
+    """detect_mitigation_blocks + detect_breaker_blocks split the OB list."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    obs = result["concepts"]["order_blocks"]
+    mit = detect_mitigation_blocks(obs)
+    brk = detect_breaker_blocks(obs)
+    # Helper invariants
+    for m in mit:
+        assert m["status"] == "mitigation"
+        assert m["block_type"] == "mitigation"
+        # Mitigation downgrades A→B (never fresh Grade-A)
+        assert m["grade"] in {"B", "C"}
+    for b in brk:
+        assert b["status"] == "breaker"
+        assert b["block_type"] == "breaker"
+        assert b["grade"] == "C"
+        # Direction flipped vs the original OB role
+        assert b["direction"] == -b["original_direction"]
+    # build_smc_analysis surfaces them as separate concept arrays
+    assert "mitigation_blocks" in result["concepts"]
+    assert "breaker_blocks" in result["concepts"]
+
+
+def test_mitigation_blocks_disjoint_from_unmitigated_and_breaker():
+    """mitigation vs unmitigated vs breaker must partition (no double-counting)."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    obs = result["concepts"]["order_blocks"]
+    statuses = {ob["status"] for ob in obs}
+    # Every status seen in the OB list maps cleanly to one of the three buckets
+    assert statuses.issubset({"unmitigated", "mitigation", "breaker"})
+    mit_set = {(m["index"], m["event_index"]) for m in detect_mitigation_blocks(obs)}
+    brk_set = {(b["index"], b["event_index"]) for b in detect_breaker_blocks(obs)}
+    assert mit_set.isdisjoint(brk_set)

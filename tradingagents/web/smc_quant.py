@@ -378,6 +378,41 @@ def detect_liquidity(df: pd.DataFrame, swings: list[dict], cfg: SMCConfig) -> li
     return out
 
 
+def _ob_zone_volume_and_strength(
+    df: pd.DataFrame, candidate_idx: int, break_idx: int
+) -> tuple[float, float]:
+    """OBVolume = cumulative volume across the formation→break window.
+
+    Percentage = the OB candidate's own volume divided by the cumulative
+    OB-zone volume in [candidate_idx, break_idx]; a higher ratio indicates
+    that the institutional footprint is concentrated on the OB candle.
+    """
+    end = min(break_idx, len(df) - 1)
+    window = df.iloc[candidate_idx : end + 1]
+    vol_col = "volume" if "volume" in df.columns else None
+    if vol_col is None:
+        return 0.0, 0.0
+    total = float(window[vol_col].sum())
+    if total <= 0:
+        return 0.0, 0.0
+    own = float(df.iloc[candidate_idx][vol_col])
+    return round(total, 4), round(own / total * 100, 2)
+
+
+def _ob_status(direction: int, mitigated: Optional[int], breaker: bool) -> str:
+    """Classify an OB's lifecycle status.
+
+    - 'unmitigated' → never revisited; highest priority entry
+    - 'mitigation'  → revisited (mitigation block); reduced but valid
+    - 'breaker'     → invalidated and flipped to the opposite side
+    """
+    if breaker:
+        return "breaker"
+    if mitigated is not None:
+        return "mitigation"
+    return "unmitigated"
+
+
 def detect_order_blocks(
     df: pd.DataFrame,
     structure: list[dict],
@@ -407,6 +442,9 @@ def detect_order_blocks(
         c = df.iloc[candidate]
         top = float(c["high"])
         bottom = float(c["low"])
+        # Body range (preferred for refined entry per §3.3 "close_mitigation")
+        body_top = max(float(c["open"]), float(c["close"]))
+        body_bottom = min(float(c["open"]), float(c["close"]))
         mitigated = None
         breaker = False
         for k in range(break_idx + 1, len(df)):
@@ -429,7 +467,11 @@ def detect_order_blocks(
         )
         displacement = break_idx in disp_indexes or any(abs(d["index"] - break_idx) <= 1 for d in displacements)
         unmitigated = mitigated is None
-        grade = "A" if swept_before and displacement and unmitigated else ("B" if displacement and unmitigated else "C")
+        status = _ob_status(direction, mitigated, breaker)
+        ob_volume, ob_pct = _ob_zone_volume_and_strength(df, candidate, break_idx)
+        # Refined entry per §3.3 Consequent Encroachment: 50% mid-line of the OB
+        # range. Smaller stop, larger RR vs entering at the zone edge.
+        mid = (top + bottom) / 2
         out.append(
             {
                 "index": candidate,
@@ -437,18 +479,72 @@ def detect_order_blocks(
                 "direction": direction,
                 "top": round(top, 4),
                 "bottom": round(bottom, 4),
-                "mid": round((top + bottom) / 2, 4),
+                "body_top": round(body_top, 4),
+                "body_bottom": round(body_bottom, 4),
+                "mid": round(mid, 4),
+                "refined_entry": round(mid, 4),       # 50% Consequent Encroachment
+                "ob_volume": ob_volume,
+                "ob_percentage": ob_pct,
                 "event_index": break_idx,
                 "event_type": event["type"],
                 "mitigated_index": mitigated,
                 "mitigated": mitigated is not None,
                 "unmitigated": unmitigated,
                 "breaker": breaker,
+                "status": status,                     # unmitigated / mitigation / breaker
                 "swept_before": swept_before,
                 "displacement_confirmed": displacement,
-                "grade": grade,
+                "grade": (
+                    "A" if swept_before and displacement and unmitigated
+                    else "B" if displacement and unmitigated
+                    else "C"
+                ),
             }
         )
+    return out
+
+
+def detect_mitigation_blocks(order_blocks: list[dict]) -> list[dict]:
+    """Filter OBs that have been *mitigated but not yet broken*.
+
+    Per §3.3 these are valid re-entry candidates: the institutional zone has
+    been revisited at least once, the order flow has been at least partially
+    rebalanced, yet structure remains intact. Priority is below unmitigated
+    Grade-A OBs but above breaker blocks.
+    """
+    out = []
+    for ob in order_blocks:
+        if ob.get("status") != "mitigation":
+            continue
+        # Inherit grade but cap at "B" for mitigation candidates so the
+        # confluence scorer downstream doesn't tag them as fresh Grade-A.
+        ob_view = dict(ob)
+        if ob_view.get("grade") == "A":
+            ob_view["grade"] = "B"
+        ob_view["block_type"] = "mitigation"
+        out.append(ob_view)
+    return out
+
+
+def detect_breaker_blocks(order_blocks: list[dict]) -> list[dict]:
+    """Failed OBs that flipped (§3.3 Inverse OB / Breaker Block).
+
+    A breaker is invalidated *as its original direction* but the price level
+    is still relevant — institutions defended the level on the way through,
+    so subsequent retests act as the opposite-direction OB. Returns a list
+    of blocks with `direction` flipped from the original OB.
+    """
+    out = []
+    for ob in order_blocks:
+        if ob.get("status") != "breaker":
+            continue
+        flipped = dict(ob)
+        flipped["block_type"] = "breaker"
+        flipped["direction"] = -int(ob["direction"])  # role-reversal
+        flipped["original_direction"] = int(ob["direction"])
+        # Breaker = the broken side; downgrade grade to reflect reduced edge
+        flipped["grade"] = "C"
+        out.append(flipped)
     return out
 
 
@@ -913,6 +1009,8 @@ def build_smc_analysis(
     fvgs = detect_fvgs(h, displacements)
     liquidity = detect_liquidity(h, swings, cfg)
     obs = detect_order_blocks(h, structure, displacements, liquidity)
+    mitigation_blocks = detect_mitigation_blocks(obs)
+    breaker_blocks = detect_breaker_blocks(obs)
     pd_zone = premium_discount(h, swings)
     bias = _latest_bias(structure)
     ote = ote_zone(swings, bias)
@@ -958,6 +1056,8 @@ def build_smc_analysis(
             "structure": structure[-20:],
             "internal_structure": internal_structure[-20:],
             "order_blocks": obs[-20:],
+            "mitigation_blocks": mitigation_blocks[-15:],
+            "breaker_blocks": breaker_blocks[-15:],
             "fvgs": fvgs[-30:],
             "liquidity": liquidity[-30:],
             "premium_discount": pd_zone,
