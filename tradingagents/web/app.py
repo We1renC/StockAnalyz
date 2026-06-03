@@ -3136,6 +3136,36 @@ def api_technical_matrix(symbol: str, period: str = "1y", include_history_marker
         raise HTTPException(500, str(e))
 
 
+@app.post("/api/research/backfill/{symbol}")
+def api_backfill_research(symbol: str, lookback_days: int = 180, step_days: int = 5):
+    """回填單一標的的 17D 歷史偏向（用歷史 OHLCV 逐日重算）。"""
+    try:
+        result = _backfill_technical_matrix_history(symbol, lookback_days=lookback_days, step_days=step_days)
+        return {"ok": True, "symbol": symbol, **result}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/research/backfill-all")
+def api_backfill_all(lookback_days: int = 180, step_days: int = 5):
+    """回填所有持倉 + 觀察清單標的的 17D 歷史。"""
+    conn = get_db()
+    syms = set()
+    for tbl in ("positions", "watchlist"):
+        for r in conn.execute(f"SELECT symbol, name, category FROM {tbl}").fetchall():
+            if not _is_test_symbol(r["symbol"], r["name"], r["category"]):
+                syms.add(r["symbol"])
+    conn.close()
+    out = {}
+    for sym in sorted(syms):
+        try:
+            out[sym] = _backfill_technical_matrix_history(sym, lookback_days=lookback_days, step_days=step_days)
+        except Exception as e:
+            out[sym] = {"errors": 1, "reason": str(e)}
+    total_filled = sum(v.get("filled", 0) for v in out.values())
+    return {"ok": True, "symbols": len(syms), "total_filled": total_filled, "detail": out}
+
+
 @app.post("/api/technical-matrix/{symbol}/snapshot")
 def api_technical_matrix_snapshot(symbol: str, period: str = "1y", include_history_markers: bool = False):
     """Build and save a 17-dimensional technical matrix snapshot to Obsidian."""
@@ -4297,8 +4327,15 @@ def _store_fundamentals_snapshot(symbol: str, data: dict, conn=None) -> None:
             conn.close()
 
 
-def _store_technical_matrix_snapshot(symbol: str, matrix: dict, period: str = "6mo", conn=None) -> None:
-    """Persist today's 17D matrix summary + full payload to SQL (idempotent)."""
+def _store_technical_matrix_snapshot(symbol: str, matrix: dict, period: str = "6mo", conn=None,
+                                     snapshot_date: Optional[str] = None, store_full: bool = True) -> None:
+    """Persist a 17D matrix summary + full payload to SQL (idempotent per day).
+
+    snapshot_date: ISO date string; defaults to today. Used by historical
+    backfill to stamp past trading days.
+    store_full: when False, store an empty data blob (saves space for the many
+    backfilled rows — only the summary fields are kept for the bias curve).
+    """
     if not matrix or matrix.get("error"):
         return
     summary = matrix.get("summary") or {}
@@ -4310,15 +4347,83 @@ def _store_technical_matrix_snapshot(symbol: str, matrix: dict, period: str = "6
             """INSERT OR REPLACE INTO technical_matrix_snapshots
                (symbol, date, period, bias, net_score, confidence, risk_level, data)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (symbol, date.today().isoformat(), period,
+            (symbol, snapshot_date or date.today().isoformat(), period,
              summary.get("bias"), summary.get("net_score"), summary.get("confidence"),
              summary.get("risk_level"),
-             json.dumps(sanitize_float_values(matrix), ensure_ascii=False)),
+             json.dumps(sanitize_float_values(matrix), ensure_ascii=False) if store_full else "{}"),
         )
         conn.commit()
     finally:
         if own:
             conn.close()
+
+
+def _backfill_technical_matrix_history(symbol: str, lookback_days: int = 180,
+                                       step_days: int = 5, conn=None) -> dict:
+    """Reconstruct past 17D matrix bias by slicing historical OHLCV.
+
+    For each sampled past trading day we slice the daily history up to that
+    date and recompute the matrix, then store its summary. Intraday / options /
+    breadth are point-in-time only and intentionally omitted from backfill —
+    the core OHLCV-driven dimensions still produce the bias curve.
+
+    Returns {filled, skipped, errors}. Idempotent — already-stored dates skip.
+    """
+    own = conn is None
+    if own:
+        conn = get_db()
+    filled = skipped = errors = 0
+    try:
+        existing = {
+            row["date"] for row in conn.execute(
+                "SELECT date FROM technical_matrix_snapshots WHERE symbol=? AND period='6mo'",
+                (symbol,),
+            ).fetchall()
+        }
+        # Fetch enough daily history to cover lookback + MA warm-up
+        h, _src = fetch_history(symbol, period="2y")
+        if h is None or len(h) < 60:
+            return {"filled": 0, "skipped": 0, "errors": 1, "reason": "insufficient history"}
+        h = h.sort_index()
+        benchmark_symbol = "^TWII" if _twse_channel(symbol) else "^GSPC"
+        bench = fetch_benchmark_close(benchmark_symbol)
+
+        cutoff_start = date.today() - timedelta(days=lookback_days)
+        # Iterate dates present in the index, sampling every step_days
+        unique_dates = sorted({ts.date() for ts in h.index})
+        sampled = [d for i, d in enumerate(unique_dates) if d >= cutoff_start]
+        # subsample by step
+        sampled = sampled[::step_days] if step_days > 1 else sampled
+        # always include the most recent date
+        if unique_dates and unique_dates[-1] not in sampled:
+            sampled.append(unique_dates[-1])
+
+        for d in sampled:
+            iso = d.isoformat()
+            if iso in existing:
+                skipped += 1
+                continue
+            try:
+                cutoff_ts = pd.Timestamp(d) + pd.Timedelta(days=1)
+                sliced = h[h.index < cutoff_ts]
+                if len(sliced) < 60:
+                    continue
+                bench_sliced = bench[bench.index < cutoff_ts] if bench is not None and len(bench) else bench
+                matrix = build_technical_matrix(
+                    symbol, sliced,
+                    benchmark_close=bench_sliced,
+                    source="backfill",
+                )
+                _store_technical_matrix_snapshot(symbol, matrix, "6mo", conn,
+                                                 snapshot_date=iso, store_full=False)
+                filled += 1
+            except Exception:
+                errors += 1
+        conn.commit()
+    finally:
+        if own:
+            conn.close()
+    return {"filled": filled, "skipped": skipped, "errors": errors}
 
 
 def _load_matrix_bias_history(symbol: str, limit: int = 7) -> list[dict]:
@@ -4457,8 +4562,21 @@ def _build_context(symbol: str) -> dict:
     parts.append("")
     parts.append(_build_technical_matrix_text(symbol, matrix=matrix))
 
+    # 若該股 17D 歷史不足，先回填過去半年（每週取樣）讓 AI 立刻有趨勢可看
+    try:
+        existing_cnt = 0
+        conn2 = get_db()
+        existing_cnt = conn2.execute(
+            "SELECT COUNT(*) AS c FROM technical_matrix_snapshots WHERE symbol=?", (symbol,)
+        ).fetchone()["c"]
+        conn2.close()
+        if existing_cnt < 4:
+            _backfill_technical_matrix_history(symbol, lookback_days=180, step_days=5)
+    except Exception as e:
+        print(f"  [WARN] backfill {symbol} failed: {e}")
+
     # 過往數日 17D 偏向變化（供 AI 看趨勢，不只看當下）
-    history = _load_matrix_bias_history(symbol, limit=7)
+    history = _load_matrix_bias_history(symbol, limit=12)
     if len(history) >= 2:
         trail = "；".join(
             f"{h['date'][5:]} {h.get('bias')}({h.get('net_score')})" for h in history

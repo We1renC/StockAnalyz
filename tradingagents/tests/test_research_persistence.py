@@ -108,6 +108,64 @@ def test_obsidian_fundamentals_note_written(tmp_path):
     assert "strong_buy" in text
 
 
+def _synthetic_history(days=500):
+    import numpy as np
+    import pandas as pd
+    rng = np.random.RandomState(3)
+    idx = pd.date_range("2024-06-01", periods=days, freq="B")
+    price = 100 + np.cumsum(rng.normal(0.05, 1.2, days))
+    return pd.DataFrame({
+        "Open": price - 0.3, "High": price + 0.6, "Low": price - 0.6,
+        "Close": price, "Volume": rng.randint(8000, 30000, days),
+    }, index=idx)
+
+
+def test_backfill_creates_historical_snapshots(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        hist = _synthetic_history()
+        with patch.object(app, "fetch_history", return_value=(hist, "test")), \
+             patch.object(app, "fetch_benchmark_close", return_value=hist["Close"]):
+            res = app._backfill_technical_matrix_history("TEST", lookback_days=120, step_days=5)
+        assert res["filled"] > 0
+        assert res["errors"] == 0
+        rows = app._load_matrix_bias_history("TEST", limit=60)
+        assert len(rows) == res["filled"]
+        # dates are chronological + each has a bias
+        assert all(r.get("bias") for r in rows)
+        assert rows[0]["date"] < rows[-1]["date"]
+    finally:
+        app.DB = original
+
+
+def test_backfill_idempotent(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        hist = _synthetic_history()
+        with patch.object(app, "fetch_history", return_value=(hist, "test")), \
+             patch.object(app, "fetch_benchmark_close", return_value=hist["Close"]):
+            first = app._backfill_technical_matrix_history("TEST", lookback_days=120, step_days=5)
+            second = app._backfill_technical_matrix_history("TEST", lookback_days=120, step_days=5)
+        assert first["filled"] > 0
+        assert second["filled"] == 0
+        assert second["skipped"] >= first["filled"]
+    finally:
+        app.DB = original
+
+
+def test_backfill_insufficient_history(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        short = _synthetic_history(days=30)
+        with patch.object(app, "fetch_history", return_value=(short, "test")), \
+             patch.object(app, "fetch_benchmark_close", return_value=short["Close"]):
+            res = app._backfill_technical_matrix_history("TEST", lookback_days=120, step_days=5)
+        assert res["filled"] == 0
+        assert res.get("errors", 0) >= 1
+    finally:
+        app.DB = original
+
+
 def test_persist_symbol_research_writes_sql(tmp_path):
     original = _temp_db(tmp_path)
     try:
