@@ -5649,6 +5649,133 @@ def api_llm_analyze(symbol: str, mode: str = "both"):
     except Exception as e:
         return {"error": f"LLM 工作流失敗: {e}"}
 
+def _run_deep_analysis(symbol: str, mode: str = "analyst") -> dict:
+    """Run one symbol's deep analysis (17D + 財報 交叉判讀) and store the result.
+
+    Reusable from the parallel batch endpoint. Returns a compact status dict.
+    The analyst (and optional reviewer) LLM calls are the slow part; running
+    several of these concurrently is what removes the per-symbol queue.
+    """
+    import time as _time
+    t0 = _time.time()
+    ctx = _build_context(symbol)
+    if "error" in ctx:
+        return {"symbol": symbol, "ok": False, "error": ctx["error"], "elapsed": round(_time.time() - t0, 1)}
+    try:
+        result = run_workflow(ctx["context"], mode=mode)
+    except Exception as e:
+        return {"symbol": symbol, "ok": False, "error": str(e), "elapsed": round(_time.time() - t0, 1)}
+
+    steps = result.get("steps", [])
+    analyst_step = next((s for s in steps if s.get("role") == "analyst"), None)
+    reviewer_step = next((s for s in steps if s.get("role") == "reviewer"), None)
+    if not analyst_step or analyst_step.get("error"):
+        return {"symbol": symbol, "ok": False,
+                "error": (analyst_step or {}).get("error", "no analyst output"),
+                "elapsed": round(_time.time() - t0, 1)}
+
+    sections = {"analyst": analyst_step.get("output", "")}
+    if reviewer_step and reviewer_step.get("output"):
+        sections["reviewer"] = reviewer_step["output"]
+    # 一句話摘要
+    decision_summary = ""
+    for line in (analyst_step.get("output", "") or "").split("\n"):
+        s = line.strip().lstrip("#*0123456789. ").strip()
+        if len(s) > 8:
+            decision_summary = s[:200]
+            break
+
+    elapsed = round(_time.time() - t0, 1)
+    provider = analyst_step.get("provider", "")
+    model = analyst_step.get("model", "")
+    try:
+        conn = get_db()
+        row = conn.execute(
+            "SELECT name FROM positions WHERE symbol=? UNION SELECT name FROM watchlist WHERE symbol=?",
+            (symbol, symbol),
+        ).fetchone()
+        sym_name = dict(row)["name"] if row else ctx.get("name", symbol)
+        conn.execute(
+            """INSERT INTO analysis_results
+               (symbol, name, ts, mode, provider, model, elapsed, decision_summary, sections)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (symbol, sym_name, datetime.now().isoformat(), mode, provider, model,
+             elapsed, decision_summary, json.dumps(sections, ensure_ascii=False)),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"  [WARN] store analysis {symbol} failed: {e}")
+    return {"symbol": symbol, "ok": True, "name": sym_name,
+            "decision_summary": decision_summary, "elapsed": elapsed}
+
+
+@app.post("/api/batch-deep-analyze")
+def api_batch_deep_analyze(mode: str = "analyst", max_workers: int = 3,
+                           scope: str = "all"):
+    """平行批次深度分析（17D + 財報 交叉判讀）。SSE 串流進度。
+
+    - scope: 'all'（持倉+觀察）/ 'positions' / 'watchlist'
+    - mode: 'analyst'（快，只分析師）/ 'both'（含審查員，較慢）
+    - max_workers: 同時併發數；上限 4 以尊重 CLI 訂閱併發限制
+    """
+    max_workers = max(1, min(max_workers, 4))
+
+    conn = get_db()
+    syms, seen = [], set()
+    tables = []
+    if scope in ("all", "positions"):
+        tables.append("positions")
+    if scope in ("all", "watchlist"):
+        tables.append("watchlist")
+    for tbl in tables:
+        for r in conn.execute(f"SELECT symbol, name, category FROM {tbl}").fetchall():
+            if r["symbol"] in seen or _is_test_symbol(r["symbol"], r["name"], r["category"]):
+                continue
+            seen.add(r["symbol"])
+            syms.append(r["symbol"])
+    conn.close()
+
+    def event_generator():
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import time as _time
+        t0 = _time.time()
+        total = len(syms)
+        if total == 0:
+            yield "data: " + json.dumps({"status": "done", "percent": 100, "message": "無標的", "results": []}) + "\n\n"
+            return
+        yield "data: " + json.dumps({"status": "progress", "percent": 3,
+                                     "message": f"開始平行分析 {total} 檔（併發 {max_workers}）..."}) + "\n\n"
+        results = []
+        done = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {ex.submit(_run_deep_analysis, sym, mode): sym for sym in syms}
+            for fut in as_completed(futures):
+                sym = futures[fut]
+                try:
+                    res = fut.result()
+                except Exception as e:
+                    res = {"symbol": sym, "ok": False, "error": str(e)}
+                results.append(res)
+                done += 1
+                pct = round(3 + done / total * 94)
+                status = "✓" if res.get("ok") else "✗"
+                yield "data: " + json.dumps({
+                    "status": "progress", "percent": pct,
+                    "message": f"[{done}/{total}] {status} {sym}"
+                    + (f"：{res.get('decision_summary','')[:40]}" if res.get("ok") else f"（{res.get('error','')[:40]}）"),
+                    "symbol": sym, "result": res,
+                }, ensure_ascii=False) + "\n\n"
+        ok = sum(1 for r in results if r.get("ok"))
+        yield "data: " + json.dumps({
+            "status": "done", "percent": 100,
+            "message": f"完成 {ok}/{total} 檔，耗時 {round(_time.time()-t0,1)}s",
+            "results": results,
+        }, ensure_ascii=False) + "\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 @app.get("/api/diagnose/{symbol}")
 def api_diagnose(symbol: str, bypass_cache: bool = False):
     """On-demand diagnosis for a symbol."""
