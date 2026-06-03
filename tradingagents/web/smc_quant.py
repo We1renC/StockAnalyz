@@ -903,6 +903,99 @@ def detect_smt_divergence(
 # §17 Crypto derivatives overlay (liquidations / OI / funding / CVD / premium)
 # ---------------------------------------------------------------------------
 
+def classify_asset_volatility(df: pd.DataFrame, *, window: int = 14) -> dict:
+    """§17.6 — classify asset by ATR% so swing/range/stop scale to volatility.
+
+    ATR% = ATR(window) / last_close * 100. Buckets per the design doc:
+      • ``low`` (≤ 1%) — TradFi equities, FX majors
+      • ``mid`` (1–3%) — BTC / ETH typical 1H
+      • ``high`` (3–6%) — alt L1 / L2 1H
+      • ``extreme`` (> 6%) — small-cap alts / news shocks
+
+    Returns ``{atr, atr_pct, bucket, scale}`` where ``scale`` is the
+    multiplier applied to the static defaults in ``adaptive_smc_config``.
+    """
+    if df is None or len(df) < 2:
+        return {"atr": 0.0, "atr_pct": 0.0, "bucket": "unknown", "scale": 1.0}
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    close = df["close"].astype(float)
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    atr = float(tr.rolling(window, min_periods=1).mean().iloc[-1])
+    last_close = float(close.iloc[-1]) or 1.0
+    atr_pct = (atr / last_close) * 100 if last_close else 0.0
+    if atr_pct <= 1.0:
+        bucket, scale = "low", 1.0
+    elif atr_pct <= 3.0:
+        bucket, scale = "mid", 1.5
+    elif atr_pct <= 6.0:
+        bucket, scale = "high", 2.5
+    else:
+        bucket, scale = "extreme", 4.0
+    return {
+        "atr": round(atr, 4),
+        "atr_pct": round(atr_pct, 4),
+        "bucket": bucket,
+        "scale": scale,
+    }
+
+
+def adaptive_smc_config(
+    df: pd.DataFrame,
+    base: Optional[SMCConfig] = None,
+    *,
+    window: int = 14,
+    k_range_percent: float = 0.6,
+    m_stop_atr: float = 1.5,
+) -> tuple[SMCConfig, dict]:
+    """§17.6 — derive an SMCConfig whose volatility-sensitive knobs (swing_length,
+    range_percent) adapt to the asset's current ATR%.
+
+    Returns ``(adapted_config, info)``.  ``info`` carries the volatility
+    classification + the recommended ATR-based stop distance multiplier
+    so callers can size stops with ``stop = entry ± m_stop_atr × ATR``.
+    """
+    import dataclasses
+    base_cfg = base if base else SMCConfig()
+    vol = classify_asset_volatility(df, window=window)
+    bucket = vol["bucket"]
+    swing = base_cfg.swing_length
+    internal = base_cfg.internal_swing_length
+    rng = base_cfg.liquidity_range_percent
+    if bucket == "low":
+        swing = max(5, swing); internal = max(3, internal); rng = max(0.0035, rng)
+    elif bucket == "mid":
+        swing = max(4, swing); rng = max(0.006, rng)
+    elif bucket == "high":
+        swing = max(3, swing); rng = max(0.012, rng)
+    else:  # extreme
+        swing = max(2, swing); rng = max(0.02, rng)
+    # ATR-driven range_percent — caps the static default by the dynamic one
+    atr_pct_frac = vol["atr_pct"] / 100.0
+    rng = max(rng, k_range_percent * atr_pct_frac)
+    cfg = dataclasses.replace(
+        base_cfg,
+        swing_length=swing,
+        internal_swing_length=internal,
+        liquidity_range_percent=rng,
+    )
+    info = {
+        **vol,
+        "applied_swing_length": cfg.swing_length,
+        "applied_internal_swing_length": cfg.internal_swing_length,
+        "applied_liquidity_range_percent": round(cfg.liquidity_range_percent, 5),
+        "stop_distance_atr": round(m_stop_atr * vol["atr"], 4),
+        "k_range_percent": k_range_percent,
+        "m_stop_atr": m_stop_atr,
+    }
+    return cfg, info
+
+
 CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT = {
     "liquidation_cluster_sweep": 2,
     "oi_drop_at_sweep": 2,
@@ -3165,6 +3258,14 @@ def build_smc_analysis(
     cfg = config or SMCConfig()
     market = infer_market(symbol)
     h = normalize_ohlcv(df)
+    # §17.6 Volatility-Adaptive Parameters — auto-tune for crypto when caller
+    # supplied no explicit config; for TW / US the static defaults already fit.
+    adaptive_info = None
+    if config is None and market == "crypto":
+        cfg, adaptive_info = adaptive_smc_config(h, cfg)
+    elif config is None:
+        # Still expose classification so the UI can show vol bucket.
+        adaptive_info = {**classify_asset_volatility(h), "applied_swing_length": cfg.swing_length}
     
     if market == "crypto" and len(h) >= 15:
         try:
@@ -3409,6 +3510,7 @@ def build_smc_analysis(
             ),
         },
         "config": cfg.__dict__,
+        "adaptive": adaptive_info,
         "confluence_weights": confluence_weights(weights),
     }
 

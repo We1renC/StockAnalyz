@@ -1008,3 +1008,46 @@ def test_backtest_replay_attaches_mae_mfe_to_each_trade():
     )
     for t in result["concepts"]["entry_models"]["backtest_replay"]["trades"]:
         assert "mae" in t and "mfe" in t
+
+
+def test_classify_asset_volatility_buckets_by_atr_pct():
+    """§17.6: ATR%-based bucket assignment matches design-doc thresholds."""
+    from smc_quant import classify_asset_volatility
+    rows = [(100, 100.5, 99.5, 100, 1)] * 30
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(len(rows))]
+    df_low = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    out_low = classify_asset_volatility(df_low)
+    assert out_low["bucket"] == "low"
+    rows = [(100, 105, 95, 100, 1)] * 30
+    df_high = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    out_high = classify_asset_volatility(df_high)
+    assert out_high["bucket"] in {"high", "extreme"}
+    assert out_high["scale"] > out_low["scale"]
+
+
+def test_adaptive_smc_config_tightens_low_loosens_high():
+    from smc_quant import adaptive_smc_config
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(30)]
+    df_low = normalize_ohlcv(pd.DataFrame(
+        [(100, 100.4, 99.6, 100, 1)] * 30,
+        columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    cfg_low, info_low = adaptive_smc_config(df_low)
+    df_high = normalize_ohlcv(pd.DataFrame(
+        [(100, 110, 90, 100, 1)] * 30,
+        columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    cfg_high, info_high = adaptive_smc_config(df_high)
+    assert cfg_high.liquidity_range_percent > cfg_low.liquidity_range_percent
+    assert info_high["stop_distance_atr"] > info_low["stop_distance_atr"]
+
+
+def test_build_smc_analysis_emits_adaptive_block_for_crypto():
+    result = build_smc_analysis(_sample_ohlcv(), "BTCUSDT")
+    assert "adaptive" in result
+    assert result["adaptive"]["bucket"] in {"low", "mid", "high", "extreme", "unknown"}
+
+
+def test_build_smc_analysis_static_config_disables_auto_adapt():
+    cfg = SMCConfig(swing_length=7, internal_swing_length=4)
+    result = build_smc_analysis(_sample_ohlcv(), "BTCUSDT", config=cfg)
+    assert result["config"]["swing_length"] == 7
+    assert result["config"]["internal_swing_length"] == 4
