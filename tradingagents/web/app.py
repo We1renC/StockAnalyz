@@ -34,6 +34,7 @@ from llm_providers import (
 )
 from technical_matrix import build_technical_matrix
 from smc_quant import SMCConfig, build_smc_analysis
+from smc_backtest import SMCBacktestConfig, run_smc_event_backtest
 
 warnings.filterwarnings("ignore")
 
@@ -3288,6 +3289,53 @@ def api_smc_analysis(
             close_break=bool(close_break),
         )
         payload = build_smc_analysis(h, symbol=symbol, timeframe=period, config=smc_cfg)
+        payload["source"] = source
+        payload["period"] = period
+        return sanitize_float_values(payload)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/smc-backtest/{symbol}")
+def api_smc_backtest(
+    symbol: str,
+    period: str = "1y",
+    swing_length: int = 5,
+    internal_swing_length: int = 3,
+    min_bars: int = 60,
+    max_hold_bars: int = 20,
+    entry_threshold: int = 8,
+    account_equity: float = 100_000,
+    risk_pct: float = 0.01,
+    require_qualified: bool = True,
+):
+    """Lookahead-proof SMC event backtest for one symbol."""
+    try:
+        cfg = _chart_period_config(period)
+        calc_period = cfg["period"]
+        interval = cfg.get("interval", "1d")
+        if interval == "1d":
+            h, source = fetch_history(symbol, period=calc_period)
+        else:
+            h = fetch_intraday_history(symbol, period=calc_period, interval=interval)
+            source = "yfinance_intraday"
+        if h is None or len(h) == 0:
+            raise HTTPException(404, "No price history")
+        smc_cfg = SMCConfig(
+            swing_length=max(2, min(int(swing_length), 50)),
+            internal_swing_length=max(2, min(int(internal_swing_length), 20)),
+            entry_threshold=max(1, min(int(entry_threshold), 20)),
+        )
+        bt_cfg = SMCBacktestConfig(
+            min_bars=max(20, min(int(min_bars), 300)),
+            max_hold_bars=max(1, min(int(max_hold_bars), 120)),
+            account_equity=max(float(account_equity), 0),
+            risk_pct=max(0, min(float(risk_pct), 0.05)),
+            require_qualified=bool(require_qualified),
+        )
+        payload = run_smc_event_backtest(h, symbol=symbol, timeframe=period, smc_config=smc_cfg, backtest_config=bt_cfg)
         payload["source"] = source
         payload["period"] = period
         return sanitize_float_values(payload)
