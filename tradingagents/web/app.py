@@ -5674,6 +5674,30 @@ def _run_deep_analysis(symbol: str, mode: str = "analyst") -> dict:
                 "error": (analyst_step or {}).get("error", "no analyst output"),
                 "elapsed": round(_time.time() - t0, 1)}
 
+    # 解析與清理建議點位 JSON
+    entry = None
+    profit = None
+    stop = None
+    reason = ""
+
+    analyst_text = analyst_step.get("output", "") or ""
+    if "[TARGET_LEVELS]" in analyst_text and "[END_TARGET_LEVELS]" in analyst_text:
+        try:
+            start_idx = analyst_text.index("[TARGET_LEVELS]")
+            end_idx = analyst_text.index("[END_TARGET_LEVELS]") + len("[END_TARGET_LEVELS]")
+            json_str = analyst_text[start_idx + len("[TARGET_LEVELS]"):end_idx - len("[END_TARGET_LEVELS]")].strip()
+            levels = json.loads(json_str)
+            entry = levels.get("entry")
+            profit = levels.get("profit")
+            stop = levels.get("stop")
+            reason = levels.get("reason") or ""
+            
+            # 清理分析報告，避免顯示 json 原始字串
+            analyst_text_cleaned = analyst_text[:start_idx].strip() + "\n" + analyst_text[end_idx:].strip()
+            analyst_step["output"] = analyst_text_cleaned.strip()
+        except Exception as e:
+            print(f"  [WARN] failed to parse target levels from deep analysis: {e}")
+
     sections = {"analyst": analyst_step.get("output", "")}
     if reviewer_step and reviewer_step.get("output"):
         sections["reviewer"] = reviewer_step["output"]
@@ -5688,8 +5712,12 @@ def _run_deep_analysis(symbol: str, mode: str = "analyst") -> dict:
     elapsed = round(_time.time() - t0, 1)
     provider = analyst_step.get("provider", "")
     model = analyst_step.get("model", "")
+    current_price = None
     try:
         conn = get_db()
+        cache = conn.execute("SELECT price FROM price_cache WHERE symbol=?", (symbol,)).fetchone()
+        current_price = cache["price"] if cache else None
+        
         row = conn.execute(
             "SELECT name FROM positions WHERE symbol=? UNION SELECT name FROM watchlist WHERE symbol=?",
             (symbol, symbol),
@@ -5707,7 +5735,9 @@ def _run_deep_analysis(symbol: str, mode: str = "analyst") -> dict:
     except Exception as e:
         print(f"  [WARN] store analysis {symbol} failed: {e}")
     return {"symbol": symbol, "ok": True, "name": sym_name,
-            "decision_summary": decision_summary, "elapsed": elapsed}
+            "decision_summary": decision_summary, "elapsed": elapsed,
+            "entry": entry, "profit": profit, "stop": stop,
+            "reason": reason or decision_summary, "current_price": current_price}
 
 
 @app.post("/api/batch-deep-analyze")

@@ -5473,16 +5473,19 @@ async function startBatchDeepAnalyze() {
   const progressText = $('batch-progress-text');
   const progressPercent = $('batch-progress-percent');
   const tbody = $('batch-analyze-tbody');
+  const applyBtn = $('batch-apply-btn');
   const mode = ($('batch-deep-mode') || {}).value || 'analyst';
 
   deepBtn.disabled = true;
   deepBtn.textContent = '深度分析中...';
+  applyBtn.disabled = true;
   progressDiv.classList.remove('hidden');
   progressBar.style.width = '3%';
   progressPercent.textContent = '3%';
   progressText.textContent = '啟動平行深度分析...';
   tbody.innerHTML = `<tr><td colspan="7" class="px-3 py-8 text-center text-gray-400">AI 正在平行對所有標的做 17D + 財報交叉判讀，完成的會即時列出...</td></tr>`;
 
+  _batchSuggestions = {};
   const rows = [];
   try {
     const resp = await fetch(`/api/batch-deep-analyze?mode=${mode}&max_workers=3&scope=all`, { method: 'POST' });
@@ -5507,18 +5510,56 @@ async function startBatchDeepAnalyze() {
             if (data.result) {
               const r = data.result;
               rows.push(r);
-              tbody.innerHTML = rows.map(x => `
-                <tr>
-                  <td class="px-3 py-2 font-mono text-slate-200">${x.symbol}</td>
-                  <td class="px-3 py-2 text-slate-300">${x.name || ''}</td>
-                  <td class="px-3 py-2 ${x.ok ? 'text-emerald-400' : 'text-red-400'}" colspan="4">${x.ok ? (x.decision_summary || '已完成') : ('失敗：' + (x.error || ''))}</td>
-                  <td class="px-3 py-2 text-slate-500">${x.elapsed != null ? x.elapsed + 's' : ''}</td>
-                </tr>`).join('');
+              if (r.ok) {
+                _batchSuggestions[r.symbol] = {
+                  entry: r.entry,
+                  profit: r.profit,
+                  stop: r.stop,
+                  name: r.name,
+                  current_price: r.current_price,
+                  reason: r.reason
+                };
+              }
+              tbody.innerHTML = rows.map(x => {
+                if (x.ok) {
+                  const cleanSymId = x.symbol.replace('.', '_');
+                  return `<tr>
+                    <td class="px-3 py-3 text-center"><input type="checkbox" class="batch-item-select" checked data-symbol="${x.symbol}"></td>
+                    <td class="px-3 py-3">
+                      <div class="font-bold text-gray-100 font-mono">${x.symbol}</div>
+                      <div class="text-xs text-gray-400">${x.name || ''}</div>
+                    </td>
+                    <td class="px-3 py-3 text-right font-mono font-semibold text-gray-200">${fmt(x.current_price)}</td>
+                    <td class="px-3 py-3 text-right">
+                      <input type="number" step="any" id="batch-entry-${cleanSymId}" class="bg-gray-700 w-24 px-2 py-1 rounded text-right text-xs" value="${x.entry || ''}">
+                    </td>
+                    <td class="px-3 py-3 text-right">
+                      <input type="number" step="any" id="batch-profit-${cleanSymId}" class="bg-gray-700 w-24 px-2 py-1 rounded text-right text-xs text-emerald-300 font-bold" value="${x.profit || ''}">
+                    </td>
+                    <td class="px-3 py-3 text-right">
+                      <input type="number" step="any" id="batch-stop-${cleanSymId}" class="bg-gray-700 w-24 px-2 py-1 rounded text-right text-xs text-red-300 font-bold" value="${x.stop || ''}">
+                    </td>
+                    <td class="px-3 py-3 text-xs text-gray-300 leading-relaxed">${x.reason || ''}</td>
+                  </tr>`;
+                } else {
+                  return `<tr>
+                    <td class="px-3 py-3 text-center"></td>
+                    <td class="px-3 py-3">
+                      <div class="font-bold text-red-400 font-mono">${x.symbol}</div>
+                      <div class="text-xs text-gray-400">${x.name || ''}</div>
+                    </td>
+                    <td colspan="5" class="px-3 py-3 text-red-400 text-xs">失敗：${x.error || ''}</td>
+                  </tr>`;
+                }
+              }).join('');
             }
           } else if (data.status === 'done') {
             progressBar.style.width = '100%';
             progressPercent.textContent = '100%';
             progressText.textContent = data.message;
+            if (Object.keys(_batchSuggestions).length > 0) {
+              applyBtn.disabled = false;
+            }
           }
         }
       }

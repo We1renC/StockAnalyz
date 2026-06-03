@@ -379,6 +379,9 @@ def run_workflow(context: str, mode: str = "both") -> dict:
 2. **操作建議** — 買/賣/持有 + 有依據的進場/停損/停利
 3. **投資建議** — 短/中/長線的部位與策略
 4. **風險與失效條件**
+
+請在報告的最尾端，**務必**加上一行以下列格式包裹的點位 JSON（不要用 markdown 區塊，直接單獨一行，所有的數字必須是純數字或 null，不要加任何單位如元或%）：
+[TARGET_LEVELS] {{"entry": 進場價位, "profit": 停利價位, "stop": 停損價位, "reason": "操作策略理由"}} [END_TARGET_LEVELS]
 """
         try:
             analyst_text = call_llm(
