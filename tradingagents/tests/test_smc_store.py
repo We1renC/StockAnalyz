@@ -3,7 +3,12 @@ from unittest.mock import patch
 import pandas as pd
 
 import app
-from smc_report import build_smc_report_html, build_smc_scan_report_html, build_smc_learning_health_report_html
+from smc_report import (
+    build_smc_report_html,
+    build_smc_scan_report_html,
+    build_smc_learning_health_report_html,
+    build_smc_daily_report_html,
+)
 from smc_store import persist_backtest_run, summarize_backtest_report
 
 
@@ -239,6 +244,39 @@ def test_build_smc_learning_health_report_html_renders_key_sections():
     assert "AMD" in html
 
 
+def test_build_smc_daily_report_html_renders_key_sections():
+    html = build_smc_daily_report_html(
+        {
+            "scope": "all",
+            "period": "6mo",
+            "overview": {
+                "backtest_run_count": 3,
+                "backtest_trade_count": 6,
+                "health_win_rate": 0.61,
+                "health_expectancy_r": 0.42,
+                "kelly_cap_pct": 0.015,
+            },
+            "scan": {"summary": {"symbol_count": 5, "signal_count": 4, "qualified_count": 2}},
+            "health": {"decay": {"is_decaying": False, "warning_message": None}},
+            "top_signals": [
+                {"symbol": "AAA", "market": "us", "model": "AMD", "direction": "long", "score": 9, "entry": 100, "tp1": 110, "rr": 2.0, "status": "qualified"}
+            ],
+            "top_backtests": [
+                {"symbol": "AAA", "market": "us", "trade_count": 6, "win_rate": 0.6, "expectancy_r": 0.4, "pnl": 120}
+            ],
+            "recent_runs": [
+                {"symbol": "AAA", "period": "6mo", "total_trades": 6, "win_rate": 0.6, "profit_factor": 1.8, "expectancy_r": 0.4}
+            ],
+        },
+        title="Custom SMC Daily",
+    )
+    assert "Custom SMC Daily" in html
+    assert "Top Signals" in html
+    assert "Backtest Symbol Summary" in html
+    assert "Recent Backtest Runs" in html
+    assert "AAA" in html
+
+
 def test_api_smc_backtest_report_html_returns_html(tmp_path):
     original = _temp_db(tmp_path)
     try:
@@ -319,5 +357,34 @@ def test_api_smc_learning_health_and_html(tmp_path):
         assert "SMC Strategy Health Report" in body
         assert "Top Positive Factors" in body
         assert "Calibration Changes" in body
+    finally:
+        app.DB = original
+
+
+def test_api_smc_daily_report_and_html(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        conn = app.get_db()
+        persist_backtest_run(conn, _sample_backtest_result("AAA"), period="6mo", source="test")
+        persist_backtest_run(conn, _sample_backtest_result("BBB"), period="6mo", source="test")
+        conn.close()
+
+        fake_scan = {
+            "scope": "all",
+            "period": "6mo",
+            "summary": {"symbol_count": 2, "signal_count": 1, "qualified_count": 1},
+            "results": [{"symbol": "AAA", "market": "us", "model": "AMD", "direction": "long", "score": 9, "entry": 100, "tp1": 110, "rr": 2.0, "status": "qualified"}],
+        }
+        with patch.object(app, "api_smc_scan", return_value=fake_scan):
+            payload = app.api_smc_daily_report(scope="all", period="6mo")
+            assert payload["overview"]["backtest_run_count"] == 2
+            assert payload["scan"]["summary"]["signal_count"] == 1
+            assert payload["top_signals"][0]["symbol"] == "AAA"
+
+            response = app.api_smc_daily_report_html(scope="all", period="6mo")
+        body = response.body.decode("utf-8")
+        assert "SMC Daily Report - all" in body
+        assert "Top Signals" in body
+        assert "AAA" in body
     finally:
         app.DB = original

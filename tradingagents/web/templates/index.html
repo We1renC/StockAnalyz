@@ -1303,6 +1303,9 @@ body { background: var(--bg-base); color: var(--text-primary); }
           <button onclick="openSmcHealthReport()" class="btn-secondary text-xs px-2.5 py-1.5" style="border-radius: 6px; padding: 4px 8px; font-size: 11px;">
             策略健康報表
           </button>
+          <button onclick="openSmcDailyReport()" class="btn-secondary text-xs px-2.5 py-1.5" style="border-radius: 6px; padding: 4px 8px; font-size: 11px;">
+            SMC 日報
+          </button>
         </div>
       </div>
       <div class="overflow-x-auto">
@@ -2611,6 +2614,11 @@ function openSmcScanReport() {
 
 function openSmcHealthReport() {
   window.open('/api/smc-learning/report/html', '_blank');
+}
+
+function openSmcDailyReport() {
+  const period = $('smc-chart-period')?.value || '6mo';
+  window.open(`/api/smc-daily-report/html?scope=all&period=${encodeURIComponent(period)}`, '_blank');
 }
 
 function switchSmcSymbol(symbol) {

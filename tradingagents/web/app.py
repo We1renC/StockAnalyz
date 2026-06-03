@@ -40,6 +40,7 @@ from smc_report import (
     build_smc_report_html,
     build_smc_scan_report_html,
     build_smc_learning_health_report_html,
+    build_smc_daily_report_html,
 )
 
 warnings.filterwarnings("ignore")
@@ -3859,6 +3860,117 @@ def api_smc_learning_report_html(symbol: Optional[str] = None, decay_window: int
         conn.close()
     title = f"SMC Strategy Health Report - {symbol.upper()}" if symbol else "SMC Strategy Health Report"
     return HTMLResponse(build_smc_learning_health_report_html(payload, title=title))
+
+
+def _build_smc_daily_report_payload(
+    conn,
+    scope: str = "all",
+    period: str = "6mo",
+    limit_runs: int = 200,
+    swing_length: int = 5,
+    internal_swing_length: int = 3,
+    close_break: bool = True,
+    account_equity: float = 100_000,
+    risk_pct: float = 0.01,
+    decay_window: int = 20,
+) -> dict:
+    scan = api_smc_scan(
+        scope=scope,
+        period=period,
+        swing_length=swing_length,
+        internal_swing_length=internal_swing_length,
+        close_break=close_break,
+        account_equity=account_equity,
+        risk_pct=risk_pct,
+    )
+    backtest = summarize_backtest_report(conn, symbol=None, limit_runs=max(1, min(int(limit_runs), 1000)))
+    health = _build_smc_learning_health_payload(conn, symbol=None, decay_window=max(2, min(int(decay_window), 200)))
+    overview = {
+        "backtest_run_count": backtest.get("run_count"),
+        "backtest_trade_count": backtest.get("trade_count"),
+        "health_win_rate": (health.get("overview") or {}).get("win_rate"),
+        "health_expectancy_r": (health.get("overview") or {}).get("expectancy_r"),
+        "kelly_cap_pct": (health.get("calibration") or {}).get("kelly_cap_pct"),
+        "overfitting_risk_level": (health.get("validation") or {}).get("overfitting_risk_level"),
+        "is_decaying": (health.get("decay") or {}).get("is_decaying"),
+    }
+    return sanitize_float_values(
+        {
+            "scope": scope,
+            "period": period,
+            "overview": overview,
+            "scan": scan,
+            "backtest": backtest,
+            "health": health,
+            "top_signals": (scan.get("results") or [])[:10],
+            "top_backtests": (backtest.get("symbols") or [])[:10],
+            "recent_runs": (backtest.get("latest_runs") or [])[:10],
+        }
+    )
+
+
+@app.get("/api/smc-daily-report")
+def api_smc_daily_report(
+    scope: str = "all",
+    period: str = "6mo",
+    limit_runs: int = 200,
+    swing_length: int = 5,
+    internal_swing_length: int = 3,
+    close_break: bool = True,
+    account_equity: float = 100_000,
+    risk_pct: float = 0.01,
+    decay_window: int = 20,
+):
+    conn = get_db()
+    try:
+        return _build_smc_daily_report_payload(
+            conn,
+            scope=scope,
+            period=period,
+            limit_runs=limit_runs,
+            swing_length=swing_length,
+            internal_swing_length=internal_swing_length,
+            close_break=close_break,
+            account_equity=account_equity,
+            risk_pct=risk_pct,
+            decay_window=decay_window,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build daily report: {str(e)}")
+    finally:
+        conn.close()
+
+
+@app.get("/api/smc-daily-report/html", response_class=HTMLResponse)
+def api_smc_daily_report_html(
+    scope: str = "all",
+    period: str = "6mo",
+    limit_runs: int = 200,
+    swing_length: int = 5,
+    internal_swing_length: int = 3,
+    close_break: bool = True,
+    account_equity: float = 100_000,
+    risk_pct: float = 0.01,
+    decay_window: int = 20,
+):
+    conn = get_db()
+    try:
+        payload = _build_smc_daily_report_payload(
+            conn,
+            scope=scope,
+            period=period,
+            limit_runs=limit_runs,
+            swing_length=swing_length,
+            internal_swing_length=internal_swing_length,
+            close_break=close_break,
+            account_equity=account_equity,
+            risk_pct=risk_pct,
+            decay_window=decay_window,
+        )
+    finally:
+        conn.close()
+    title = f"SMC Daily Report - {scope}"
+    return HTMLResponse(build_smc_daily_report_html(payload, title=title))
 
 
 @app.post("/api/smc-learning/calibrate")
