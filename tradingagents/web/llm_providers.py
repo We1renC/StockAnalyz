@@ -229,6 +229,7 @@ def call_cli(provider: str, model: str, prompt: str, timeout: int = 180) -> str:
             text=True,
             timeout=timeout,
             env=env,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
             err = result.stderr or result.stdout or "unknown error"

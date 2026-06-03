@@ -5737,7 +5737,8 @@ def api_batch_deep_analyze(mode: str = "analyst", max_workers: int = 3,
     conn.close()
 
     def event_generator():
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import queue
+        from concurrent.futures import ThreadPoolExecutor
         import time as _time
         t0 = _time.time()
         total = len(syms)
@@ -5746,32 +5747,62 @@ def api_batch_deep_analyze(mode: str = "analyst", max_workers: int = 3,
             return
         yield "data: " + json.dumps({"status": "progress", "percent": 3,
                                      "message": f"開始平行分析 {total} 檔（併發 {max_workers}）..."}) + "\n\n"
-        results = []
-        done = 0
+        
+        q = queue.Queue()
+
+        def worker(sym):
+            q.put({"type": "start", "symbol": sym})
+            res = {"symbol": sym, "ok": False, "error": "unknown error"}
+            try:
+                res = _run_deep_analysis(sym, mode)
+            except Exception as e:
+                res = {"symbol": sym, "ok": False, "error": str(e)}
+            finally:
+                q.put({"type": "finish", "symbol": sym, "result": res})
+
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = {ex.submit(_run_deep_analysis, sym, mode): sym for sym in syms}
-            for fut in as_completed(futures):
-                sym = futures[fut]
+            for sym in syms:
+                ex.submit(worker, sym)
+
+            active_syms = set()
+            done = 0
+            results = []
+            while done < total:
                 try:
-                    res = fut.result()
-                except Exception as e:
-                    res = {"symbol": sym, "ok": False, "error": str(e)}
-                results.append(res)
-                done += 1
-                pct = round(3 + done / total * 94)
-                status = "✓" if res.get("ok") else "✗"
-                yield "data: " + json.dumps({
-                    "status": "progress", "percent": pct,
-                    "message": f"[{done}/{total}] {status} {sym}"
-                    + (f"：{res.get('decision_summary','')[:40]}" if res.get("ok") else f"（{res.get('error','')[:40]}）"),
-                    "symbol": sym, "result": res,
-                }, ensure_ascii=False) + "\n\n"
-        ok = sum(1 for r in results if r.get("ok"))
-        yield "data: " + json.dumps({
-            "status": "done", "percent": 100,
-            "message": f"完成 {ok}/{total} 檔，耗時 {round(_time.time()-t0,1)}s",
-            "results": results,
-        }, ensure_ascii=False) + "\n\n"
+                    item = q.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+
+                if item["type"] == "start":
+                    active_syms.add(item["symbol"])
+                    current_running = ", ".join(active_syms)
+                    yield "data: " + json.dumps({
+                        "status": "progress",
+                        "percent": round(3 + (done / total) * 94),
+                        "message": f"正在分析 {item['symbol']}... (目前運行中: {current_running})",
+                    }, ensure_ascii=False) + "\n\n"
+                elif item["type"] == "finish":
+                    sym = item["symbol"]
+                    res = item["result"]
+                    if sym in active_syms:
+                        active_syms.remove(sym)
+                    results.append(res)
+                    done += 1
+                    pct = round(3 + (done / total) * 94)
+                    status = "✓" if res.get("ok") else "✗"
+                    current_running = ", ".join(active_syms) if active_syms else "無"
+                    yield "data: " + json.dumps({
+                        "status": "progress", "percent": pct,
+                        "message": f"[{done}/{total}] {status} {sym} 完成！(剩餘運行: {current_running})",
+                        "symbol": sym, "result": res,
+                    }, ensure_ascii=False) + "\n\n"
+
+            ok = sum(1 for r in results if r.get("ok"))
+            yield "data: " + json.dumps({
+                "status": "done", "percent": 100,
+                "message": f"完成 {ok}/{total} 檔，耗時 {round(_time.time()-t0,1)}s",
+                "results": results,
+            }, ensure_ascii=False) + "\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
