@@ -664,3 +664,58 @@ def test_build_smc_analysis_exposes_risk_gated_block():
     )
     rg = result["concepts"]["entry_models"]["risk_gated"]
     assert "ready" in rg and "rejected" in rg and "lock" in rg
+
+
+def test_dol_target_picks_nearest_opposite_pool():
+    """§3.5 DOL: long → nearest unswept BSL above price; short → nearest SSL below."""
+    from smc_quant import resolve_dol_target
+    liquidity = [
+        {"type": "BSL", "level": 110, "swept": False, "end_index": 5},
+        {"type": "BSL", "level": 120, "swept": False, "end_index": 6},
+        {"type": "BSL", "level": 105, "swept": True, "end_index": 4},   # swept → ignored
+        {"type": "SSL", "level": 90, "swept": False, "end_index": 3},
+    ]
+    long_target = resolve_dol_target(1, current_price=100, liquidity=liquidity)
+    assert long_target["target_price"] == 110.0
+    assert long_target["target_kind"] == "BSL"
+    short_target = resolve_dol_target(-1, current_price=100, liquidity=liquidity)
+    assert short_target["target_kind"] == "SSL"
+    assert short_target["target_price"] == 90.0
+
+
+def test_dol_falls_back_to_pdh_and_fvg_when_no_liquidity():
+    from smc_quant import resolve_dol_target
+    prev = {"previous_high": 115, "previous_low": 85}
+    fvgs = [
+        {"direction": -1, "mid": 112, "mitigated": False, "index": 7},   # bearish FVG = magnet for long
+        {"direction": -1, "mid": 118, "mitigated": False, "index": 8},
+    ]
+    target = resolve_dol_target(1, current_price=100, liquidity=[], prev_levels=prev, fvgs=fvgs)
+    assert target is not None
+    # PDH @ 115 (distance 15) vs FVG mid 112 (12) → FVG wins on proximity
+    assert target["target_price"] in (112.0, 115.0)
+    assert target["target_kind"] in ("FVG_MID", "PDH")
+
+
+def test_attach_dol_blocks_entries_without_target():
+    """Per §3.5: 'do not enter trades without a clear DOL'."""
+    from smc_quant import attach_dol_targets
+    entries = [
+        {"model": "x", "direction": 1, "entry": 100, "stop": 99, "target": 102, "risk": 1, "rr": 2.0, "triggered": True}
+    ]
+    # No liquidity / no prev / no FVG above current → no DOL → triggered must flip False
+    out = attach_dol_targets(entries, liquidity=[], prev_levels=None, fvgs=[], current_price=100)
+    assert out[0]["dol_target"] is None
+    assert out[0]["dol_required"] is True
+    assert out[0]["triggered"] is False
+
+
+def test_build_smc_analysis_attaches_dol_to_entry_models():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    for key in ("sweep_reversal", "ob_fvg_continuation", "ote_retracement", "unicorn", "silver_bullet", "power_of_three"):
+        for e in result["concepts"]["entry_models"][key]:
+            assert "dol_target" in e
+            assert "dol_required" in e

@@ -900,6 +900,131 @@ def detect_smt_divergence(
 
 
 # ---------------------------------------------------------------------------
+# §3.5 DOL — Draw-on-Liquidity / Liquidity Magnet target picker
+# ---------------------------------------------------------------------------
+
+def resolve_dol_target(
+    direction: int,
+    current_price: float,
+    liquidity: list[dict],
+    prev_levels: Optional[dict] = None,
+    fvgs: Optional[list[dict]] = None,
+) -> Optional[dict]:
+    """§3.5 DOL — pick the nearest opposite-side liquidity pool as the target.
+
+    Candidate pools (in priority order):
+      1. Unswept opposing liquidity (BSL for long / SSL for short)
+      2. Previous-day extreme (PDH for long / PDL for short)
+      3. Nearest unmitigated opposite-direction FVG mid
+    Returns ``{target_price, target_kind, distance}`` or None when no
+    valid DOL is available — per spec, callers MUST refuse to enter
+    without one.
+    """
+    if direction not in (1, -1):
+        return None
+    if current_price is None:
+        return None
+    candidates: list[dict] = []
+    target_type = "BSL" if direction == 1 else "SSL"
+    for liq in liquidity or []:
+        if liq.get("swept"):
+            continue
+        if liq.get("type") != target_type:
+            continue
+        level = float(liq.get("level", 0))
+        if direction == 1 and level <= current_price:
+            continue
+        if direction == -1 and level >= current_price:
+            continue
+        candidates.append({
+            "target_price": round(level, 4),
+            "target_kind": target_type,
+            "distance": round(abs(level - current_price), 4),
+            "source_index": int(liq.get("end_index", -1)),
+        })
+    if prev_levels:
+        prev_high = prev_levels.get("previous_high")
+        prev_low = prev_levels.get("previous_low")
+        if direction == 1 and prev_high is not None and float(prev_high) > current_price:
+            candidates.append({
+                "target_price": round(float(prev_high), 4),
+                "target_kind": "PDH",
+                "distance": round(float(prev_high) - current_price, 4),
+                "source_index": -1,
+            })
+        if direction == -1 and prev_low is not None and float(prev_low) < current_price:
+            candidates.append({
+                "target_price": round(float(prev_low), 4),
+                "target_kind": "PDL",
+                "distance": round(current_price - float(prev_low), 4),
+                "source_index": -1,
+            })
+    for f in fvgs or []:
+        if f.get("mitigated"):
+            continue
+        # An opposite-direction FVG acts as the magnet for the trend continuation.
+        if int(f.get("direction", 0)) != -direction:
+            continue
+        mid = float(f.get("mid", 0))
+        if direction == 1 and mid <= current_price:
+            continue
+        if direction == -1 and mid >= current_price:
+            continue
+        candidates.append({
+            "target_price": round(mid, 4),
+            "target_kind": "FVG_MID",
+            "distance": round(abs(mid - current_price), 4),
+            "source_index": int(f.get("index", -1)),
+        })
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: c["distance"])
+    return candidates[0]
+
+
+def attach_dol_targets(
+    entries: list[dict],
+    liquidity: list[dict],
+    prev_levels: Optional[dict],
+    fvgs: Optional[list[dict]],
+    current_price: float,
+) -> list[dict]:
+    """Annotate every §5 entry with a §3.5 DOL target.
+
+    Per spec, entries WITHOUT a DOL are flagged ``dol_required=True`` and
+    ``triggered`` is forced False — "do not enter trades without a clear DOL".
+    """
+    out: list[dict] = []
+    for e in entries or []:
+        direction = int(e.get("direction", 0))
+        dol = resolve_dol_target(direction, current_price, liquidity, prev_levels, fvgs)
+        annotated = dict(e)
+        if dol is None:
+            annotated["dol_target"] = None
+            annotated["dol_required"] = True
+            annotated["triggered"] = False  # Hard gate per §3.5 mandate
+        else:
+            annotated["dol_target"] = dol
+            annotated["dol_required"] = False
+            # If DOL is farther than the current 2R fallback, upgrade target.
+            try:
+                risk = float(annotated.get("risk", 0))
+                cur_target = float(annotated.get("target", 0))
+                dol_price = float(dol["target_price"])
+                if risk > 0:
+                    cur_rr = abs(cur_target - float(annotated["entry"])) / risk
+                    dol_rr = abs(dol_price - float(annotated["entry"])) / risk
+                    if dol_rr > cur_rr:
+                        annotated["target"] = round(dol_price, 4)
+                        annotated["rr"] = round(dol_rr, 2)
+                        annotated["target_source"] = f"dol:{dol['target_kind']}"
+            except Exception:
+                pass
+        out.append(annotated)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # §5.1 / §5.2 Entry models + Confluence scoring
 # ---------------------------------------------------------------------------
 
@@ -2311,6 +2436,13 @@ def build_smc_analysis(
     power_of_three_entries = detect_power_of_three_entries(
         h, judas_events, obs, fvgs, pd_zone, bias, session, weights=weights,
     )
+    _last_close = float(h["close"].iloc[-1]) if len(h) else 0.0
+    sweep_reversal_entries = attach_dol_targets(sweep_reversal_entries, liquidity, prev, fvgs, _last_close)
+    continuation_entries = attach_dol_targets(continuation_entries, liquidity, prev, fvgs, _last_close)
+    ote_entries = attach_dol_targets(ote_entries, liquidity, prev, fvgs, _last_close)
+    unicorn_entries = attach_dol_targets(unicorn_entries, liquidity, prev, fvgs, _last_close)
+    silver_bullet_entries = attach_dol_targets(silver_bullet_entries, liquidity, prev, fvgs, _last_close)
+    power_of_three_entries = attach_dol_targets(power_of_three_entries, liquidity, prev, fvgs, _last_close)
     retracement = retracement_state(h, swings)
     generated_at = datetime.now().isoformat(timespec="seconds")
     signals = build_signals(
