@@ -1382,6 +1382,17 @@ body { background: var(--bg-base); color: var(--text-primary); }
       </div>
     </div>
 
+    <!-- 研究資料落地 -->
+    <div class="mb-6">
+      <h3 class="text-lg font-semibold mb-3 border-b border-gray-700 pb-1">研究資料落地（財報 / 17D）</h3>
+      <p class="text-xs text-gray-400 mb-3">一次把觀察清單與持倉所有標的的財報（ETF 存基金概況）、基本面、17D 矩陣存進資料庫與 Obsidian，供 AI 分析複用。</p>
+      <div class="flex gap-2 flex-wrap items-center">
+        <button onclick="storeAllResearch(this)" class="btn-secondary text-xs px-3 py-1.5">儲存所有標的研究資料</button>
+        <button onclick="backfillAllResearch(this)" class="btn-secondary text-xs px-3 py-1.5">回填 17D 歷史</button>
+        <span id="research-store-result" class="text-xs text-slate-400 self-center"></span>
+      </div>
+    </div>
+
     <div class="flex gap-2 justify-end">
       <button onclick="closeSettings()" class="btn-secondary">取消</button>
       <button onclick="saveSettings()" class="btn-primary px-4 py-2 rounded font-semibold">儲存設定</button>
@@ -5681,6 +5692,49 @@ function switchTab(tabName) {
   if (btn) {
     btn.click();
   }
+}
+
+// ─────────────── 研究資料落地 ───────────────
+async function storeAllResearch(btn) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '儲存中...';
+  const status = $('research-store-result');
+  if (status) { status.textContent = '抓取並儲存所有標的財報 / 17D 中（可能需數十秒）...'; status.style.color = '#94a3b8'; }
+  try {
+    const r = await fetch('/api/research/store-all', { method: 'POST' }).then(r => r.json());
+    if (r.ok && status) {
+      const funds = Object.values(r.detail || {}).filter(d => d.type === 'fund').length;
+      const stocks = Object.values(r.detail || {}).filter(d => d.type === 'stock').length;
+      status.textContent = `已儲存 ${r.symbols} 檔（個股 ${stocks} / ETF ${funds}）`;
+      status.style.color = '#34d399';
+    } else if (status) {
+      status.textContent = r.detail || '儲存失敗';
+      status.style.color = '#ef4444';
+    }
+  } catch (e) {
+    if (status) { status.textContent = '連線失敗：' + e; status.style.color = '#ef4444'; }
+  }
+  btn.disabled = false; btn.textContent = orig;
+}
+
+async function backfillAllResearch(btn) {
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '回填中...';
+  const status = $('research-store-result');
+  if (status) { status.textContent = '回填所有標的 17D 歷史中（可能需數十秒）...'; status.style.color = '#94a3b8'; }
+  try {
+    const r = await fetch('/api/research/backfill-all', { method: 'POST' }).then(r => r.json());
+    if (r.ok && status) {
+      status.textContent = `已回填 ${r.symbols} 檔，共 ${r.total_filled} 個歷史點`;
+      status.style.color = '#34d399';
+    } else if (status) {
+      status.textContent = r.detail || '回填失敗';
+      status.style.color = '#ef4444';
+    }
+  } catch (e) {
+    if (status) { status.textContent = '連線失敗：' + e; status.style.color = '#ef4444'; }
+  }
+  btn.disabled = false; btn.textContent = orig;
 }
 
 // ─────────────── Obsidian 同步 ───────────────

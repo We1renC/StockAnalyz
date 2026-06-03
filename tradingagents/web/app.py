@@ -688,6 +688,34 @@ def fetch_fundamentals(symbol: str) -> dict:
         "recommendation_key": info.get("recommendationKey"),
         "num_analysts": _g("numberOfAnalystOpinions"),
     }
+    # ETF / 基金沒有損益表，改存基金等價資訊（類別、規模、報酬、配息、持股）
+    quote_type = (info.get("quoteType") or "").upper()
+    out["quote_type"] = quote_type
+    if quote_type in ("ETF", "MUTUALFUND"):
+        out["is_fund"] = True
+        out["etf"] = {
+            "category": info.get("category"),
+            "fund_family": info.get("fundFamily"),
+            "total_assets": _g("totalAssets"),
+            "nav": _g("navPrice"),
+            "yield": _g("yield"),
+            "ytd_return": _g("ytdReturn"),
+            "three_year_return": _g("threeYearAverageReturn"),
+            "five_year_return": _g("fiveYearAverageReturn"),
+            "beta_3y": _g("beta3Year"),
+            "legal_type": info.get("legalType"),
+        }
+        # 前 5 大持股（best-effort）
+        try:
+            th = yf.Ticker(symbol).funds_data.top_holdings
+            if th is not None and not th.empty:
+                out["etf"]["top_holdings"] = [
+                    {"symbol": str(idx), "name": str(row.get("Name", "")),
+                     "weight": round(float(row.get("Holding Percent", 0)) * 100, 2)}
+                    for idx, row in th.head(5).iterrows()
+                ]
+        except Exception:
+            pass
     _FUNDAMENTALS_CACHE[symbol] = (time.time() + _FUNDAMENTALS_TTL, out)
     return out
 
@@ -3239,6 +3267,45 @@ def api_backfill_research(symbol: str, lookback_days: int = 180, step_days: int 
         raise HTTPException(500, str(e))
 
 
+@app.post("/api/research/store-all")
+def api_store_all_research():
+    """批次：把觀察清單 + 持倉所有標的的財報（ETF 存基金概況）+ 基本面 +
+    17D 矩陣落地到 SQL 與 Obsidian。"""
+    conn = get_db()
+    syms = []
+    seen = set()
+    for tbl in ("positions", "watchlist"):
+        for r in conn.execute(f"SELECT symbol, name, category FROM {tbl}").fetchall():
+            if r["symbol"] in seen or _is_test_symbol(r["symbol"], r["name"], r["category"]):
+                continue
+            seen.add(r["symbol"])
+            syms.append(r["symbol"])
+    conn.close()
+
+    out = {}
+    for sym in syms:
+        try:
+            fundamentals = fetch_fundamentals(sym)
+            financials = fetch_financial_history(sym)
+            matrix = None
+            try:
+                matrix = _build_technical_matrix_payload(sym, "6mo")
+            except Exception:
+                matrix = None
+            _persist_symbol_research(sym, fundamentals, matrix, financials)
+            out[sym] = {
+                "type": "fund" if fundamentals.get("is_fund") else "stock",
+                "quarters": len(financials),
+                "matrix": bool(matrix and not matrix.get("error")),
+            }
+        except Exception as e:
+            out[sym] = {"error": str(e)}
+        finally:
+            import gc
+            gc.collect()
+    return {"ok": True, "symbols": len(syms), "detail": out}
+
+
 @app.post("/api/research/backfill-all")
 def api_backfill_all(lookback_days: int = 180, step_days: int = 5):
     """回填所有持倉 + 觀察清單標的的 17D 歷史。"""
@@ -4307,7 +4374,35 @@ def _fmt_num(v, digits=2):
 def _build_fundamentals_text(symbol: str, price: Optional[float], fundamentals: Optional[dict] = None) -> str:
     """Human-readable fundamentals block for the LLM context."""
     f = fundamentals if fundamentals is not None else fetch_fundamentals(symbol)
-    if not f or all(v is None for k, v in f.items() if k not in ("sector", "industry")):
+    if not f:
+        return "基本面數據：暫時無法取得（yfinance 無回應或標的無基本面）。"
+
+    # ETF / 基金：改用基金等價資訊（無損益表）
+    if f.get("is_fund") and f.get("etf"):
+        e = f["etf"]
+        lines = ["【ETF / 基金概況】"]
+        if e.get("category") or e.get("fund_family"):
+            lines.append(f"類別：{e.get('category') or '—'}，發行商：{e.get('fund_family') or '—'}")
+        ta = e.get("total_assets")
+        ta_txt = f"{ta/1e8:.0f}億" if ta else "—"
+        lines.append(
+            f"規模：{ta_txt}，NAV {_fmt_num(e.get('nav'))}，"
+            f"配息率 {_fmt_pct(e.get('yield'))}，3 年 β {_fmt_num(e.get('beta_3y'))}"
+        )
+        lines.append(
+            f"報酬：YTD {_fmt_num(e.get('ytd_return'))}%，"
+            f"3 年平均 {_fmt_pct(e.get('three_year_return'))}，5 年平均 {_fmt_pct(e.get('five_year_return'))}"
+        )
+        if price and e.get("nav"):
+            prem = (price / e["nav"] - 1) * 100
+            lines.append(f"折溢價：市價相對 NAV {prem:+.2f}%")
+        holdings = e.get("top_holdings") or []
+        if holdings:
+            hs = "，".join(f"{h['symbol']} {h['weight']}%" for h in holdings[:5])
+            lines.append(f"前 5 大持股：{hs}")
+        return "\n".join(lines)
+
+    if all(v is None for k, v in f.items() if k not in ("sector", "industry", "quote_type", "is_fund")):
         return "基本面數據：暫時無法取得（yfinance 無回應或標的無基本面）。"
     lines = ["【基本面與估值】"]
     if f.get("sector") or f.get("industry"):
