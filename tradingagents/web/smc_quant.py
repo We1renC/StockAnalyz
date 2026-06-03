@@ -7,6 +7,7 @@ same outputs can be reused by API views, chart markers, and future backtests.
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
@@ -27,6 +28,75 @@ class SMCConfig:
     entry_threshold: int = 8
 
 
+DEFAULT_CONFLUENCE_WEIGHTS = {
+    "htf_bias_alignment": 2,
+    "premium_discount_alignment": 2,
+    "unmitigated_ob": 2,
+    "unfilled_fvg": 1,
+    "liquidity_sweep": 2,
+    "ltf_choch": 2,
+    "ote_zone": 1,
+    "killzone": 1,
+    "displacement": 1,
+}
+
+
+MARKET_CONFIGS = {
+    "tw": {
+        "timezone": "Asia/Taipei",
+        "session": "09:00-13:30",
+        "primary_killzone": "09:00-10:00",
+        "tick_size": 0.01,
+        "daily_price_limit_pct": 10,
+        "commission_pct": 0.001425,
+        "transaction_tax_pct": 0.003,
+        "default_timeframes": {"htf": "1y", "mtf": "6mo", "ltf": "1mo"},
+    },
+    "us": {
+        "timezone": "America/New_York",
+        "session": "09:30-16:00",
+        "primary_killzone": "09:30-10:00",
+        "tick_size": 0.01,
+        "daily_price_limit_pct": None,
+        "commission_pct": 0.0,
+        "transaction_tax_pct": 0.0,
+        "default_timeframes": {"htf": "1y", "mtf": "6mo", "ltf": "1mo"},
+    },
+    "crypto": {
+        "timezone": "UTC",
+        "session": "24/7",
+        "primary_killzone": "London/NY",
+        "tick_size": 0.01,
+        "daily_price_limit_pct": None,
+        "commission_pct": 0.0006,
+        "funding_sensitive": True,
+        "default_timeframes": {"htf": "1d", "mtf": "4h", "ltf": "15m"},
+        "max_leverage": 3,
+    },
+}
+
+
+def infer_market(symbol: str) -> str:
+    upper = (symbol or "").upper()
+    if upper.endswith((".TW", ".TWO")):
+        return "tw"
+    if any(x in upper for x in ("BTC", "ETH", "USDT", "USD-")) or "/" in upper:
+        return "crypto"
+    return "us"
+
+
+def market_config(symbol: str) -> dict:
+    return deepcopy(MARKET_CONFIGS[infer_market(symbol)])
+
+
+def confluence_weights(overrides: Optional[dict[str, int]] = None) -> dict[str, int]:
+    weights = dict(DEFAULT_CONFLUENCE_WEIGHTS)
+    for key, value in (overrides or {}).items():
+        if key in weights:
+            weights[key] = int(value)
+    return weights
+
+
 def _safe_float(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -45,6 +115,12 @@ def _ts_value(index_value) -> int:
 
 def _record_time(index_value) -> str:
     return pd.Timestamp(index_value).isoformat()
+
+
+def _round_tick(value: float, tick_size: float = 0.01) -> float:
+    if tick_size <= 0:
+        return round(float(value), 4)
+    return round(round(float(value) / tick_size) * tick_size, 4)
 
 
 def normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
@@ -555,6 +631,7 @@ def build_signals(
     session: dict,
     prev: dict,
     cfg: SMCConfig,
+    weights: Optional[dict[str, int]] = None,
 ) -> list[dict]:
     if len(df) == 0:
         return []
@@ -581,16 +658,17 @@ def build_signals(
 
     factors = []
     score = 0
+    w = confluence_weights(weights)
     checks = [
-        ("htf_bias_alignment", bias, 2, direction != 0),
-        ("premium_discount_alignment", pd.get("zone"), 2, in_pd),
-        ("unmitigated_ob", len(active_ob), 2, bool(active_ob)),
-        ("unfilled_fvg", len(active_fvg), 1, bool(active_fvg)),
-        ("liquidity_sweep", recent_sweep, 2, recent_sweep),
-        ("ltf_choch", recent_choch, 2, recent_choch),
-        ("ote_zone", ote.get("entry_0705") if ote else None, 1, in_ote),
-        ("killzone", session.get("name"), 1, bool(session.get("killzone"))),
-        ("displacement", displacement_recent, 1, displacement_recent),
+        ("htf_bias_alignment", bias, w["htf_bias_alignment"], direction != 0),
+        ("premium_discount_alignment", pd.get("zone"), w["premium_discount_alignment"], in_pd),
+        ("unmitigated_ob", len(active_ob), w["unmitigated_ob"], bool(active_ob)),
+        ("unfilled_fvg", len(active_fvg), w["unfilled_fvg"], bool(active_fvg)),
+        ("liquidity_sweep", recent_sweep, w["liquidity_sweep"], recent_sweep),
+        ("ltf_choch", recent_choch, w["ltf_choch"], recent_choch),
+        ("ote_zone", ote.get("entry_0705") if ote else None, w["ote_zone"], in_ote),
+        ("killzone", session.get("name"), w["killzone"], bool(session.get("killzone"))),
+        ("displacement", displacement_recent, w["displacement"], displacement_recent),
     ]
     for key, value, weight, active in checks:
         if active:
@@ -647,6 +725,102 @@ def build_signals(
             },
         }
     ]
+
+
+def standardize_signal(
+    signal: dict,
+    symbol: str,
+    timeframe: str,
+    market: str,
+    generated_at: str,
+    account_equity: Optional[float] = None,
+    risk_pct: float = 0.01,
+) -> dict:
+    out = dict(signal)
+    out["signal_id"] = f"{symbol}:{timeframe}:{generated_at}:{signal.get('model')}:{signal.get('direction')}"
+    out["symbol"] = symbol
+    out["timeframe"] = timeframe
+    out["market"] = market
+    out["generated_at"] = generated_at
+    out["status"] = "qualified" if signal.get("qualified") else "watch"
+    out["feature_vector"] = {f["id"]: bool(f.get("active")) for f in signal.get("factors", [])}
+    out["risk"] = dict(signal.get("risk") or {})
+    out["risk"]["position_sizing"] = calculate_position_size(
+        out,
+        account_equity=account_equity or 0,
+        risk_pct=risk_pct,
+        market=market,
+    )
+    return out
+
+
+def calculate_position_size(
+    signal: dict,
+    account_equity: float,
+    risk_pct: float = 0.01,
+    market: Optional[str] = None,
+    max_single_loss_pct: float = 0.05,
+    max_units: Optional[int] = None,
+) -> dict:
+    entry = _safe_float(signal.get("entry"))
+    stop = _safe_float(signal.get("stop"))
+    if entry is None or stop is None or account_equity <= 0:
+        return {
+            "qty": 0,
+            "risk_amount": 0,
+            "stop_distance": None,
+            "blocked": True,
+            "reason": "missing_entry_stop_or_equity",
+        }
+    stop_distance = abs(entry - stop)
+    if stop_distance <= 0:
+        return {
+            "qty": 0,
+            "risk_amount": 0,
+            "stop_distance": 0,
+            "blocked": True,
+            "reason": "zero_stop_distance",
+        }
+    capped_risk_pct = min(max(risk_pct, 0), max_single_loss_pct)
+    risk_amount = account_equity * capped_risk_pct
+    raw_qty = math.floor(risk_amount / stop_distance)
+    if max_units is not None:
+        raw_qty = min(raw_qty, int(max_units))
+    cfg = MARKET_CONFIGS.get(market or "", {})
+    tick = cfg.get("tick_size", 0.01)
+    rounded_entry = _round_tick(entry, tick)
+    rounded_stop = _round_tick(stop, tick)
+    return {
+        "qty": max(raw_qty, 0),
+        "risk_amount": round(risk_amount, 2),
+        "risk_pct": capped_risk_pct,
+        "stop_distance": round(stop_distance, 4),
+        "entry_rounded": rounded_entry,
+        "stop_rounded": rounded_stop,
+        "blocked": raw_qty <= 0,
+        "reason": "ok" if raw_qty > 0 else "risk_budget_too_small",
+    }
+
+
+def rule_enforcement_snapshot(
+    account_equity: float,
+    daily_realized_pnl: float = 0,
+    max_drawdown: float = 0,
+    active_days_traded: int = 0,
+    daily_loss_limit: float = 50_000,
+    max_drawdown_limit: float = 50_000,
+) -> dict:
+    daily_buffer = daily_loss_limit + daily_realized_pnl
+    drawdown_buffer = max_drawdown_limit - abs(max_drawdown)
+    locked = account_equity <= 0 or daily_buffer <= 0 or drawdown_buffer <= 0
+    return {
+        "account_equity": round(float(account_equity), 2),
+        "daily_loss_limit_buffer": round(float(daily_buffer), 2),
+        "max_drawdown_limit_buffer": round(float(drawdown_buffer), 2),
+        "active_days_traded": int(active_days_traded),
+        "locked": locked,
+        "lock_reason": "risk_limit_breached" if locked else "ok",
+    }
 
 
 def build_markers(df: pd.DataFrame, swings, structure, fvgs, obs, liquidity) -> list[dict]:
@@ -716,8 +890,11 @@ def build_smc_analysis(
     timeframe: str = "1d",
     config: Optional[SMCConfig] = None,
     correlated: Optional[dict[str, pd.DataFrame]] = None,
+    weights: Optional[dict[str, int]] = None,
+    account_equity: Optional[float] = None,
 ) -> dict:
     cfg = config or SMCConfig()
+    market = infer_market(symbol)
     h = normalize_ohlcv(df)
     if len(h) < max(20, cfg.swing_length * 2 + 5):
         return {
@@ -742,13 +919,26 @@ def build_smc_analysis(
     prev = previous_levels(h)
     session = session_state(h, symbol)
     retracement = retracement_state(h, swings)
-    signals = build_signals(h, bias, obs, fvgs, liquidity, pd_zone, ote, structure, displacements, session, prev, cfg)
+    generated_at = datetime.now().isoformat(timespec="seconds")
+    signals = build_signals(h, bias, obs, fvgs, liquidity, pd_zone, ote, structure, displacements, session, prev, cfg, weights)
+    signals = [
+        standardize_signal(
+            s,
+            symbol=symbol,
+            timeframe=timeframe,
+            market=market,
+            generated_at=generated_at,
+            account_equity=account_equity,
+        )
+        for s in signals
+    ]
     markers = build_markers(h, swings, structure, fvgs, obs, liquidity)
 
     return {
         "symbol": symbol,
         "timeframe": timeframe,
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": generated_at,
+        "market": market,
         "bars": len(h),
         "summary": {
             "bias": bias,
@@ -761,6 +951,7 @@ def build_smc_analysis(
             "premium_discount": pd_zone.get("zone"),
             "lookahead_policy": "swing pivots expose confirm_index; signals use confirmed structures only",
         },
+        "market_config": market_config(symbol),
         "concepts": {
             "swings": swings[-30:],
             "internal_swings": internal_swings[-30:],
@@ -796,4 +987,124 @@ def build_smc_analysis(
             "future_charts": ["session_judas_map", "sweep_confirmation_map", "mtf_composite", "trade_setup_map", "crypto_liquidation_overlay"],
         },
         "config": cfg.__dict__,
+        "confluence_weights": confluence_weights(weights),
     }
+
+
+def build_mtf_analysis(
+    frames: dict[str, pd.DataFrame],
+    symbol: str,
+    config: Optional[SMCConfig] = None,
+    weights: Optional[dict[str, int]] = None,
+    account_equity: Optional[float] = None,
+) -> dict:
+    """Build HTF -> MTF -> LTF SMC alignment from already fetched OHLCV frames."""
+    ordered = [("htf", "HTF"), ("mtf", "MTF"), ("ltf", "LTF")]
+    analyses: dict[str, dict] = {}
+    for key, label in ordered:
+        df = frames.get(key)
+        if df is None:
+            continue
+        analyses[key] = build_smc_analysis(
+            df,
+            symbol=symbol,
+            timeframe=label,
+            config=config,
+            weights=weights,
+            account_equity=account_equity,
+        )
+
+    biases = {k: (v.get("summary") or {}).get("bias") for k, v in analyses.items()}
+    htf_bias = biases.get("htf")
+    ltf_bias = biases.get("ltf")
+    alignment = bool(htf_bias and ltf_bias and _bias_direction(htf_bias) == _bias_direction(ltf_bias) and _bias_direction(htf_bias) != 0)
+    poi = _rank_poi(analyses.get("mtf") or analyses.get("htf") or {})
+    ltf_signals = list((analyses.get("ltf") or {}).get("signals") or [])
+    selected_signal = ltf_signals[0] if ltf_signals else None
+    if selected_signal:
+        selected_signal = dict(selected_signal)
+        selected_signal["mtf_alignment"] = alignment
+        selected_signal["htf_bias"] = htf_bias
+        selected_signal["poi"] = poi[0] if poi else None
+        selected_signal["qualified"] = bool(selected_signal.get("qualified") and alignment)
+        selected_signal["status"] = "qualified" if selected_signal["qualified"] else "watch"
+
+    return {
+        "symbol": symbol,
+        "market": infer_market(symbol),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "layers": analyses,
+        "top_down": {
+            "htf_bias": htf_bias,
+            "mtf_bias": biases.get("mtf"),
+            "ltf_bias": ltf_bias,
+            "aligned": alignment,
+            "poi_count": len(poi),
+            "process": [
+                "HTF bias",
+                "HTF/MTF POI",
+                "LTF sweep or CHoCH trigger",
+                "SMC signal and risk gate",
+            ],
+        },
+        "poi": poi,
+        "selected_signal": selected_signal,
+    }
+
+
+def _bias_direction(bias: Optional[str]) -> int:
+    if bias in ("bullish", "strong_bullish"):
+        return 1
+    if bias in ("bearish", "strong_bearish"):
+        return -1
+    return 0
+
+
+def _rank_poi(analysis: dict) -> list[dict]:
+    concepts = analysis.get("concepts") or {}
+    obs = concepts.get("order_blocks") or []
+    fvgs = concepts.get("fvgs") or []
+    liquidity = concepts.get("liquidity") or []
+    poi: list[dict] = []
+    for ob in obs:
+        score = 3 if ob.get("grade") == "A" else (2 if ob.get("grade") == "B" else 1)
+        if ob.get("unmitigated"):
+            score += 2
+        poi.append(
+            {
+                "type": "order_block",
+                "direction": ob.get("direction"),
+                "top": ob.get("top"),
+                "bottom": ob.get("bottom"),
+                "entry": ob.get("mid"),
+                "score": score,
+                "source_index": ob.get("index"),
+            }
+        )
+    for fvg in fvgs:
+        score = 2 if fvg.get("displacement_confirmed") else 1
+        if not fvg.get("mitigated"):
+            score += 1
+        poi.append(
+            {
+                "type": "fvg",
+                "direction": fvg.get("direction"),
+                "top": fvg.get("top"),
+                "bottom": fvg.get("bottom"),
+                "entry": fvg.get("mid"),
+                "score": score,
+                "source_index": fvg.get("index"),
+            }
+        )
+    for liq in liquidity:
+        poi.append(
+            {
+                "type": "liquidity",
+                "direction": liq.get("direction"),
+                "level": liq.get("level"),
+                "score": 2 + int(liq.get("touches") or 0),
+                "swept": liq.get("swept"),
+                "source_index": liq.get("end_index"),
+            }
+        )
+    return sorted(poi, key=lambda x: (x.get("score") or 0, x.get("source_index") or 0), reverse=True)[:20]

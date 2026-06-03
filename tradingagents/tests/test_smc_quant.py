@@ -2,7 +2,16 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
-from smc_quant import SMCConfig, build_smc_analysis, detect_swings, normalize_ohlcv
+from smc_quant import (
+    SMCConfig,
+    build_mtf_analysis,
+    build_smc_analysis,
+    calculate_position_size,
+    detect_swings,
+    infer_market,
+    normalize_ohlcv,
+    rule_enforcement_snapshot,
+)
 
 
 def _sample_ohlcv() -> pd.DataFrame:
@@ -49,6 +58,8 @@ def test_swings_include_confirmation_index_for_lookahead_safety():
 def test_build_smc_analysis_outputs_core_concepts_and_markers():
     result = build_smc_analysis(_sample_ohlcv(), "2330.TW", config=SMCConfig(swing_length=2, internal_swing_length=2))
     assert result["summary"]["bias"] in {"strong_bullish", "bullish", "neutral", "bearish", "strong_bearish"}
+    assert result["market"] == "tw"
+    assert result["market_config"]["timezone"] == "Asia/Taipei"
     concepts = result["concepts"]
     assert concepts["swings"]
     assert "premium_discount" in concepts
@@ -56,3 +67,47 @@ def test_build_smc_analysis_outputs_core_concepts_and_markers():
     assert isinstance(result["signals"], list)
     assert isinstance(result["markers"], list)
     assert result["visualization"]["enabled_charts"]
+
+
+def test_standardized_signal_contains_feature_vector_and_risk_contract():
+    result = build_smc_analysis(
+        _sample_ohlcv(),
+        "ABAT",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+        account_equity=10_000,
+    )
+    assert infer_market("ABAT") == "us"
+    assert result["signals"]
+    signal = result["signals"][0]
+    assert signal["symbol"] == "ABAT"
+    assert signal["market"] == "us"
+    assert signal["signal_id"].startswith("ABAT:")
+    assert isinstance(signal["feature_vector"], dict)
+    assert signal["risk"]["position_sizing"]["risk_amount"] == 100
+
+
+def test_position_sizing_and_rule_enforcement_are_deterministic():
+    sizing = calculate_position_size({"entry": 100, "stop": 95}, account_equity=50_000, risk_pct=0.01, market="us")
+    assert sizing["qty"] == 100
+    assert sizing["risk_amount"] == 500
+    assert sizing["blocked"] is False
+
+    ok = rule_enforcement_snapshot(100_000, daily_realized_pnl=-10_000, max_drawdown=-20_000, active_days_traded=12)
+    assert ok["locked"] is False
+    locked = rule_enforcement_snapshot(100_000, daily_realized_pnl=-55_000, max_drawdown=-20_000)
+    assert locked["locked"] is True
+    assert locked["lock_reason"] == "risk_limit_breached"
+
+
+def test_mtf_analysis_returns_top_down_alignment_and_poi_list():
+    sample = _sample_ohlcv()
+    result = build_mtf_analysis(
+        {"htf": sample, "mtf": sample, "ltf": sample},
+        "BTCUSDT",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+        account_equity=25_000,
+    )
+    assert result["market"] == "crypto"
+    assert set(result["layers"]) == {"htf", "mtf", "ltf"}
+    assert "aligned" in result["top_down"]
+    assert isinstance(result["poi"], list)
