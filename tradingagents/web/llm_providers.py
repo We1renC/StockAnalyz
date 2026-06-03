@@ -14,6 +14,11 @@ DEFAULT_SETTINGS = {
         "google": "",
     },
     "roles": {
+        "smc_structure_analyst": {
+            "provider": "openai",
+            "model": "gpt-5.5",
+            "mode": "cli",
+        },
         "analyst": {
             "provider": "openai",
             "model": "gpt-5.5",       # ChatGPT Pro 旗艦推理
@@ -134,11 +139,34 @@ AVAILABLE_MODELS = {
     ],
 }
 
+WORKFLOW_ROLE_LABELS = {
+    "smc_structure_analyst": "SMC 結構分析師",
+    "analyst": "分析師",
+    "reviewer": "審查員",
+}
 
-def build_analyst_prompt(context: str) -> str:
+
+def build_smc_structure_analyst_prompt(context: str) -> str:
+    return f"""你是 SMC 結構分析師，只專注於 Smart Money Concepts / ICT 結構，不討論基本面，也不要泛泛而談。請使用**繁體中文**，根據我提供的上下文中 SMC 區塊、17D 技術矩陣、即時價格與回測摘要，輸出一份可供其他代理人引用的結構化判讀。
+
+{context}
+
+請直接用 markdown 編號條列輸出：
+
+1. **結構偏向** — 當前多空方向、HTF/MTF/LTF 是否對齊、偏向成立的理由
+2. **POI 與流動性** — 關鍵 OB / FVG / BOS / CHoCH / DOL / Premium-Discount 區
+3. **觸發與失效** — 什麼條件才算可進場，什麼條件代表結構失效
+4. **回測與可信度** — 若上下文有回測樣本，說明其支持或限制；若資料不足要明講
+5. **一句話結論** — 給綜合分析師的執行摘要
+"""
+
+
+def build_analyst_prompt(context: str, smc_report: str = "") -> str:
+    smc_section = f"\n[SMC 結構分析師判讀]\n{smc_report}\n" if smc_report else ""
     return f"""你是專業金融分析師。我提供你這檔標的的歷史財報與基本面、17D 全景技術矩陣（含歷史偏向）、SMC 結構與回測摘要、即時技術指標與大盤環境。請**交叉判讀**後給出操作建議與投資建議。用**繁體中文**。
 
 {context}
+{smc_section}
 
 **方法**：把財報（營收/EPS/毛利趨勢）、估值（本益比/成長/賣方目標價）、17D 技術（共振區、各維度偏向、歷史偏向變化）、SMC（結構方向、DOL、回測樣本）四者交叉比對，重點在四者是同向強化還是背離；背離時明確指出並權衡。點位要有依據（進場=技術共振區或 SMC POI 且估值合理；停損=結構失效；停利=目標價/壓力/DOL 共振區）。資料缺口降權。
 
@@ -151,11 +179,13 @@ def build_analyst_prompt(context: str) -> str:
 """
 
 
-def build_reviewer_prompt(context: str, analyst_text: str) -> str:
+def build_reviewer_prompt(context: str, analyst_text: str, smc_report: str = "") -> str:
+    smc_section = f"\n[SMC 結構分析師判讀]\n{smc_report}\n" if smc_report else ""
     return f"""你是嚴格的投資審查員，負責**找出分析師報告的盲點與弱點**。
 
 [原始數據]
 {context}
+{smc_section}
 
 [分析師報告]
 {analyst_text}
@@ -174,6 +204,27 @@ def build_reviewer_prompt(context: str, analyst_text: str) -> str:
 ## 四、修正後的建議
 （給出你認為更穩健的操作版本）
 """
+
+
+def workflow_role_sequence(mode: str = "both") -> list[str]:
+    if mode == "analyst":
+        return ["smc_structure_analyst", "analyst"]
+    if mode == "both":
+        return ["smc_structure_analyst", "analyst", "reviewer"]
+    return []
+
+
+def build_workflow_prompt(role: str, context: str, prior_outputs: dict | None = None) -> str:
+    prior_outputs = prior_outputs or {}
+    smc_report = prior_outputs.get("smc_structure_analyst", "")
+    analyst_text = prior_outputs.get("analyst", "")
+    if role == "smc_structure_analyst":
+        return build_smc_structure_analyst_prompt(context)
+    if role == "analyst":
+        return build_analyst_prompt(context, smc_report=smc_report)
+    if role == "reviewer":
+        return build_reviewer_prompt(context, analyst_text, smc_report=smc_report)
+    raise ValueError(f"Unknown workflow role: {role}")
 
 
 def load_settings() -> dict:
@@ -403,61 +454,41 @@ def run_workflow(context: str, mode: str = "both") -> dict:
     roles = settings["roles"]
 
     result = {"context": context, "mode": mode, "steps": []}
+    prior_outputs: dict[str, str] = {}
 
-    # Step 1: 分析師
-    if mode in ("analyst", "both"):
-        analyst = roles["analyst"]
-        analyst_prompt = build_analyst_prompt(context)
+    for role in workflow_role_sequence(mode):
+        cfg = roles.get(role, {})
+        provider = cfg.get("provider", "")
+        model = cfg.get("model", "")
+        role_mode = cfg.get("mode", "api")
+        prompt = build_workflow_prompt(role, context, prior_outputs)
         try:
-            analyst_text = call_llm(
-                analyst["provider"], analyst["model"],
-                analyst_prompt,
-                keys.get(analyst["provider"], ""),
-                mode=analyst.get("mode", "api"),
+            output = call_llm(
+                provider,
+                model,
+                prompt,
+                keys.get(provider, ""),
+                mode=role_mode,
             )
+            prior_outputs[role] = output
             result["steps"].append({
-                "role": "analyst",
-                "provider": analyst["provider"],
-                "model": analyst["model"],
-                "mode": analyst.get("mode", "api"),
-                "output": analyst_text,
+                "role": role,
+                "label": WORKFLOW_ROLE_LABELS.get(role, role),
+                "provider": provider,
+                "model": model,
+                "mode": role_mode,
+                "output": output,
             })
         except Exception as e:
             result["steps"].append({
-                "role": "analyst",
-                "provider": analyst["provider"],
-                "model": analyst["model"],
-                "mode": analyst.get("mode", "api"),
+                "role": role,
+                "label": WORKFLOW_ROLE_LABELS.get(role, role),
+                "provider": provider,
+                "model": model,
+                "mode": role_mode,
                 "error": str(e),
             })
-            return result
-
-    # Step 2: 審查員
-    if mode == "both":
-        reviewer = roles["reviewer"]
-        analyst_text = result["steps"][0].get("output", "")
-        reviewer_prompt = build_reviewer_prompt(context, analyst_text)
-        try:
-            reviewer_text = call_llm(
-                reviewer["provider"], reviewer["model"],
-                reviewer_prompt,
-                keys.get(reviewer["provider"], ""),
-                mode=reviewer.get("mode", "api"),
-            )
-            result["steps"].append({
-                "role": "reviewer",
-                "provider": reviewer["provider"],
-                "model": reviewer["model"],
-                "mode": reviewer.get("mode", "api"),
-                "output": reviewer_text,
-            })
-        except Exception as e:
-            result["steps"].append({
-                "role": "reviewer",
-                "provider": reviewer["provider"],
-                "model": reviewer["model"],
-                "mode": reviewer.get("mode", "api"),
-                "error": str(e),
-            })
+            if role in ("analyst", "reviewer"):
+                return result
 
     return result

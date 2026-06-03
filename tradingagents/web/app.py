@@ -30,7 +30,7 @@ from pydantic import BaseModel
 from llm_providers import (
     load_settings, save_settings, mask_key,
     run_workflow, AVAILABLE_MODELS, detect_cli_availability,
-    call_llm, call_cli, build_analyst_prompt, build_reviewer_prompt,
+    call_llm, call_cli, workflow_role_sequence, build_workflow_prompt,
 )
 from technical_matrix import build_technical_matrix
 from smc_quant import SMCConfig, build_smc_analysis
@@ -6546,80 +6546,51 @@ def api_llm_analyze_stream(symbol: str, mode: str = "both"):
         settings = load_settings()
         keys = settings["api_keys"]
         roles = settings["roles"]
+        prior_outputs = {}
 
-        # ── Step 1: 分析師 ──
-        if mode in ("analyst", "both"):
-            analyst = roles["analyst"]
+        for role in workflow_role_sequence(mode):
+            cfg = roles.get(role, {})
+            provider = cfg.get("provider", "")
+            model = cfg.get("model", "")
+            role_mode = cfg.get("mode", "api")
             yield emit("step_start", {
-                "role": "analyst",
-                "provider": analyst["provider"],
-                "model": analyst["model"],
-                "mode": analyst.get("mode", "api"),
+                "role": role,
+                "provider": provider,
+                "model": model,
+                "mode": role_mode,
                 "elapsed": round(_time.time() - t0, 1),
             })
 
-            analyst_prompt = build_analyst_prompt(ctx["context"])
+            prompt = build_workflow_prompt(role, ctx["context"], prior_outputs)
             try:
-                analyst_text = call_llm(
-                    analyst["provider"], analyst["model"],
-                    analyst_prompt,
-                    keys.get(analyst["provider"], ""),
-                    mode=analyst.get("mode", "api"),
+                output = call_llm(
+                    provider,
+                    model,
+                    prompt,
+                    keys.get(provider, ""),
+                    mode=role_mode,
                 )
+                prior_outputs[role] = output
                 yield emit("step_done", {
-                    "role": "analyst",
-                    "provider": analyst["provider"],
-                    "model": analyst["model"],
-                    "mode": analyst.get("mode", "api"),
-                    "output": analyst_text,
+                    "role": role,
+                    "provider": provider,
+                    "model": model,
+                    "mode": role_mode,
+                    "output": output,
                     "elapsed": round(_time.time() - t0, 1),
                 })
             except Exception as e:
                 yield emit("step_error", {
-                    "role": "analyst",
-                    "provider": analyst["provider"],
-                    "model": analyst["model"],
+                    "role": role,
+                    "provider": provider,
+                    "model": model,
+                    "mode": role_mode,
                     "error": str(e),
                     "elapsed": round(_time.time() - t0, 1),
                 })
-                yield emit("done", {"elapsed": round(_time.time() - t0, 1)})
-                return
-
-            # ── Step 2: 審查員 ──
-            if mode == "both":
-                reviewer = roles["reviewer"]
-                yield emit("step_start", {
-                    "role": "reviewer",
-                    "provider": reviewer["provider"],
-                    "model": reviewer["model"],
-                    "mode": reviewer.get("mode", "api"),
-                    "elapsed": round(_time.time() - t0, 1),
-                })
-
-                reviewer_prompt = build_reviewer_prompt(ctx["context"], analyst_text)
-                try:
-                    reviewer_text = call_llm(
-                        reviewer["provider"], reviewer["model"],
-                        reviewer_prompt,
-                        keys.get(reviewer["provider"], ""),
-                        mode=reviewer.get("mode", "api"),
-                    )
-                    yield emit("step_done", {
-                        "role": "reviewer",
-                        "provider": reviewer["provider"],
-                        "model": reviewer["model"],
-                        "mode": reviewer.get("mode", "api"),
-                        "output": reviewer_text,
-                        "elapsed": round(_time.time() - t0, 1),
-                    })
-                except Exception as e:
-                    yield emit("step_error", {
-                        "role": "reviewer",
-                        "provider": reviewer["provider"],
-                        "model": reviewer["model"],
-                        "error": str(e),
-                        "elapsed": round(_time.time() - t0, 1),
-                    })
+                if role in ("analyst", "reviewer"):
+                    yield emit("done", {"elapsed": round(_time.time() - t0, 1)})
+                    return
 
         yield emit("done", {"elapsed": round(_time.time() - t0, 1)})
 
@@ -6676,6 +6647,7 @@ def _run_deep_analysis(symbol: str, mode: str = "analyst") -> dict:
         return {"symbol": symbol, "ok": False, "error": str(e), "elapsed": round(_time.time() - t0, 1)}
 
     steps = result.get("steps", [])
+    smc_step = next((s for s in steps if s.get("role") == "smc_structure_analyst"), None)
     analyst_step = next((s for s in steps if s.get("role") == "analyst"), None)
     reviewer_step = next((s for s in steps if s.get("role") == "reviewer"), None)
     if not analyst_step or analyst_step.get("error"):
@@ -6684,6 +6656,8 @@ def _run_deep_analysis(symbol: str, mode: str = "analyst") -> dict:
                 "elapsed": round(_time.time() - t0, 1)}
 
     sections = {"analyst": analyst_step.get("output", "")}
+    if smc_step and smc_step.get("output"):
+        sections["smc_structure_analyst"] = smc_step["output"]
     if reviewer_step and reviewer_step.get("output"):
         sections["reviewer"] = reviewer_step["output"]
     sections["smc"] = _build_smc_snapshot_payload(symbol)

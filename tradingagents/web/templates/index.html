@@ -1487,10 +1487,36 @@ body { background: var(--bg-base); color: var(--text-primary); }
     <!-- Roles -->
     <div class="mb-6">
       <h3 class="text-lg font-semibold mb-3 border-b border-gray-700 pb-1">角色指派</h3>
-      <p class="text-xs text-gray-400 mb-3">指定每個角色使用的 LLM。建議：分析師用主流推理模型，審查員用不同家來避免同質化偏誤。</p>
+      <p class="text-xs text-gray-400 mb-3">指定每個角色使用的 LLM。建議：SMC 分析師負責結構拆解，分析師做綜合判讀，審查員用不同家來避免同質化偏誤。</p>
 
       <!-- CLI Status Bar -->
       <div id="cli-status-bar" class="text-xs bg-gray-900 p-2 rounded mb-3"></div>
+
+      <!-- SMC Structure Analyst -->
+      <div class="bg-cyan-900 bg-opacity-30 p-3 rounded mb-3">
+        <div class="font-semibold text-cyan-300 mb-2">SMC 結構分析師（SMC Structure Analyst）— 結構 / 流動性 / DOL</div>
+        <div class="grid grid-cols-3 gap-3">
+          <div>
+            <label class="text-xs text-gray-400">Provider</label>
+            <select id="role-smc_structure_analyst-provider" class="input-field" onchange="updateModelOptions('smc_structure_analyst')">
+              <option value="anthropic">Anthropic Claude</option>
+              <option value="openai">OpenAI</option>
+              <option value="google">Google Gemini</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-400">Model</label>
+            <select id="role-smc_structure_analyst-model" class="input-field"></select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-400">模式</label>
+            <select id="role-smc_structure_analyst-mode" class="input-field">
+              <option value="cli">CLI（走訂閱）</option>
+              <option value="api">API（按量計費）</option>
+            </select>
+          </div>
+        </div>
+      </div>
 
       <!-- Analyst -->
       <div class="bg-blue-900 bg-opacity-30 p-3 rounded mb-3">
@@ -5661,10 +5687,28 @@ function stopDiagRefresh() {
 let _llmEventSource = null;
 
 function renderStep(step) {
-  const isAnalyst = step.role === 'analyst';
-  const headerClass = isAnalyst ? 'bg-blue-900 bg-opacity-50' : 'bg-purple-900 bg-opacity-50';
-  const bodyClass = isAnalyst ? 'bg-blue-900 bg-opacity-20' : 'bg-purple-900 bg-opacity-20';
-  const roleLabel = isAnalyst ? '分析師' : '審查員';
+  const roleMeta = {
+    smc_structure_analyst: {
+      headerClass: 'bg-cyan-900 bg-opacity-50',
+      bodyClass: 'bg-cyan-900 bg-opacity-20',
+      roleLabel: 'SMC 結構分析師',
+    },
+    analyst: {
+      headerClass: 'bg-blue-900 bg-opacity-50',
+      bodyClass: 'bg-blue-900 bg-opacity-20',
+      roleLabel: '分析師',
+    },
+    reviewer: {
+      headerClass: 'bg-purple-900 bg-opacity-50',
+      bodyClass: 'bg-purple-900 bg-opacity-20',
+      roleLabel: '審查員',
+    },
+  }[step.role] || {
+    headerClass: 'bg-slate-800 bg-opacity-50',
+    bodyClass: 'bg-slate-800 bg-opacity-20',
+    roleLabel: step.role || '代理人',
+  };
+  const { headerClass, bodyClass, roleLabel } = roleMeta;
   const modeBadge = step.mode === 'cli' ? '<span class="ml-1 text-emerald-300">CLI</span>' : '<span class="ml-1 text-yellow-300">API</span>';
 
   if (step.status === 'running') {
@@ -5711,6 +5755,7 @@ const ANALYSIS_SECTION_LABELS = {
   news_report: '新聞分析',
   fundamentals_report: '基本面分析',
   smc_report: 'SMC 結構分析',
+  smc_structure_analyst: 'SMC 結構分析師',
   smc: 'SMC 快照',
   analyst: '分析師',
   reviewer: '審查員',
@@ -6044,6 +6089,11 @@ async function openSettings() {
     ` <span class="text-gray-500">(CLI 模式需先在 terminal 執行 <code>claude</code>/<code>codex</code>/<code>gemini</code> 完成登入)</span>`;
 
   // Roles
+  $('role-smc_structure_analyst-provider').value = r.roles.smc_structure_analyst.provider;
+  updateModelOptions('smc_structure_analyst');
+  $('role-smc_structure_analyst-model').value = r.roles.smc_structure_analyst.model;
+  $('role-smc_structure_analyst-mode').value = r.roles.smc_structure_analyst.mode || 'cli';
+
   $('role-analyst-provider').value = r.roles.analyst.provider;
   updateModelOptions('analyst');
   $('role-analyst-model').value = r.roles.analyst.model;
@@ -6094,9 +6144,10 @@ function updateModelOptions(role) {
 }
 
 function updateLLMHint(roles) {
+  const sMode = roles.smc_structure_analyst.mode === 'cli' ? 'CLI' : 'API';
   const aMode = roles.analyst.mode === 'cli' ? 'CLI' : 'API';
   const rMode = roles.reviewer.mode === 'cli' ? 'CLI' : 'API';
-  $('llm-config-hint').innerHTML = `分析師: <code class="bg-gray-900 px-1 rounded text-emerald-300">${roles.analyst.provider}/${roles.analyst.model} ${aMode}</code> &nbsp;|&nbsp; 審查員: <code class="bg-gray-900 px-1 rounded text-purple-300">${roles.reviewer.provider}/${roles.reviewer.model} ${rMode}</code>`;
+  $('llm-config-hint').innerHTML = `SMC: <code class="bg-gray-900 px-1 rounded text-cyan-300">${roles.smc_structure_analyst.provider}/${roles.smc_structure_analyst.model} ${sMode}</code> &nbsp;|&nbsp; 分析師: <code class="bg-gray-900 px-1 rounded text-emerald-300">${roles.analyst.provider}/${roles.analyst.model} ${aMode}</code> &nbsp;|&nbsp; 審查員: <code class="bg-gray-900 px-1 rounded text-purple-300">${roles.reviewer.provider}/${roles.reviewer.model} ${rMode}</code>`;
 }
 
 async function saveSettings() {
@@ -6107,6 +6158,11 @@ async function saveSettings() {
       google: $('key-google').value,
     },
     roles: {
+      smc_structure_analyst: {
+        provider: $('role-smc_structure_analyst-provider').value,
+        model: $('role-smc_structure_analyst-model').value,
+        mode: $('role-smc_structure_analyst-mode').value,
+      },
       analyst: {
         provider: $('role-analyst-provider').value,
         model: $('role-analyst-model').value,
