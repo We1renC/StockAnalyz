@@ -3603,6 +3603,43 @@ def api_add_trade(t: TradeCreate):
 
     created_at = datetime.utcnow().isoformat() + "Z"
     conn = get_db()
+
+    # 以持股頁面中的成本價格為準：若賣出時交易紀錄無足夠的買入額度，自動以持倉成本補登買入明細
+    if t.action == "sell":
+        try:
+            buy_shares_res = conn.execute(
+                "SELECT SUM(shares) FROM trades WHERE symbol=? AND action='buy'", (symbol,)
+            ).fetchone()
+            sell_shares_res = conn.execute(
+                "SELECT SUM(shares) FROM trades WHERE symbol=? AND action='sell'", (symbol,)
+            ).fetchone()
+            total_buy = buy_shares_res[0] or 0.0
+            total_sell = sell_shares_res[0] or 0.0
+            new_total_sell = total_sell + t.shares
+
+            if total_buy < new_total_sell:
+                deficit = new_total_sell - total_buy
+                pos = conn.execute(
+                    "SELECT cost_price, purchase_date, name, currency FROM positions WHERE symbol=?", (symbol,)
+                ).fetchone()
+                if pos:
+                    pos_cost = pos["cost_price"]
+                    pos_date = pos["purchase_date"] or date.today().isoformat()
+                    pos_name = pos["name"] or t.name or ""
+                    pos_curr = pos["currency"] or t.currency
+                    auto_fee, _ = _estimate_trade_fees("buy", deficit, pos_cost, pos_curr)
+
+                    conn.execute(
+                        """INSERT INTO trades
+                           (symbol, name, action, shares, price, fee, tax, trade_date, settle_date, currency, notes, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (symbol, pos_name, "buy", deficit, pos_cost, auto_fee, 0.0,
+                         pos_date, None, pos_curr, "自動補登初始持倉成本", created_at)
+                    )
+                    conn.commit()
+        except Exception as ex:
+            print(f"  [WARN] Failed to auto-backfill buy trade: {ex}")
+
     conn.execute(
         """INSERT INTO trades
            (symbol, name, action, shares, price, fee, tax, trade_date, settle_date, currency, notes, created_at)

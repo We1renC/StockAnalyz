@@ -8,7 +8,7 @@ from unittest.mock import patch
 from datetime import date
 
 import app
-from app import PositionCreate, PositionUpdate, api_add_position, api_update_position
+from app import PositionCreate, PositionUpdate, api_add_position, api_update_position, TradeCreate, api_add_trade
 
 
 @pytest.fixture(autouse=True)
@@ -136,3 +136,47 @@ def test_api_add_position_creates_trade(temp_db):
         assert trade["price"] == 120.0
         assert trade["trade_date"] == "2026-05-20"
         assert trade["notes"] == "新增持倉自動導入"
+
+
+def test_api_add_sell_trade_autofills_from_position(temp_db):
+    """Test that adding a sell trade for a symbol with deficit buy trades automatically creates a buy trade from the active position's cost."""
+    with patch("app.DB", Path(temp_db)):
+        conn = app.get_db()
+        conn.execute(
+            "INSERT INTO positions (symbol, name, category, shares, cost_price, currency, purchase_date) "
+            "VALUES ('TEST.TW', '測試', '測試股', 10.0, 150.0, 'TWD', '2026-05-15')"
+        )
+        conn.commit()
+        conn.close()
+        
+        # Now add a sell trade of 5.0 shares
+        t = TradeCreate(
+            symbol="TEST.TW",
+            name="測試",
+            action="sell",
+            shares=5.0,
+            price=200.0,
+            currency="TWD",
+            trade_date="2026-06-03",
+            auto_fee=True
+        )
+        
+        res = api_add_trade(t)
+        assert res["ok"] is True
+        
+        # Verify both buy and sell trades exist in trades table
+        conn = app.get_db()
+        trades = conn.execute("SELECT * FROM trades WHERE symbol='TEST.TW' ORDER BY action").fetchall()
+        conn.close()
+        
+        assert len(trades) == 2
+        buy_trade = [tr for tr in trades if tr["action"] == "buy"][0]
+        sell_trade = [tr for tr in trades if tr["action"] == "sell"][0]
+        
+        assert buy_trade["shares"] == 5.0  # Deficit of sell (5.0) - buy (0.0) = 5.0
+        assert buy_trade["price"] == 150.0 # From positions cost_price
+        assert buy_trade["trade_date"] == "2026-05-15" # From positions purchase_date
+        assert buy_trade["notes"] == "自動補登初始持倉成本"
+        
+        assert sell_trade["shares"] == 5.0
+        assert sell_trade["price"] == 200.0
