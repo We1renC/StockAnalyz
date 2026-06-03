@@ -43,8 +43,8 @@ def persist_backtest_run(conn, result: dict, period: str, source: str = "") -> i
                (run_id, symbol, market, timeframe, trade_id, direction, model,
                 entry_time, exit_time, entry_price, exit_price, stop_price, tp1_price,
                 qty, pnl, r_multiple, score, threshold, feature_vector, dol_target,
-                exit_reason, holding_bars, win)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                exit_reason, holding_bars, win, mae, mfe)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 (
                     run_id,
@@ -70,6 +70,8 @@ def persist_backtest_run(conn, result: dict, period: str, source: str = "") -> i
                     trade.get("exit_reason"),
                     trade.get("holding_bars"),
                     1 if trade.get("win") else 0,
+                    trade.get("mae"),
+                    trade.get("mfe"),
                 )
                 for trade in trades
             ],

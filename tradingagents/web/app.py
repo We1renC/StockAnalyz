@@ -282,6 +282,8 @@ def init_db():
         exit_reason TEXT,
         holding_bars INTEGER,
         win INTEGER DEFAULT 0,
+        mae REAL,
+        mfe REAL,
         FOREIGN KEY(run_id) REFERENCES smc_backtest_runs(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_smc_trades_symbol_entry
@@ -325,6 +327,14 @@ def init_db():
     ):
         try:
             c.execute(f"ALTER TABLE trades ADD COLUMN {col_def}")
+            conn.commit()
+        except Exception:
+            pass
+
+    # Migration: smc_backtest_trades mae and mfe columns
+    for col in ("mae", "mfe"):
+        try:
+            c.execute(f"ALTER TABLE smc_backtest_trades ADD COLUMN {col} REAL")
             conn.commit()
         except Exception:
             pass
@@ -3637,6 +3647,99 @@ def api_smc_backtest_report_html(symbol: Optional[str] = None, limit_runs: int =
         conn.close()
     title = f"SMC Backtest Report - {symbol.upper()}" if symbol else "SMC Backtest Report"
     return HTMLResponse(build_smc_report_html(report, title=title))
+
+
+@app.get("/api/smc-learning/attribution")
+def api_smc_learning_attribution(symbol: Optional[str] = None):
+    from learning.trade_store import load_trades_from_db
+    from learning.attribution import generate_attribution_report
+    
+    conn = get_db()
+    try:
+        df = load_trades_from_db(conn, symbol=symbol)
+        report = generate_attribution_report(df)
+        return sanitize_float_values(report)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate attribution: {str(e)}")
+    finally:
+        conn.close()
+
+
+@app.post("/api/smc-learning/calibrate")
+def api_smc_learning_calibrate(symbol: Optional[str] = None):
+    from learning.trade_store import load_trades_from_db
+    from learning.attribution import generate_attribution_report
+    from learning.calibration import calibrate_confluence_weights, calculate_kelly_fraction
+    
+    conn = get_db()
+    try:
+        df = load_trades_from_db(conn, symbol=symbol)
+        if df.empty or len(df) < 5:
+            return {
+                "ok": False,
+                "reason": "Insufficient trade data for calibration (need at least 5 trades)",
+                "proposed_weights": {},
+                "kelly_cap_pct": 0.01
+            }
+            
+        report = generate_attribution_report(df)
+        calibration = calibrate_confluence_weights(report)
+        
+        # Calculate dynamic Kelly Cap based on overall win rate and payoff
+        wins_df = df[df["win"] == 1]
+        losses_df = df[df["win"] == 0]
+        win_rate = len(wins_df) / len(df)
+        avg_win_pnl = float(wins_df["pnl"].mean()) if not wins_df.empty else 0.0
+        avg_loss_pnl = float(losses_df["pnl"].mean()) if not losses_df.empty else 0.0
+        
+        kelly_cap = calculate_kelly_fraction(
+            win_rate=win_rate,
+            avg_win_pnl=avg_win_pnl,
+            avg_loss_pnl=avg_loss_pnl,
+            fraction=0.25
+        )
+        
+        from learning.cross_val import purged_train_test_split, estimate_backtest_overfitting
+        train_df, test_df = purged_train_test_split(df)
+        validation = {}
+        if not train_df.empty and not test_df.empty:
+            validation = estimate_backtest_overfitting(
+                train_df["r_multiple"],
+                test_df["r_multiple"]
+            )
+            
+        from learning.feature_importance import calculate_feature_importance
+        importance = calculate_feature_importance(df)
+        
+        return sanitize_float_values({
+            "ok": True,
+            "proposed_weights": calibration["proposed_weights"],
+            "kelly_cap_pct": kelly_cap,
+            "changes": calibration["changes"],
+            "validation": validation,
+            "feature_importance": importance.get("importances", []),
+            "feature_importance_method": importance.get("method", "correlation")
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to calibrate: {str(e)}")
+    finally:
+        conn.close()
+
+
+@app.get("/api/smc-learning/decay")
+def api_smc_learning_decay(symbol: Optional[str] = None):
+    from learning.trade_store import load_trades_from_db
+    from learning.decay_monitor import detect_edge_decay
+    
+    conn = get_db()
+    try:
+        df = load_trades_from_db(conn, symbol=symbol)
+        decay = detect_edge_decay(df)
+        return sanitize_float_values(decay)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to monitor decay: {str(e)}")
+    finally:
+        conn.close()
 
 
 @app.post("/api/research/backfill/{symbol}")
