@@ -1298,3 +1298,58 @@ def test_edge_decay_check_skips_when_live_sample_too_small():
     out = edge_decay_check([{"r_multiple": 2.0}] * 30, [{"r_multiple": 0.1}] * 5)
     assert out["status"] == "insufficient_live_samples"
     assert out["review_required"] is False
+
+
+def test_inverse_fvg_flips_direction_when_fvg_closed_through():
+    """§3.4: IFVG = a mitigated+inverse FVG, direction is the OPPOSITE of original."""
+    from smc_quant import detect_inverse_fvgs
+    h = normalize_ohlcv(_sample_ohlcv())
+    fvgs = [
+        {"index": 5, "direction": 1, "top": 12.0, "bottom": 11.0, "mid": 11.5,
+         "mitigated": True, "inverse": True, "displacement_confirmed": True, "time": None},
+        {"index": 6, "direction": -1, "top": 10.0, "bottom": 9.0, "mid": 9.5,
+         "mitigated": False, "inverse": False, "time": None},
+    ]
+    out = detect_inverse_fvgs(h, fvgs)
+    assert len(out) == 1
+    assert out[0]["direction"] == -1  # bullish FVG inverted
+    assert out[0]["original_direction"] == 1
+    assert out[0]["block_type"] == "inverse_fvg"
+
+
+def test_balanced_price_range_returns_overlap_between_opposing_fvgs():
+    from smc_quant import detect_balanced_price_range
+    h = normalize_ohlcv(_sample_ohlcv())
+    fvgs = [
+        {"index": 5, "direction": 1, "top": 12.0, "bottom": 10.0, "mid": 11.0, "time": None},
+        {"index": 6, "direction": -1, "top": 11.5, "bottom": 9.5, "mid": 10.5, "time": None},
+    ]
+    out = detect_balanced_price_range(h, fvgs, max_gap_bars=2)
+    assert len(out) == 1
+    bpr = out[0]
+    assert bpr["top"] == 11.5
+    assert bpr["bottom"] == 10.0  # overlap [10.0, 11.5]
+    assert bpr["block_type"] == "balanced_price_range"
+
+
+def test_volume_imbalance_only_fires_on_body_gap_without_wick_overlap():
+    from smc_quant import detect_volume_imbalance
+    # Bar 0: decisive bullish body 100→110. Bar 1 opens at 112 with low 111 → VI gap [110,111].
+    rows = [(100, 110, 99, 110, 1), (112, 115, 111, 114, 1)]
+    idx = [datetime(2026, 1, 1), datetime(2026, 1, 2)]
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    out = detect_volume_imbalance(df)
+    assert len(out) == 1
+    vi = out[0]
+    assert vi["direction"] == 1
+    assert vi["bottom"] == 110.0 and vi["top"] == 111.0
+
+
+def test_build_smc_analysis_exposes_fvg_extensions():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    for key in ("inverse_fvgs", "balanced_price_ranges", "volume_imbalances"):
+        assert key in result["concepts"]
+        assert isinstance(result["concepts"][key], list)

@@ -359,6 +359,134 @@ def detect_fvgs(df: pd.DataFrame, displacements: list[dict]) -> list[dict]:
     return out
 
 
+def detect_inverse_fvgs(df: pd.DataFrame, fvgs: list[dict]) -> list[dict]:
+    """§3.4 — Inverse FVG (IFVG).
+
+    When price completely pierces and closes past a Fair Value Gap, the
+    gap flips polarity: a bullish FVG that's been closed below becomes
+    bearish resistance, and vice versa. We surface IFVGs as a separate
+    structural concept so the entry-model / chart layers can colour them
+    distinctly from un-mitigated FVGs.
+    """
+    if df is None or len(df) == 0 or not fvgs:
+        return []
+    out: list[dict] = []
+    for f in fvgs:
+        if not f.get("mitigated"):
+            continue
+        if not f.get("inverse"):
+            continue  # The original detect_fvgs already marks the flip event
+        direction = int(f.get("direction", 0))
+        ifvg_direction = -direction
+        out.append({
+            "index": int(f["index"]),
+            "time": f.get("time"),
+            "original_direction": direction,
+            "direction": ifvg_direction,
+            "top": float(f["top"]),
+            "bottom": float(f["bottom"]),
+            "mid": float(f.get("mid", (f["top"] + f["bottom"]) / 2)),
+            "mitigated_index": f.get("mitigated_index"),
+            "block_type": "inverse_fvg",
+            "displacement_confirmed": bool(f.get("displacement_confirmed")),
+        })
+    return out
+
+
+def detect_balanced_price_range(
+    df: pd.DataFrame, fvgs: list[dict], *, max_gap_bars: int = 2,
+) -> list[dict]:
+    """§3.4 — Balanced Price Range (BPR).
+
+    A BPR is the *overlap* of an opposing bullish & bearish FVG formed
+    within ``max_gap_bars`` of each other. The intersection becomes a
+    high-precision reversal POI (used by Unicorn variants too). We only
+    report overlaps whose direction flip happens within the window —
+    older FVG pairs are noise.
+    """
+    if df is None or len(df) == 0 or not fvgs or len(fvgs) < 2:
+        return []
+    out: list[dict] = []
+    sorted_fvgs = sorted(fvgs, key=lambda f: int(f.get("index", 0)))
+    seen_keys: set[tuple] = set()
+    for i, a in enumerate(sorted_fvgs):
+        a_dir = int(a.get("direction", 0))
+        if a_dir == 0:
+            continue
+        for b in sorted_fvgs[i + 1:]:
+            b_dir = int(b.get("direction", 0))
+            if b_dir != -a_dir:
+                continue
+            if int(b["index"]) - int(a["index"]) > max_gap_bars:
+                break
+            top = min(float(a["top"]), float(b["top"]))
+            bottom = max(float(a["bottom"]), float(b["bottom"]))
+            if top <= bottom:
+                continue  # no overlap
+            key = (int(a["index"]), int(b["index"]))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            out.append({
+                "index_a": int(a["index"]),
+                "index_b": int(b["index"]),
+                "time": a.get("time"),
+                "top": round(top, 4),
+                "bottom": round(bottom, 4),
+                "mid": round((top + bottom) / 2, 4),
+                "direction_a": a_dir,
+                "direction_b": b_dir,
+                "block_type": "balanced_price_range",
+            })
+    return out
+
+
+def detect_volume_imbalance(df: pd.DataFrame, *, min_body_ratio: float = 0.7) -> list[dict]:
+    """§3.4 — Volume Imbalance gaps.
+
+    Where two adjacent candles leave a body-to-body gap (open[i+1] >
+    close[i] for bullish, open[i+1] < close[i] for bearish) WITHOUT
+    overlapping wicks: that strip is a Volume Imbalance — institutions
+    must come back to fill it. Distinct from FVGs (which span three
+    candles); VIs span two and act as smaller magnet targets.
+    """
+    if df is None or len(df) < 2:
+        return []
+    out: list[dict] = []
+    for i in range(len(df) - 1):
+        open_next = float(df["open"].iloc[i + 1])
+        close_cur = float(df["close"].iloc[i])
+        high_cur = float(df["high"].iloc[i])
+        low_cur = float(df["low"].iloc[i])
+        low_next = float(df["low"].iloc[i + 1])
+        high_next = float(df["high"].iloc[i + 1])
+        body_cur = abs(close_cur - float(df["open"].iloc[i]))
+        rng_cur = max(high_cur - low_cur, 1e-9)
+        if body_cur / rng_cur < min_body_ratio:
+            continue  # require a decisive close, not a doji
+        # Bullish VI: next open > current close AND no wick overlap (next.low > current.high)
+        if open_next > close_cur and low_next > high_cur:
+            out.append({
+                "index": i + 1,
+                "time": _record_time(df.index[i + 1]),
+                "direction": 1,
+                "top": round(low_next, 4),
+                "bottom": round(high_cur, 4),
+                "block_type": "volume_imbalance",
+            })
+        # Bearish VI
+        elif open_next < close_cur and high_next < low_cur:
+            out.append({
+                "index": i + 1,
+                "time": _record_time(df.index[i + 1]),
+                "direction": -1,
+                "top": round(low_cur, 4),
+                "bottom": round(high_next, 4),
+                "block_type": "volume_imbalance",
+            })
+    return out
+
+
 def detect_liquidity(df: pd.DataFrame, swings: list[dict], cfg: SMCConfig) -> list[dict]:
     out: list[dict] = []
     confirmed = [s for s in swings if s["confirm_index"] < len(df)]
@@ -3777,6 +3905,9 @@ def build_smc_analysis(
     structure = detect_structure(h, swings, cfg)
     internal_structure = detect_structure(h, internal_swings, cfg)
     fvgs = detect_fvgs(h, displacements)
+    inverse_fvgs = detect_inverse_fvgs(h, fvgs)
+    balanced_price_ranges = detect_balanced_price_range(h, fvgs)
+    volume_imbalances = detect_volume_imbalance(h)
     liquidity = detect_liquidity(h, swings, cfg)
     obs = detect_order_blocks(h, structure, displacements, liquidity)
     mitigation_blocks = detect_mitigation_blocks(obs)
@@ -3900,6 +4031,9 @@ def build_smc_analysis(
             "mitigation_blocks": mitigation_blocks[-15:],
             "breaker_blocks": breaker_blocks[-15:],
             "fvgs": fvgs[-30:],
+            "inverse_fvgs": inverse_fvgs[-15:],
+            "balanced_price_ranges": balanced_price_ranges[-10:],
+            "volume_imbalances": volume_imbalances[-15:],
             "liquidity": liquidity[-30:],
             "premium_discount": pd_zone,
             "ote": ote,
