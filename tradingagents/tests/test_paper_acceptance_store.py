@@ -20,16 +20,19 @@ from paper_acceptance_store import (
     load_order_audit_rows,
     load_reconciliation_runs,
     load_runtime_metrics,
+    load_shadow_parity_traces,
     persist_acceptance_report,
     record_alert_delivery,
     record_acceptance_event,
     record_capital_stage,
     record_deviation_snapshot,
+    record_shadow_parity_trace,
     record_order_audit,
     record_reconciliation_run,
     record_runtime_metric,
     refresh_acceptance_reports_for_symbols,
     run_acceptance_scenario,
+    summarize_shadow_parity_traces,
     upsert_acceptance_review,
     upsert_acceptance_check,
     upsert_acceptance_context_overrides,
@@ -468,6 +471,52 @@ def test_capital_stage_and_deviation_snapshot_round_trip():
     assert deviations[0]["baseline_source"] == deviation["baseline_source"]
     assert deviations[0]["comparison_source"] == deviation["comparison_source"]
     assert deviations[0]["detail"]["origin"] == "manual"
+
+
+def test_shadow_parity_round_trip_and_context_mapping():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+
+    trace = record_shadow_parity_trace(
+        conn,
+        symbol="ABAT",
+        market_timestamp="2026-06-05T09:00:00Z",
+        signal_timestamp="2026-06-05T09:00:01Z",
+        risk_timestamp="2026-06-05T09:00:02Z",
+        order_intent_timestamp="2026-06-05T09:00:03Z",
+        adapter_timestamp="2026-06-05T09:00:03.150000Z",
+        adapter_name="shadow_adapter_v1",
+        side="buy",
+        order_type="limit",
+        requested_qty=5,
+        signal_price=10.0,
+        expected_price=10.05,
+        execution_latency_ms=150,
+        market_data_source_shared=True,
+        signal_process_shared=True,
+        risk_module_shared=True,
+        order_generation_shared=True,
+        logging_alerting_shared=True,
+        no_exchange_submission=True,
+        order_book_snapshot_recorded=True,
+        likely_execution_price_recorded=True,
+        post_order_price_behavior_recorded=True,
+        detail={"origin": "manual"},
+    )
+
+    rows = load_shadow_parity_traces(conn, "ABAT")
+    summary = summarize_shadow_parity_traces(conn, "ABAT")
+    context = build_smc_acceptance_context(conn, symbol="ABAT")
+
+    assert rows[0]["parity_key"] == trace["parity_key"]
+    assert summary["trace_count"] == 1
+    assert summary["shared_module_ratio"] == 1.0
+    assert context["strategy"]["shadow_trading_used"] is True
+    assert context["strategy"]["shared_live_architecture"] is True
+    assert context["metrics"]["shadow_parity_score"] == 1.0
+    shadow_gate = context["evidence"]["shadow_trading"]["checks"]
+    assert shadow_gate["live_market_data_source"] is True
+    assert shadow_gate["no_exchange_submission"] is True
 
 
 def test_workspace_auto_generates_stage_and_deviation_from_live_telemetry():

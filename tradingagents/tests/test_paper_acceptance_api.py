@@ -15,6 +15,7 @@ from app import (
     PaperAcceptanceReviewUpdate,
     PaperAcceptanceRuntimeMetricCreate,
     PaperAcceptanceScenarioRunRequest,
+    PaperAcceptanceShadowParityCreate,
     PaperAcceptanceWorkspaceUpdate,
     SMCJournalCreate,
 )
@@ -252,6 +253,49 @@ def test_api_capital_stage_and_deviation_snapshot_round_trip(tmp_path):
         assert deviations["count"] >= 1
         assert any(row["stage_name"] == "stage3_25_50" for row in workspace["capital_stages"])
         assert any(row["detail"]["origin"] == "manual" for row in workspace["deviation_snapshots"])
+    finally:
+        app.DB = original
+
+
+def test_api_shadow_parity_round_trip(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        payload = app.api_record_paper_acceptance_shadow_parity(
+            PaperAcceptanceShadowParityCreate(
+                symbol="ABAT",
+                market_timestamp="2026-06-05T09:00:00Z",
+                signal_timestamp="2026-06-05T09:00:01Z",
+                risk_timestamp="2026-06-05T09:00:02Z",
+                order_intent_timestamp="2026-06-05T09:00:03Z",
+                adapter_timestamp="2026-06-05T09:00:03.200000Z",
+                adapter_name="shadow_adapter_v1",
+                side="buy",
+                order_type="limit",
+                requested_qty=5,
+                signal_price=10.0,
+                expected_price=10.04,
+                execution_latency_ms=200,
+                market_data_source_shared=True,
+                signal_process_shared=True,
+                risk_module_shared=True,
+                order_generation_shared=True,
+                logging_alerting_shared=True,
+                no_exchange_submission=True,
+                order_book_snapshot_recorded=True,
+                likely_execution_price_recorded=True,
+                post_order_price_behavior_recorded=True,
+                detail={"origin": "manual"},
+            )
+        )
+
+        rows = app.api_get_paper_acceptance_shadow_parity(symbol="ABAT")
+        workspace = app.api_get_paper_acceptance_workspace(symbol="ABAT")
+
+        assert payload["ok"] is True
+        assert rows["count"] == 1
+        assert rows["summary"]["shared_module_ratio"] == 1.0
+        assert workspace["shadow_parity_summary"]["trace_count"] == 1
+        assert workspace["shadow_parity_traces"][0]["adapter_name"] == "shadow_adapter_v1"
     finally:
         app.DB = original
 

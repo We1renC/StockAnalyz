@@ -56,16 +56,19 @@ from paper_acceptance_store import (
     load_reconciliation_runs,
     load_runtime_metrics,
     load_scenario_runs,
+    load_shadow_parity_traces,
     record_alert_delivery,
     record_acceptance_change,
     record_acceptance_event,
     record_capital_stage,
     record_deviation_snapshot,
+    record_shadow_parity_trace,
     record_order_audit,
     record_reconciliation_run,
     record_runtime_metric,
     refresh_acceptance_reports_for_symbols,
     run_acceptance_scenario,
+    summarize_shadow_parity_traces,
     upsert_acceptance_review,
     upsert_acceptance_check,
     upsert_acceptance_context_overrides,
@@ -4906,6 +4909,35 @@ class PaperAcceptanceDeviationSnapshotCreate(BaseModel):
     stage: str = "paper"
 
 
+class PaperAcceptanceShadowParityCreate(BaseModel):
+    symbol: str
+    runtime_stage: str = "shadow"
+    market_timestamp: Optional[str] = None
+    signal_timestamp: Optional[str] = None
+    risk_timestamp: Optional[str] = None
+    order_intent_timestamp: Optional[str] = None
+    adapter_timestamp: Optional[str] = None
+    adapter_name: str = ""
+    side: str = ""
+    order_type: str = ""
+    requested_qty: Optional[float] = None
+    signal_price: Optional[float] = None
+    expected_price: Optional[float] = None
+    execution_latency_ms: Optional[float] = None
+    market_data_source_shared: bool = False
+    signal_process_shared: bool = False
+    risk_module_shared: bool = False
+    order_generation_shared: bool = False
+    logging_alerting_shared: bool = False
+    no_exchange_submission: bool = True
+    order_book_snapshot_recorded: bool = False
+    likely_execution_price_recorded: bool = False
+    post_order_price_behavior_recorded: bool = False
+    parity_score: Optional[float] = None
+    detail: Optional[dict] = None
+    stage: str = "paper"
+
+
 def _json_dumps_compact(value, fallback):
     if value is None:
         value = fallback
@@ -5607,6 +5639,59 @@ def api_record_paper_acceptance_deviation_snapshot(req: PaperAcceptanceDeviation
             holding_time_delta_minutes=req.holding_time_delta_minutes,
             trade_frequency_delta=req.trade_frequency_delta,
             deviation_score=req.deviation_score,
+            detail=req.detail or {},
+            stage=req.stage,
+        )
+        return sanitize_float_values({"ok": True, "row": row})
+    finally:
+        conn.close()
+
+
+@app.get("/api/paper-acceptance/shadow-parity")
+def api_get_paper_acceptance_shadow_parity(symbol: str, stage: str = "paper", limit: int = 100):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        rows = load_shadow_parity_traces(conn, symbol.strip().upper(), stage=stage, limit=limit)
+        summary = summarize_shadow_parity_traces(conn, symbol.strip().upper(), stage=stage, limit=limit)
+        return sanitize_float_values({"rows": rows, "summary": summary, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+@app.post("/api/paper-acceptance/shadow-parity")
+def api_record_paper_acceptance_shadow_parity(req: PaperAcceptanceShadowParityCreate):
+    if not req.symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        row = record_shadow_parity_trace(
+            conn,
+            symbol=req.symbol.strip().upper(),
+            runtime_stage=req.runtime_stage,
+            market_timestamp=req.market_timestamp,
+            signal_timestamp=req.signal_timestamp,
+            risk_timestamp=req.risk_timestamp,
+            order_intent_timestamp=req.order_intent_timestamp,
+            adapter_timestamp=req.adapter_timestamp,
+            adapter_name=req.adapter_name,
+            side=req.side,
+            order_type=req.order_type,
+            requested_qty=req.requested_qty,
+            signal_price=req.signal_price,
+            expected_price=req.expected_price,
+            execution_latency_ms=req.execution_latency_ms,
+            market_data_source_shared=req.market_data_source_shared,
+            signal_process_shared=req.signal_process_shared,
+            risk_module_shared=req.risk_module_shared,
+            order_generation_shared=req.order_generation_shared,
+            logging_alerting_shared=req.logging_alerting_shared,
+            no_exchange_submission=req.no_exchange_submission,
+            order_book_snapshot_recorded=req.order_book_snapshot_recorded,
+            likely_execution_price_recorded=req.likely_execution_price_recorded,
+            post_order_price_behavior_recorded=req.post_order_price_behavior_recorded,
+            parity_score=req.parity_score,
             detail=req.detail or {},
             stage=req.stage,
         )

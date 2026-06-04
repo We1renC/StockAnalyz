@@ -70,19 +70,25 @@ def build_acceptance_policy_snapshot(
 
     derived_evidence: dict[str, dict[str, bool]] = {}
 
-    shared_architecture = bool(strategy.get("shared_live_architecture") or strategy.get("shadow_trading_used"))
+    shadow_trace_count = int(metrics.get("shadow_trace_count") or 0)
+    shared_architecture = bool(strategy.get("shared_live_architecture") or shadow_trace_count > 0 or strategy.get("shadow_trading_used"))
     shadow_checks = _checks_for_gate(evidence, "shadow_trading")
+    def _ratio_ok(key: str, minimum: float = 0.8) -> bool:
+        value = metrics.get(key)
+        if value is None:
+            return False
+        return float(value) >= minimum
     derived_evidence["shadow_trading"] = {
-        "live_market_data_source": shadow_checks.get("live_market_data_source") is True or shared_architecture,
-        "live_signal_process": shadow_checks.get("live_signal_process") is True or shared_architecture,
-        "live_risk_module": shadow_checks.get("live_risk_module") is True or shared_architecture,
-        "live_order_generation": shadow_checks.get("live_order_generation") is True or shared_architecture,
-        "live_logging_alerting": shadow_checks.get("live_logging_alerting") is True or shared_architecture,
-        "no_exchange_submission": shadow_checks.get("no_exchange_submission") is True or bool(strategy.get("shadow_trading_used")),
-        "theoretical_submission_time": shadow_checks.get("theoretical_submission_time") is True or metrics.get("average_execution_latency") is not None,
-        "order_book_snapshot_recorded": shadow_checks.get("order_book_snapshot_recorded") is True or metrics.get("signal_vs_execution_delta") is not None,
-        "likely_execution_price": shadow_checks.get("likely_execution_price") is True or metrics.get("average_slippage") is not None,
-        "post_order_price_behavior": shadow_checks.get("post_order_price_behavior") is True or metrics.get("missed_fill_price_movement") is not None,
+        "live_market_data_source": shadow_checks.get("live_market_data_source") is True or _ratio_ok("shadow_market_data_shared_ratio"),
+        "live_signal_process": shadow_checks.get("live_signal_process") is True or _ratio_ok("shadow_signal_process_shared_ratio"),
+        "live_risk_module": shadow_checks.get("live_risk_module") is True or _ratio_ok("shadow_risk_module_shared_ratio"),
+        "live_order_generation": shadow_checks.get("live_order_generation") is True or _ratio_ok("shadow_order_generation_shared_ratio"),
+        "live_logging_alerting": shadow_checks.get("live_logging_alerting") is True or _ratio_ok("shadow_logging_alerting_shared_ratio"),
+        "no_exchange_submission": shadow_checks.get("no_exchange_submission") is True or _ratio_ok("shadow_no_exchange_submission_ratio", 1.0),
+        "theoretical_submission_time": shadow_checks.get("theoretical_submission_time") is True or metrics.get("shadow_avg_intent_to_adapter_ms") is not None,
+        "order_book_snapshot_recorded": shadow_checks.get("order_book_snapshot_recorded") is True or _ratio_ok("shadow_order_book_snapshot_ratio"),
+        "likely_execution_price": shadow_checks.get("likely_execution_price") is True or _ratio_ok("shadow_likely_execution_price_ratio"),
+        "post_order_price_behavior": shadow_checks.get("post_order_price_behavior") is True or _ratio_ok("shadow_post_order_price_behavior_ratio"),
     }
 
     derived_evidence["sample_size_period"] = {
@@ -166,6 +172,18 @@ def build_acceptance_policy_snapshot(
     blockers: list[str] = []
     if not shared_architecture:
         blockers.append("2.2 shared_architecture_missing")
+    if shadow_trace_count > 0 and not _all_truthy(
+        derived_evidence["shadow_trading"],
+        (
+            "live_market_data_source",
+            "live_signal_process",
+            "live_risk_module",
+            "live_order_generation",
+            "live_logging_alerting",
+            "no_exchange_submission",
+        ),
+    ):
+        blockers.append("14 shadow_parity_incomplete")
     if not _all_truthy(
         derived_evidence["sample_size_period"],
         ("complete_trading_cycle", "sufficient_trade_samples", "enough_market_conditions"),

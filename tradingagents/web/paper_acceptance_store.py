@@ -315,6 +315,43 @@ def ensure_paper_acceptance_schema(conn) -> None:
         """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_deviation_symbol_created
            ON paper_acceptance_deviation_snapshots(symbol, stage, created_at DESC, id DESC)"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_shadow_parity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            parity_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            runtime_stage TEXT NOT NULL DEFAULT 'shadow',
+            market_timestamp TEXT,
+            signal_timestamp TEXT,
+            risk_timestamp TEXT,
+            order_intent_timestamp TEXT,
+            adapter_timestamp TEXT,
+            adapter_name TEXT NOT NULL DEFAULT '',
+            side TEXT NOT NULL DEFAULT '',
+            order_type TEXT NOT NULL DEFAULT '',
+            requested_qty REAL,
+            signal_price REAL,
+            expected_price REAL,
+            execution_latency_ms REAL,
+            market_data_source_shared INTEGER NOT NULL DEFAULT 0,
+            signal_process_shared INTEGER NOT NULL DEFAULT 0,
+            risk_module_shared INTEGER NOT NULL DEFAULT 0,
+            order_generation_shared INTEGER NOT NULL DEFAULT 0,
+            logging_alerting_shared INTEGER NOT NULL DEFAULT 0,
+            no_exchange_submission INTEGER NOT NULL DEFAULT 1,
+            order_book_snapshot_recorded INTEGER NOT NULL DEFAULT 0,
+            likely_execution_price_recorded INTEGER NOT NULL DEFAULT 0,
+            post_order_price_behavior_recorded INTEGER NOT NULL DEFAULT 0,
+            parity_score REAL,
+            detail TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_shadow_parity_symbol_created
+           ON paper_acceptance_shadow_parity(symbol, stage, created_at DESC, id DESC)"""
+    )
     ensure_paper_acceptance_metrics_schema(conn)
     ensure_paper_acceptance_scenario_schema(conn)
     conn.commit()
@@ -598,6 +635,234 @@ def load_deviation_snapshots(conn, symbol: str | None, stage: str = "paper", lim
         data["detail"] = _json_loads(data.get("detail"), {})
         out.append(data)
     return out
+
+
+def record_shadow_parity_trace(
+    conn,
+    *,
+    symbol: str,
+    runtime_stage: str = "shadow",
+    market_timestamp: str | None = None,
+    signal_timestamp: str | None = None,
+    risk_timestamp: str | None = None,
+    order_intent_timestamp: str | None = None,
+    adapter_timestamp: str | None = None,
+    adapter_name: str = "",
+    side: str = "",
+    order_type: str = "",
+    requested_qty: float | None = None,
+    signal_price: float | None = None,
+    expected_price: float | None = None,
+    execution_latency_ms: float | None = None,
+    market_data_source_shared: bool = False,
+    signal_process_shared: bool = False,
+    risk_module_shared: bool = False,
+    order_generation_shared: bool = False,
+    logging_alerting_shared: bool = False,
+    no_exchange_submission: bool = True,
+    order_book_snapshot_recorded: bool = False,
+    likely_execution_price_recorded: bool = False,
+    post_order_price_behavior_recorded: bool = False,
+    parity_score: float | None = None,
+    detail: dict | None = None,
+    stage: str = "paper",
+) -> dict:
+    """Persist one shadow/live parity trace for architecture equivalence checks."""
+
+    ensure_paper_acceptance_schema(conn)
+    bool_flags = [
+        bool(market_data_source_shared),
+        bool(signal_process_shared),
+        bool(risk_module_shared),
+        bool(order_generation_shared),
+        bool(logging_alerting_shared),
+        bool(no_exchange_submission),
+        bool(order_intent_timestamp and adapter_timestamp),
+        bool(order_book_snapshot_recorded),
+        bool(likely_execution_price_recorded),
+        bool(post_order_price_behavior_recorded),
+    ]
+    derived_score = round(sum(1.0 for item in bool_flags if item) / len(bool_flags), 4)
+    payload = {
+        "parity_key": f"paper-shadow-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "runtime_stage": runtime_stage or "shadow",
+        "market_timestamp": market_timestamp,
+        "signal_timestamp": signal_timestamp,
+        "risk_timestamp": risk_timestamp,
+        "order_intent_timestamp": order_intent_timestamp,
+        "adapter_timestamp": adapter_timestamp,
+        "adapter_name": adapter_name or "",
+        "side": side or "",
+        "order_type": order_type or "",
+        "requested_qty": _safe_float(requested_qty),
+        "signal_price": _safe_float(signal_price),
+        "expected_price": _safe_float(expected_price),
+        "execution_latency_ms": _safe_float(execution_latency_ms),
+        "market_data_source_shared": bool(market_data_source_shared),
+        "signal_process_shared": bool(signal_process_shared),
+        "risk_module_shared": bool(risk_module_shared),
+        "order_generation_shared": bool(order_generation_shared),
+        "logging_alerting_shared": bool(logging_alerting_shared),
+        "no_exchange_submission": bool(no_exchange_submission),
+        "order_book_snapshot_recorded": bool(order_book_snapshot_recorded),
+        "likely_execution_price_recorded": bool(likely_execution_price_recorded),
+        "post_order_price_behavior_recorded": bool(post_order_price_behavior_recorded),
+        "parity_score": _safe_float(parity_score, derived_score),
+        "detail": detail or {},
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_shadow_parity
+           (parity_key, symbol, stage, runtime_stage, market_timestamp, signal_timestamp,
+            risk_timestamp, order_intent_timestamp, adapter_timestamp, adapter_name, side,
+            order_type, requested_qty, signal_price, expected_price, execution_latency_ms,
+            market_data_source_shared, signal_process_shared, risk_module_shared,
+            order_generation_shared, logging_alerting_shared, no_exchange_submission,
+            order_book_snapshot_recorded, likely_execution_price_recorded,
+            post_order_price_behavior_recorded, parity_score, detail, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["parity_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["runtime_stage"],
+            payload["market_timestamp"],
+            payload["signal_timestamp"],
+            payload["risk_timestamp"],
+            payload["order_intent_timestamp"],
+            payload["adapter_timestamp"],
+            payload["adapter_name"],
+            payload["side"],
+            payload["order_type"],
+            payload["requested_qty"],
+            payload["signal_price"],
+            payload["expected_price"],
+            payload["execution_latency_ms"],
+            1 if payload["market_data_source_shared"] else 0,
+            1 if payload["signal_process_shared"] else 0,
+            1 if payload["risk_module_shared"] else 0,
+            1 if payload["order_generation_shared"] else 0,
+            1 if payload["logging_alerting_shared"] else 0,
+            1 if payload["no_exchange_submission"] else 0,
+            1 if payload["order_book_snapshot_recorded"] else 0,
+            1 if payload["likely_execution_price_recorded"] else 0,
+            1 if payload["post_order_price_behavior_recorded"] else 0,
+            payload["parity_score"],
+            _json_dumps(payload["detail"]),
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=payload["symbol"],
+        stage=payload["stage"],
+        change_type="shadow_parity_recorded",
+        target_type="shadow_parity",
+        target_key=payload["runtime_stage"],
+        detail={"parity_score": payload["parity_score"], "adapter_name": payload["adapter_name"]},
+    )
+    return payload
+
+
+def load_shadow_parity_traces(conn, symbol: str | None, stage: str = "paper", limit: int = 100) -> list[dict]:
+    """Load persisted shadow/live parity traces."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_shadow_parity
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 1000))),
+    ).fetchall()
+    out = []
+    for row in rows:
+        data = dict(row)
+        data["detail"] = _json_loads(data.get("detail"), {})
+        for key in (
+            "market_data_source_shared",
+            "signal_process_shared",
+            "risk_module_shared",
+            "order_generation_shared",
+            "logging_alerting_shared",
+            "no_exchange_submission",
+            "order_book_snapshot_recorded",
+            "likely_execution_price_recorded",
+            "post_order_price_behavior_recorded",
+        ):
+            data[key] = bool(data.get(key))
+        out.append(data)
+    return out
+
+
+def summarize_shadow_parity_traces(conn, symbol: str | None, stage: str = "paper", limit: int = 100) -> dict:
+    """Summarize shadow parity traces into ratios usable by gates and policy."""
+
+    rows = load_shadow_parity_traces(conn, symbol, stage=stage, limit=limit)
+    if not rows:
+        return {
+            "trace_count": 0,
+            "runtime_stages": [],
+            "shared_module_ratio": None,
+            "market_data_shared_ratio": None,
+            "signal_process_shared_ratio": None,
+            "risk_module_shared_ratio": None,
+            "order_generation_shared_ratio": None,
+            "logging_alerting_shared_ratio": None,
+            "no_exchange_submission_ratio": None,
+            "order_book_snapshot_ratio": None,
+            "likely_execution_price_ratio": None,
+            "post_order_price_behavior_ratio": None,
+            "avg_parity_score": None,
+            "avg_execution_latency_ms": None,
+            "avg_intent_to_adapter_ms": None,
+        }
+
+    def _ratio(key: str) -> float:
+        return round(sum(1 for row in rows if row.get(key)) / len(rows), 4)
+
+    def _avg(values: list[float]) -> float | None:
+        return round(sum(values) / len(values), 4) if values else None
+
+    parity_scores = [float(row["parity_score"]) for row in rows if _safe_float(row.get("parity_score")) is not None]
+    execution_latencies = [float(row["execution_latency_ms"]) for row in rows if _safe_float(row.get("execution_latency_ms")) is not None]
+    intent_to_adapter: list[float] = []
+    for row in rows:
+        start = _parse_ts(row.get("order_intent_timestamp"))
+        end = _parse_ts(row.get("adapter_timestamp"))
+        if start and end and end >= start:
+            intent_to_adapter.append((end - start).total_seconds() * 1000)
+    shared_keys = (
+        "market_data_source_shared",
+        "signal_process_shared",
+        "risk_module_shared",
+        "order_generation_shared",
+        "logging_alerting_shared",
+    )
+    shared_module_ratio = round(
+        sum(_ratio(key) for key in shared_keys if rows) / len(shared_keys),
+        4,
+    )
+    return {
+        "trace_count": len(rows),
+        "runtime_stages": sorted({str(row.get("runtime_stage") or "").strip() for row in rows if row.get("runtime_stage")}),
+        "shared_module_ratio": shared_module_ratio,
+        "market_data_shared_ratio": _ratio("market_data_source_shared"),
+        "signal_process_shared_ratio": _ratio("signal_process_shared"),
+        "risk_module_shared_ratio": _ratio("risk_module_shared"),
+        "order_generation_shared_ratio": _ratio("order_generation_shared"),
+        "logging_alerting_shared_ratio": _ratio("logging_alerting_shared"),
+        "no_exchange_submission_ratio": _ratio("no_exchange_submission"),
+        "order_book_snapshot_ratio": _ratio("order_book_snapshot_recorded"),
+        "likely_execution_price_ratio": _ratio("likely_execution_price_recorded"),
+        "post_order_price_behavior_ratio": _ratio("post_order_price_behavior_recorded"),
+        "avg_parity_score": _avg(parity_scores),
+        "avg_execution_latency_ms": _avg(execution_latencies),
+        "avg_intent_to_adapter_ms": _avg(intent_to_adapter),
+    }
 
 
 def _same_numeric(a, b, *, precision: int = 6) -> bool:
@@ -1217,16 +1482,26 @@ def _build_auto_evidence(
         _merge_check(evidence, "sample_size_period", "consecutive_loss_periods", metrics.get("max_consecutive_losses", 0) >= 1, source="observed")
         _merge_check(evidence, "sample_size_period", "not_only_one_way_market", paper_summary.get("win_rate") not in (None, 0.0, 1.0), source="observed")
 
-    if strategy.get("shadow_trading_used") is True:
-        for key in (
-            "live_market_data_source",
-            "live_signal_process",
-            "live_risk_module",
-            "live_order_generation",
-            "live_logging_alerting",
-            "no_exchange_submission",
-        ):
-            _merge_check(evidence, "shadow_trading", key, True, source="observed")
+    if strategy.get("shadow_trading_used") is True or int(metrics.get("shadow_trace_count") or 0) > 0:
+        shadow_mapping = {
+            "live_market_data_source": _safe_float(metrics.get("shadow_market_data_shared_ratio")),
+            "live_signal_process": _safe_float(metrics.get("shadow_signal_process_shared_ratio")),
+            "live_risk_module": _safe_float(metrics.get("shadow_risk_module_shared_ratio")),
+            "live_order_generation": _safe_float(metrics.get("shadow_order_generation_shared_ratio")),
+            "live_logging_alerting": _safe_float(metrics.get("shadow_logging_alerting_shared_ratio")),
+            "no_exchange_submission": _safe_float(metrics.get("shadow_no_exchange_submission_ratio")),
+            "theoretical_submission_time": _safe_float(metrics.get("shadow_avg_intent_to_adapter_ms")),
+            "order_book_snapshot_recorded": _safe_float(metrics.get("shadow_order_book_snapshot_ratio")),
+            "likely_execution_price": _safe_float(metrics.get("shadow_likely_execution_price_ratio")),
+            "post_order_price_behavior": _safe_float(metrics.get("shadow_post_order_price_behavior_ratio")),
+        }
+        for key, value in shadow_mapping.items():
+            if value is None:
+                continue
+            if key == "theoretical_submission_time":
+                _merge_check(evidence, "shadow_trading", key, True, source="observed")
+            else:
+                _merge_check(evidence, "shadow_trading", key, value >= 0.8, source="observed")
 
     if metrics.get("parameters_frozen") is not None:
         _merge_check(evidence, "research_discipline", "strategy_parameters_frozen", bool(metrics.get("parameters_frozen")), source="observed")
@@ -1405,6 +1680,8 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
     live_rows = _load_journal_rows(conn, symbol=key, environment="live")
     backtest_runs = _load_backtest_runs(conn, symbol=key, limit=20)
     events = load_acceptance_events(conn, symbol=key, limit=500)
+    shadow_parity = summarize_shadow_parity_traces(conn, symbol=key, stage="paper", limit=200)
+    shadow_rows = load_shadow_parity_traces(conn, key, stage="paper", limit=50)
     telemetry = summarize_acceptance_telemetry(conn, symbol=key, stage="paper")
     live_telemetry = summarize_acceptance_telemetry(conn, symbol=key, stage="live")
     scenarios = summarize_scenario_evidence(conn, symbol=key, stage="paper")
@@ -1416,6 +1693,10 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
     strategy_payload.setdefault("stage", "paper")
     strategy_payload.setdefault("symbol", key)
     strategy_payload.setdefault("exchange", "paper-sim")
+    if int(shadow_parity.get("trace_count") or 0) > 0:
+        strategy_payload.setdefault("shadow_trading_used", True)
+    if shadow_parity.get("shared_module_ratio") is not None:
+        strategy_payload.setdefault("shared_live_architecture", float(shadow_parity["shared_module_ratio"]) >= 0.8)
     if not strategy_payload.get("testing_period"):
         combined_rows = _sorted_trade_rows(_journal_closed_rows(paper_rows))
         if combined_rows:
@@ -1486,6 +1767,20 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "backtest_trade_count": latest_backtest.get("total_trades"),
         "fill_rate_live": live_telemetry.get("metrics", {}).get("fill_rate"),
         "average_slippage_live": live_telemetry.get("metrics", {}).get("average_slippage"),
+        "shadow_trace_count": shadow_parity.get("trace_count"),
+        "shadow_parity_score": shadow_parity.get("avg_parity_score"),
+        "shadow_shared_module_ratio": shadow_parity.get("shared_module_ratio"),
+        "shadow_market_data_shared_ratio": shadow_parity.get("market_data_shared_ratio"),
+        "shadow_signal_process_shared_ratio": shadow_parity.get("signal_process_shared_ratio"),
+        "shadow_risk_module_shared_ratio": shadow_parity.get("risk_module_shared_ratio"),
+        "shadow_order_generation_shared_ratio": shadow_parity.get("order_generation_shared_ratio"),
+        "shadow_logging_alerting_shared_ratio": shadow_parity.get("logging_alerting_shared_ratio"),
+        "shadow_no_exchange_submission_ratio": shadow_parity.get("no_exchange_submission_ratio"),
+        "shadow_order_book_snapshot_ratio": shadow_parity.get("order_book_snapshot_ratio"),
+        "shadow_likely_execution_price_ratio": shadow_parity.get("likely_execution_price_ratio"),
+        "shadow_post_order_price_behavior_ratio": shadow_parity.get("post_order_price_behavior_ratio"),
+        "shadow_avg_execution_latency_ms": shadow_parity.get("avg_execution_latency_ms"),
+        "shadow_avg_intent_to_adapter_ms": shadow_parity.get("avg_intent_to_adapter_ms"),
     }
     metrics.update({key: value for key, value in telemetry.get("metrics", {}).items() if value is not None})
     metrics.update({key: value for key, value in overrides["metrics"].items() if value is not None})
@@ -1573,6 +1868,8 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "security_scan": security_scan,
         "capital_stages": capital_stages,
         "deviation_snapshots": deviation_snapshots,
+        "shadow_parity_summary": shadow_parity,
+        "shadow_parity_traces": shadow_rows,
     }
 
 
@@ -1976,6 +2273,8 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         "coverage": _build_coverage_summary(catalog),
         "capital_stages": context.get("capital_stages") or [],
         "deviation_snapshots": context.get("deviation_snapshots") or [],
+        "shadow_parity_summary": context.get("shadow_parity_summary") or {},
+        "shadow_parity_traces": context.get("shadow_parity_traces") or [],
     }
 
 
@@ -1995,6 +2294,7 @@ __all__ = [
     "load_order_audit_rows",
     "load_capital_stages",
     "load_deviation_snapshots",
+    "load_shadow_parity_traces",
     "load_reconciliation_runs",
     "load_runtime_metrics",
     "load_scenario_runs",
@@ -2004,10 +2304,12 @@ __all__ = [
     "record_acceptance_event",
     "record_capital_stage",
     "record_deviation_snapshot",
+    "record_shadow_parity_trace",
     "record_order_audit",
     "record_reconciliation_run",
     "record_runtime_metric",
     "refresh_acceptance_reports_for_symbols",
+    "summarize_shadow_parity_traces",
     "run_acceptance_scenario",
     "upsert_acceptance_review",
     "upsert_acceptance_check",
