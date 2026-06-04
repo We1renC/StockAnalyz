@@ -28,6 +28,7 @@ from paper_acceptance_store import (
     record_order_audit,
     record_reconciliation_run,
     record_runtime_metric,
+    refresh_acceptance_reports_for_symbols,
     run_acceptance_scenario,
     upsert_acceptance_review,
     upsert_acceptance_check,
@@ -525,3 +526,19 @@ def test_workspace_auto_generates_stage_and_deviation_from_live_telemetry():
     assert live_deviation["fill_rate_delta"] == 0.0
     assert live_deviation["slippage_delta_bps"] == 6.0
     assert live_deviation["detail"]["live_average_slippage"] == 18.0
+
+
+def test_refresh_acceptance_reports_for_symbols_skips_recent_and_empty():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+
+    first = refresh_acceptance_reports_for_symbols(conn, ["ABAT", "TEST.TW"], min_interval_minutes=30)
+    rows = load_acceptance_reports(conn, symbol="ABAT")
+    second = refresh_acceptance_reports_for_symbols(conn, ["ABAT", "EMPTY"], min_interval_minutes=30)
+
+    assert first["refreshed_symbols"] == ["ABAT"]
+    assert "TEST.TW" in first["skipped_empty_symbols"]
+    assert rows[0]["symbol"] == "ABAT"
+    assert second["refreshed_count"] == 0
+    assert second["skipped_recent_symbols"] == ["ABAT"]
+    assert "EMPTY" in second["skipped_empty_symbols"]

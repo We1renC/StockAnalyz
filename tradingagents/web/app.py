@@ -64,6 +64,7 @@ from paper_acceptance_store import (
     record_order_audit,
     record_reconciliation_run,
     record_runtime_metric,
+    refresh_acceptance_reports_for_symbols,
     run_acceptance_scenario,
     upsert_acceptance_review,
     upsert_acceptance_check,
@@ -2808,6 +2809,23 @@ def _run_refresh_cycle_sync(*, use_benchmark: bool, indicator_workers: int) -> d
         _record_portfolio_snapshot(conn)
     except Exception as e:
         print(f"  [WARN] snapshot failed: {e}")
+    try:
+        acceptance_refresh = refresh_acceptance_reports_for_symbols(
+            conn,
+            list(symbol_map.keys()),
+            min_interval_minutes=30,
+        )
+    except Exception as e:
+        print(f"  [WARN] acceptance refresh failed: {e}")
+        acceptance_refresh = {
+            "symbols": sorted(symbol_map.keys()),
+            "refreshed_symbols": [],
+            "skipped_recent_symbols": [],
+            "skipped_empty_symbols": sorted(symbol_map.keys()),
+            "refreshed_count": 0,
+            "skipped_recent_count": 0,
+            "skipped_empty_count": len(symbol_map),
+        }
     vault = _get_vault()
     if alerts_created and vault:
         _obsidian_post_write_sync(vault, kinds=("alerts",))
@@ -2819,6 +2837,7 @@ def _run_refresh_cycle_sync(*, use_benchmark: bool, indicator_workers: int) -> d
         "symbol_map": symbol_map,
         "indicators": indicators,
         "alerts_created": alerts_created,
+        "acceptance_refresh": acceptance_refresh,
     }
 
 
@@ -3233,6 +3252,7 @@ def _run_api_refresh_sync(t0: float) -> dict:
     return {
         "refreshed": len(cycle["indicators"]),
         "alerts_created": cycle["alerts_created"],
+        "acceptance_reports_refreshed": cycle["acceptance_refresh"]["refreshed_count"],
         "market": cycle["market"],
         "elapsed_seconds": elapsed,
     }

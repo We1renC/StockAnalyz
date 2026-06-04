@@ -1585,6 +1585,85 @@ def build_and_persist_smc_acceptance_report(conn, symbol: str | None = None, str
     return {"run_key": run_key, "report": report}
 
 
+def _symbol_has_acceptance_inputs(conn, symbol: str, stage: str = "paper") -> bool:
+    key = _symbol_key(symbol)
+    checks = [
+        ("smc_trade_journal", "symbol=? AND environment IN ('paper', 'live')"),
+        ("smc_backtest_runs", "symbol=?"),
+        ("paper_acceptance_events", "symbol=?"),
+        ("paper_acceptance_evidence", "symbol=? AND stage=?"),
+        ("paper_acceptance_context_overrides", "symbol=? AND stage=?"),
+        ("paper_acceptance_runtime_metrics", "symbol=? AND stage=?"),
+        ("paper_acceptance_reconciliation_runs", "symbol=? AND stage=?"),
+        ("paper_acceptance_order_audit", "symbol=? AND stage=?"),
+        ("paper_acceptance_alert_deliveries", "symbol=? AND stage=?"),
+        ("paper_acceptance_scenario_runs", "symbol=? AND stage=?"),
+    ]
+    for table, where in checks:
+        params = (key, stage) if "stage=?" in where else (key,)
+        try:
+            row = conn.execute(f"SELECT 1 FROM {table} WHERE {where} LIMIT 1", params).fetchone()
+        except Exception:
+            row = None
+        if row:
+            return True
+    return False
+
+
+def refresh_acceptance_reports_for_symbols(
+    conn,
+    symbols: list[str],
+    *,
+    stage: str = "paper",
+    min_interval_minutes: int = 30,
+) -> dict:
+    """Persist fresh acceptance reports for active symbols when inputs changed enough.
+
+    The helper is designed for monitor/refresh loops:
+    - skip symbols without any acceptance inputs;
+    - skip symbols that already have a recent report inside the cooldown window;
+    - return structured counts for logging and API summaries.
+    """
+
+    ensure_paper_acceptance_schema(conn)
+    refreshed: list[str] = []
+    skipped_recent: list[str] = []
+    skipped_empty: list[str] = []
+    now = datetime.now(UTC)
+    seen: set[str] = set()
+    for raw_symbol in symbols:
+        key = _symbol_key(raw_symbol)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if not _symbol_has_acceptance_inputs(conn, key, stage=stage):
+            skipped_empty.append(key)
+            continue
+        recent = conn.execute(
+            """SELECT created_at FROM paper_acceptance_runs
+               WHERE symbol=? AND stage=?
+               ORDER BY created_at DESC, id DESC
+               LIMIT 1""",
+            (key, stage),
+        ).fetchone()
+        if recent:
+            recent_ts = _parse_ts(recent["created_at"])
+            if recent_ts and (now - recent_ts).total_seconds() < max(1, min_interval_minutes) * 60:
+                skipped_recent.append(key)
+                continue
+        build_and_persist_smc_acceptance_report(conn, symbol=key)
+        refreshed.append(key)
+    return {
+        "symbols": sorted(seen),
+        "refreshed_symbols": refreshed,
+        "skipped_recent_symbols": skipped_recent,
+        "skipped_empty_symbols": skipped_empty,
+        "refreshed_count": len(refreshed),
+        "skipped_recent_count": len(skipped_recent),
+        "skipped_empty_count": len(skipped_empty),
+    }
+
+
 def _build_acceptance_timeline(events: list[dict], scenario_runs: list[dict], changes: list[dict]) -> list[dict]:
     timeline: list[dict] = []
     for row in events:
@@ -1900,6 +1979,7 @@ __all__ = [
     "record_order_audit",
     "record_reconciliation_run",
     "record_runtime_metric",
+    "refresh_acceptance_reports_for_symbols",
     "run_acceptance_scenario",
     "upsert_acceptance_review",
     "upsert_acceptance_check",
