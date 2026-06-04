@@ -1423,3 +1423,36 @@ def test_unicorn_pool_accepts_inverse_fvgs():
     entries = detect_unicorn_entries(h, breakers, inverse_fvgs, [], {"state": "discount"}, "bullish")
     assert entries
     assert entries[0]["model"] == "unicorn"
+
+
+def test_premium_discount_emits_full_fib_grid_and_dual_zone_labels():
+    """§3.6: PD must expose Fibonacci sub-zone grid + both `zone` (5-bucket) and `state` (legacy 2-bucket)."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    pd_zone = result["concepts"]["premium_discount"]
+    # Fibonacci grid present
+    for key in ("fib_0_236", "fib_0_382", "fib_0_5", "fib_0_618", "fib_0_705", "fib_0_786"):
+        assert key in pd_zone
+        assert isinstance(pd_zone[key], (int, float))
+    # Sub-zone label (five bucket) and legacy state co-exist
+    assert pd_zone["zone"] in {"pure_discount", "discount", "equilibrium", "premium", "pure_premium"}
+    assert pd_zone["state"] in {"discount", "equilibrium", "premium"}
+    # position_pct can exceed [0,100] when close breaks beyond the range
+    assert isinstance(pd_zone["position_pct"], (int, float))
+
+
+def test_premium_discount_position_pct_matches_close_in_range():
+    """position_pct = (close - low) / (high - low) × 100."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    pd_zone = result["concepts"]["premium_discount"]
+    if not pd_zone:
+        return
+    leg = pd_zone["range_high"] - pd_zone["range_low"]
+    close = float(_sample_ohlcv()["Close"].iloc[-1])
+    expected = (close - pd_zone["range_low"]) / leg * 100
+    assert abs(pd_zone["position_pct"] - expected) < 0.5

@@ -717,7 +717,23 @@ def premium_discount(df: pd.DataFrame, swings: list[dict]) -> dict:
         return {}
     eq = (high + low) / 2
     close = float(df["close"].iloc[-1])
-    zone = "discount" if close < eq else ("premium" if close > eq else "equilibrium")
+    leg = high - low
+    # Five-bucket §3.6 zone classification — pure discount / discount /
+    # equilibrium band / premium / pure premium for finer PD targeting.
+    pos = (close - low) / leg if leg > 0 else 0.5
+    if pos <= 0.21:
+        zone = "pure_discount"
+    elif pos <= 0.48:
+        zone = "discount"
+    elif pos < 0.52:
+        zone = "equilibrium"
+    elif pos < 0.79:
+        zone = "premium"
+    else:
+        zone = "pure_premium"
+    # ``state`` is the legacy two-bucket label many entry models still
+    # read; surface both so callers don't have to disambiguate.
+    state = "discount" if close < eq else ("premium" if close > eq else "equilibrium")
     start_s = hi if hi["index"] < lo["index"] else lo
     end_s = lo if hi["index"] < lo["index"] else hi
     return {
@@ -725,9 +741,16 @@ def premium_discount(df: pd.DataFrame, swings: list[dict]) -> dict:
         "range_low": round(low, 4),
         "equilibrium": round(eq, 4),
         "zone": zone,
-        "fib_0_62": round(low + (high - low) * 0.62, 4),
-        "fib_0_705": round(low + (high - low) * 0.705, 4),
-        "fib_0_79": round(low + (high - low) * 0.79, 4),
+        "state": state,
+        "position_pct": round(pos * 100, 2),
+        "fib_0_236": round(low + leg * 0.236, 4),
+        "fib_0_382": round(low + leg * 0.382, 4),
+        "fib_0_5": round(eq, 4),
+        "fib_0_618": round(low + leg * 0.618, 4),
+        "fib_0_62": round(low + leg * 0.62, 4),
+        "fib_0_705": round(low + leg * 0.705, 4),
+        "fib_0_786": round(low + leg * 0.786, 4),
+        "fib_0_79": round(low + leg * 0.79, 4),
         "high": round(high, 4),
         "low": round(low, 4),
         "start_time": start_s["time"],
