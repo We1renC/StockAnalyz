@@ -1,0 +1,42 @@
+# §M0.3 — Market configurations (external override for MARKET_CONFIGS in web/smc_quant.py).
+# Edit values here without touching code; load_market_configs() merges over the in-code defaults.
+
+tw:
+  timezone: Asia/Taipei
+  session: "09:00-13:30"
+  primary_killzone: "09:00-10:00"
+  tick_size: 0.01
+  daily_price_limit_pct: 10
+  commission_pct: 0.001425
+  transaction_tax_pct: 0.003
+  default_timeframes:
+    htf: 1y
+    mtf: 6mo
+    ltf: 1mo
+
+us:
+  timezone: America/New_York
+  session: "09:30-16:00"
+  primary_killzone: "09:30-10:00"
+  tick_size: 0.01
+  daily_price_limit_pct: null
+  commission_pct: 0.0
+  transaction_tax_pct: 0.0
+  default_timeframes:
+    htf: 1y
+    mtf: 6mo
+    ltf: 1mo
+
+crypto:
+  timezone: UTC
+  session: "24/7"
+  primary_killzone: London/NY
+  tick_size: 0.01
+  daily_price_limit_pct: null
+  commission_pct: 0.0006
+  funding_sensitive: true
+  default_timeframes:
+    htf: 1d
+    mtf: 4h
+    ltf: 15m
+  max_leverage: 3

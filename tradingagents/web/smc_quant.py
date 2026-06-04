@@ -53,6 +53,46 @@ DEFAULT_CONFLUENCE_WEIGHTS = {
 }
 
 
+def load_yaml_config(filename: str, *, search_paths: Optional[list[str]] = None) -> dict:
+    """§M0.3 — load YAML config from one of ``config/markets.yaml`` /
+    ``config/strategy.yaml`` and return parsed dict; missing file or
+    missing pyyaml → ``{}`` so the in-code defaults still drive behaviour.
+    """
+    import os
+    paths = search_paths or [
+        os.path.join(os.path.dirname(__file__), "..", "config", filename),
+        os.path.join(os.path.dirname(__file__), "config", filename),
+        os.path.join(os.getcwd(), "config", filename),
+    ]
+    for p in paths:
+        ap = os.path.abspath(p)
+        if not os.path.exists(ap):
+            continue
+        try:
+            import yaml
+        except Exception:
+            return {}
+        try:
+            with open(ap, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            return {}
+    return {}
+
+
+def _merge_market_configs(base: dict, overrides: dict) -> dict:
+    out = {k: dict(v) for k, v in base.items()}
+    for market, cfg in (overrides or {}).items():
+        if not isinstance(cfg, dict):
+            continue
+        merged = dict(out.get(market, {}))
+        merged.update(cfg)
+        out[market] = merged
+    return out
+
+
 MARKET_CONFIGS = {
     "tw": {
         "timezone": "Asia/Taipei",
@@ -2544,6 +2584,44 @@ CONFLUENCE_WEIGHTS_DEFAULT = {
     "poi_displacement_missing": -2,
 }
 CONFLUENCE_THRESHOLD_DEFAULT = 8
+
+
+def apply_strategy_yaml_overrides() -> dict:
+    """§M0.3 — overlay ``config/strategy.yaml`` onto in-code defaults.
+
+    Mutates module-level ``MARKET_CONFIGS`` / ``CONFLUENCE_WEIGHTS_DEFAULT`` /
+    ``CONFLUENCE_THRESHOLD_DEFAULT`` / ``CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT``
+    so every downstream function picks up the overrides automatically.
+    Returns the merged config dict for caller-side audit.
+    """
+    global MARKET_CONFIGS, CONFLUENCE_WEIGHTS_DEFAULT
+    global CONFLUENCE_THRESHOLD_DEFAULT, CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT
+    markets_yaml = load_yaml_config("markets.yaml")
+    strategy_yaml = load_yaml_config("strategy.yaml")
+    if markets_yaml:
+        MARKET_CONFIGS = _merge_market_configs(MARKET_CONFIGS, markets_yaml)
+    conf = strategy_yaml.get("confluence") or {}
+    if "weights" in conf and isinstance(conf["weights"], dict):
+        CONFLUENCE_WEIGHTS_DEFAULT = {**CONFLUENCE_WEIGHTS_DEFAULT, **conf["weights"]}
+    if "threshold" in conf:
+        try:
+            CONFLUENCE_THRESHOLD_DEFAULT = int(conf["threshold"])
+        except Exception:
+            pass
+    crypto_w = strategy_yaml.get("crypto_confluence") or {}
+    if isinstance(crypto_w, dict) and crypto_w:
+        CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT = {
+            **CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT, **crypto_w,
+        }
+    return {
+        "markets": MARKET_CONFIGS,
+        "confluence_weights": CONFLUENCE_WEIGHTS_DEFAULT,
+        "confluence_threshold": CONFLUENCE_THRESHOLD_DEFAULT,
+        "crypto_confluence_weights": CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT,
+        "risk": strategy_yaml.get("risk") or {},
+        "backtest": strategy_yaml.get("backtest") or {},
+        "adaptive": strategy_yaml.get("adaptive") or {},
+    }
 
 
 def build_multi_batch_entry_plan(

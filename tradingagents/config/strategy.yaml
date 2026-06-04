@@ -1,0 +1,65 @@
+# §M0.3 — Strategy configuration (external override for the §5.2 confluence
+# weights / threshold + §17.10 crypto-confluence weights + risk knobs).
+# load_strategy_config() merges these over the in-code defaults.
+
+confluence:
+  threshold: 8
+  weights:
+    # §5.2 base factors
+    htf_bias_aligned: 2
+    premium_discount_side: 2
+    unmitigated_ob: 2
+    unfilled_fvg: 1
+    liquidity_swept: 2
+    ltf_choch: 2
+    ote_zone: 1
+    killzone: 1
+    volume_displacement: 1
+    # §3.5 — DOL pulling toward external / strong equal-highs adds confluence
+    strong_dol_target: 1
+    # §3.11 — POI lacking displacement is a drag (negative weight)
+    poi_displacement_missing: -2
+
+crypto_confluence:
+  # §17.10 — crypto-specific factors added on top of §5.2
+  liquidation_cluster_sweep: 2
+  oi_drop_at_sweep: 2
+  cvd_divergence: 2
+  funding_extreme_contrarian: 1
+  coinbase_premium_aligned: 1
+  altcoin_btc_aligned: 2
+  cme_gap_hit: 1
+  perp_led_warning: -2
+  cvd_aggressive_flow: 1
+  altseason_tailwind: 2
+  altcoin_btc_htf_aligned: 2
+  altcoin_btc_htf_blocked: -3
+
+risk:
+  # §6 RR / position-sizing knobs (apply_risk_pipeline defaults)
+  min_rr: 1.5
+  risk_pct: 0.01
+  max_single_loss_pct: 0.05
+  daily_loss_limit: 50000
+  max_drawdown_limit: 50000
+  # §12.3 +NT$80k defensive switch
+  defensive_mode_pnl_trigger: 80000
+
+backtest:
+  # §10 acceptance criteria (§10.3)
+  min_win_rate: 0.55
+  min_profit_factor: 1.5
+  min_avg_R: 1.0
+  max_drawdown: 0.20
+  min_sample_size: 30
+  # §18.6 walk-forward / Kelly
+  walk_forward_folds: 4
+  train_fraction: 0.6
+  kelly_fractional: 0.25
+  kelly_cap: 0.05
+
+adaptive:
+  # §17.6 ATR-driven parameter buckets
+  k_range_percent: 0.6
+  m_stop_atr: 1.5
+  atr_window: 14

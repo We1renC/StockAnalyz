@@ -4120,3 +4120,47 @@ def test_generate_strategy_proposal_creates_yaml_and_changelog():
     assert "htf_bias_aligned: 3" in out["proposal_yaml"]
     assert "new_factor: 2" in out["proposal_yaml"]
 
+
+
+def test_load_yaml_config_returns_empty_when_missing(tmp_path):
+    """Missing config file → empty dict, never raises."""
+    from smc_quant import load_yaml_config
+    out = load_yaml_config("does_not_exist.yaml", search_paths=[str(tmp_path / "x.yaml")])
+    assert out == {}
+
+
+def test_load_yaml_config_reads_yaml_file(tmp_path):
+    from smc_quant import load_yaml_config
+    p = tmp_path / "markets.yaml"
+    p.write_text("tw:\n  tick_size: 0.05\n  custom_field: hello\n", encoding="utf-8")
+    try:
+        import yaml  # noqa: F401
+    except Exception:
+        return  # pyyaml not installed — loader returns {} which is acceptable
+    out = load_yaml_config("markets.yaml", search_paths=[str(p)])
+    assert out.get("tw", {}).get("tick_size") == 0.05
+    assert out.get("tw", {}).get("custom_field") == "hello"
+
+
+def test_apply_strategy_yaml_overrides_merges_into_module_state():
+    """§M0.3: applying yaml overrides changes module-level defaults."""
+    import smc_quant as M
+    try:
+        import yaml  # noqa: F401
+    except Exception:
+        return
+    before_weights = dict(M.CONFLUENCE_WEIGHTS_DEFAULT)
+    before_threshold = int(M.CONFLUENCE_THRESHOLD_DEFAULT)
+    merged = M.apply_strategy_yaml_overrides()
+    # The repo-provided config/strategy.yaml carries threshold=8 + same weights,
+    # so the merge must succeed without altering the contract.
+    assert merged["confluence_threshold"] == before_threshold
+    # Strong DOL target weight present (defined in YAML)
+    assert "strong_dol_target" in merged["confluence_weights"]
+    # Markets carry the three known buckets
+    assert set(merged["markets"]).issuperset({"tw", "us", "crypto"})
+    # Crypto-confluence merge keeps existing keys
+    assert merged["crypto_confluence_weights"]["liquidation_cluster_sweep"] == 2
+    # Re-apply must be idempotent
+    again = M.apply_strategy_yaml_overrides()
+    assert again["confluence_weights"] == merged["confluence_weights"]
