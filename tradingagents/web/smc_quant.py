@@ -4219,6 +4219,8 @@ def suggest_confluence_weights(
         "perp_led_warning": -2,
         "cvd_aggressive_flow": 1,
         "altseason_tailwind": 2,
+        "bpr_overlap": 1,
+        "ifvg_overlap": 1,
     }
     base = {**extension_defaults, **base}
     stats = (factor_edge or {}).get("factors", {})

@@ -2545,3 +2545,11 @@ def test_sweep_reversal_falls_through_without_bpr_ifvg():
     f = entries[0]["factors"]
     assert f["bpr_overlap"] is False
     assert f["ifvg_overlap"] is False
+
+
+def test_suggest_weights_seeds_bpr_and_ifvg_overlap():
+    """§3.4: suggest_confluence_weights now seeds bpr_overlap + ifvg_overlap."""
+    from smc_quant import suggest_confluence_weights
+    out = suggest_confluence_weights({"factors": {}})
+    assert out["bpr_overlap"] == 1
+    assert out["ifvg_overlap"] == 1
