@@ -5048,6 +5048,61 @@ DAILY_REPORT_SCHEMA_VERSION = 1
 CLOSED_LOOP_SCHEMA_VERSION = 1
 
 
+def monthly_edge_stability(
+    trade_records: list[dict],
+    *,
+    decay_threshold_pct: float = 50.0,
+) -> dict:
+    """§18.3 — month-by-month expectancy to spot edge decay.
+
+    Groups trades by ``entry_time`` calendar month, computes
+    ``compute_expectancy`` per bucket, then compares each month's
+    expected_R against the *overall* expected_R. Months whose expectancy
+    drops below ``decay_threshold_pct`` of the overall are flagged.
+
+    Returns ``{months: [{ym, n, expected_R, win_rate, decay_flag}],
+    overall_expected_R, decay_months}``.
+    """
+    if not trade_records:
+        return {"status": "no_trades", "months": []}
+    overall = compute_expectancy(trade_records)
+    overall_E = overall.get("expected_R", 0.0)
+    buckets: dict[str, list[dict]] = {}
+    for t in trade_records:
+        ts = t.get("entry_time") or t.get("exit_time")
+        if not ts:
+            continue
+        try:
+            ym = pd.Timestamp(ts).strftime("%Y-%m")
+        except Exception:
+            continue
+        buckets.setdefault(ym, []).append(t)
+    months_out: list[dict] = []
+    decay_months: list[str] = []
+    threshold = (decay_threshold_pct / 100.0) * overall_E if overall_E > 0 else 0
+    for ym in sorted(buckets.keys()):
+        chunk = buckets[ym]
+        exp = compute_expectancy(chunk)
+        decay = bool(overall_E > 0 and exp["expected_R"] < threshold)
+        if decay:
+            decay_months.append(ym)
+        months_out.append({
+            "ym": ym,
+            "n": len(chunk),
+            "expected_R": exp["expected_R"],
+            "win_rate": exp["win_rate"],
+            "decay_flag": decay,
+        })
+    return {
+        "status": "ok",
+        "overall_expected_R": overall_E,
+        "decay_threshold_pct": decay_threshold_pct,
+        "months": months_out,
+        "decay_months": decay_months,
+        "review_required": bool(decay_months),
+    }
+
+
 def run_closed_loop_calibration(
     trade_records: list[dict],
     *,

@@ -3841,3 +3841,28 @@ def test_run_closed_loop_calibration_blocks_adoption_when_oos_fails():
     out = run_closed_loop_calibration(records, walk_forward_folds=4)
     assert out["verdict"]["adopt"] is False
     assert "oos_failed" in out["verdict"]["reason"]
+
+
+def test_monthly_edge_stability_flags_decay_when_month_drops():
+    from smc_quant import monthly_edge_stability
+    records = []
+    for d in range(1, 6):
+        records.append({"entry_time": f"2026-01-{d:02d}T10:00", "r_multiple": 2.0})
+    for d in range(1, 6):
+        records.append({"entry_time": f"2026-02-{d:02d}T10:00", "r_multiple": -1.0})
+    out = monthly_edge_stability(records)
+    feb = next(m for m in out["months"] if m["ym"] == "2026-02")
+    assert feb["decay_flag"] is True
+    assert "2026-02" in out["decay_months"]
+    assert out["review_required"] is True
+
+
+def test_monthly_edge_stability_no_decay_when_consistent():
+    from smc_quant import monthly_edge_stability
+    records = [
+        {"entry_time": "2026-01-05T10:00", "r_multiple": 2.0},
+        {"entry_time": "2026-02-05T10:00", "r_multiple": 2.0},
+    ]
+    out = monthly_edge_stability(records)
+    assert out["decay_months"] == []
+    assert out["review_required"] is False
