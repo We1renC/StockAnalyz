@@ -671,3 +671,45 @@ def test_binance_compatibility_api():
     res = client.get(f"/api/v3/myTrades?{q_str}", headers=headers)
     assert res.status_code == 200
 
+
+def test_exchange_adapter_management_api():
+    client = TestClient(app.app)
+    
+    # 1. Query Exchange List
+    headers = get_auth_headers("GET", "/v1/exchanges")
+    res = client.get("/v1/exchanges", headers=headers)
+    assert res.status_code == 200
+    assert res.json()["success"] is True
+    data = res.json()["data"]
+    assert any(x["exchange"] == "binance" for x in data)
+    assert any(x["exchange"] == "simulated" for x in data)
+
+    # 2. Query Single Exchange Status (Binance)
+    headers = get_auth_headers("GET", "/v1/exchanges/binance/status")
+    res = client.get("/v1/exchanges/binance/status", headers=headers)
+    assert res.status_code == 200
+    assert res.json()["success"] is True
+    assert res.json()["data"]["exchange"] == "binance"
+
+    # 3. Query Single Exchange Status (Simulated)
+    headers = get_auth_headers("GET", "/v1/exchanges/simulated/status")
+    res = client.get("/v1/exchanges/simulated/status", headers=headers)
+    assert res.status_code == 200
+    assert res.json()["success"] is True
+    assert res.json()["data"]["exchange"] == "simulated"
+
+    # 4. Query Exchange Symbol Mapping
+    headers = get_auth_headers("GET", "/v1/exchanges/binance/symbols")
+    res = client.get("/v1/exchanges/binance/symbols", headers=headers)
+    assert res.status_code == 200
+    assert res.json()["success"] is True
+    assert res.json()["exchange"] == "binance"
+    assert len(res.json()["data"]) >= 3
+    assert any(sym["internal_symbol"] == "BTC-USDT" and sym["exchange_symbol"] == "BTCUSDT" for sym in res.json()["data"])
+
+    # 5. Invalid Exchange query -> 404
+    headers = get_auth_headers("GET", "/v1/exchanges/invalid_exchange/status")
+    res = client.get("/v1/exchanges/invalid_exchange/status", headers=headers)
+    assert res.status_code == 404
+
+

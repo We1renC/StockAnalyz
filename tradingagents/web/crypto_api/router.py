@@ -1409,6 +1409,127 @@ def delete_api_key(api_key_id: str, auth_info: Dict[str, Any] = Depends(require_
     }
 
 
+# ─────────────── 13.10 Exchange Adapter Management API ───────────────
+
+@router.get("/exchanges")
+async def get_exchanges(auth_info: Dict[str, Any] = Depends(require_scopes(["admin:system"]))):
+    return {
+        "success": True,
+        "data": [
+            {
+                "exchange": "binance",
+                "status": "online",
+                "trading_status": "trading",
+                "supported_market_types": ["spot"],
+                "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            },
+            {
+                "exchange": "simulated",
+                "status": "online",
+                "trading_status": "trading",
+                "supported_market_types": ["spot"],
+                "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            }
+        ]
+    }
+
+@router.get("/exchanges/{exchange}/status")
+async def get_exchange_status(exchange: str, auth_info: Dict[str, Any] = Depends(require_scopes(["admin:system"]))):
+    exch = exchange.lower().strip()
+    if exch not in ("binance", "simulated"):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "EXCHANGE_NOT_FOUND",
+                    "message": f"Exchange '{exchange}' is not configured."
+                }
+            }
+        )
+    
+    if exch == "binance":
+        import urllib.request
+        start = time.time()
+        latency = 50
+        status_val = "online"
+        try:
+            url = f"{price_engine.base_url}/api/v3/ping"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=2) as res:
+                res.read()
+            latency = int((time.time() - start) * 1000)
+        except Exception:
+            status_val = "offline"
+            latency = 999
+            
+        return {
+            "success": True,
+            "data": {
+                "exchange": "binance",
+                "status": status_val,
+                "trading_status": "trading" if status_val == "online" else "halted",
+                "latency_ms": latency,
+                "last_heartbeat_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "rate_limit": {
+                    "remaining": 999,
+                    "reset_at": datetime.now(UTC).isoformat().replace("+00:00", "Z")
+                }
+            }
+        }
+    else:
+        return {
+            "success": True,
+            "data": {
+                "exchange": "simulated",
+                "status": "online",
+                "trading_status": "trading",
+                "latency_ms": 0,
+                "last_heartbeat_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "rate_limit": {
+                    "remaining": 9999,
+                    "reset_at": datetime.now(UTC).isoformat().replace("+00:00", "Z")
+                }
+            }
+        }
+
+@router.get("/exchanges/{exchange}/symbols")
+async def get_exchange_symbols(exchange: str, auth_info: Dict[str, Any] = Depends(require_scopes(["admin:system"]))):
+    exch = exchange.lower().strip()
+    if exch not in ("binance", "simulated"):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "EXCHANGE_NOT_FOUND",
+                    "message": f"Exchange '{exchange}' is not configured."
+                }
+            }
+        )
+    
+    conn = get_crypto_db()
+    c = conn.cursor()
+    rows = c.execute("SELECT symbol FROM crypto_markets").fetchall()
+    conn.close()
+    
+    data = []
+    for r in rows:
+        symbol = r["symbol"]
+        exchange_symbol = symbol.replace("-", "") if exch == "binance" else symbol
+        data.append({
+            "internal_symbol": symbol,
+            "exchange_symbol": exchange_symbol,
+            "status": "trading"
+        })
+        
+    return {
+        "success": True,
+        "exchange": exchange,
+        "data": data
+    }
+
+
 def order_to_binance(order: Dict[str, Any], fills_list: List[Dict[str, Any]] = []) -> Dict[str, Any]:
     status_map = {
         "pending": "NEW",
