@@ -51,11 +51,13 @@ from paper_acceptance_store import (
     load_order_audit_rows,
     load_reconciliation_runs,
     load_runtime_metrics,
+    load_scenario_runs,
     record_alert_delivery,
     record_acceptance_event,
     record_order_audit,
     record_reconciliation_run,
     record_runtime_metric,
+    run_acceptance_scenario,
     upsert_acceptance_check,
     upsert_acceptance_context_overrides,
 )
@@ -4829,6 +4831,12 @@ class PaperAcceptanceAlertDeliveryCreate(BaseModel):
     created_at: Optional[str] = None
 
 
+class PaperAcceptanceScenarioRunRequest(BaseModel):
+    symbol: str
+    scenario_id: str
+    stage: str = "paper"
+
+
 def _json_dumps_compact(value, fallback):
     if value is None:
         value = fallback
@@ -5611,6 +5619,39 @@ def api_record_paper_acceptance_alert_deliveries(req: PaperAcceptanceAlertDelive
             created_at=req.created_at,
         )
         return sanitize_float_values({"ok": True, "row": row})
+    finally:
+        conn.close()
+
+
+@app.get("/api/paper-acceptance/scenarios")
+def api_get_paper_acceptance_scenarios(symbol: str, stage: str = "paper", limit: int = 100):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        rows = load_scenario_runs(conn, symbol=symbol.strip().upper(), stage=stage, limit=limit)
+        return sanitize_float_values({"rows": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+@app.post("/api/paper-acceptance/scenarios/run")
+def api_run_paper_acceptance_scenario(req: PaperAcceptanceScenarioRunRequest):
+    if not req.symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    if not req.scenario_id.strip():
+        raise HTTPException(400, "scenario_id is required")
+    conn = get_db()
+    try:
+        row = run_acceptance_scenario(
+            conn,
+            symbol=req.symbol.strip().upper(),
+            scenario_id=req.scenario_id.strip(),
+            stage=req.stage,
+        )
+        return {"ok": True, "row": row}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     finally:
         conn.close()
 

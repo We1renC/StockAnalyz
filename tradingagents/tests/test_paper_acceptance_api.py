@@ -11,6 +11,7 @@ from app import (
     PaperAcceptanceOrderAuditCreate,
     PaperAcceptanceReconciliationCreate,
     PaperAcceptanceRuntimeMetricCreate,
+    PaperAcceptanceScenarioRunRequest,
     PaperAcceptanceWorkspaceUpdate,
     SMCJournalCreate,
 )
@@ -201,5 +202,26 @@ def test_api_runtime_metrics_reconciliation_order_audit_and_alert_delivery(tmp_p
         assert workspace["report"]["metrics"]["fees_included"] is True
         assert workspace["report"]["metrics"]["reconciliation_implemented"] is True
         assert len(workspace["runtime_metrics"]) >= 2
+    finally:
+        app.DB = original
+
+
+def test_api_run_acceptance_scenario(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        payload = app.api_run_paper_acceptance_scenario(
+            PaperAcceptanceScenarioRunRequest(symbol="ABAT", scenario_id="kill_switch_blocks_orders")
+        )
+        rows = app.api_get_paper_acceptance_scenarios(symbol="ABAT")
+        workspace = app.api_get_paper_acceptance_workspace(symbol="ABAT")
+
+        assert payload["ok"] is True
+        assert rows["count"] == 1
+        gate = next(item for item in workspace["catalog"] if item["section"] == "10.4")
+        check = next(
+            row for row in gate["gates"][0]["checks"]
+            if row["key"] == "new_orders_blocked_after_shutdown"
+        )
+        assert check["value"] is True
     finally:
         app.DB = original

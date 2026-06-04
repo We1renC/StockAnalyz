@@ -24,6 +24,12 @@ from paper_acceptance_metrics import (
     record_runtime_metric,
     summarize_acceptance_telemetry,
 )
+from paper_acceptance_scenarios import (
+    ensure_paper_acceptance_scenario_schema,
+    load_scenario_runs,
+    run_acceptance_scenario,
+    summarize_scenario_evidence,
+)
 
 
 FRAMEWORK_CAPABILITY_CHECKS: dict[str, dict[str, bool]] = {
@@ -223,6 +229,7 @@ def ensure_paper_acceptance_schema(conn) -> None:
            ON paper_acceptance_evidence(symbol, stage, gate_id, updated_at DESC)"""
     )
     ensure_paper_acceptance_metrics_schema(conn)
+    ensure_paper_acceptance_scenario_schema(conn)
     conn.commit()
 
 
@@ -930,6 +937,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
     backtest_runs = _load_backtest_runs(conn, symbol=key, limit=20)
     events = load_acceptance_events(conn, symbol=key, limit=500)
     telemetry = summarize_acceptance_telemetry(conn, symbol=key, stage="paper")
+    scenarios = summarize_scenario_evidence(conn, symbol=key, stage="paper")
     strategy_payload = dict(overrides["strategy"] or {})
     strategy_payload.update(strategy or {})
     strategy_payload.setdefault("name", "SMC Paper Acceptance")
@@ -1019,6 +1027,9 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
     for gate_id, checks in (telemetry.get("evidence") or {}).items():
         for check_key, value in (checks or {}).items():
             _merge_check(evidence, gate_id, check_key, value, source="observed")
+    for gate_id, checks in (scenarios.get("evidence") or {}).items():
+        for check_key, value in (checks or {}).items():
+            _merge_check(evidence, gate_id, check_key, value, source="observed")
     _apply_manual_evidence(evidence, load_acceptance_checks(conn, key, stage="paper"))
     prohibitions = _build_auto_prohibitions(metrics, strategy_payload, evidence)
     prohibitions.update({key: bool(value) for key, value in (overrides["prohibitions"] or {}).items()})
@@ -1037,6 +1048,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
             for row in _journal_closed_rows(paper_rows)
         ],
         "telemetry": telemetry,
+        "scenario_runs": scenarios.get("runs") or [],
     }
 
 
@@ -1071,6 +1083,7 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         "reconciliation_runs": load_reconciliation_runs(conn, symbol=key, stage=stage, limit=30),
         "order_audit": load_order_audit_rows(conn, symbol=key, stage=stage, limit=40),
         "alert_deliveries": load_alert_deliveries(conn, symbol=key, stage=stage, limit=40),
+        "scenario_runs": load_scenario_runs(conn, symbol=key, stage=stage, limit=40),
         "reports": load_acceptance_reports(conn, symbol=key, limit=limit_reports),
     }
 
@@ -1089,12 +1102,14 @@ __all__ = [
     "load_order_audit_rows",
     "load_reconciliation_runs",
     "load_runtime_metrics",
+    "load_scenario_runs",
     "persist_acceptance_report",
     "record_alert_delivery",
     "record_acceptance_event",
     "record_order_audit",
     "record_reconciliation_run",
     "record_runtime_metric",
+    "run_acceptance_scenario",
     "upsert_acceptance_check",
     "upsert_acceptance_context_overrides",
 ]
