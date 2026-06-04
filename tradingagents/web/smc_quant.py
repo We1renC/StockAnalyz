@@ -2474,8 +2474,52 @@ CONFLUENCE_WEIGHTS_DEFAULT = {
     # §3.5 — DOL pulling toward external / strong equal-highs magnets earns
     # a confluence bonus over weak / internal pools.
     "strong_dol_target": 1,
+    # §3.11 — "OBs and FVGs are only valid when accompanied by displacement."
+    # When the POI origin has NO displacement nearby we surface a negative-
+    # weight drag (rather than hard-blocking) so users can still see the
+    # candidate but it ranks below displacement-backed alternatives.
+    "poi_displacement_missing": -2,
 }
 CONFLUENCE_THRESHOLD_DEFAULT = 8
+
+
+def annotate_poi_displacement_validity(entries: list[dict]) -> list[dict]:
+    """§3.11 — flag entries whose POI origin lacks displacement.
+
+    OBs and FVGs are only "institutional" when accompanied by a
+    displacement candle. The detectors already record per-POI
+    ``displacement_confirmed`` flags; this helper rolls that into a
+    uniform ``poi_displacement_missing`` factor on each entry and
+    re-scores the confluence so the §5.2 drag weight kicks in.
+
+    Returns a *new* list — input untouched.
+    """
+    out: list[dict] = []
+    for e in entries or []:
+        annotated = dict(e)
+        poi_kind = e.get("poi_kind")
+        # poi_displacement_confirmed is only meaningful for OB / FVG /
+        # breaker_fvg_overlap POIs; OTE band & accumulation_mid do not
+        # have an origin candle to validate.
+        if poi_kind not in {"order_block", "fvg", "breaker_fvg_overlap"}:
+            out.append(annotated); continue
+        # Inspect the entry's factors map — sweep_reversal/continuation/etc
+        # already wrote ``volume_displacement`` from the POI. Without that
+        # signal the POI is suspect per §3.11.
+        factors = dict(annotated.get("factors") or {})
+        displaced = bool(factors.get("volume_displacement"))
+        factors["poi_displacement_missing"] = (not displaced)
+        annotated["factors"] = factors
+        if isinstance(annotated.get("confluence"), dict):
+            rescored = score_confluence(
+                factors,
+                weights=annotated["confluence"].get("weights"),
+                threshold=annotated["confluence"].get("threshold", CONFLUENCE_THRESHOLD_DEFAULT),
+            )
+            annotated["confluence"] = rescored
+            annotated["triggered"] = rescored["triggered"]
+        out.append(annotated)
+    return out
 
 
 def merge_crypto_factors(
@@ -5784,6 +5828,15 @@ def build_smc_analysis(
     unicorn_entries = attach_dol_targets(unicorn_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels)
     silver_bullet_entries = attach_dol_targets(silver_bullet_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels)
     power_of_three_entries = attach_dol_targets(power_of_three_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels)
+    # §3.11 — uniformly drag down entries whose OB/FVG POI was not formed
+    # by a displacement candle. Re-scoring may flip ``triggered`` off when
+    # the missing-displacement -2 weight tips a borderline candidate.
+    sweep_reversal_entries = annotate_poi_displacement_validity(sweep_reversal_entries)
+    continuation_entries = annotate_poi_displacement_validity(continuation_entries)
+    ote_entries = annotate_poi_displacement_validity(ote_entries)
+    unicorn_entries = annotate_poi_displacement_validity(unicorn_entries)
+    silver_bullet_entries = annotate_poi_displacement_validity(silver_bullet_entries)
+    power_of_three_entries = annotate_poi_displacement_validity(power_of_three_entries)
     # §17.10 — when a crypto overlay is present, weave its factor map
     # into every entry's confluence score so e.g. perp_led_warning
     # actually debits points and oi_drop_at_sweep adds them.

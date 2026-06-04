@@ -3178,3 +3178,65 @@ def test_retracement_state_bearish_leg_direction_and_deepest():
     assert out["direction"] == -1
     assert out["current_retracement_pct"] == 35.0
     assert out["deepest_retracement_pct"] == 60.0
+
+
+def test_annotate_poi_displacement_validity_drags_score_when_missing():
+    """§3.11: an OB POI without displacement gets -2 drag on confluence."""
+    from smc_quant import annotate_poi_displacement_validity, score_confluence
+    base_factors = {
+        "htf_bias_aligned": True, "premium_discount_side": True,
+        "unmitigated_ob": True, "unfilled_fvg": False,
+        "liquidity_swept": True, "ltf_choch": True,
+        "ote_zone": False, "killzone": False,
+        "volume_displacement": False,  # ← no displacement at POI origin
+    }
+    entry = {
+        "model": "sweep_reversal", "direction": 1, "entry": 100, "stop": 99,
+        "target": 102, "risk": 1, "rr": 2.0,
+        "poi_kind": "order_block",
+        "factors": base_factors,
+        "confluence": score_confluence(base_factors),
+        "triggered": True,
+    }
+    out = annotate_poi_displacement_validity([entry])
+    factors = out[0]["factors"]
+    assert factors["poi_displacement_missing"] is True
+    # Score should drop by exactly the drag weight (-2).
+    drop = score_confluence(base_factors)["score"] - out[0]["confluence"]["score"]
+    assert drop == 2
+
+
+def test_annotate_poi_displacement_validity_skips_non_origin_pois():
+    """OTE band / accumulation-mid POIs have no origin candle → not flagged."""
+    from smc_quant import annotate_poi_displacement_validity, score_confluence
+    base_factors = {"htf_bias_aligned": True, "volume_displacement": False}
+    entry = {
+        "model": "ote_retracement", "direction": 1,
+        "poi_kind": "ote_band",
+        "factors": base_factors,
+        "confluence": score_confluence(base_factors),
+    }
+    out = annotate_poi_displacement_validity([entry])
+    # poi_displacement_missing must NOT be added for ote_band POI
+    assert "poi_displacement_missing" not in out[0]["factors"]
+
+
+def test_annotate_poi_displacement_validity_passes_through_when_displaced():
+    from smc_quant import annotate_poi_displacement_validity, score_confluence
+    base_factors = {
+        "htf_bias_aligned": True, "premium_discount_side": True,
+        "unmitigated_ob": True, "unfilled_fvg": False,
+        "liquidity_swept": True, "ltf_choch": True,
+        "ote_zone": False, "killzone": False,
+        "volume_displacement": True,  # displacement present
+    }
+    entry = {
+        "model": "sweep_reversal", "direction": 1,
+        "poi_kind": "order_block",
+        "factors": base_factors,
+        "confluence": score_confluence(base_factors),
+    }
+    out = annotate_poi_displacement_validity([entry])
+    assert out[0]["factors"]["poi_displacement_missing"] is False
+    # No drag → same score as before
+    assert out[0]["confluence"]["score"] == score_confluence(base_factors)["score"]
