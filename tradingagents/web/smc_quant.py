@@ -1054,6 +1054,103 @@ def detect_smt_divergence(
 # §17 Crypto derivatives overlay (liquidations / OI / funding / CVD / premium)
 # ---------------------------------------------------------------------------
 
+def aggregate_multi_exchange(
+    exchange_feeds: dict[str, pd.DataFrame],
+    *,
+    wick_outlier_pct: float = 2.0,
+    min_confirmations: int = 2,
+) -> dict:
+    """§17.9 — multi-exchange consensus + single-venue wick filter.
+
+    Inputs: ``{exchange_name: ohlcv_df}``. For each timestamp present in
+    the majority of feeds we emit a consensus bar (median of OHLC across
+    feeds) and flag exchanges whose high/low deviates from the consensus
+    by more than ``wick_outlier_pct`` % — those are the single-venue
+    fake-wicks that §17.9 warns against.
+
+    Returns ``{consensus_df, wick_anomalies, sample_size, exchanges}``.
+    """
+    if not exchange_feeds:
+        return {"consensus_df": None, "wick_anomalies": [], "sample_size": 0, "exchanges": []}
+    valid: dict[str, pd.DataFrame] = {}
+    for name, df in exchange_feeds.items():
+        if df is None or len(df) == 0:
+            continue
+        valid[name] = normalize_ohlcv(df)
+    if not valid:
+        return {"consensus_df": None, "wick_anomalies": [], "sample_size": 0, "exchanges": []}
+    # Outer-join all indexes so every venue is represented at every time.
+    union_index = sorted(set().union(*(df.index for df in valid.values())))
+    if len(valid) < min_confirmations:
+        # Below confirmation floor — return whichever single feed we have but mark it.
+        only = next(iter(valid.values()))
+        return {
+            "consensus_df": only,
+            "wick_anomalies": [],
+            "sample_size": len(only),
+            "exchanges": list(valid.keys()),
+            "note": f"single_venue_only ({list(valid.keys())[0]})",
+        }
+    aligned = {name: df.reindex(union_index).ffill() for name, df in valid.items()}
+    # Median across venues per OHLC column — robust to a single venue's wick.
+    consensus_rows = []
+    anomalies: list[dict] = []
+    for ts in union_index:
+        opens, highs, lows, closes, volumes = [], [], [], [], []
+        per_venue: dict[str, dict] = {}
+        for name, df in aligned.items():
+            try:
+                row = df.loc[ts]
+            except KeyError:
+                continue
+            if pd.isna(row["close"]):
+                continue
+            opens.append(float(row["open"]))
+            highs.append(float(row["high"]))
+            lows.append(float(row["low"]))
+            closes.append(float(row["close"]))
+            volumes.append(float(row.get("volume", 0) or 0))
+            per_venue[name] = {
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+            }
+        if len(closes) < min_confirmations:
+            continue
+        sorted_c = sorted(closes)
+        median_close = sorted_c[len(sorted_c) // 2]
+        consensus_rows.append({
+            "timestamp": ts,
+            "open": sum(opens) / len(opens),
+            "high": sorted(highs)[len(highs) // 2],
+            "low": sorted(lows)[len(lows) // 2],
+            "close": median_close,
+            "volume": sum(volumes),
+        })
+        for name, snap in per_venue.items():
+            if median_close <= 0:
+                continue
+            dev = max(abs(snap["high"] - median_close), abs(snap["low"] - median_close)) / median_close * 100
+            if dev > wick_outlier_pct:
+                anomalies.append({
+                    "timestamp": ts,
+                    "exchange": name,
+                    "deviation_pct": round(dev, 3),
+                    "median_close": round(median_close, 4),
+                    "snap": snap,
+                })
+    if not consensus_rows:
+        return {"consensus_df": None, "wick_anomalies": [], "sample_size": 0, "exchanges": list(valid.keys())}
+    consensus_df = pd.DataFrame(consensus_rows).set_index("timestamp")
+    return {
+        "consensus_df": consensus_df,
+        "wick_anomalies": anomalies,
+        "sample_size": len(consensus_df),
+        "exchanges": list(valid.keys()),
+        "wick_outlier_pct": wick_outlier_pct,
+    }
+
+
 def crypto_daily_levels(df: pd.DataFrame) -> dict:
     """§17.5 — crypto-aligned previous-day high/low using UTC 00:00 close.
 

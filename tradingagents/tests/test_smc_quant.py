@@ -1509,3 +1509,36 @@ def test_propose_strategy_yaml_marks_review_required_when_walk_forward_fails():
     if out["validation"]["walk_forward"]["passes"] is False:
         assert out["adopt"] is False
         assert out["status"] == "review_required"
+
+
+def test_multi_exchange_aggregator_flags_single_venue_wick():
+    """§17.9: one venue prints a 5% wick while two others stay tight → anomaly."""
+    from smc_quant import aggregate_multi_exchange
+    idx = [datetime(2026, 1, 1) + timedelta(hours=i) for i in range(5)]
+    base = pd.DataFrame(
+        [(100, 101, 99, 100, 1)] * 5,
+        columns=["Open", "High", "Low", "Close", "Volume"], index=idx,
+    )
+    wick = base.copy()
+    wick.loc[idx[2], "High"] = 110  # 10% wick on one venue
+    out = aggregate_multi_exchange({"A": base, "B": base.copy(), "C": wick}, wick_outlier_pct=2.0)
+    assert out["consensus_df"] is not None
+    assert any(a["exchange"] == "C" for a in out["wick_anomalies"])
+    assert out["sample_size"] >= 5
+
+
+def test_multi_exchange_aggregator_single_venue_marked_as_note():
+    from smc_quant import aggregate_multi_exchange
+    idx = [datetime(2026, 1, 1) + timedelta(hours=i) for i in range(3)]
+    df = normalize_ohlcv(pd.DataFrame(
+        [(100, 101, 99, 100, 1)] * 3, columns=["Open","High","Low","Close","Volume"], index=idx))
+    out = aggregate_multi_exchange({"A": df})
+    assert out["sample_size"] == 3
+    assert "single_venue_only" in out.get("note", "")
+
+
+def test_multi_exchange_aggregator_returns_empty_on_no_feeds():
+    from smc_quant import aggregate_multi_exchange
+    out = aggregate_multi_exchange({})
+    assert out["sample_size"] == 0
+    assert out["consensus_df"] is None
