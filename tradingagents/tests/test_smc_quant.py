@@ -1749,3 +1749,40 @@ def test_top_down_audit_emits_six_step_checklist():
     assert audit["max_score"] == 6
     assert 0 <= audit["score"] <= audit["max_score"]
     assert isinstance(audit["ready"], bool)
+
+
+def test_equilibrium_reactions_count_oscillations_around_50pct():
+    """§3.6: bars that wick across EQ but close on one side count as reactions."""
+    from smc_quant import track_equilibrium_reactions
+    pd_zone = {"equilibrium": 100.0, "range_high": 110, "range_low": 90}
+    rows = [
+        (95, 102, 95, 96, 1),    # wicks above EQ, closes below → reaction
+        (96, 101, 96, 99, 1),    # wicks above EQ, closes below → reaction
+        (99, 102, 98, 101, 1),   # closes above
+        (101, 103, 99, 102, 1),  # closes above
+    ]
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(len(rows))]
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open","High","Low","Close","Volume"], index=idx))
+    out = track_equilibrium_reactions(df, pd_zone, lookback=10)
+    assert out["reactions"] >= 2
+    assert out["active"] is True
+    assert out["flips"] >= 1
+
+
+def test_equilibrium_reactions_inactive_when_no_eq_data():
+    from smc_quant import track_equilibrium_reactions
+    h = normalize_ohlcv(_sample_ohlcv())
+    out = track_equilibrium_reactions(h, {})
+    assert out["active"] is False
+    assert out["reactions"] == 0
+
+
+def test_build_smc_analysis_routes_equilibrium_reactions():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    pd_zone = result["concepts"]["premium_discount"]
+    if pd_zone:
+        assert "equilibrium_reactions" in pd_zone
+        assert "active" in pd_zone["equilibrium_reactions"]

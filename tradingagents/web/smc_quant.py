@@ -372,6 +372,52 @@ def detect_fvgs(df: pd.DataFrame, displacements: list[dict]) -> list[dict]:
     return out
 
 
+def track_equilibrium_reactions(
+    df: pd.DataFrame, pd_zone: dict, *, lookback: int = 30, tol_pct: float = 0.3,
+) -> dict:
+    """§3.6 — count how often price has reacted to the dealing-range
+    equilibrium (50%) line.
+
+    Each bar within ``lookback`` whose body straddles the equilibrium and
+    closes back on the same side it came from counts as a *reaction*.
+    Many reactions means the EQ line is "live" support/resistance — a
+    high-quality 50%-mean-reversion zone for §5.1 OTE entries.
+    """
+    if df is None or len(df) == 0 or not pd_zone:
+        return {"reactions": 0, "lookback": lookback, "active": False}
+    eq = float(pd_zone.get("equilibrium") or 0)
+    if eq <= 0:
+        return {"reactions": 0, "lookback": lookback, "active": False}
+    leg = float(pd_zone.get("range_high", 0)) - float(pd_zone.get("range_low", 0))
+    if leg <= 0:
+        return {"reactions": 0, "lookback": lookback, "active": False}
+    tol = leg * (tol_pct / 100)
+    start = max(0, len(df) - lookback)
+    reactions = 0
+    last_side = 0
+    flips = 0
+    for j in range(start, len(df)):
+        close = float(df["close"].iloc[j])
+        high = float(df["high"].iloc[j])
+        low = float(df["low"].iloc[j])
+        side = 1 if close > eq + tol else (-1 if close < eq - tol else 0)
+        # Reaction = bar wicked across EQ but closed away from it
+        if low - tol <= eq <= high + tol and side != 0:
+            reactions += 1
+        if last_side != 0 and side != 0 and side != last_side:
+            flips += 1
+        if side != 0:
+            last_side = side
+    return {
+        "equilibrium": round(eq, 4),
+        "reactions": reactions,
+        "flips": flips,
+        "lookback": lookback,
+        "tolerance_pct": tol_pct,
+        "active": reactions >= 2,
+    }
+
+
 def classify_liquidity_internal_external(
     liquidity: list[dict],
     pd_zone: dict,
@@ -4438,6 +4484,9 @@ def build_smc_analysis(
     breaker_blocks = detect_breaker_blocks(obs)
     pd_zone = premium_discount(h, swings)
     liquidity = classify_liquidity_internal_external(liquidity, pd_zone)
+    eq_reactions = track_equilibrium_reactions(h, pd_zone)
+    if pd_zone:
+        pd_zone = {**pd_zone, "equilibrium_reactions": eq_reactions}
     bias = _latest_bias(structure)
     ote = ote_zone(swings, bias)
     prev = previous_levels(h)
