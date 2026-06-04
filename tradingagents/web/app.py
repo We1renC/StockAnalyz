@@ -380,6 +380,14 @@ def init_db():
         except Exception:
             pass
 
+    # Crypto DB init and seed
+    try:
+        from crypto_api.models import init_crypto_db, seed_crypto_data
+        init_crypto_db(conn)
+        seed_crypto_data(conn)
+    except Exception as e:
+        print(f"Error initializing crypto db: {e}")
+
     conn.close()
 
 # ─────────────── Price + Indicators ───────────────
