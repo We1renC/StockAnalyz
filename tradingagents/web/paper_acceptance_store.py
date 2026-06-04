@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 from paper_acceptance import (
@@ -32,6 +33,7 @@ from paper_acceptance_scenarios import (
     summarize_scenario_evidence,
 )
 from paper_acceptance_policy import build_acceptance_policy_snapshot
+from paper_acceptance_security import run_security_scan
 
 
 FRAMEWORK_CAPABILITY_CHECKS: dict[str, dict[str, bool]] = {
@@ -1180,6 +1182,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
     events = load_acceptance_events(conn, symbol=key, limit=500)
     telemetry = summarize_acceptance_telemetry(conn, symbol=key, stage="paper")
     scenarios = summarize_scenario_evidence(conn, symbol=key, stage="paper")
+    security_scan = run_security_scan(Path(__file__).resolve().parents[2])
     strategy_payload = dict(overrides["strategy"] or {})
     strategy_payload.update(strategy or {})
     strategy_payload.setdefault("name", "SMC Paper Acceptance")
@@ -1256,6 +1259,14 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "live_trade_count": live_summary.get("trade_count"),
         "backtest_trade_count": latest_backtest.get("total_trades"),
     }
+    metrics.update({
+        "hardcoded_api_keys": not bool(security_scan.get("no_hardcoded_keys")),
+        "test_live_keys_separated": security_scan.get("test_live_separation"),
+        "revocation_process": security_scan.get("revocation_process"),
+        "logs_avoid_secrets": security_scan.get("no_hardcoded_keys"),
+        "security_scan_file_count": security_scan.get("scanned_files"),
+        "security_scan_hit_count": security_scan.get("hardcoded_secret_count"),
+    })
     metrics.update({key: value for key, value in telemetry.get("metrics", {}).items() if value is not None})
     metrics.update({key: value for key, value in overrides["metrics"].items() if value is not None})
     evidence = _build_auto_evidence(
@@ -1304,6 +1315,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "telemetry": telemetry,
         "scenario_runs": scenarios.get("runs") or [],
         "policy": policy,
+        "security_scan": security_scan,
     }
 
 
@@ -1425,6 +1437,7 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         "prohibitions_overrides": overrides["prohibitions"],
         "review": load_acceptance_review(conn, key, stage=stage),
         "policy": context.get("policy") or {},
+        "security_scan": context.get("security_scan") or {},
         "report": report,
         "sections": section_summaries,
         "catalog": catalog,

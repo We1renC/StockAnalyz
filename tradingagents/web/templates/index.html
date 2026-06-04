@@ -3495,6 +3495,7 @@ function renderPaperAcceptanceObserved(workspace) {
   const runtimeMetrics = workspace?.runtime_metrics || [];
   const reconciliationRuns = workspace?.reconciliation_runs || [];
   const orderAudit = workspace?.order_audit || [];
+  const securityScan = workspace?.security_scan || {};
   const parts = [
     `API latency ${metrics.average_api_latency ?? '—'} ms`,
     `P95 ${metrics.latency_p95 ?? '—'} / P99 ${metrics.latency_p99 ?? '—'}`,
@@ -3504,6 +3505,8 @@ function renderPaperAcceptanceObserved(workspace) {
     `reconciliation ${reconciliationRuns.length} 筆`,
     `order audit ${orderAudit.length} 筆`,
     `runtime metric ${runtimeMetrics.length} 筆`,
+    `security scan ${securityScan.scanned_files ?? '—'} 檔`,
+    `secret hit ${securityScan.hardcoded_secret_count ?? '—'}`,
   ];
   const reconList = reconciliationRuns.slice(0, 3).map(row => `
     <div class="text-[11px] text-slate-500">
