@@ -903,6 +903,69 @@ def detect_smt_divergence(
 # §17 Crypto derivatives overlay (liquidations / OI / funding / CVD / premium)
 # ---------------------------------------------------------------------------
 
+def crypto_daily_levels(df: pd.DataFrame) -> dict:
+    """§17.5 — crypto-aligned previous-day high/low using UTC 00:00 close.
+
+    Standard equity ``previous_levels`` uses the last *bar*; crypto trades
+    24/7 so PDH/PDL must be computed over the most recently *completed*
+    UTC calendar day so it aligns with CoinGlass / major exchange
+    convention (affects DOL targets + Power-of-Three §3.12 reference).
+    """
+    if df is None or len(df) == 0:
+        return {}
+    idx = df.index
+    try:
+        if getattr(idx, "tz", None) is None:
+            utc_idx = pd.DatetimeIndex(idx).tz_localize("UTC")
+        else:
+            utc_idx = pd.DatetimeIndex(idx).tz_convert("UTC")
+    except Exception:
+        utc_idx = pd.DatetimeIndex(idx)
+    daily_groups = pd.Series(utc_idx.date, index=df.index)
+    today = daily_groups.iloc[-1]
+    yesterday_mask = daily_groups != today
+    yesterday = daily_groups[yesterday_mask].iloc[-1] if yesterday_mask.any() else None
+    if yesterday is None:
+        return {"previous_high": None, "previous_low": None, "boundary": "utc_00", "status": "insufficient_history"}
+    yday_rows = df[daily_groups == yesterday]
+    if yday_rows.empty:
+        return {"previous_high": None, "previous_low": None, "boundary": "utc_00", "status": "no_prior_day"}
+    high = round(float(yday_rows["high"].max()), 4)
+    low = round(float(yday_rows["low"].min()), 4)
+    last_close = float(df["close"].iloc[-1])
+    return {
+        "previous_high": high,
+        "previous_low": low,
+        "boundary": "utc_00",
+        "broken_high": last_close > high,
+        "broken_low": last_close < low,
+        "status": "ok",
+    }
+
+
+def is_weekend_illiquid(df: pd.DataFrame, *, market: str = "crypto") -> dict:
+    """§17.5 — flag low-liquidity weekend bars for crypto / forex.
+
+    Returns ``{is_weekend, weekday, weight}``; ``weight`` is < 1 on
+    weekend bars so upstream confluence scoring can downweight signals
+    formed during low-liquidity periods (per spec: lower weekend weight
+    or require multi-exchange confirmation).
+    """
+    if df is None or len(df) == 0:
+        return {"is_weekend": False, "weekday": None, "weight": 1.0}
+    ts = pd.Timestamp(df.index[-1])
+    weekday = int(ts.weekday())  # Mon=0 .. Sun=6
+    is_weekend = weekday >= 5
+    if market != "crypto":
+        # TradFi markets are closed on weekends; flag for completeness.
+        return {"is_weekend": is_weekend, "weekday": weekday, "weight": 1.0}
+    return {
+        "is_weekend": is_weekend,
+        "weekday": weekday,
+        "weight": 0.6 if is_weekend else 1.0,
+    }
+
+
 def classify_asset_volatility(df: pd.DataFrame, *, window: int = 14) -> dict:
     """§17.6 — classify asset by ATR% so swing/range/stop scale to volatility.
 
@@ -3637,6 +3700,15 @@ def build_smc_analysis(
     bias = _latest_bias(structure)
     ote = ote_zone(swings, bias)
     prev = previous_levels(h)
+    # §17.5 — crypto uses UTC daily boundary for PDH/PDL; merge over the
+    # legacy "last bar" defaults so DOL targeting picks up real prior-day
+    # liquidity instead of the previous 1H/4H bar's high/low.
+    if market == "crypto":
+        utc_prev = crypto_daily_levels(h)
+        if utc_prev.get("status") == "ok":
+            prev = {**prev, **{k: utc_prev[k] for k in ("previous_high", "previous_low", "broken_high", "broken_low")},
+                    "daily_boundary": "utc_00"}
+    weekend_state = is_weekend_illiquid(h, market=market)
     session = session_state(h, symbol)
     judas_events = detect_judas_swings(h, structure, liquidity, displacements, symbol)
     smt_events = detect_smt_divergence(h, correlated, swings)
@@ -3748,6 +3820,7 @@ def build_smc_analysis(
             "ote": ote,
             "previous_levels": prev,
             "sessions": session,
+            "weekend_illiquidity": weekend_state,
             "retracements": retracement,
             "displacement": displacements[-20:],
             "judas": {

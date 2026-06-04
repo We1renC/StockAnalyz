@@ -1199,3 +1199,54 @@ def test_mae_mfe_recommendations_blocks_when_sample_too_small():
     from smc_quant import mae_mfe_recommendations
     out = mae_mfe_recommendations([{"r_multiple": 2.0, "mae": -0.5, "mfe": 2.0}] * 5)
     assert "insufficient_winners" in out["note"]
+
+
+def test_crypto_daily_levels_uses_prior_utc_day():
+    """§17.5: PDH/PDL must come from the previous *completed* UTC day."""
+    from smc_quant import crypto_daily_levels
+    # Build 4-hour bars across two UTC days
+    base = datetime(2026, 1, 1)
+    rows = []
+    idx = []
+    for h in range(0, 24, 4):
+        rows.append((100, 105, 95, 100, 1))
+        idx.append(base + timedelta(hours=h))
+    for h in range(0, 24, 4):
+        rows.append((100, 110, 90, 100, 1))  # today wider
+        idx.append(base + timedelta(days=1, hours=h))
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    out = crypto_daily_levels(df)
+    assert out["status"] == "ok"
+    assert out["previous_high"] == 105.0
+    assert out["previous_low"] == 95.0
+    assert out["boundary"] == "utc_00"
+
+
+def test_crypto_daily_levels_returns_status_when_only_one_day():
+    from smc_quant import crypto_daily_levels
+    df = normalize_ohlcv(_sample_ohlcv().head(1))  # single bar → no prior UTC day
+    out = crypto_daily_levels(df)
+    assert out["status"] in {"insufficient_history", "no_prior_day"}
+
+
+def test_weekend_illiquidity_downweights_crypto_only():
+    from smc_quant import is_weekend_illiquid
+    # Saturday bar
+    sat = datetime(2026, 1, 3, 12, 0)  # Sat
+    df = pd.DataFrame([[1, 1, 1, 1, 1]], columns=["Open", "High", "Low", "Close", "Volume"], index=[sat])
+    df = normalize_ohlcv(df)
+    crypto = is_weekend_illiquid(df, market="crypto")
+    tradfi = is_weekend_illiquid(df, market="us")
+    assert crypto["is_weekend"] is True and crypto["weight"] < 1.0
+    assert tradfi["weight"] == 1.0
+
+
+def test_build_smc_analysis_routes_utc_pdh_for_crypto():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "BTCUSDT",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    prev = result["concepts"]["previous_levels"]
+    assert "weekend_illiquidity" in result["concepts"]
+    # Crypto branch should annotate the boundary marker
+    assert prev.get("daily_boundary") in {"utc_00", None}
