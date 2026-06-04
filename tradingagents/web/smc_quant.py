@@ -4026,6 +4026,17 @@ def build_chart_layers(
             "range_low": pd_zone.get("range_low"),
             "equilibrium": pd_zone.get("equilibrium"),
             "state": pd_zone.get("state"),
+            "zone": pd_zone.get("zone"),
+            "position_pct": pd_zone.get("position_pct"),
+            "fib_grid": {
+                "0.236": pd_zone.get("fib_0_236"),
+                "0.382": pd_zone.get("fib_0_382"),
+                "0.500": pd_zone.get("fib_0_5"),
+                "0.618": pd_zone.get("fib_0_618"),
+                "0.705": pd_zone.get("fib_0_705"),
+                "0.786": pd_zone.get("fib_0_786"),
+            },
+            "equilibrium_reactions": pd_zone.get("equilibrium_reactions"),
         }
     # C6 OTE Map — 0.62–0.79 band + 0.705 ideal line
     if ote:

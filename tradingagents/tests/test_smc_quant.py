@@ -2087,3 +2087,18 @@ def test_suggest_weights_lifts_positive_edge_extension_factor():
     out = suggest_confluence_weights(edge)
     # Extension default 1 + 1 = 2
     assert out["pd_extreme"] == 2
+
+
+def test_chart_layer_c5_exposes_fib_grid_and_eq_reactions():
+    """§6.1: C5_premium_discount now carries the §3.6 Fib grid + EQ activity."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    c5 = result["visualization"]["chart_layers"]["C5_premium_discount"]
+    assert "fib_grid" in c5
+    grid = c5["fib_grid"]
+    for level in ("0.236", "0.382", "0.500", "0.618", "0.705", "0.786"):
+        assert level in grid
+    assert "equilibrium_reactions" in c5
+    assert "position_pct" in c5
