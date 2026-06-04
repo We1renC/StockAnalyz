@@ -645,31 +645,282 @@ ACCEPTANCE_GATES: tuple[AcceptanceGateDefinition, ...] = (
 )
 
 
+GATE_TITLE_ZH: dict[str, str] = {
+    "strategy_logic": "策略邏輯檢查",
+    "instrument_liquidity": "交易標的流動性檢查",
+    "data_source_traceability": "資料來源與可追溯性",
+    "market_execution_model": "市價單成交模型",
+    "limit_execution_model": "限價單成交模型",
+    "slippage_market_impact": "滑價與市場衝擊",
+    "fees": "交易費用",
+    "derivatives_costs": "衍生品額外成本",
+    "order_lifecycle": "訂單生命週期",
+    "unknown_order_state": "未知訂單狀態",
+    "virtual_account": "虛擬帳戶",
+    "reconciliation": "對帳機制",
+    "api_rate_limits": "API 速率限制",
+    "latency": "延遲量測",
+    "system_stability": "系統穩定性",
+    "network_abnormality": "網路異常",
+    "market_abnormality": "市場異常",
+    "program_abnormality": "程式異常",
+    "risk_control_priority": "風控優先權",
+    "position_risk": "部位風險",
+    "loss_risk": "損失風險",
+    "kill_switch": "Kill Switch",
+    "monitoring_dashboard": "監控面板",
+    "alerting": "告警機制",
+    "performance_metrics": "績效指標",
+    "trade_quality": "交易品質",
+    "behavior_deviation": "行為偏差",
+    "shadow_trading": "Shadow Trading",
+    "sample_size_period": "樣本數與測試期間",
+    "research_discipline": "研究紀律",
+    "api_security": "API 安全",
+    "capacity_scaling": "容量與資金擴張",
+    "paper_live_comparison": "前測與小規模實盤比較",
+    "quantitative_thresholds": "量化門檻",
+    "final_report": "最終驗收報告",
+}
+
+GATE_PASSING_STANDARD_ZH: dict[str, str] = {
+    "strategy_logic": "邏輯、參數與訊號定義可書面重現，且無前視偏差。",
+    "instrument_liquidity": "預期下單量不得明顯超出市場流動性與可承受成本。",
+    "data_source_traceability": "每筆訊號都能回溯到具時間戳的來源資料。",
+    "market_execution_model": "市價單以保守簿深、VWAP 與部分成交規則模擬。",
+    "limit_execution_model": "限價單不得依賴碰價即成交的樂觀假設獲利。",
+    "slippage_market_impact": "扣除動態滑價與市場衝擊後，策略仍須維持正期望。",
+    "fees": "績效必須以扣除 maker/taker 等實際費用後的淨值評估。",
+    "derivatives_costs": "資金費率、槓桿、保證金與清算風險均已納入控制。",
+    "order_lifecycle": "每筆訂單都可追蹤、回放並覆蓋完整生命週期。",
+    "unknown_order_state": "未知狀態會先停風險並觸發對帳，而非盲目重送。",
+    "virtual_account": "虛擬帳戶必須貼近真實帳戶，不得產生無效餘額或下單。",
+    "reconciliation": "餘額、部位、訂單與成交差異必須可解釋且可修正。",
+    "api_rate_limits": "速率限制須集中管理，具退避、優先序與有限重試。",
+    "latency": "系統需量測延遲分佈，超門檻時可告警或暫停。",
+    "system_stability": "系統需可無人值守穩定運行至少 7 天。",
+    "network_abnormality": "網路故障不得造成重複下單、錯誤部位或失控交易。",
+    "market_abnormality": "市場異常可以虧損，但不得讓系統失控。",
+    "program_abnormality": "程式異常必須安全停止並保留可追溯紀錄。",
+    "risk_control_priority": "風控權限高於策略，不能被訊號繞過。",
+    "position_risk": "超出部位、槓桿、保證金或曝險上限時必須拒單。",
+    "loss_risk": "停損與回撤上限需明確定義並能實際阻止新單。",
+    "kill_switch": "手動與自動停機都已實測，且重啟前不得再送新單。",
+    "monitoring_dashboard": "操作者可快速判斷帳戶、策略、資料、API 與風控健康度。",
+    "alerting": "重大異常需主動通知，且包含原因、時間、策略、標的與嚴重度。",
+    "performance_metrics": "績效必須連同淨利、成本、回撤、比率與筆數一起評估。",
+    "trade_quality": "獲利不得主要來自過度理想化的成交假設。",
+    "behavior_deviation": "前測行為需與回測及研究假設大致一致。",
+    "shadow_trading": "Shadow 模式除最後不送單外，應共用實盤架構。",
+    "sample_size_period": "樣本數與測試期間需覆蓋策略所需市場情境。",
+    "research_discipline": "邏輯、參數與風控需凍結，修改後要重算統計。",
+    "api_security": "API 權限最小化、環境隔離、不可硬編碼且可撤銷。",
+    "capacity_scaling": "資金擴張需分階段進行，逐步重估滑價、成交率與回撤。",
+    "paper_live_comparison": "前測結果需能作為小規模實盤的偏差基準。",
+    "quantitative_thresholds": "穩定性、追蹤、對帳、成本、風控與容量門檻需明確。",
+    "final_report": "報告需明確說明是否可進入下一個交易階段。",
+}
+
+CHECK_LABEL_OVERRIDES: dict[str, str] = {
+    "no_future_data": "未使用未來資料",
+    "oos_test_completed": "已完成樣本外測試",
+    "ask_bid_depth_used": "使用買賣盤深度估算成交",
+    "multi_level_book_consumption": "會吃穿多檔位深度",
+    "vwap_execution_price": "以 VWAP 計算成交價",
+    "insufficient_depth_policy": "深度不足時會拒單或部分成交",
+    "queue_position_considered": "已考慮排隊順位",
+    "volume_at_level_considered": "已考慮該價位實際成交量",
+    "partial_fills_supported": "支援部分成交",
+    "unfilled_orders_supported": "支援未成交",
+    "timeout_cancel_supported": "支援逾時與取消",
+    "post_only_rejection_supported": "支援 post-only 拒絕",
+    "fill_rate_measured": "有量測成交率",
+    "adverse_selection_measured": "有量測逆向選擇",
+    "maker_taker_distinguished": "區分 maker / taker 費",
+    "fee_schedule_configured": "已依實際費率設定",
+    "pair_fee_differences_considered": "已考慮標的費率差異",
+    "fee_recorded_per_trade": "逐筆記錄費用",
+    "gross_and_net_profit_reported": "同時提供毛利與淨利",
+    "client_order_id": "有 client order id",
+    "unknown_state_supported": "支援 unknown 狀態",
+    "no_blind_resend": "未知狀態不盲目重送",
+    "client_order_id_query": "以 client order id 查詢狀態",
+    "unknown_state_suspends_trading": "未知狀態會暫停交易",
+    "unknown_state_alerts": "未知狀態會觸發告警",
+    "available_and_frozen_balance": "區分可用與凍結資金",
+    "realized_unrealized_pnl": "同時計算已實現與未實現損益",
+    "minimum_notional_enforced": "有最小成交金額限制",
+    "precision_rules_enforced": "有精度限制",
+    "reconciliation_frequency_defined": "已定義對帳頻率",
+    "major_differences_suspend_trading": "重大差異會暫停交易",
+    "backoff_on_rate_limit": "觸發速率限制會退避",
+    "bounded_retries": "重試次數有上限",
+    "api_abnormality_pauses_strategy": "API 異常會暫停策略",
+    "p95_p99_latency": "有 P95 / P99 延遲",
+    "seven_day_runtime": "連續穩定運行至少 7 天",
+    "restart_state_recovery": "重啟後可恢復狀態",
+    "signals_cannot_bypass_risk": "訊號無法繞過風控",
+    "orders_pass_risk_before_submission": "下單前必過風控",
+    "risk_reject_not_resubmitted": "風控拒單後策略不自動重送",
+    "risk_events_logged": "風控事件有記錄",
+    "risk_events_alerted": "風控事件有告警",
+    "manual_shutdown": "支援手動停機",
+    "automatic_shutdown": "支援自動停機",
+    "new_orders_blocked_after_shutdown": "停機後阻擋新單",
+    "cancel_open_orders_after_shutdown": "停機後可撤單",
+    "manual_restart_confirmation": "重啟需人工確認",
+    "shutdown_test_successful": "停機流程已實測成功",
+    "start_stop_notifications": "啟停有通知",
+    "order_failure_notifications": "下單失敗有通知",
+    "reconciliation_notifications": "對帳異常有通知",
+    "kill_switch_notifications": "Kill Switch 有通知",
+    "trade_count": "交易筆數",
+    "average_holding_time": "平均持有時間",
+    "trade_frequency_matches": "交易頻率符合預期",
+    "win_rate_matches": "勝率符合預期",
+    "win_loss_ratio_matches": "盈虧比符合預期",
+    "holding_time_matches": "持有時間符合預期",
+    "drawdown_matches": "回撤符合預期",
+    "slippage_not_materially_higher": "滑價未顯著高於預期",
+    "fill_rate_not_materially_lower": "成交率未顯著低於預期",
+    "live_market_data_source": "沿用實盤行情來源",
+    "live_signal_process": "沿用實盤訊號流程",
+    "live_risk_module": "沿用實盤風控模組",
+    "live_order_generation": "沿用實盤下單模組",
+    "live_logging_alerting": "沿用實盤記錄與告警",
+    "no_exchange_submission": "不真正送出到交易所",
+    "complete_trading_cycle": "覆蓋完整交易循環",
+    "sufficient_trade_samples": "交易樣本數足夠",
+    "enough_market_conditions": "市場情境覆蓋足夠",
+    "strategy_logic_frozen": "策略邏輯已凍結",
+    "strategy_parameters_frozen": "策略參數已凍結",
+    "risk_parameters_frozen": "風控參數已凍結",
+    "no_short_term_parameter_tuning": "未因短期績效調參",
+    "version_result_mapping": "版本與結果可對映",
+    "minimum_permissions": "API 權限最小化",
+    "withdrawal_disabled": "已停用提領權限",
+    "no_hardcoded_keys": "未硬編碼 API 金鑰",
+    "test_live_keys_separated": "測試與實盤金鑰分離",
+    "order_size_vs_book_depth": "單筆下單量受限於簿深",
+    "fill_rate_reestimated_after_scaling": "擴張後重新估算成交率",
+    "drawdown_reestimated_after_scaling": "擴張後重新估算回撤",
+    "slippage_comparison": "前測/實盤滑價比較",
+    "fill_rate_comparison": "前測/實盤成交率比較",
+    "rejection_rate_comparison": "前測/實盤拒單率比較",
+    "api_latency_comparison": "前測/實盤 API 延遲比較",
+    "trade_frequency_comparison": "前測/實盤交易頻率比較",
+    "cost_erosion_comparison": "成本侵蝕比較",
+    "stability_threshold": "有穩定性門檻",
+    "order_tracking_threshold": "有訂單追蹤門檻",
+    "reconciliation_threshold": "有對帳門檻",
+    "limit_fill_threshold": "有限價成交門檻",
+    "risk_control_threshold": "有風控門檻",
+    "sample_size_threshold": "有樣本數門檻",
+    "logging_threshold": "有日誌門檻",
+    "alerting_threshold": "有告警門檻",
+    "basic_information": "基本資訊完整",
+    "performance_summary": "績效摘要完整",
+    "behavior_deviation": "行為偏差段落完整",
+    "system_stability": "系統穩定性段落完整",
+    "risk_control_records": "風控觸發紀錄完整",
+    "security_check": "安全檢查段落完整",
+    "abnormal_events": "異常事件段落完整",
+    "final_conclusion": "最終結論完整",
+}
+
+CHECK_TOKEN_ZH: dict[str, str] = {
+    "entry": "進場",
+    "exit": "出場",
+    "stop": "停損",
+    "loss": "損失",
+    "take": "停利",
+    "profit": "獲利",
+    "conditions": "條件",
+    "condition": "條件",
+    "parameters": "參數",
+    "parameter": "參數",
+    "frozen": "凍結",
+    "market": "市場",
+    "data": "資料",
+    "source": "來源",
+    "timestamps": "時間戳",
+    "latency": "延遲",
+    "missing": "缺失",
+    "duplicate": "重複",
+    "order": "訂單",
+    "orders": "訂單",
+    "book": "委託簿",
+    "depth": "深度",
+    "price": "價格",
+    "volume": "成交量",
+    "queue": "排隊",
+    "position": "部位",
+    "positions": "部位",
+    "balance": "餘額",
+    "trade": "交易",
+    "trades": "交易",
+    "rates": "速率",
+    "rate": "速率",
+    "api": "API",
+    "ws": "WebSocket",
+    "dns": "DNS",
+    "restart": "重啟",
+    "risk": "風險",
+    "control": "控制",
+    "controls": "控制",
+    "daily": "每日",
+    "weekly": "每週",
+    "drawdown": "回撤",
+    "kill": "Kill",
+    "switch": "Switch",
+    "notifications": "通知",
+    "notification": "通知",
+    "average": "平均",
+    "maximum": "最大",
+    "partial": "部分",
+    "waiting": "等待",
+    "time": "時間",
+    "shadow": "Shadow",
+    "live": "實盤",
+    "paper": "前測",
+    "comparison": "比較",
+    "threshold": "門檻",
+    "report": "報告",
+    "security": "安全",
+    "capacity": "容量",
+    "scaling": "擴張",
+    "logging": "日誌",
+    "alerting": "告警",
+    "event": "事件",
+    "events": "事件",
+}
+
+
 PROHIBITION_FLAGS: tuple[tuple[str, str], ...] = (
-    ("fees_missing", "Paper trading is profitable, but transaction fees are not included."),
-    ("slippage_missing", "Paper trading is profitable, but slippage is not included."),
-    ("execution_model_idealized", "The execution model is overly idealized."),
-    ("touch_equals_filled", "Limit orders assume touch price equals filled."),
-    ("order_states_incomplete", "Order states cannot be fully tracked."),
-    ("duplicate_orders", "The system has produced duplicate orders."),
-    ("incorrect_positions", "The system has produced incorrect positions."),
-    ("unexplained_reconciliation_diff", "Balance or position differences cannot be explained."),
-    ("reconciliation_missing", "Reconciliation is not implemented."),
-    ("risk_controls_untested", "Risk controls have not been tested."),
-    ("kill_switch_untested", "The kill switch has not been tested."),
-    ("api_errors_uncontrolled", "API errors can cause the strategy to lose control."),
-    ("websocket_recovery_missing", "WebSocket disconnection cannot be recovered."),
-    ("restart_state_inconsistent", "State becomes inconsistent after program restart."),
-    ("repeated_parameter_changes", "The strategy only looks good after repeated parameter changes during paper trading."),
-    ("sample_size_too_small", "The paper trading sample size is too small."),
-    ("single_extreme_event_profit", "Profit mainly comes from a single extreme event."),
-    ("averaging_down_without_limits", "The strategy averages down after losses without strict limits."),
-    ("stop_condition_unclear", "The operator cannot clearly explain when the strategy should stop."),
-    ("logging_incomplete", "Logging is incomplete."),
-    ("alerting_missing", "Alerting is missing."),
-    ("capital_or_loss_limits_missing", "There are no capital limits or loss limits."),
-    ("api_permissions_excessive", "API key permissions are excessive or security controls are insufficient."),
-    ("paper_live_comparison_missing", "Paper trading results cannot be compared with small-scale live trading results."),
+    ("fees_missing", "前測顯示獲利，但尚未納入交易費用。"),
+    ("slippage_missing", "前測顯示獲利，但尚未納入滑價。"),
+    ("execution_model_idealized", "成交模型過度理想化。"),
+    ("touch_equals_filled", "限價單仍以碰價即成交為假設。"),
+    ("order_states_incomplete", "訂單狀態無法完整追蹤。"),
+    ("duplicate_orders", "系統曾產生重複下單。"),
+    ("incorrect_positions", "系統曾產生錯誤部位。"),
+    ("unexplained_reconciliation_diff", "餘額或部位差異無法解釋。"),
+    ("reconciliation_missing", "尚未實作對帳機制。"),
+    ("risk_controls_untested", "風控尚未完成測試。"),
+    ("kill_switch_untested", "Kill Switch 尚未完成測試。"),
+    ("api_errors_uncontrolled", "API 異常可能導致策略失控。"),
+    ("websocket_recovery_missing", "WebSocket 斷線後無法可靠恢復。"),
+    ("restart_state_inconsistent", "程式重啟後狀態不一致。"),
+    ("repeated_parameter_changes", "前測期間反覆調參後才看起來有效。"),
+    ("sample_size_too_small", "前測樣本數過小。"),
+    ("single_extreme_event_profit", "獲利主要來自單一極端事件。"),
+    ("averaging_down_without_limits", "虧損後加碼攤平但缺乏嚴格限制。"),
+    ("stop_condition_unclear", "操作者無法清楚說明何時應停止策略。"),
+    ("logging_incomplete", "日誌紀錄不完整。"),
+    ("alerting_missing", "告警機制缺失。"),
+    ("capital_or_loss_limits_missing", "尚未定義資金上限或虧損上限。"),
+    ("api_permissions_excessive", "API 權限過大或安全控制不足。"),
+    ("paper_live_comparison_missing", "前測結果無法與小規模實盤比較。"),
 )
 
 
@@ -679,6 +930,82 @@ SAMPLE_REQUIREMENTS = {
     "swing": {"min_trades": 20, "min_days": 60},
     "low_frequency": {"min_trades": 10, "min_days": 90},
 }
+
+
+def _humanize_check_key(key: str) -> str:
+    if key in CHECK_LABEL_OVERRIDES:
+        return CHECK_LABEL_OVERRIDES[key]
+    parts = []
+    for token in key.split("_"):
+        if token in CHECK_TOKEN_ZH:
+            parts.append(CHECK_TOKEN_ZH[token])
+        elif token.isupper():
+            parts.append(token)
+        elif token.startswith("p") and token[1:].isdigit():
+            parts.append(token.upper())
+        else:
+            normalized = (
+                token.replace("choch", "CHoCH")
+                .replace("bos", "BOS")
+                .replace("fvg", "FVG")
+                .replace("ote", "OTE")
+            )
+            parts.append(normalized)
+    label = " ".join(parts).strip()
+    return label[:1].upper() + label[1:] if label else key
+
+
+def _section_sort_key(section: str) -> tuple[int, float]:
+    try:
+        return (0, float(section))
+    except ValueError:
+        head = section.split(".", 1)[0]
+        try:
+            return (0, float(head))
+        except ValueError:
+            return (1, float("inf"))
+
+
+def acceptance_gate_map() -> dict[str, AcceptanceGateDefinition]:
+    """Return acceptance gates keyed by stable gate id."""
+
+    return {gate.gate_id: gate for gate in ACCEPTANCE_GATES}
+
+
+def acceptance_catalog(evidence: Optional[Mapping[str, Any]] = None) -> list[dict[str, Any]]:
+    """Return the full standard as section/gate/check catalog for UI and storage."""
+
+    evidence = evidence or {}
+    sections: dict[str, dict[str, Any]] = {}
+    for gate in ACCEPTANCE_GATES:
+        section = sections.setdefault(gate.section, {
+            "section": gate.section,
+            "gates": [],
+        })
+        raw = evidence.get(gate.gate_id) or {}
+        gate_checks = raw.get("checks") if isinstance(raw, Mapping) and isinstance(raw.get("checks"), Mapping) else raw
+        gate_sources = raw.get("sources") if isinstance(raw, Mapping) and isinstance(raw.get("sources"), Mapping) else {}
+        gate_notes = raw.get("notes") if isinstance(raw, Mapping) and isinstance(raw.get("notes"), Mapping) else {}
+        section["gates"].append({
+            "id": gate.gate_id,
+            "section": gate.section,
+            "title": gate.title,
+            "title_zh": GATE_TITLE_ZH.get(gate.gate_id, gate.title),
+            "blocking": gate.blocking,
+            "passing_standard": gate.passing_standard,
+            "passing_standard_zh": GATE_PASSING_STANDARD_ZH.get(gate.gate_id, gate.passing_standard),
+            "checks": [
+                {
+                    "key": check_key,
+                    "label": _humanize_check_key(check_key),
+                    "value": gate_checks.get(check_key) if isinstance(gate_checks, Mapping) else None,
+                    "source": gate_sources.get(check_key, "missing"),
+                    "note": gate_notes.get(check_key, ""),
+                }
+                for check_key in gate.evidence_keys
+            ],
+        })
+    return [sections[key] for key in sorted(sections, key=_section_sort_key)]
 
 
 def acceptance_gate_ids() -> list[str]:
@@ -746,12 +1073,12 @@ def _apply_optional_gate(definition: AcceptanceGateDefinition, context: Mapping[
     if definition.optional_when == "non_derivative" and instrument_type not in {"derivative", "futures", "perpetual"}:
         return {
             "status": "not_applicable",
-            "reason": "Instrument is not marked as derivative/futures/perpetual.",
+            "reason": "目前標的未標記為衍生品、期貨或永續商品。",
         }
     if definition.optional_when == "pre_live" and stage in {"paper", "paper_trading", "shadow"}:
         return {
             "status": "not_applicable",
-            "reason": "Small-scale live comparison is required after paper acceptance, not before live data exists.",
+            "reason": "小規模實盤比較應在取得實盤資料後進行，而不是純前測階段。",
         }
     return None
 
@@ -764,14 +1091,14 @@ def _derived_status(definition: AcceptanceGateDefinition, context: Mapping[str, 
         fees_included = _as_bool(metrics["fees_included"]) if "fees_included" in metrics else _as_bool(checks.get("fee_recorded_per_trade"))
         total_fees = _num(metrics.get("total_fees"))
         status: GateStatus = "pass" if fees_included and total_fees is not None else "fail"
-        return {"status": status, "reason": "Fees must be recorded and deducted from net performance."}
+        return {"status": status, "reason": "費用必須逐筆記錄，並從淨績效中扣除。"}
 
     if definition.gate_id == "slippage_market_impact":
         slippage_included = _as_bool(metrics["slippage_included"]) if "slippage_included" in metrics else _as_bool(checks.get("slippage_recorded"))
         expectancy = _num(metrics.get("expectancy_after_costs"))
         positive = expectancy is None or expectancy > 0
         status = "pass" if slippage_included and positive else "fail"
-        return {"status": status, "reason": "Slippage must be included and not erase expectancy."}
+        return {"status": status, "reason": "必須納入滑價，且滑價不能把期望值侵蝕到失真。"}
 
     if definition.gate_id == "performance_metrics":
         trade_count = _num(metrics.get("trade_count"), 0) or 0
@@ -784,12 +1111,12 @@ def _derived_status(definition: AcceptanceGateDefinition, context: Mapping[str, 
             status = "fail"
         else:
             status = "pass" if complete else "partial"
-        return {"status": status, "reason": "Performance must be net of costs and include core risk metrics."}
+        return {"status": status, "reason": "績效必須以成本後淨值衡量，並包含核心風險指標。"}
 
     if definition.gate_id == "trade_quality":
         quality_keys = ("average_slippage", "maximum_slippage", "fill_rate", "rejection_ratio")
         status = "pass" if all(metrics.get(key) is not None for key in quality_keys) else _status_from_checks(checks, definition.evidence_keys)
-        return {"status": status, "reason": "Execution quality metrics must be available for paper acceptance."}
+        return {"status": status, "reason": "前測驗收必須能提供成交品質相關指標。"}
 
     if definition.gate_id == "sample_size_period":
         strategy_type = (strategy.get("strategy_type") or "swing").lower()
@@ -799,7 +1126,7 @@ def _derived_status(definition: AcceptanceGateDefinition, context: Mapping[str, 
         status = "pass" if trade_count >= req["min_trades"] and days >= req["min_days"] else "fail"
         return {
             "status": status,
-            "reason": f"{strategy_type} requires at least {req['min_trades']} trades and {req['min_days']} days.",
+            "reason": f"{strategy_type} 至少需要 {req['min_trades']} 筆交易與 {req['min_days']} 天樣本。",
             "threshold": req,
         }
 
@@ -807,24 +1134,68 @@ def _derived_status(definition: AcceptanceGateDefinition, context: Mapping[str, 
         abnormalities = int(_num(metrics.get("unresolved_reconciliation_count"), 0) or 0)
         implemented = _as_bool(checks.get("order_state_compared") or metrics.get("reconciliation_implemented"))
         status = "pass" if implemented and abnormalities == 0 else "fail"
-        return {"status": status, "reason": "Unresolved reconciliation differences block promotion."}
+        return {"status": status, "reason": "存在未解決的對帳差異時，不可升級到下一階段。"}
 
     if definition.gate_id == "kill_switch":
         tested = _as_bool(checks.get("shutdown_test_successful") or metrics.get("kill_switch_tested"))
         status = "pass" if tested else "fail"
-        return {"status": status, "reason": "A tested kill switch is a minimum live-trading requirement."}
+        return {"status": status, "reason": "Kill Switch 完成實測，是進入實盤的最低要求。"}
 
     if definition.gate_id == "research_discipline":
         frozen = _as_bool(metrics.get("parameters_frozen") or checks.get("strategy_parameters_frozen"))
         changes = int(_num(metrics.get("parameter_change_count"), 0) or 0)
         status = "pass" if frozen and changes == 0 else "fail"
-        return {"status": status, "reason": "Paper validation cannot reuse repeatedly tuned parameters."}
+        return {"status": status, "reason": "前測驗證不得建立在反覆調參後的結果上。"}
 
     if definition.gate_id == "api_security":
         hardcoded = _as_bool(metrics.get("hardcoded_api_keys"))
         withdrawal = _as_bool(metrics.get("withdrawal_permission_enabled"))
         status = "fail" if hardcoded or withdrawal else _status_from_checks(checks, definition.evidence_keys)
-        return {"status": status, "reason": "Secrets and excessive permissions block live trading."}
+        return {"status": status, "reason": "金鑰安全與過大權限會直接阻擋實盤升級。"}
+
+    if definition.gate_id == "system_stability":
+        runtime_days = _num(metrics.get("runtime_days"))
+        major_error_count = int(_num(metrics.get("major_error_count"), 0) or 0)
+        restart_count = int(_num(metrics.get("program_restart_count"), 0) or 0)
+        if runtime_days is not None:
+            status = "pass" if runtime_days >= 7 and major_error_count == 0 and restart_count <= 1 else "fail"
+            return {"status": status, "reason": "系統穩定性取決於多日連續運行與低重大錯誤頻率。"}
+
+    if definition.gate_id == "alerting":
+        alert_count = _num(metrics.get("alert_count"))
+        if alert_count is not None:
+            status = "pass" if alert_count >= 0 and _status_from_checks(checks, definition.evidence_keys) != "fail" else "partial"
+            return {"status": status, "reason": "重大異常必須由告警主動通知，而不是被動發現。"}
+
+    if definition.gate_id == "behavior_deviation":
+        alignment_score = _num(metrics.get("behavior_alignment_score"))
+        if alignment_score is not None:
+            status = "pass" if alignment_score >= 0.6 else "fail"
+            return {"status": status, "reason": "前測行為需與研究假設大致一致，不可明顯漂移。"}
+
+    if definition.gate_id == "capacity_scaling":
+        stage_count = int(_num(metrics.get("capital_stage_count"), 0) or 0)
+        if stage_count:
+            status = "pass" if stage_count >= 2 else "partial"
+            return {"status": status, "reason": "資金擴張需分階段進行，且每階段都要觀察與重估。"}
+
+    if definition.gate_id == "paper_live_comparison":
+        comparison_ready = _as_bool(metrics.get("paper_live_comparison_ready"))
+        max_dev = _num(metrics.get("paper_live_max_deviation_ratio"))
+        if comparison_ready or max_dev is not None:
+            status = "pass" if comparison_ready and (max_dev is None or max_dev <= 0.35) else "partial"
+            return {"status": status, "reason": "前測結果必須能持續作為小規模實盤的比較基準。"}
+
+    if definition.gate_id == "quantitative_thresholds":
+        thresholds_defined = _as_bool(metrics.get("thresholds_defined"))
+        if thresholds_defined:
+            return {"status": "pass", "reason": "量化門檻已明確定義。"}
+
+    if definition.gate_id == "final_report":
+        required = ("basic_information", "performance_summary", "trade_quality", "final_conclusion")
+        present = sum(1 for key in required if _as_bool(checks.get(key)) or metrics.get(key) is not None)
+        status = "pass" if present == len(required) else "partial" if present else "fail"
+        return {"status": status, "reason": "驗收報告必須清楚說明是否已具備進入下一階段的條件。"}
 
     return None
 
@@ -839,9 +1210,11 @@ def evaluate_gate(definition: AcceptanceGateDefinition, context: Mapping[str, An
             "id": definition.gate_id,
             "section": definition.section,
             "title": definition.title,
+            "title_zh": GATE_TITLE_ZH.get(definition.gate_id, definition.title),
             "status": status,
             "blocking": False,
             "passing_standard": definition.passing_standard,
+            "passing_standard_zh": GATE_PASSING_STANDARD_ZH.get(definition.gate_id, definition.passing_standard),
             "reason": optional.get("reason", ""),
             "missing_evidence": [],
             "evidence": {},
@@ -853,13 +1226,13 @@ def evaluate_gate(definition: AcceptanceGateDefinition, context: Mapping[str, An
     derived = _derived_status(definition, context, checks)
     if explicit_status in {"pass", "partial", "fail", "unavailable", "not_applicable"}:
         status = explicit_status
-        reason = evidence.get("reason") or "Explicit evidence status."
+        reason = evidence.get("reason") or "依明確證據狀態判定。"
     elif derived:
         status = derived["status"]
         reason = derived.get("reason", "")
     else:
         status = _status_from_checks(checks, definition.evidence_keys)
-        reason = evidence.get("reason") or "Evaluated from checklist evidence."
+        reason = evidence.get("reason") or "依檢查項證據判定。"
 
     missing = [key for key in definition.evidence_keys if key not in checks or checks.get(key) in (None, "")]
     if status == "pass":
@@ -869,9 +1242,11 @@ def evaluate_gate(definition: AcceptanceGateDefinition, context: Mapping[str, An
         "id": definition.gate_id,
         "section": definition.section,
         "title": definition.title,
+        "title_zh": GATE_TITLE_ZH.get(definition.gate_id, definition.title),
         "status": status,
         "blocking": definition.blocking,
         "passing_standard": definition.passing_standard,
+        "passing_standard_zh": GATE_PASSING_STANDARD_ZH.get(definition.gate_id, definition.passing_standard),
         "reason": reason,
         "missing_evidence": missing,
         "evidence": checks,
@@ -943,6 +1318,40 @@ def conclusion_label(conclusion: str) -> str:
     }.get(conclusion, conclusion)
 
 
+def summarize_sections(gates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Aggregate gate results by standard section for UI/report navigation."""
+
+    status_field = {
+        "pass": "passed",
+        "partial": "partial",
+        "fail": "failed",
+        "unavailable": "unavailable",
+        "not_applicable": "not_applicable",
+    }
+    buckets: dict[str, dict[str, Any]] = {}
+    for gate in gates:
+        section = str(gate.get("section") or "")
+        bucket = buckets.setdefault(section, {
+            "section": section,
+            "passed": 0,
+            "partial": 0,
+            "failed": 0,
+            "unavailable": 0,
+            "not_applicable": 0,
+            "gate_count": 0,
+            "blocking_issue_count": 0,
+            "titles": [],
+        })
+        bucket["gate_count"] += 1
+        field = status_field.get(gate.get("status") or "unavailable", "unavailable")
+        bucket[field] += 1
+        if gate.get("blocking") and gate.get("status") in {"fail", "unavailable"}:
+            bucket["blocking_issue_count"] += 1
+        if gate.get("title"):
+            bucket["titles"].append(gate["title"])
+    return [buckets[key] for key in sorted(buckets, key=_section_sort_key)]
+
+
 def build_acceptance_report(context: Mapping[str, Any]) -> dict[str, Any]:
     """Build the full paper-trading acceptance report schema."""
 
@@ -958,6 +1367,7 @@ def build_acceptance_report(context: Mapping[str, Any]) -> dict[str, Any]:
     ]
     partial = [gate for gate in gates if gate.get("status") == "partial"]
     strategy = dict(context.get("strategy") or {})
+    sections = summarize_sections(gates)
     return {
         "schema_version": "paper_acceptance.v1",
         "generated_at": _now_iso(),
@@ -965,6 +1375,7 @@ def build_acceptance_report(context: Mapping[str, Any]) -> dict[str, Any]:
         "strategy": strategy,
         "metrics": metrics,
         "gates": gates,
+        "sections": sections,
         "prohibitions": prohibitions,
         "summary": {
             "gate_count": len(gates),
@@ -982,6 +1393,7 @@ def build_acceptance_report(context: Mapping[str, Any]) -> dict[str, Any]:
                 "id": gate["id"],
                 "section": gate["section"],
                 "title": gate["title"],
+                "title_zh": gate.get("title_zh", gate["title"]),
                 "status": gate["status"],
                 "reason": gate["reason"],
             }
@@ -991,6 +1403,7 @@ def build_acceptance_report(context: Mapping[str, Any]) -> dict[str, Any]:
                 "id": item["flag"],
                 "section": "21",
                 "title": "Live Trading Prohibition",
+                "title_zh": "實盤升級禁止條件",
                 "status": "fail",
                 "reason": item["description"],
             }
@@ -1130,8 +1543,12 @@ def render_acceptance_markdown(report: Mapping[str, Any]) -> str:
 
 __all__ = [
     "ACCEPTANCE_GATES",
+    "CHECK_LABEL_OVERRIDES",
+    "GATE_TITLE_ZH",
     "PROHIBITION_FLAGS",
     "SAMPLE_REQUIREMENTS",
+    "acceptance_catalog",
+    "acceptance_gate_map",
     "acceptance_gate_ids",
     "build_acceptance_report",
     "conclusion_label",
@@ -1139,4 +1556,5 @@ __all__ = [
     "evaluate_gate",
     "evaluate_prohibitions",
     "render_acceptance_markdown",
+    "summarize_sections",
 ]

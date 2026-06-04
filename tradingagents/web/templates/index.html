@@ -1396,14 +1396,60 @@ body { background: var(--bg-base); color: var(--text-primary); }
       <div id="smc-paper-acceptance-overview" class="grid grid-cols-2 xl:grid-cols-6 gap-3 mb-4">
         <div class="rounded-lg border border-slate-800/70 bg-slate-950/40 p-3 text-center text-slate-500 text-xs">載入中...</div>
       </div>
-      <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+      <div class="grid grid-cols-1 2xl:grid-cols-[minmax(0,1.7fr)_minmax(360px,0.95fr)] gap-4">
+        <div class="space-y-4">
+          <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <div class="text-xs font-semibold text-slate-300">標準章節覆蓋</div>
+              <div id="smc-paper-acceptance-section-meta" class="text-[11px] text-slate-500">尚未載入</div>
+            </div>
+            <div id="smc-paper-acceptance-sections" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+              <div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 text-xs text-slate-500">載入中...</div>
+            </div>
+          </div>
+          <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <div class="text-xs font-semibold text-slate-300">條款證據工作區</div>
+              <div id="smc-paper-acceptance-catalog-meta" class="text-[11px] text-slate-500">選取章節後可編輯</div>
+            </div>
+            <div id="smc-paper-acceptance-catalog" class="text-xs text-slate-500">載入中...</div>
+          </div>
+        </div>
+        <div class="space-y-4">
         <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
-          <div class="text-xs font-semibold text-slate-300 mb-2">Live Promotion Blockers</div>
+          <div class="text-xs font-semibold text-slate-300 mb-2">實盤升級阻擋項</div>
           <div id="smc-paper-acceptance-blockers" class="text-xs text-slate-500">載入中...</div>
         </div>
         <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
           <div class="text-xs font-semibold text-slate-300 mb-2">近期驗收報告</div>
           <div id="smc-paper-acceptance-reports" class="text-xs text-slate-500">載入中...</div>
+        </div>
+          <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
+            <div class="text-xs font-semibold text-slate-300 mb-2">異常事件與告警證據</div>
+            <div id="smc-paper-acceptance-events" class="text-xs text-slate-500">載入中...</div>
+          </div>
+          <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <div class="text-xs font-semibold text-slate-300">工作區覆寫</div>
+              <button onclick="savePaperAcceptanceWorkspaceOverrides()" id="smc-paper-acceptance-save-workspace-btn" class="btn-secondary text-[11px] px-2.5 py-1.5" style="border-radius: 6px; padding: 4px 10px;">
+                儲存並重算
+              </button>
+            </div>
+            <div class="space-y-3">
+              <div>
+                <label class="block text-[11px] text-slate-500 mb-1">策略覆寫 JSON</label>
+                <textarea id="smc-paper-acceptance-strategy-json" class="input-field text-xs w-full font-mono" rows="6" style="padding: 8px 10px;" placeholder="{}"></textarea>
+              </div>
+              <div>
+                <label class="block text-[11px] text-slate-500 mb-1">指標覆寫 JSON</label>
+                <textarea id="smc-paper-acceptance-metrics-json" class="input-field text-xs w-full font-mono" rows="8" style="padding: 8px 10px;" placeholder="{}"></textarea>
+              </div>
+              <div>
+                <label class="block text-[11px] text-slate-500 mb-1">禁止旗標覆寫 JSON</label>
+                <textarea id="smc-paper-acceptance-prohibitions-json" class="input-field text-xs w-full font-mono" rows="5" style="padding: 8px 10px;" placeholder="{}"></textarea>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -2382,6 +2428,8 @@ let _smcTabMatrix = null;
 let _smcDashboardCache = new Map();
 let _smcJournalBusy = false;
 let _smcPaperAcceptanceBusy = false;
+let _smcPaperAcceptanceWorkspace = null;
+let _smcPaperAcceptanceSection = '';
 
 async function drawSmcTabChart(symbol, period, isRefresh = false) {
   if (!isRefresh) {
@@ -3058,37 +3106,181 @@ function paperAcceptanceTone(conclusion) {
   }[conclusion] || 'text-slate-200';
 }
 
+function paperAcceptanceStatusLabel(status) {
+  return {
+    pass: '通過',
+    partial: '部分覆蓋',
+    fail: '缺口',
+    unavailable: '缺資料',
+    not_applicable: '不適用',
+  }[status] || status || '—';
+}
+
+function paperAcceptanceStatusTone(status) {
+  return {
+    pass: 'text-emerald-200 border-emerald-800/40 bg-emerald-950/20',
+    partial: 'text-amber-200 border-amber-800/40 bg-amber-950/20',
+    fail: 'text-red-200 border-red-800/40 bg-red-950/20',
+    unavailable: 'text-slate-300 border-slate-700/60 bg-slate-900/40',
+    not_applicable: 'text-cyan-200 border-cyan-800/40 bg-cyan-950/20',
+  }[status] || 'text-slate-300 border-slate-700/60 bg-slate-900/40';
+}
+
+function paperAcceptanceCheckValueLabel(value) {
+  if (value === true) return '已覆蓋';
+  if (value === false) return '未覆蓋';
+  return '待補';
+}
+
+function paperAcceptanceCheckTone(value, source = 'missing') {
+  if (value === true) {
+    return source === 'manual'
+      ? 'text-cyan-200 border-cyan-800/40 bg-cyan-950/20'
+      : 'text-emerald-200 border-emerald-800/40 bg-emerald-950/20';
+  }
+  if (value === false) {
+    return 'text-red-200 border-red-800/40 bg-red-950/20';
+  }
+  return 'text-slate-300 border-slate-700/60 bg-slate-900/40';
+}
+
+function paperAcceptanceSourceLabel(source) {
+  return {
+    manual: '手動',
+    framework: '框架',
+    observed: '觀察',
+    missing: '缺失',
+  }[source] || source || '—';
+}
+
+function paperAcceptanceSourceTone(source) {
+  return {
+    manual: 'text-cyan-200 border-cyan-800/40 bg-cyan-950/10',
+    framework: 'text-violet-200 border-violet-800/40 bg-violet-950/10',
+    observed: 'text-emerald-200 border-emerald-800/40 bg-emerald-950/10',
+    missing: 'text-slate-300 border-slate-700/60 bg-slate-900/30',
+  }[source] || 'text-slate-300 border-slate-700/60 bg-slate-900/30';
+}
+
+function paperAcceptanceSeverityTone(severity) {
+  return {
+    critical: 'text-red-200 border-red-800/40 bg-red-950/20',
+    error: 'text-red-200 border-red-800/40 bg-red-950/20',
+    warning: 'text-amber-200 border-amber-800/40 bg-amber-950/20',
+    info: 'text-cyan-200 border-cyan-800/40 bg-cyan-950/20',
+  }[severity] || 'text-slate-300 border-slate-700/60 bg-slate-900/30';
+}
+
+function paperAcceptanceSectionState(summary = {}) {
+  const blockers = Number(summary.blocking_issue_count || 0);
+  const gaps = Number(summary.failed || 0) + Number(summary.unavailable || 0);
+  const partial = Number(summary.partial || 0);
+  if (blockers > 0 || gaps > 0) return 'fail';
+  if (partial > 0) return 'partial';
+  if (Number(summary.passed || 0) > 0) return 'pass';
+  return 'unavailable';
+}
+
+function paperAcceptanceFormatJson(value) {
+  const payload = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return JSON.stringify(payload, null, 2);
+}
+
 function renderPaperAcceptanceLoading(message = '載入前測驗收...') {
   const overview = $('smc-paper-acceptance-overview');
   const blockers = $('smc-paper-acceptance-blockers');
   const reports = $('smc-paper-acceptance-reports');
+  const sections = $('smc-paper-acceptance-sections');
+  const catalog = $('smc-paper-acceptance-catalog');
+  const events = $('smc-paper-acceptance-events');
   const meta = $('smc-paper-acceptance-meta');
+  const sectionMeta = $('smc-paper-acceptance-section-meta');
+  const catalogMeta = $('smc-paper-acceptance-catalog-meta');
   if (overview) {
     overview.innerHTML = `<div class="rounded-lg border border-slate-800/70 bg-slate-950/40 p-3 text-center text-slate-500 text-xs col-span-full">${escHtml(message)}</div>`;
   }
   if (blockers) blockers.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
   if (reports) reports.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
+  if (sections) sections.innerHTML = `<div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 text-xs text-slate-500 md:col-span-2 xl:col-span-3">${escHtml(message)}</div>`;
+  if (catalog) catalog.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
+  if (events) events.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
   if (meta) meta.textContent = message;
+  if (sectionMeta) sectionMeta.textContent = message;
+  if (catalogMeta) catalogMeta.textContent = message;
 }
 
-function renderPaperAcceptanceEmpty(symbol, reports = []) {
+function renderPaperAcceptanceEmpty(symbol) {
+  _smcPaperAcceptanceWorkspace = null;
+  _smcPaperAcceptanceSection = '';
   const overview = $('smc-paper-acceptance-overview');
   const blockers = $('smc-paper-acceptance-blockers');
   const reportsEl = $('smc-paper-acceptance-reports');
+  const sections = $('smc-paper-acceptance-sections');
+  const catalog = $('smc-paper-acceptance-catalog');
+  const events = $('smc-paper-acceptance-events');
   const meta = $('smc-paper-acceptance-meta');
+  const sectionMeta = $('smc-paper-acceptance-section-meta');
+  const catalogMeta = $('smc-paper-acceptance-catalog-meta');
   if (overview) {
     overview.innerHTML = [
       smcDashboardMetric('目前標的', escHtml(symbol || '—'), 'text-cyan-300'),
       smcDashboardMetric('驗收結論', '尚未產生', 'text-slate-300'),
-      smcDashboardMetric('Blockers', '—'),
-      smcDashboardMetric('Gate 通過', '—'),
-      smcDashboardMetric('缺口', '—'),
-      smcDashboardMetric('Report', reports.length),
+      smcDashboardMetric('阻擋項', '—'),
+      smcDashboardMetric('通過條款', '—'),
+      smcDashboardMetric('部分覆蓋', '—'),
+      smcDashboardMetric('交易樣本', '—'),
     ].join('');
   }
-  if (blockers) blockers.innerHTML = '<div class="text-slate-500">尚未產生驗收報告；產生後會列出費用、滑價、對帳、kill switch 等 live promotion 缺口。</div>';
-  if (reportsEl) reportsEl.innerHTML = renderPaperAcceptanceReportList(reports);
-  if (meta) meta.textContent = `${symbol || '—'} · 尚未產生`;
+  if (blockers) blockers.innerHTML = '<div class="text-slate-500">請先選擇標的；系統會依目前 journal、backtest、event 與 overrides 即時計算驗收狀態。</div>';
+  if (reportsEl) reportsEl.innerHTML = '<div class="text-slate-500">尚無歷史報告。</div>';
+  if (sections) sections.innerHTML = '<div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 text-xs text-slate-500 md:col-span-2 xl:col-span-3">請先選擇標的。</div>';
+  if (catalog) catalog.innerHTML = '<div class="text-slate-500">選擇標的後即可瀏覽條款與證據工作區。</div>';
+  if (events) events.innerHTML = '<div class="text-slate-500">尚無異常事件。</div>';
+  if (meta) meta.textContent = symbol ? `${symbol} · 尚未載入工作區` : '請先選擇標的';
+  if (sectionMeta) sectionMeta.textContent = '尚未載入';
+  if (catalogMeta) catalogMeta.textContent = '選取章節後可編輯';
+  if ($('smc-paper-acceptance-strategy-json')) $('smc-paper-acceptance-strategy-json').value = '{}';
+  if ($('smc-paper-acceptance-metrics-json')) $('smc-paper-acceptance-metrics-json').value = '{}';
+  if ($('smc-paper-acceptance-prohibitions-json')) $('smc-paper-acceptance-prohibitions-json').value = '{}';
+}
+
+function paperAcceptancePreferredSection(workspace) {
+  const sections = workspace?.sections || [];
+  const catalog = workspace?.catalog || [];
+  const sectionIds = new Set(catalog.map(item => item.section));
+  if (_smcPaperAcceptanceSection && sectionIds.has(_smcPaperAcceptanceSection)) {
+    return _smcPaperAcceptanceSection;
+  }
+  const prioritized = sections.find(item =>
+    Number(item.blocking_issue_count || 0) > 0 ||
+    Number(item.failed || 0) > 0 ||
+    Number(item.unavailable || 0) > 0 ||
+    Number(item.partial || 0) > 0
+  );
+  return prioritized?.section || catalog[0]?.section || '';
+}
+
+function paperAcceptanceFindCatalogSection(workspace, sectionId) {
+  return (workspace?.catalog || []).find(item => item.section === sectionId) || null;
+}
+
+function paperAcceptanceFindCheck(workspace, gateId, checkKey) {
+  for (const section of workspace?.catalog || []) {
+    for (const gate of section.gates || []) {
+      if (gate.id !== gateId) continue;
+      const check = (gate.checks || []).find(item => item.key === checkKey);
+      if (check) return check;
+    }
+  }
+  return null;
+}
+
+function selectPaperAcceptanceSection(section) {
+  _smcPaperAcceptanceSection = section || '';
+  if (_smcPaperAcceptanceWorkspace) {
+    renderPaperAcceptanceSections(_smcPaperAcceptanceWorkspace);
+    renderPaperAcceptanceCatalog(_smcPaperAcceptanceWorkspace);
+  }
 }
 
 function renderPaperAcceptanceReportList(reports) {
@@ -3107,45 +3299,338 @@ function renderPaperAcceptanceReportList(reports) {
         </div>
         <div class="text-right shrink-0">
           <div class="font-semibold ${paperAcceptanceTone(conclusion)}">${escHtml(paperAcceptanceConclusionLabel(conclusion))}</div>
-          <div class="text-[11px] text-slate-500">Block ${summary.blocking_issue_count ?? row.blocking_issue_count ?? '—'}</div>
+          <div class="text-[11px] text-slate-500">阻擋 ${summary.blocking_issue_count ?? row.blocking_issue_count ?? '—'}</div>
         </div>
       </div>
     `;
   }).join('');
 }
 
-function renderPaperAcceptanceReport(report, reports = []) {
+function renderPaperAcceptanceBlockers(issues) {
+  if (!issues || !issues.length) {
+    return '<div class="text-emerald-300">目前無實盤升級阻擋項。</div>';
+  }
+  return issues.slice(0, 10).map(item => `
+    <div class="py-1.5 border-b border-slate-800/50 last:border-b-0">
+      <div class="text-red-300 font-semibold">§${escHtml(item.section || '—')} ${escHtml(item.title_zh || item.title || item.id || '阻擋項')}</div>
+      <div class="text-[11px] text-slate-500">${escHtml(item.reason || '')}</div>
+    </div>
+  `).join('');
+}
+
+function renderPaperAcceptanceEvents(events) {
+  if (!events || !events.length) {
+    return '<div class="text-slate-500">尚無異常事件或告警證據。</div>';
+  }
+  return events.slice(0, 8).map(event => `
+    <div class="py-2 border-b border-slate-800/50 last:border-b-0">
+      <div class="flex items-center justify-between gap-2">
+        <div class="min-w-0">
+          <div class="font-semibold text-slate-200 truncate">${escHtml(event.event_type || 'event')}</div>
+          <div class="text-[11px] text-slate-500">${escHtml(smcJournalFormatTime(event.created_at))}</div>
+        </div>
+        <span class="inline-flex items-center px-2 py-0.5 rounded border text-[10px] ${paperAcceptanceSeverityTone(event.severity)}">${escHtml(event.severity || 'info')}</span>
+      </div>
+      <div class="text-[11px] text-slate-500 mt-1">${escHtml(event.detail?.reason || event.detail?.message || event.status || '—')}</div>
+    </div>
+  `).join('');
+}
+
+function renderPaperAcceptanceSections(workspace) {
+  const sectionsEl = $('smc-paper-acceptance-sections');
+  const sectionMeta = $('smc-paper-acceptance-section-meta');
+  if (!sectionsEl) return;
+  const catalog = workspace?.catalog || [];
+  if (!catalog.length) {
+    sectionsEl.innerHTML = '<div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 text-xs text-slate-500 md:col-span-2 xl:col-span-3">尚無章節資料。</div>';
+    if (sectionMeta) sectionMeta.textContent = '0 個章節';
+    return;
+  }
+  const summaryMap = new Map((workspace?.sections || []).map(item => [item.section, item]));
+  const activeSection = paperAcceptancePreferredSection(workspace);
+  _smcPaperAcceptanceSection = activeSection;
+  if (sectionMeta) {
+    const totalBlocking = (workspace?.sections || []).reduce((sum, item) => sum + Number(item.blocking_issue_count || 0), 0);
+    sectionMeta.textContent = `${catalog.length} 個章節 · ${totalBlocking} 個阻擋項`;
+  }
+  sectionsEl.innerHTML = catalog.map(section => {
+    const summary = summaryMap.get(section.section) || section.summary || {};
+    const title = section.gates?.[0]?.title_zh || section.gates?.[0]?.title || `§${section.section}`;
+    const state = paperAcceptanceSectionState(summary);
+    const active = section.section === activeSection;
+    const frame = active
+      ? 'border-cyan-700/50 bg-cyan-950/10'
+      : 'border-slate-800/60 bg-slate-950/25 hover:bg-slate-900/40';
+    return `
+      <button onclick="selectPaperAcceptanceSection('${escJs(section.section)}')" class="text-left rounded-lg border ${frame} p-3 transition-colors">
+        <div class="flex items-center justify-between gap-2">
+          <span class="font-mono text-[11px] text-slate-500">§${escHtml(section.section)}</span>
+          <span class="inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] ${paperAcceptanceStatusTone(state)}">${escHtml(paperAcceptanceStatusLabel(state))}</span>
+        </div>
+        <div class="text-sm font-semibold text-slate-100 mt-2 leading-snug">${escHtml(title)}</div>
+        <div class="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-500">
+          <span>通過 ${summary.passed || 0}/${summary.gate_count || 0}</span>
+          <span>部分 ${summary.partial || 0}</span>
+          <span>缺口 ${(summary.failed || 0) + (summary.unavailable || 0)}</span>
+        </div>
+      </button>
+    `;
+  }).join('');
+}
+
+function renderPaperAcceptanceCatalog(workspace) {
+  const catalogEl = $('smc-paper-acceptance-catalog');
+  const catalogMeta = $('smc-paper-acceptance-catalog-meta');
+  if (!catalogEl) return;
+  const activeSection = paperAcceptancePreferredSection(workspace);
+  const section = paperAcceptanceFindCatalogSection(workspace, activeSection);
+  if (!section) {
+    catalogEl.innerHTML = '<div class="text-slate-500">查無章節條款。</div>';
+    if (catalogMeta) catalogMeta.textContent = '選取章節後可編輯';
+    return;
+  }
+  const summary = section.summary || {};
+  if (catalogMeta) {
+    catalogMeta.textContent = `§${section.section} · ${section.gates?.length || 0} 個條款 · 通過 ${summary.passed || 0}/${summary.gate_count || 0}`;
+  }
+  catalogEl.innerHTML = (section.gates || []).map(gate => {
+    const missingLabels = (gate.missing_evidence || [])
+      .map(key => {
+        const found = (gate.checks || []).find(item => item.key === key);
+        return found?.label || key;
+      })
+      .join('、');
+    const gateType = gate.blocking ? '阻擋條款' : '觀察條款';
+    return `
+      <div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 mb-3 last:mb-0">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="font-mono text-[11px] text-slate-500">§${escHtml(gate.section)}</span>
+              <span class="text-[10px] text-slate-500">${escHtml(gateType)}</span>
+            </div>
+            <div class="text-sm font-semibold text-slate-100 mt-1">${escHtml(gate.title_zh || gate.title || gate.id)}</div>
+            <div class="text-[11px] text-slate-500 mt-1">${escHtml(gate.passing_standard_zh || gate.passing_standard || '')}</div>
+          </div>
+          <div class="text-right shrink-0">
+            <div class="inline-flex items-center px-2 py-0.5 rounded border text-[10px] ${paperAcceptanceStatusTone(gate.status)}">${escHtml(paperAcceptanceStatusLabel(gate.status))}</div>
+            ${gate.reason ? `<div class="text-[11px] text-slate-500 mt-1 max-w-[240px]">${escHtml(gate.reason)}</div>` : ''}
+          </div>
+        </div>
+        ${missingLabels ? `<div class="mt-2 text-[11px] text-amber-300">缺少證據：${escHtml(missingLabels)}</div>` : ''}
+        <div class="mt-3 space-y-2">
+          ${(gate.checks || []).map(check => {
+            const noteId = `smc-paper-note-${gate.id}-${check.key}`;
+            return `
+              <div class="rounded-md border border-slate-800/50 bg-slate-950/35 p-2">
+                <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_auto] gap-2 items-start">
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="text-slate-200">${escHtml(check.label)}</span>
+                      <span class="inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] ${paperAcceptanceCheckTone(check.value, check.source)}">${escHtml(paperAcceptanceCheckValueLabel(check.value))}</span>
+                      <span class="inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] ${paperAcceptanceSourceTone(check.source)}">${escHtml(paperAcceptanceSourceLabel(check.source))}</span>
+                    </div>
+                    <div class="text-[10px] text-slate-600 font-mono mt-1">${escHtml(check.key)}</div>
+                  </div>
+                  <div class="flex items-center gap-1 justify-end flex-wrap">
+                    <button onclick="setPaperAcceptanceCheck('${escJs(gate.id)}', '${escJs(check.key)}', true)" class="btn-secondary text-[11px] px-2 py-1" style="border-radius: 6px;">通過</button>
+                    <button onclick="setPaperAcceptanceCheck('${escJs(gate.id)}', '${escJs(check.key)}', false)" class="btn-secondary text-[11px] px-2 py-1" style="border-radius: 6px;">缺口</button>
+                    <button onclick="clearPaperAcceptanceCheck('${escJs(gate.id)}', '${escJs(check.key)}')" class="btn-secondary text-[11px] px-2 py-1" style="border-radius: 6px;">清除</button>
+                  </div>
+                </div>
+                <div class="mt-2 flex items-center gap-2">
+                  <input id="${noteId}" value="${escHtml(check.note || '')}" class="input-field text-xs flex-1" style="padding: 6px 8px;" placeholder="補充文件、測試結果、追蹤說明">
+                  <button onclick="savePaperAcceptanceCheckNote('${escJs(gate.id)}', '${escJs(check.key)}')" class="btn-secondary text-[11px] px-2 py-1" style="border-radius: 6px;">存註記</button>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function hydratePaperAcceptanceWorkspaceEditors(workspace) {
+  if ($('smc-paper-acceptance-strategy-json')) {
+    $('smc-paper-acceptance-strategy-json').value = paperAcceptanceFormatJson(workspace?.strategy_overrides || {});
+  }
+  if ($('smc-paper-acceptance-metrics-json')) {
+    $('smc-paper-acceptance-metrics-json').value = paperAcceptanceFormatJson(workspace?.metrics_overrides || {});
+  }
+  if ($('smc-paper-acceptance-prohibitions-json')) {
+    $('smc-paper-acceptance-prohibitions-json').value = paperAcceptanceFormatJson(workspace?.prohibitions_overrides || {});
+  }
+}
+
+function renderPaperAcceptanceWorkspace(workspace) {
   const overview = $('smc-paper-acceptance-overview');
   const blockers = $('smc-paper-acceptance-blockers');
   const reportsEl = $('smc-paper-acceptance-reports');
   const meta = $('smc-paper-acceptance-meta');
-  const summary = report?.summary || {};
-  const metrics = report?.metrics || {};
-  const strategy = report?.strategy || {};
+  const report = workspace?.report || {};
+  const summary = report.summary || {};
+  const metrics = report.metrics || {};
+  const strategy = report.strategy || {};
   const conclusion = summary.conclusion || 'unknown';
+  _smcPaperAcceptanceWorkspace = workspace || null;
   if (overview) {
     overview.innerHTML = [
       smcDashboardMetric('目前標的', escHtml(strategy.symbol || smcJournalSelectedSymbol() || '—'), 'text-cyan-300'),
       smcDashboardMetric('驗收結論', escHtml(paperAcceptanceConclusionLabel(conclusion)), paperAcceptanceTone(conclusion)),
-      smcDashboardMetric('Blockers', summary.blocking_issue_count ?? 0, (summary.blocking_issue_count || 0) > 0 ? 'text-red-300' : 'text-emerald-300'),
-      smcDashboardMetric('Gate 通過', `${summary.passed ?? 0}/${summary.gate_count ?? 0}`, 'text-slate-100'),
-      smcDashboardMetric('缺口', `${(summary.failed ?? 0) + (summary.unavailable ?? 0)} / P${summary.partial ?? 0}`, ((summary.failed || 0) + (summary.unavailable || 0)) > 0 ? 'text-red-300' : 'text-amber-300'),
-      smcDashboardMetric('Paper Trades', metrics.trade_count ?? 0, (metrics.trade_count || 0) > 0 ? 'text-cyan-300' : 'text-slate-300'),
+      smcDashboardMetric('阻擋項', summary.blocking_issue_count ?? 0, (summary.blocking_issue_count || 0) > 0 ? 'text-red-300' : 'text-emerald-300'),
+      smcDashboardMetric('通過條款', `${summary.passed ?? 0}/${summary.gate_count ?? 0}`, 'text-slate-100'),
+      smcDashboardMetric('部分覆蓋', summary.partial ?? 0, (summary.partial || 0) > 0 ? 'text-amber-300' : 'text-slate-300'),
+      smcDashboardMetric('交易樣本', metrics.trade_count ?? 0, (metrics.trade_count || 0) > 0 ? 'text-cyan-300' : 'text-slate-300'),
     ].join('');
   }
-  const issues = report?.blocking_issues || [];
-  if (blockers) {
-    blockers.innerHTML = issues.length
-      ? issues.slice(0, 8).map(item => `
-          <div class="py-1.5 border-b border-slate-800/50 last:border-b-0">
-            <div class="text-red-300 font-semibold">§${escHtml(item.section || '—')} ${escHtml(item.title || item.id || 'Blocker')}</div>
-            <div class="text-[11px] text-slate-500">${escHtml(item.reason || '')}</div>
-          </div>
-        `).join('')
-      : '<div class="text-emerald-300">目前無 live promotion blocker。</div>';
+  if (blockers) blockers.innerHTML = renderPaperAcceptanceBlockers(report.blocking_issues || []);
+  if (reportsEl) reportsEl.innerHTML = renderPaperAcceptanceReportList(workspace?.reports || []);
+  if ($('smc-paper-acceptance-events')) $('smc-paper-acceptance-events').innerHTML = renderPaperAcceptanceEvents(workspace?.events || []);
+  renderPaperAcceptanceSections(workspace);
+  renderPaperAcceptanceCatalog(workspace);
+  hydratePaperAcceptanceWorkspaceEditors(workspace);
+  if (meta) {
+    meta.textContent = `${strategy.symbol || workspace?.symbol || smcJournalSelectedSymbol() || '—'} · ${paperAcceptanceConclusionLabel(conclusion)} · ${summary.blocking_issue_count ?? 0} 個阻擋項`;
   }
-  if (reportsEl) reportsEl.innerHTML = renderPaperAcceptanceReportList(reports);
-  if (meta) meta.textContent = `${strategy.symbol || smcJournalSelectedSymbol() || '—'} · ${paperAcceptanceConclusionLabel(conclusion)} · ${summary.blocking_issue_count ?? 0} blockers`;
+}
+
+function paperAcceptanceParseJson(id, label) {
+  const raw = ($(id)?.value || '').trim();
+  if (!raw) return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`${label} JSON 格式錯誤：${e.message}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${label} 必須是 JSON object`);
+  }
+  return parsed;
+}
+
+async function savePaperAcceptanceWorkspaceOverrides() {
+  const symbol = smcJournalSelectedSymbol();
+  const meta = $('smc-paper-acceptance-meta');
+  const btn = $('smc-paper-acceptance-save-workspace-btn');
+  if (!symbol) {
+    if (meta) meta.textContent = '請先選擇標的';
+    return null;
+  }
+  const originalText = btn?.textContent || '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '儲存中...';
+  }
+  try {
+    const payload = {
+      symbol,
+      stage: 'paper',
+      strategy: paperAcceptanceParseJson('smc-paper-acceptance-strategy-json', '策略覆寫'),
+      metrics: paperAcceptanceParseJson('smc-paper-acceptance-metrics-json', '指標覆寫'),
+      prohibitions: paperAcceptanceParseJson('smc-paper-acceptance-prohibitions-json', '禁止旗標覆寫'),
+    };
+    const res = await fetch('/api/paper-acceptance/workspace', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(r => r.json());
+    if (res.error || res.detail || res.ok === false) {
+      throw new Error(res.error || res.detail || '工作區儲存失敗');
+    }
+    if (meta) meta.textContent = `${symbol} · overrides 已儲存，重算中...`;
+    await refreshPaperAcceptance(true);
+    return res;
+  } catch (e) {
+    if (meta) meta.textContent = `工作區儲存失敗：${e}`;
+    return null;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+}
+
+async function upsertPaperAcceptanceCheck(gateId, checkKey, value, note = null) {
+  const symbol = smcJournalSelectedSymbol();
+  const meta = $('smc-paper-acceptance-meta');
+  const check = paperAcceptanceFindCheck(_smcPaperAcceptanceWorkspace, gateId, checkKey);
+  const noteInput = $(`smc-paper-note-${gateId}-${checkKey}`);
+  const payload = {
+    symbol,
+    gate_id: gateId,
+    check_key: checkKey,
+    value,
+    note: note === null ? ((noteInput?.value ?? check?.note ?? '').trim()) : note,
+    stage: 'paper',
+    source: 'manual',
+  };
+  const res = await fetch('/api/paper-acceptance/check', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(r => r.json());
+  if (res.error || res.detail || res.ok === false) {
+    throw new Error(res.error || res.detail || '條款覆寫失敗');
+  }
+  if (meta) meta.textContent = `${symbol} · ${gateId}.${checkKey} 已更新`;
+  await refreshPaperAcceptance(true);
+  return res;
+}
+
+async function setPaperAcceptanceCheck(gateId, checkKey, value) {
+  const symbol = smcJournalSelectedSymbol();
+  const meta = $('smc-paper-acceptance-meta');
+  if (!symbol) {
+    if (meta) meta.textContent = '請先選擇標的';
+    return null;
+  }
+  try {
+    return await upsertPaperAcceptanceCheck(gateId, checkKey, value);
+  } catch (e) {
+    if (meta) meta.textContent = `條款覆寫失敗：${e}`;
+    return null;
+  }
+}
+
+async function savePaperAcceptanceCheckNote(gateId, checkKey) {
+  const meta = $('smc-paper-acceptance-meta');
+  const current = paperAcceptanceFindCheck(_smcPaperAcceptanceWorkspace, gateId, checkKey);
+  if (typeof current?.value !== 'boolean') {
+    if (meta) meta.textContent = `請先標記 ${gateId}.${checkKey} 為通過或缺口`;
+    return null;
+  }
+  try {
+    return await upsertPaperAcceptanceCheck(gateId, checkKey, current.value);
+  } catch (e) {
+    if (meta) meta.textContent = `註記儲存失敗：${e}`;
+    return null;
+  }
+}
+
+async function clearPaperAcceptanceCheck(gateId, checkKey) {
+  const symbol = smcJournalSelectedSymbol();
+  const meta = $('smc-paper-acceptance-meta');
+  if (!symbol) {
+    if (meta) meta.textContent = '請先選擇標的';
+    return null;
+  }
+  try {
+    const res = await fetch(`/api/paper-acceptance/check?symbol=${encodeURIComponent(symbol)}&gate_id=${encodeURIComponent(gateId)}&check_key=${encodeURIComponent(checkKey)}&stage=paper`, {
+      method: 'DELETE',
+    }).then(r => r.json());
+    if (res.error || res.detail || res.ok === false) {
+      throw new Error(res.error || res.detail || '清除失敗');
+    }
+    if (meta) meta.textContent = `${symbol} · ${gateId}.${checkKey} 已清除手動覆寫`;
+    await refreshPaperAcceptance(true);
+    return res;
+  } catch (e) {
+    if (meta) meta.textContent = `清除失敗：${e}`;
+    return null;
+  }
 }
 
 async function refreshPaperAcceptance(force = false) {
@@ -3158,25 +3643,30 @@ async function refreshPaperAcceptance(force = false) {
   _smcPaperAcceptanceBusy = true;
   renderPaperAcceptanceLoading('讀取前測驗收...');
   try {
-    const payload = await fetch(`/api/paper-acceptance?symbol=${encodeURIComponent(symbol)}&limit=5`).then(r => r.json());
+    const payload = await fetch(`/api/paper-acceptance/workspace?symbol=${encodeURIComponent(symbol)}&stage=paper&limit_reports=5`).then(r => r.json());
     if (payload.error || payload.detail) throw new Error(payload.error || payload.detail);
-    const reports = payload.reports || [];
-    if (reports.length && reports[0].report_payload) {
-      renderPaperAcceptanceReport(reports[0].report_payload, reports);
-    } else {
-      renderPaperAcceptanceEmpty(symbol, reports);
-    }
+    renderPaperAcceptanceWorkspace(payload);
     return payload;
   } catch (e) {
     const overview = $('smc-paper-acceptance-overview');
     const blockers = $('smc-paper-acceptance-blockers');
     const reports = $('smc-paper-acceptance-reports');
+    const sections = $('smc-paper-acceptance-sections');
+    const catalog = $('smc-paper-acceptance-catalog');
+    const events = $('smc-paper-acceptance-events');
     const meta = $('smc-paper-acceptance-meta');
+    const sectionMeta = $('smc-paper-acceptance-section-meta');
+    const catalogMeta = $('smc-paper-acceptance-catalog-meta');
     const msg = `前測驗收讀取失敗：${e}`;
     if (overview) overview.innerHTML = `<div class="rounded-lg border border-red-900/40 bg-red-950/10 p-3 text-center text-red-300 text-xs col-span-full">${escHtml(msg)}</div>`;
     if (blockers) blockers.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (reports) reports.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
+    if (sections) sections.innerHTML = `<div class="rounded-lg border border-red-900/40 bg-red-950/10 p-3 text-xs text-red-300 md:col-span-2 xl:col-span-3">${escHtml(msg)}</div>`;
+    if (catalog) catalog.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
+    if (events) events.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (meta) meta.textContent = '讀取失敗';
+    if (sectionMeta) sectionMeta.textContent = '讀取失敗';
+    if (catalogMeta) catalogMeta.textContent = '讀取失敗';
     return null;
   } finally {
     _smcPaperAcceptanceBusy = false;
@@ -3213,8 +3703,7 @@ async function generatePaperAcceptanceReport() {
       }),
     }).then(r => r.json());
     if (payload.error || payload.detail) throw new Error(payload.error || payload.detail);
-    const reportsPayload = await fetch(`/api/paper-acceptance?symbol=${encodeURIComponent(symbol)}&limit=5`).then(r => r.json());
-    renderPaperAcceptanceReport(payload.report, reportsPayload.reports || []);
+    await refreshPaperAcceptance(true);
     return payload;
   } catch (e) {
     const metaEl = $('smc-paper-acceptance-meta');

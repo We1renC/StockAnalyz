@@ -4,8 +4,10 @@ from unittest.mock import patch
 
 import app
 from app import (
+    PaperAcceptanceCheckUpdate,
     PaperAcceptanceEventCreate,
     PaperAcceptanceGenerateRequest,
+    PaperAcceptanceWorkspaceUpdate,
     SMCJournalCreate,
 )
 
@@ -80,5 +82,55 @@ def test_api_record_paper_acceptance_event(tmp_path):
         assert events["count"] == 1
         assert events["events"][0]["event_key"] == payload["event_key"]
         assert events["events"][0]["detail"]["difference"] == "position mismatch"
+    finally:
+        app.DB = original
+
+
+def test_api_workspace_and_check_crud(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        app.api_update_paper_acceptance_workspace(
+            PaperAcceptanceWorkspaceUpdate(
+                symbol="ABAT",
+                strategy={"initial_capital": 10000, "name": "ABAT Acceptance"},
+                metrics={"fees_included": True, "kill_switch_tested": True},
+                prohibitions={"duplicate_orders": False},
+            )
+        )
+        app.api_update_paper_acceptance_check(
+            PaperAcceptanceCheckUpdate(
+                symbol="ABAT",
+                gate_id="strategy_logic",
+                check_key="entry_conditions",
+                value=True,
+                note="有策略文件",
+            )
+        )
+
+        workspace = app.api_get_paper_acceptance_workspace(symbol="ABAT")
+        assert workspace["symbol"] == "ABAT"
+        assert workspace["strategy_overrides"]["initial_capital"] == 10000
+        gate = next(item for item in workspace["catalog"] if item["section"] == "3.1")
+        check = next(
+            row for row in gate["gates"][0]["checks"]
+            if row["key"] == "entry_conditions"
+        )
+        assert check["source"] == "manual"
+        assert check["note"] == "有策略文件"
+
+        resp = app.api_delete_paper_acceptance_check(
+            symbol="ABAT",
+            gate_id="strategy_logic",
+            check_key="entry_conditions",
+        )
+        assert resp["ok"] is True
+
+        workspace_after_clear = app.api_get_paper_acceptance_workspace(symbol="ABAT")
+        gate_after_clear = next(item for item in workspace_after_clear["catalog"] if item["section"] == "3.1")
+        check_after_clear = next(
+            row for row in gate_after_clear["gates"][0]["checks"]
+            if row["key"] == "entry_conditions"
+        )
+        assert check_after_clear["source"] != "manual"
     finally:
         app.DB = original

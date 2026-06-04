@@ -4,13 +4,19 @@ import sqlite3
 
 from paper_acceptance import ACCEPTANCE_GATES, build_acceptance_report
 from paper_acceptance_store import (
+    build_acceptance_workspace,
     build_and_persist_smc_acceptance_report,
     build_smc_acceptance_context,
+    delete_acceptance_check,
     ensure_paper_acceptance_schema,
+    load_acceptance_checks,
+    load_acceptance_context_overrides,
     load_acceptance_events,
     load_acceptance_reports,
     persist_acceptance_report,
     record_acceptance_event,
+    upsert_acceptance_check,
+    upsert_acceptance_context_overrides,
 )
 
 
@@ -152,3 +158,64 @@ def test_build_and_persist_smc_acceptance_report():
     rows = load_acceptance_reports(conn, symbol="ABAT")
     assert rows[0]["run_key"] == payload["run_key"]
     assert rows[0]["gate_summary"]["conclusion"] == "failed_repeat_paper"
+
+
+def test_workspace_overrides_and_manual_checks_are_reflected_in_workspace():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+
+    upsert_acceptance_context_overrides(
+        conn,
+        symbol="ABAT",
+        strategy={"initial_capital": 10000, "name": "ABAT Acceptance"},
+        metrics={
+            "fees_included": True,
+            "total_fees": 4.5,
+            "slippage_included": True,
+            "average_slippage": 0.001,
+            "maximum_slippage": 0.002,
+            "fill_rate": 0.92,
+            "rejection_ratio": 0.0,
+            "kill_switch_tested": True,
+            "reconciliation_implemented": True,
+            "parameters_frozen": True,
+            "parameter_change_count": 0,
+        },
+        prohibitions={"duplicate_orders": False},
+    )
+    upsert_acceptance_check(
+        conn,
+        symbol="ABAT",
+        gate_id="strategy_logic",
+        check_key="entry_conditions",
+        value=True,
+        note="已有書面定義",
+    )
+
+    overrides = load_acceptance_context_overrides(conn, "ABAT")
+    checks = load_acceptance_checks(conn, "ABAT")
+    context = build_smc_acceptance_context(conn, symbol="ABAT")
+    workspace = build_acceptance_workspace(conn, symbol="ABAT")
+
+    assert overrides["strategy"]["initial_capital"] == 10000
+    assert checks[0]["check_key"] == "entry_conditions"
+    assert context["metrics"]["fees_included"] is True
+    assert context["metrics"]["kill_switch_tested"] is True
+    assert len(workspace["catalog"]) >= 5
+
+    gate = next(item for item in workspace["catalog"] if item["section"] == "3.1")
+    check = next(
+        row for row in gate["gates"][0]["checks"]
+        if row["key"] == "entry_conditions"
+    )
+    assert check["source"] == "manual"
+    assert check["note"] == "已有書面定義"
+
+    delete_acceptance_check(conn, symbol="ABAT", gate_id="strategy_logic", check_key="entry_conditions")
+    workspace_after_clear = build_acceptance_workspace(conn, symbol="ABAT")
+    gate_after_clear = next(item for item in workspace_after_clear["catalog"] if item["section"] == "3.1")
+    check_after_clear = next(
+        row for row in gate_after_clear["gates"][0]["checks"]
+        if row["key"] == "entry_conditions"
+    )
+    assert check_after_clear["source"] != "manual"
