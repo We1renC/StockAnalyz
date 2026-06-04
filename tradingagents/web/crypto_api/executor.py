@@ -305,6 +305,32 @@ async def validate_pre_trade_risk(conn: sqlite3.Connection, account_id: str, ord
         if open_count >= risk["max_open_orders"]:
             return False, "MAX_OPEN_ORDERS_EXCEEDED", None
 
+        # Max daily notional limit check
+        today_start = datetime.now(UTC).date().isoformat() + "T00:00:00Z"
+        rows_today = c.execute(
+            "SELECT price, quantity, symbol FROM crypto_orders WHERE account_id = ? AND created_at >= ?",
+            (account_id, today_start)
+        ).fetchall()
+        notional_today = Decimal("0")
+        for r in rows_today:
+            r_price = Decimal(r["price"]) if r["price"] else await price_engine.get_price(r["symbol"])
+            r_qty = Decimal(r["quantity"])
+            notional_today += r_price * r_qty
+            
+        max_daily = Decimal(risk["max_daily_notional"])
+        if notional_today + notional > max_daily:
+            return False, "MAX_DAILY_NOTIONAL_EXCEEDED", None
+
+        # Price deviation check for limit orders
+        if order_type == "limit" and order_data.get("price"):
+            limit_price = Decimal(order_data["price"])
+            ref_price = await price_engine.get_price(symbol)
+            if ref_price > 0:
+                dev_pct = abs(limit_price - ref_price) / ref_price * 100
+                max_dev = Decimal(risk["max_price_deviation_percent"])
+                if dev_pct > max_dev:
+                    return False, "PRICE_DEVIATION_LIMIT_EXCEEDED", None
+
         # Allowed / blocked list checks
         allowed = json.loads(risk["allowed_symbols"])
         blocked = json.loads(risk["blocked_symbols"])

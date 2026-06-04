@@ -63,6 +63,13 @@ def temp_db():
         
         # Initialize and seed database
         app.init_db()
+        
+        # Adjust price deviation limit for tests so they don't get blocked by default
+        conn = sqlite3.connect(temp_db_path)
+        conn.execute("UPDATE crypto_risk_limits SET max_price_deviation_percent = '100'")
+        conn.commit()
+        conn.close()
+        
         yield temp_db_path
         
     if os.path.exists(temp_db_path):
@@ -278,6 +285,56 @@ def test_pre_trade_risk_validation():
     res2 = post_json(client, path, payload2)
     assert res2.status_code == 400
     assert res2.json()["detail"]["error"]["code"] == "INSUFFICIENT_BALANCE"
+
+    # 3. Price deviation check (limit price 75000 is >5% deviation from BTC reference price 68000)
+    res_patch_dev = patch_json(client, "/v1/risk/limits", {"max_price_deviation_percent": "5"})
+    assert res_patch_dev.status_code == 200
+    price_engine.price_cache["BTC-USDT"] = "68000.00"
+    payload3 = {
+        "client_order_id": "test-buy-risk-003",
+        "symbol": "BTC-USDT",
+        "side": "buy",
+        "type": "limit",
+        "price": "75000.00",
+        "quantity": "0.01" # 750 USDT (well under 10000 max single order)
+    }
+    res3 = post_json(client, path, payload3)
+    assert res3.status_code == 400
+    assert res3.json()["detail"]["error"]["code"] == "PRICE_DEVIATION_LIMIT_EXCEEDED"
+
+    # 4. Max daily notional limit check
+    # Patch daily limit to 9000 USDT and reset price deviation to 100
+    patch_payload = {
+        "max_daily_notional": "9000",
+        "max_price_deviation_percent": "100"
+    }
+    res_patch = patch_json(client, "/v1/risk/limits", patch_payload)
+    assert res_patch.status_code == 200
+
+    # Place order 1: 5000 USDT (succeeds)
+    payload4 = {
+        "client_order_id": "test-buy-risk-004",
+        "symbol": "BTC-USDT",
+        "side": "buy",
+        "type": "limit",
+        "price": "5000.00",
+        "quantity": "1.0"
+    }
+    res4 = post_json(client, path, payload4)
+    assert res4.status_code == 200
+
+    # Place order 2: 5000 USDT (fails because 5000 + 5000 = 10000 > 9000 daily limit)
+    payload5 = {
+        "client_order_id": "test-buy-risk-005",
+        "symbol": "BTC-USDT",
+        "side": "buy",
+        "type": "limit",
+        "price": "5000.00",
+        "quantity": "1.0"
+    }
+    res5 = post_json(client, path, payload5)
+    assert res5.status_code == 400
+    assert res5.json()["detail"]["error"]["code"] == "MAX_DAILY_NOTIONAL_EXCEEDED"
 
 @pytest.mark.anyio
 async def test_matching_engine_execution():
