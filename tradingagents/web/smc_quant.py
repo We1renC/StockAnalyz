@@ -2288,6 +2288,8 @@ def detect_sweep_reversal_entries(
     session: Optional[dict] = None,
     weights: Optional[dict[str, int]] = None,
     threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
+    balanced_price_ranges: Optional[list[dict]] = None,
+    inverse_fvgs: Optional[list[dict]] = None,
 ) -> list[dict]:
     """§5.1 Entry Model 1 — Liquidity Sweep Reversal (Sweep + CHoCH).
 
@@ -2376,6 +2378,16 @@ def detect_sweep_reversal_entries(
                 ote_overlap = leg_low + 0.62 * leg <= entry <= leg_low + 0.79 * leg
             else:
                 ote_overlap = leg_high - 0.79 * leg <= entry <= leg_high - 0.62 * leg
+        # §3.4 enhanced overlap — entry sits inside a BPR or IFVG (same dir)
+        bpr_overlap = any(
+            float(b["bottom"]) <= entry <= float(b["top"])
+            for b in (balanced_price_ranges or [])
+        )
+        ifvg_overlap = any(
+            int(i.get("direction", 0)) == real_dir
+            and float(i["bottom"]) <= entry <= float(i["top"])
+            for i in (inverse_fvgs or [])
+        )
         factors = {
             "htf_bias_aligned": bias_dir == real_dir,
             "premium_discount_side": on_correct_pd_side,
@@ -2389,13 +2401,17 @@ def detect_sweep_reversal_entries(
             "displacement_extreme": ev.get("displacement_strength") == "extreme",
             "killzone_premium": is_premium_killzone(session),
             "pd_extreme": pd_extreme,
+            "bpr_overlap": bpr_overlap,
+            "ifvg_overlap": ifvg_overlap,
         }
-        # §3.11 + §3.9 + §3.6 — credit extreme displacement / killzone / PD extreme (+1 each).
+        # §3.11 + §3.9 + §3.6 + §3.4 — extreme displacement / killzone / PD extreme / BPR / IFVG (+1 each).
         local_weights = {
             **(weights or {}),
             "displacement_extreme": 1,
             "killzone_premium": 1,
             "pd_extreme": 1,
+            "bpr_overlap": 1,
+            "ifvg_overlap": 1,
         }
         scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
@@ -5254,6 +5270,8 @@ def build_smc_analysis(
     sweep_reversal_entries = detect_sweep_reversal_entries(
         h, judas_events, obs, fvgs, pd_zone, bias, session,
         weights=weights,
+        balanced_price_ranges=balanced_price_ranges,
+        inverse_fvgs=inverse_fvgs,
     )
     continuation_entries = detect_continuation_entries(
         h, structure, obs, fvgs, pd_zone, bias, session, weights=weights,

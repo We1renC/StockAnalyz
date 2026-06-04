@@ -2488,3 +2488,60 @@ def test_atr_adaptive_stop_falls_back_when_no_direction():
     out = atr_adaptive_stop(direction=0, entry=100, atr=1.0, vol_bucket="mid")
     assert out["stop"] == 100
     assert out["rule"] == "no_direction"
+
+
+def test_sweep_reversal_credits_bpr_and_ifvg_overlap():
+    """§3.4 + §5.1: entry inside a BPR or IFVG band gets extra confluence."""
+    from smc_quant import detect_sweep_reversal_entries
+    judas = [{
+        "judas": 1, "real_direction": 1, "fakeout_direction": -1,
+        "sweep_type": "SSL", "sweep_level": 9.0,
+        "sweep_index": 4, "confirm_index": 6, "confirm_time": None,
+        "false_move_high": 10.5, "false_move_low": 8.8,
+        "displacement_confirmed": True, "displacement_strength": "normal",
+        "session_at_sweep": None, "killzone": False, "sweep_time": None,
+    }]
+    obs = [{
+        "index": 5, "direction": 1, "top": 10.0, "bottom": 9.0,
+        "refined_entry": 9.5, "status": "unmitigated", "grade": "B",
+        "displacement_confirmed": True,
+    }]
+    h = normalize_ohlcv(_sample_ohlcv())
+    bprs = [{"top": 10, "bottom": 9, "direction_a": 1, "direction_b": -1, "mid": 9.5,
+             "index_a": 5, "index_b": 6}]
+    ifvgs = [{"top": 10, "bottom": 9, "direction": 1, "block_type": "inverse_fvg",
+              "mitigated": False, "index": 5}]
+    entries = detect_sweep_reversal_entries(
+        h, judas, obs, [], {"state": "discount", "zone": "pure_discount"}, "bullish",
+        balanced_price_ranges=bprs, inverse_fvgs=ifvgs,
+    )
+    assert entries
+    f = entries[0]["factors"]
+    assert f["bpr_overlap"] is True
+    assert f["ifvg_overlap"] is True
+    names = {x["factor"] for x in entries[0]["confluence"]["contributing_factors"]}
+    assert "bpr_overlap" in names and "ifvg_overlap" in names
+
+
+def test_sweep_reversal_falls_through_without_bpr_ifvg():
+    """When neither BPR nor IFVG are supplied → factors flip False but entries still build."""
+    from smc_quant import detect_sweep_reversal_entries
+    judas = [{
+        "judas": 1, "real_direction": 1, "fakeout_direction": -1,
+        "sweep_type": "SSL", "sweep_level": 9.0,
+        "sweep_index": 4, "confirm_index": 6, "confirm_time": None,
+        "false_move_high": 10.5, "false_move_low": 8.8,
+        "displacement_confirmed": True, "displacement_strength": "normal",
+        "session_at_sweep": None, "killzone": False, "sweep_time": None,
+    }]
+    obs = [{"index": 5, "direction": 1, "top": 10.0, "bottom": 9.0,
+            "refined_entry": 9.5, "status": "unmitigated", "grade": "B",
+            "displacement_confirmed": True}]
+    h = normalize_ohlcv(_sample_ohlcv())
+    entries = detect_sweep_reversal_entries(
+        h, judas, obs, [], {"state": "discount"}, "bullish",
+    )
+    assert entries
+    f = entries[0]["factors"]
+    assert f["bpr_overlap"] is False
+    assert f["ifvg_overlap"] is False
