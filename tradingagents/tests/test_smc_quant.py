@@ -1687,3 +1687,41 @@ def test_displacement_fields_present_on_every_event():
     for d in out:
         assert d["strength"] in {"extreme", "strong", "normal", "body_only"}
         assert "atr_multiple" in d
+
+
+def test_killzone_classifier_returns_per_market_buckets():
+    """§3.9: each market gets its own killzone label + weight."""
+    from smc_quant import classify_killzone
+    # TW 09:30 → tw_open
+    tw_idx = pd.DatetimeIndex([pd.Timestamp("2026-01-05 09:30")])  # local TW time
+    tw_df = pd.DataFrame([[1,1,1,1,1]], columns=["Open","High","Low","Close","Volume"], index=tw_idx)
+    tw_df = normalize_ohlcv(tw_df)
+    out_tw = classify_killzone(tw_df, "tw")
+    assert out_tw["zone"] == "tw_open"
+    assert out_tw["weight"] > 1.0
+    # Crypto London 08:00 UTC → london_killzone
+    crypto_idx = pd.DatetimeIndex([pd.Timestamp("2026-01-05 08:00")])
+    crypto_df = pd.DataFrame([[1,1,1,1,1]], columns=["Open","High","Low","Close","Volume"], index=crypto_idx)
+    crypto_df = normalize_ohlcv(crypto_df)
+    out_c = classify_killzone(crypto_df, "crypto")
+    assert out_c["zone"] == "london_killzone"
+    assert out_c["weight"] >= 1.4
+
+
+def test_killzone_classifier_returns_quiet_outside_session():
+    from smc_quant import classify_killzone
+    idx = pd.DatetimeIndex([pd.Timestamp("2026-01-05 20:00")])
+    df = pd.DataFrame([[1,1,1,1,1]], columns=["Open","High","Low","Close","Volume"], index=idx)
+    df = normalize_ohlcv(df)
+    out = classify_killzone(df, "crypto")
+    assert out["zone"] in {"crypto_quiet", "ny_killzone"}
+
+
+def test_build_smc_analysis_attaches_killzone_zone_field():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "BTCUSDT",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    sess = result["concepts"]["sessions"]
+    assert "zone" in sess
+    assert "weight" in sess

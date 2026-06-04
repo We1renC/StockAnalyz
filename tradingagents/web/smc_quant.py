@@ -904,6 +904,56 @@ def previous_levels(df: pd.DataFrame) -> dict:
     return res
 
 
+def classify_killzone(df: pd.DataFrame, market: str) -> dict:
+    """§3.9 — fine-grained killzone classification per market.
+
+    For TradFi the killzones map to market opens (TW 09:00-10:00,
+    US 09:30-10:30). For crypto we split the 24h cycle into Asia /
+    London / NY killzones plus the NY 10–11 Silver-Bullet window,
+    each weighted per the design doc's volatility profile.
+    """
+    if df is None or len(df) == 0:
+        return {"zone": "closed", "weight": 0.0}
+    ts = pd.Timestamp(df.index[-1])
+    # TW / US assume local exchange time (matching session_state); crypto uses UTC.
+    if market in ("tw", "us"):
+        local_ts = ts
+    else:
+        try:
+            local_ts = ts.tz_localize("UTC") if ts.tz is None else ts.tz_convert("UTC")
+        except Exception:
+            local_ts = ts
+    minute = local_ts.hour * 60 + local_ts.minute
+    if market == "tw":
+        if 9 * 60 <= minute <= 10 * 60:
+            return {"zone": "tw_open", "weight": 1.5}
+        if 13 * 60 <= minute <= 13 * 60 + 30:
+            return {"zone": "tw_close", "weight": 1.2}
+        if 9 * 60 <= minute <= 13 * 60 + 30:
+            return {"zone": "tw_session", "weight": 1.0}
+        return {"zone": "closed", "weight": 0.0}
+    if market == "us":
+        if 14 * 60 + 30 <= minute <= 15 * 60 + 30:
+            return {"zone": "ny_open", "weight": 1.5}
+        if 19 * 60 + 30 <= minute <= 21 * 60:
+            return {"zone": "ny_close", "weight": 1.2}
+        if 14 * 60 + 30 <= minute <= 21 * 60:
+            return {"zone": "us_session", "weight": 1.0}
+        return {"zone": "closed", "weight": 0.0}
+    # Crypto: 24h cycle in UTC
+    if 0 <= minute < 6 * 60:
+        return {"zone": "asia_session", "weight": 0.8}
+    if 6 * 60 <= minute <= 10 * 60:
+        return {"zone": "london_killzone", "weight": 1.5}
+    if 13 * 60 <= minute <= 14 * 60:
+        return {"zone": "ny_open_killzone", "weight": 1.5}
+    if 14 * 60 < minute <= 15 * 60:
+        return {"zone": "ny_silver_bullet", "weight": 1.4}
+    if 15 * 60 < minute <= 17 * 60:
+        return {"zone": "ny_killzone", "weight": 1.2}
+    return {"zone": "crypto_quiet", "weight": 0.7}
+
+
 def session_state(df: pd.DataFrame, symbol: str) -> dict:
     if len(df) == 0:
         return {}
@@ -4401,6 +4451,10 @@ def build_smc_analysis(
                     "daily_boundary": "utc_00"}
     weekend_state = is_weekend_illiquid(h, market=market)
     session = session_state(h, symbol)
+    # §3.9 — overlay fine-grained killzone label + per-zone weight so
+    # the §5.2 scorer and UI can tier "NY open" above "Asia quiet".
+    killzone_detail = classify_killzone(h, market)
+    session = {**session, **killzone_detail}
     judas_events = detect_judas_swings(h, structure, liquidity, displacements, symbol)
     smt_events = detect_smt_divergence(h, correlated, swings)
     sweep_reversal_entries = detect_sweep_reversal_entries(
