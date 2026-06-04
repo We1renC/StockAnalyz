@@ -605,6 +605,14 @@ def detect_liquidity(df: pd.DataFrame, swings: list[dict], cfg: SMCConfig) -> li
                 if kind == "low" and float(row["low"]) < level and float(row["close"]) > level:
                     swept = j
                     break
+            touches = len(cluster)
+            # §3.5 Equal Highs / Equal Lows tag: ≥2 same-side swings cluster
+            # within the tolerance ⇒ explicit EQH / EQL marker for chart UI
+            # and the DOL prioritiser. ≥3 touches escalates to "strong".
+            eq_tag = ("EQH" if kind == "high" else "EQL") if touches >= 2 else None
+            tier = "strong" if touches >= 3 else ("weak" if touches >= 2 else None)
+            levels_seen = sorted(round(float(x["level"]), 4) for x in cluster)
+            level_dispersion = (max(levels_seen) - min(levels_seen)) if levels_seen else 0.0
             out.append(
                 {
                     "type": "BSL" if kind == "high" else "SSL",
@@ -612,9 +620,12 @@ def detect_liquidity(df: pd.DataFrame, swings: list[dict], cfg: SMCConfig) -> li
                     "level": round(level, 4),
                     "start_index": min(x["index"] for x in cluster),
                     "end_index": end_index,
-                    "touches": len(cluster),
+                    "touches": touches,
                     "swept_index": swept,
                     "swept": swept is not None,
+                    "equal_tag": eq_tag,
+                    "equal_tier": tier,
+                    "level_dispersion": round(level_dispersion, 4),
                     "time": _record_time(df.index[end_index]),
                     "time_unix": _ts_value(df.index[end_index]),
                     "swept_time_unix": _ts_value(df.index[swept]) if swept is not None else None,

@@ -1863,3 +1863,19 @@ def test_sweep_reversal_entry_picks_up_premium_killzone_factor():
     )
     assert entries
     assert entries[0]["factors"]["killzone_premium"] is True
+
+
+def test_liquidity_records_carry_equal_tag_and_tier():
+    """§3.5: clusters ≥2 touches expose EQH/EQL tag; ≥3 escalates to strong."""
+    cfg = SMCConfig(swing_length=2, internal_swing_length=2)
+    h = normalize_ohlcv(_sample_ohlcv())
+    swings = detect_swings(h, cfg.swing_length)
+    liqs = detect_liquidity(h, swings, cfg)
+    for l in liqs:
+        assert "equal_tag" in l and "equal_tier" in l
+        if l["touches"] >= 2:
+            assert l["equal_tag"] in {"EQH", "EQL"}
+            assert l["equal_tier"] in {"weak", "strong"}
+        else:
+            assert l["equal_tag"] is None
+        assert l["level_dispersion"] >= 0
