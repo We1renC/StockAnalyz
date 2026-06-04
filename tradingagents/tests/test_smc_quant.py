@@ -3960,3 +3960,38 @@ def test_smc_morning_briefing_empty_analyses_returns_empty_rows():
     out = smc_morning_briefing({})
     assert out["rows"] == []
     assert out["headline_count"] == 0
+
+
+def test_reference_pivot_swings_finds_obvious_pivot():
+    """§10.4: textbook pivot detector — middle bar's high > 2 left + 2 right."""
+    from smc_quant import reference_pivot_swings
+    rows = [
+        (10, 10, 9, 9.5, 1),
+        (9.5, 10, 9, 9.5, 1),
+        (9.5, 12, 9.5, 11, 1),
+        (11, 11, 10, 10.5, 1),
+        (10.5, 10.5, 8, 8.5, 1),
+    ]
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(len(rows))]
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    pivots = reference_pivot_swings(df, left=2, right=2)
+    highs = [p for p in pivots if p["type"] == "high"]
+    assert any(p["index"] == 2 and p["level"] == 12.0 for p in highs)
+
+
+def test_cross_validate_swing_detection_aligned_on_same_input():
+    """§10.4: detect_swings should largely overlap with reference pivots."""
+    from smc_quant import cross_validate_swing_detection
+    df = normalize_ohlcv(_sample_ohlcv())
+    primary = detect_swings(df, swing_length=2)
+    out = cross_validate_swing_detection(df, primary, left=2, right=2, index_tolerance=1)
+    assert out["status"] in {"aligned", "drifting"}
+    assert out["iou"] >= 0.5
+
+
+def test_cross_validate_swing_detection_divergent_when_primary_empty():
+    from smc_quant import cross_validate_swing_detection
+    df = normalize_ohlcv(_sample_ohlcv())
+    out = cross_validate_swing_detection(df, [], left=2, right=2)
+    assert out["status"] == "divergent"
+    assert out["iou"] == 0.0

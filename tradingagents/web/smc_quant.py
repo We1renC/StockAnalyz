@@ -5171,6 +5171,84 @@ DAILY_REPORT_SCHEMA_VERSION = 1
 CLOSED_LOOP_SCHEMA_VERSION = 1
 
 
+def reference_pivot_swings(df: pd.DataFrame, *, left: int = 2, right: int = 2) -> list[dict]:
+    """§10.4 — reference (textbook) pivot-high/low detector for cross-check.
+
+    The simplest deterministic SMC swing definition is: a bar is a
+    swing-high iff its high is strictly greater than the ``left``
+    preceding highs AND the ``right`` following highs. Mirrored for
+    swing-low. Used solely to cross-validate ``detect_swings`` and
+    catch drift from spec.
+    """
+    out: list[dict] = []
+    if df is None or len(df) < left + right + 1:
+        return out
+    highs = df["high"].astype(float).values
+    lows = df["low"].astype(float).values
+    n = len(df)
+    for i in range(left, n - right):
+        h_window = highs[i - left : i + right + 1]
+        l_window = lows[i - left : i + right + 1]
+        if highs[i] == max(h_window) and list(h_window).count(highs[i]) == 1:
+            out.append({"index": i, "type": "high", "level": float(highs[i])})
+        if lows[i] == min(l_window) and list(l_window).count(lows[i]) == 1:
+            out.append({"index": i, "type": "low", "level": float(lows[i])})
+    return out
+
+
+def cross_validate_swing_detection(
+    df: pd.DataFrame,
+    primary_swings: list[dict],
+    *,
+    left: int = 2,
+    right: int = 2,
+    index_tolerance: int = 0,
+) -> dict:
+    """§10.4 — compare ``detect_swings`` output against reference pivots.
+
+    Reports overlap (intersection over union by (type, index) keys),
+    primary-only and reference-only counts, and a ``status``:
+      • ``aligned`` — IoU ≥ 0.85
+      • ``drifting`` — 0.5 ≤ IoU < 0.85
+      • ``divergent`` — IoU < 0.5
+
+    ``index_tolerance`` allows ±N-bar fuzzy matching for noisy data.
+    """
+    ref = reference_pivot_swings(df, left=left, right=right)
+    def _key(s: dict, off: int = 0) -> tuple[str, int]:
+        return (s["type"], int(s.get("index", -1)) + off)
+    ref_keys = {_key(s) for s in ref}
+    primary_keys = {_key(s) for s in primary_swings or []}
+    if index_tolerance > 0:
+        # Expand ref keys with tolerance window so primary in [-tol, +tol] matches.
+        expanded = set()
+        for typ, idx in ref_keys:
+            for off in range(-index_tolerance, index_tolerance + 1):
+                expanded.add((typ, idx + off))
+        ref_keys_match = expanded
+    else:
+        ref_keys_match = ref_keys
+    overlap = primary_keys & ref_keys_match
+    union = primary_keys | ref_keys
+    iou = (len(overlap) / len(union)) if union else 1.0
+    if iou >= 0.85:
+        status = "aligned"
+    elif iou >= 0.5:
+        status = "drifting"
+    else:
+        status = "divergent"
+    return {
+        "status": status,
+        "iou": round(iou, 3),
+        "reference_count": len(ref_keys),
+        "primary_count": len(primary_keys),
+        "overlap": len(overlap),
+        "primary_only": len(primary_keys - ref_keys_match),
+        "reference_only": len(ref_keys - primary_keys),
+        "params": {"left": left, "right": right, "tolerance": index_tolerance},
+    }
+
+
 def sharpe_ratio(returns: list[float], *, annualize: int = 252) -> dict:
     """§18.6 — annualised Sharpe ratio.
 
