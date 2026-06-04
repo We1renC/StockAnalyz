@@ -3245,6 +3245,91 @@ def build_chart_layers(
     return layers
 
 
+JOURNAL_ENTRY_SCHEMA_VERSION = 1
+
+
+def build_journal_entry(
+    trade_record: dict,
+    *,
+    rationale: str = "",
+    emotional_state: Optional[str] = None,
+    screenshot_path: Optional[str] = None,
+    source: str = "paper",
+) -> dict:
+    """§10.5 — paper / forward-trade journal entry.
+
+    Carries everything an auditor needs: ``trade_id``, confluence score
+    and factors at entry, the human rationale, the trader's emotional
+    state (the design doc explicitly logs this), and an Appendix-A C10
+    chart screenshot path. ``source`` is one of ``paper`` / ``live`` —
+    backtest records keep using the §18.2 trade ledger directly.
+    """
+    return {
+        "schema_version": JOURNAL_ENTRY_SCHEMA_VERSION,
+        "trade_id": trade_record.get("trade_id"),
+        "symbol": trade_record.get("symbol"),
+        "market": trade_record.get("market"),
+        "model": trade_record.get("model"),
+        "direction": trade_record.get("direction"),
+        "entry_time": trade_record.get("entry_time"),
+        "exit_time": trade_record.get("exit_time"),
+        "entry_price": trade_record.get("entry_price"),
+        "stop": trade_record.get("stop"),
+        "target": trade_record.get("target"),
+        "confluence_score": trade_record.get("confluence_score"),
+        "factors": trade_record.get("factors", {}),
+        "crypto_factors": trade_record.get("crypto_factors", {}),
+        "outcome": trade_record.get("outcome"),
+        "r_multiple": trade_record.get("r_multiple"),
+        "mae": trade_record.get("mae"),
+        "mfe": trade_record.get("mfe"),
+        "dol_kind": trade_record.get("dol_kind"),
+        "rationale": rationale,
+        "emotional_state": emotional_state,
+        "screenshot_path": screenshot_path,
+        "source": source,
+    }
+
+
+def edge_decay_check(
+    backtest_records: list[dict],
+    live_records: list[dict],
+    *,
+    min_live_samples: int = 20,
+    decay_threshold: float = 0.5,
+) -> dict:
+    """§18.6 last bullet — edge-decay monitoring.
+
+    Compares ``compute_expectancy`` over the backtest sample against the
+    live / paper sample. Flags ``review_required=True`` if the live
+    expected_R drops below ``decay_threshold`` × backtest expected_R
+    AND has enough live samples to trust the comparison.
+    """
+    bt_exp = compute_expectancy(backtest_records).get("expected_R", 0.0)
+    live_exp_block = compute_expectancy(live_records)
+    live_exp = live_exp_block.get("expected_R", 0.0)
+    live_n = live_exp_block.get("sample_size", 0)
+    if live_n < min_live_samples:
+        return {
+            "backtest_expected_R": bt_exp,
+            "live_expected_R": live_exp,
+            "live_sample_size": live_n,
+            "review_required": False,
+            "status": "insufficient_live_samples",
+        }
+    ratio = (live_exp / bt_exp) if bt_exp not in (0, 0.0) else float("inf") if live_exp > 0 else 0
+    review = bt_exp > 0 and live_exp <= decay_threshold * bt_exp
+    return {
+        "backtest_expected_R": round(bt_exp, 4),
+        "live_expected_R": round(live_exp, 4),
+        "live_sample_size": live_n,
+        "ratio": round(ratio, 3) if ratio not in (float("inf"),) else None,
+        "decay_threshold": decay_threshold,
+        "review_required": bool(review),
+        "status": "decay_detected" if review else "stable",
+    }
+
+
 def walk_forward_evaluate(
     trade_records: list[dict],
     *,

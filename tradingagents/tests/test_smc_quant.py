@@ -1250,3 +1250,51 @@ def test_build_smc_analysis_routes_utc_pdh_for_crypto():
     assert "weekend_illiquidity" in result["concepts"]
     # Crypto branch should annotate the boundary marker
     assert prev.get("daily_boundary") in {"utc_00", None}
+
+
+def test_build_journal_entry_carries_rationale_and_features():
+    """§10.5: journal entry must carry rationale + emotional state + chart path."""
+    from smc_quant import build_journal_entry
+    trade = {
+        "trade_id": "BTCUSDT:001", "symbol": "BTCUSDT", "market": "crypto",
+        "model": "sweep_reversal", "direction": 1,
+        "entry_time": "2026-01-02T10:30Z", "exit_time": "2026-01-02T12:00Z",
+        "entry_price": 50000, "stop": 49500, "target": 51500,
+        "confluence_score": 10, "factors": {"htf_bias_aligned": True},
+        "outcome": "target", "r_multiple": 3.0, "mae": -0.3, "mfe": 3.2,
+        "dol_kind": "BSL",
+    }
+    j = build_journal_entry(trade, rationale="Asia low swept, NY CHoCH",
+                            emotional_state="calm", screenshot_path="/tmp/c10.png")
+    assert j["schema_version"] == 1
+    assert j["rationale"] == "Asia low swept, NY CHoCH"
+    assert j["emotional_state"] == "calm"
+    assert j["screenshot_path"] == "/tmp/c10.png"
+    assert j["source"] == "paper"  # default
+    assert j["confluence_score"] == 10
+
+
+def test_edge_decay_check_flags_review_when_live_lags_backtest():
+    """§18.6: live expected_R below 50% of backtest → review_required."""
+    from smc_quant import edge_decay_check
+    bt = [{"r_multiple": 2.0}] * 20 + [{"r_multiple": -1.0}] * 10  # +1R expectancy
+    live = [{"r_multiple": 0.2}] * 25  # weak +0.2R live
+    out = edge_decay_check(bt, live, min_live_samples=20, decay_threshold=0.5)
+    assert out["review_required"] is True
+    assert out["status"] == "decay_detected"
+
+
+def test_edge_decay_check_returns_stable_when_live_meets_expectations():
+    from smc_quant import edge_decay_check
+    bt = [{"r_multiple": 2.0}] * 20 + [{"r_multiple": -1.0}] * 10
+    live = [{"r_multiple": 2.0}] * 20 + [{"r_multiple": -1.0}] * 10
+    out = edge_decay_check(bt, live, min_live_samples=20)
+    assert out["review_required"] is False
+    assert out["status"] == "stable"
+
+
+def test_edge_decay_check_skips_when_live_sample_too_small():
+    from smc_quant import edge_decay_check
+    out = edge_decay_check([{"r_multiple": 2.0}] * 30, [{"r_multiple": 0.1}] * 5)
+    assert out["status"] == "insufficient_live_samples"
+    assert out["review_required"] is False
