@@ -2422,3 +2422,39 @@ def test_nearest_poi_proximity_empty_matrix():
     from smc_quant import nearest_poi_proximity
     out = nearest_poi_proximity({}, direction=1)
     assert out["has_poi_within"] is False
+
+
+def test_paper_trading_report_passes_when_thresholds_met():
+    """§10.5: ≥50 paper trades + healthy expectancy → ready_for_live True."""
+    from smc_quant import paper_trading_report
+    bt_records = [{"r_multiple": 2.0}] * 40 + [{"r_multiple": -1.0}] * 20
+    paper_journal = []
+    for i in range(50):
+        r = 2.0 if i % 5 != 0 else -1.0
+        paper_journal.append({
+            "trade_id": f"P{i}", "r_multiple": r,
+            "emotional_state": "calm",
+            "factors": {"htf_bias_aligned": True},
+        })
+    out = paper_trading_report(paper_journal, bt_records, min_paper_trades=50)
+    assert out["sample_size"] == 50
+    assert out["sample_ready"] is True
+    assert out["ready_for_live"] is True
+    assert out["expectancy"]["sample_size"] == 50
+
+
+def test_paper_trading_report_blocked_when_too_few_trades():
+    from smc_quant import paper_trading_report
+    out = paper_trading_report([{"r_multiple": 2.0}], [{"r_multiple": 2.0}] * 20)
+    assert out["sample_ready"] is False
+    assert out["ready_for_live"] is False
+
+
+def test_paper_trading_report_blocked_when_edge_decayed():
+    """If paper expectancy is way below backtest → ready_for_live False."""
+    from smc_quant import paper_trading_report
+    bt = [{"r_multiple": 3.0}] * 30 + [{"r_multiple": -1.0}] * 10
+    paper = [{"r_multiple": 0.1, "emotional_state": "calm"}] * 50
+    out = paper_trading_report(paper, bt, min_paper_trades=20)
+    assert out["edge_decay"]["status"] == "decay_detected"
+    assert out["ready_for_live"] is False

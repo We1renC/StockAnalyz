@@ -4541,6 +4541,56 @@ def build_journal_entry(
     }
 
 
+def paper_trading_report(
+    journal_entries: list[dict],
+    backtest_records: list[dict],
+    *,
+    min_paper_trades: int = 50,
+) -> dict:
+    """§10.5 — single-call paper-trading audit + go/no-go verdict.
+
+    Combines:
+      • emotional summary  (journal_emotional_summary)
+      • expectancy & R distribution (compute_expectancy + r_multiple_distribution)
+      • edge decay vs backtest (edge_decay_check)
+      • sample-count gate (≥ ``min_paper_trades`` per §10.5 baseline)
+
+    Verdict ``ready_for_live``:
+      • Sufficient paper samples
+      • Non-empty backtest baseline
+      • No edge decay flagged
+    """
+    sample_size = len(journal_entries or [])
+    paper_records = [
+        {
+            "r_multiple": j.get("r_multiple") or 0,
+            "factors": j.get("factors") or {},
+            "crypto_factors": j.get("crypto_factors") or {},
+        }
+        for j in (journal_entries or [])
+    ]
+    expectancy = compute_expectancy(paper_records)
+    distribution = r_multiple_distribution(paper_records)
+    emotional = journal_emotional_summary(journal_entries or [])
+    decay = edge_decay_check(backtest_records or [], paper_records)
+    sample_ready = sample_size >= min_paper_trades
+    ready = bool(
+        sample_ready
+        and (backtest_records or [])
+        and decay.get("status") != "decay_detected"
+    )
+    return {
+        "sample_size": sample_size,
+        "min_paper_trades": min_paper_trades,
+        "expectancy": expectancy,
+        "distribution": distribution,
+        "emotional": emotional,
+        "edge_decay": decay,
+        "sample_ready": sample_ready,
+        "ready_for_live": ready,
+    }
+
+
 def edge_decay_check(
     backtest_records: list[dict],
     live_records: list[dict],
