@@ -2340,3 +2340,40 @@ def test_propose_strategy_yaml_now_includes_r_distribution_and_clusters():
     assert "clusters" in out
     assert out["r_distribution"]["sample_size"] == 40
     assert "sweep_reversal / us" in out["clusters"]["clusters"]
+
+
+def test_pd_array_matrix_consolidates_all_poi_kinds_with_distance_sort():
+    """§3.10: PD-array matrix lists every POI kind in distance-sorted order."""
+    from smc_quant import build_pd_array_matrix
+    out = build_pd_array_matrix(
+        current_price=100.0,
+        order_blocks=[{"direction": 1, "top": 102, "bottom": 99, "status": "unmitigated", "grade": "A"}],
+        mitigation_blocks=[],
+        breaker_blocks=[{"direction": -1, "top": 110, "bottom": 108}],
+        fvgs=[{"direction": 1, "top": 105, "bottom": 104, "mitigated": False}],
+        inverse_fvgs=[],
+        balanced_price_ranges=[],
+        volume_imbalances=[],
+        liquidity=[{"direction": -1, "type": "BSL", "level": 115, "swept": False,
+                    "equal_tag": "EQH", "liquidity_kind": "external"}],
+    )
+    kinds = [r["kind"] for r in out["rows"]]
+    assert "order_block" in kinds and "breaker_block" in kinds
+    assert "fvg" in kinds and "liquidity" in kinds
+    # Distance-sorted ascending
+    distances = [r["distance"] for r in out["rows"]]
+    assert distances == sorted(distances)
+    # Each row knows whether it's above or below price
+    for r in out["rows"]:
+        assert r["side"] in {"above", "below"}
+
+
+def test_build_smc_analysis_exposes_pd_array_matrix():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    matrix = result["concepts"]["pd_array_matrix"]
+    assert "rows" in matrix
+    assert "current_price" in matrix
+    assert matrix["above_count"] + matrix["below_count"] == matrix["total"]

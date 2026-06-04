@@ -372,6 +372,77 @@ def detect_fvgs(df: pd.DataFrame, displacements: list[dict]) -> list[dict]:
     return out
 
 
+def build_pd_array_matrix(
+    *,
+    current_price: float,
+    order_blocks: list[dict],
+    mitigation_blocks: list[dict],
+    breaker_blocks: list[dict],
+    fvgs: list[dict],
+    inverse_fvgs: list[dict],
+    balanced_price_ranges: list[dict],
+    volume_imbalances: list[dict],
+    liquidity: list[dict],
+) -> dict:
+    """§3.10 — single PD-array matrix snapshot.
+
+    Collapses every Premium / Discount Array (POI) the engine knows into
+    a unified table sorted by distance from price. Each row says what
+    kind of POI it is, the direction, the price band, and whether it's
+    currently *above* or *below* price (the side property).
+    """
+    rows: list[dict] = []
+
+    def _band(direction: int, top: float, bottom: float, kind: str, **extra) -> dict:
+        side = "above" if (top + bottom) / 2 > current_price else "below"
+        mid = (top + bottom) / 2
+        dist = abs(mid - current_price)
+        dist_pct = (dist / current_price * 100) if current_price > 0 else 0.0
+        row = {
+            "kind": kind, "direction": int(direction),
+            "top": round(float(top), 4), "bottom": round(float(bottom), 4),
+            "mid": round(mid, 4),
+            "side": side, "distance": round(dist, 4),
+            "distance_pct": round(dist_pct, 3),
+        }
+        row.update(extra)
+        return row
+
+    for ob in (order_blocks or []):
+        rows.append(_band(ob.get("direction", 0), ob["top"], ob["bottom"], "order_block",
+                          status=ob.get("status"), grade=ob.get("grade")))
+    for m in (mitigation_blocks or []):
+        rows.append(_band(m.get("direction", 0), m["top"], m["bottom"], "mitigation_block",
+                          grade=m.get("grade")))
+    for b in (breaker_blocks or []):
+        rows.append(_band(b.get("direction", 0), b["top"], b["bottom"], "breaker_block"))
+    for f in (fvgs or []):
+        if f.get("mitigated"):
+            continue
+        rows.append(_band(f.get("direction", 0), f["top"], f["bottom"], "fvg"))
+    for ifvg in (inverse_fvgs or []):
+        rows.append(_band(ifvg.get("direction", 0), ifvg["top"], ifvg["bottom"], "inverse_fvg"))
+    for bpr in (balanced_price_ranges or []):
+        rows.append(_band(bpr.get("direction_a", 0), bpr["top"], bpr["bottom"], "balanced_price_range"))
+    for vi in (volume_imbalances or []):
+        rows.append(_band(vi.get("direction", 0), vi["top"], vi["bottom"], "volume_imbalance"))
+    for liq in (liquidity or []):
+        if liq.get("swept"):
+            continue
+        level = float(liq.get("level", 0))
+        rows.append(_band(liq.get("direction", 0), level, level, "liquidity",
+                          equal_tag=liq.get("equal_tag"), liquidity_kind=liq.get("liquidity_kind"),
+                          subkind=liq.get("type")))
+    rows.sort(key=lambda r: r["distance"])
+    return {
+        "current_price": round(float(current_price), 4),
+        "rows": rows,
+        "above_count": sum(1 for r in rows if r["side"] == "above"),
+        "below_count": sum(1 for r in rows if r["side"] == "below"),
+        "total": len(rows),
+    }
+
+
 def track_equilibrium_reactions(
     df: pd.DataFrame, pd_zone: dict, *, lookback: int = 30, tol_pct: float = 0.3,
 ) -> dict:
@@ -5007,6 +5078,17 @@ def build_smc_analysis(
     pd_zone = premium_discount(h, swings)
     liquidity = classify_liquidity_internal_external(liquidity, pd_zone)
     eq_reactions = track_equilibrium_reactions(h, pd_zone)
+    pd_array_matrix = build_pd_array_matrix(
+        current_price=float(h["close"].iloc[-1]) if len(h) else 0.0,
+        order_blocks=obs,
+        mitigation_blocks=mitigation_blocks,
+        breaker_blocks=breaker_blocks,
+        fvgs=fvgs,
+        inverse_fvgs=inverse_fvgs,
+        balanced_price_ranges=balanced_price_ranges,
+        volume_imbalances=volume_imbalances,
+        liquidity=liquidity,
+    )
     if pd_zone:
         pd_zone = {**pd_zone, "equilibrium_reactions": eq_reactions}
     bias = _latest_bias(structure)
@@ -5166,6 +5248,7 @@ def build_smc_analysis(
             "previous_levels": prev,
             "sessions": session,
             "weekend_illiquidity": weekend_state,
+            "pd_array_matrix": pd_array_matrix,
             "round_number_magnets": round_magnets,
             "retracements": retracement,
             "displacement": displacements[-20:],
