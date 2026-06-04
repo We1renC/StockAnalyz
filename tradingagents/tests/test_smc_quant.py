@@ -2619,3 +2619,50 @@ def test_sanitize_for_json_passes_through_safe_primitives():
     assert sanitize_for_json("ok") == "ok"
     assert sanitize_for_json(True) is True
     assert sanitize_for_json(42) == 42
+
+
+def test_sweep_reversal_uses_atr_adaptive_stop_when_provided():
+    """§17.6: providing atr+vol_bucket → stop is widened past structural if ATR is larger."""
+    from smc_quant import detect_sweep_reversal_entries
+    judas = [{
+        "judas": 1, "real_direction": 1, "fakeout_direction": -1,
+        "sweep_type": "SSL", "sweep_level": 9.0,
+        "sweep_index": 4, "confirm_index": 6, "confirm_time": None,
+        "false_move_high": 10.5, "false_move_low": 8.8,
+        "displacement_confirmed": True, "displacement_strength": "normal",
+        "session_at_sweep": None, "killzone": False, "sweep_time": None,
+    }]
+    obs = [{
+        "index": 5, "direction": 1, "top": 10.0, "bottom": 9.0,
+        "refined_entry": 9.5, "status": "unmitigated", "grade": "B",
+        "displacement_confirmed": True,
+    }]
+    h = normalize_ohlcv(_sample_ohlcv())
+    # With "extreme" bucket and ATR=1 → ATR distance is 2.5; structural ~ 0.7
+    out = detect_sweep_reversal_entries(
+        h, judas, obs, [], {"state": "discount"}, "bullish",
+        atr_value=1.0, vol_bucket="extreme",
+    )
+    assert out
+    e = out[0]
+    # ATR-widened stop sits below the structural one
+    assert e["stop"] <= 8.8
+    assert e["stop_rule"] in {"atr_dominant", "max(atr,structural)"}
+
+
+def test_sweep_reversal_falls_back_when_no_atr_provided():
+    from smc_quant import detect_sweep_reversal_entries
+    judas = [{
+        "judas": 1, "real_direction": 1, "fakeout_direction": -1,
+        "sweep_type": "SSL", "sweep_level": 9.0,
+        "sweep_index": 4, "confirm_index": 6, "confirm_time": None,
+        "false_move_high": 10.5, "false_move_low": 8.8,
+        "displacement_confirmed": True, "displacement_strength": "normal",
+        "session_at_sweep": None, "killzone": False, "sweep_time": None,
+    }]
+    obs = [{"index": 5, "direction": 1, "top": 10.0, "bottom": 9.0,
+            "refined_entry": 9.5, "status": "unmitigated", "grade": "B",
+            "displacement_confirmed": True}]
+    h = normalize_ohlcv(_sample_ohlcv())
+    entries = detect_sweep_reversal_entries(h, judas, obs, [], {"state": "discount"}, "bullish")
+    assert entries[0]["stop_rule"] == "structural_only"

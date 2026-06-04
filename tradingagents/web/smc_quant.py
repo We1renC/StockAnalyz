@@ -2290,6 +2290,8 @@ def detect_sweep_reversal_entries(
     threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
     balanced_price_ranges: Optional[list[dict]] = None,
     inverse_fvgs: Optional[list[dict]] = None,
+    atr_value: Optional[float] = None,
+    vol_bucket: Optional[str] = None,
 ) -> list[dict]:
     """§5.1 Entry Model 1 — Liquidity Sweep Reversal (Sweep + CHoCH).
 
@@ -2346,9 +2348,17 @@ def detect_sweep_reversal_entries(
             poi_top, poi_bottom = float(fvg["top"]), float(fvg["bottom"])
         # Stop just beyond the structural invalidation (sweep extreme).
         if real_dir == 1:
-            stop = float(ev["false_move_low"]) - max(0.0, (entry - float(ev["false_move_low"])) * 0.05)
+            structural_stop = float(ev["false_move_low"]) - max(0.0, (entry - float(ev["false_move_low"])) * 0.05)
         else:
-            stop = float(ev["false_move_high"]) + max(0.0, (float(ev["false_move_high"]) - entry) * 0.05)
+            structural_stop = float(ev["false_move_high"]) + max(0.0, (float(ev["false_move_high"]) - entry) * 0.05)
+        if atr_value and vol_bucket:
+            stop_dict = atr_adaptive_stop(real_dir, entry, atr_value, vol_bucket,
+                                          structural_stop=structural_stop)
+            stop = stop_dict["stop"]
+            stop_rule = stop_dict["rule"]
+        else:
+            stop = structural_stop
+            stop_rule = "structural_only"
         risk = abs(entry - stop)
         if risk <= 0:
             continue
@@ -2424,6 +2434,7 @@ def detect_sweep_reversal_entries(
                 "risk": round(risk, 4),
                 "rr": round(rr, 2),
                 "poi_kind": poi_kind,
+                "stop_rule": stop_rule,
                 "poi_top": round(poi_top, 4),
                 "poi_bottom": round(poi_bottom, 4),
                 "judas_index": confirm_idx,
@@ -5345,6 +5356,8 @@ def build_smc_analysis(
         weights=weights,
         balanced_price_ranges=balanced_price_ranges,
         inverse_fvgs=inverse_fvgs,
+        atr_value=(adaptive_info or {}).get("atr"),
+        vol_bucket=(adaptive_info or {}).get("bucket"),
     )
     continuation_entries = detect_continuation_entries(
         h, structure, obs, fvgs, pd_zone, bias, session, weights=weights,
