@@ -2677,3 +2677,33 @@ def test_dol_pdh_carries_already_broken_flag_when_price_pierced():
     )
     assert out is not None and out["target_kind"] == "PDH"
     assert out.get("already_broken") is True
+
+
+def test_dol_already_broken_pdh_loses_to_unbroken_internal():
+    """§3.5: PDH already broken (priority 1+0.5=1.5) loses to a strong-tier
+    internal pool (priority 2-1=1)."""
+    from smc_quant import resolve_dol_target
+    prev_levels = {"previous_high": 105, "previous_low": 90, "broken_high": True}
+    pools = [
+        {"type": "BSL", "level": 108, "swept": False, "end_index": 5,
+         "liquidity_kind": "internal", "equal_tag": "EQH", "equal_tier": "strong"},
+    ]
+    out = resolve_dol_target(1, current_price=100, liquidity=pools, prev_levels=prev_levels)
+    # Broken PDH (1.5) > strong internal (1) → internal wins
+    assert out["target_kind"] != "PDH"
+    assert out["target_price"] == 108
+
+
+def test_dol_intact_pdh_still_beats_strong_internal():
+    """§3.5: unbroken PDH (priority 1) ties with strong internal (1) but
+    takes the closer-distance candidate as tiebreak."""
+    from smc_quant import resolve_dol_target
+    prev_levels = {"previous_high": 103, "previous_low": 90}
+    pools = [
+        {"type": "BSL", "level": 108, "swept": False, "end_index": 5,
+         "liquidity_kind": "internal", "equal_tag": "EQH", "equal_tier": "strong"},
+    ]
+    out = resolve_dol_target(1, current_price=100, liquidity=pools, prev_levels=prev_levels)
+    # PDH at 103 closer than internal at 108 → PDH wins
+    assert out["target_kind"] == "PDH"
+    assert out["target_price"] == 103

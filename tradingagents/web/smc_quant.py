@@ -2162,6 +2162,9 @@ def resolve_dol_target(
             bucket = max(0, bucket - 1)
         elif c.get("equal_tier") == "weak":
             bucket = max(0, bucket - 0.5)
+        # §3.5 — PDH/PDL that price has already pierced lose 0.5 priority.
+        if c.get("already_broken"):
+            bucket = bucket + 0.5
         return (bucket, c["distance"])
     candidates.sort(key=_sort_key)
     return candidates[0]
