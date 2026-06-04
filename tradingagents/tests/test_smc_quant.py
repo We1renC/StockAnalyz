@@ -2157,3 +2157,39 @@ def test_crypto_readiness_handles_empty_analysis():
     out = crypto_readiness_checklist({})
     assert out["ready_for_live"] is False
     assert out["score"] == 0
+
+
+def test_rule_enforcement_dashboard_reports_four_mandatory_numbers():
+    """§10.5: dashboard must output equity / daily buffer / DD buffer / active days."""
+    from smc_quant import rule_enforcement_dashboard
+    out = rule_enforcement_dashboard(
+        account_equity=100_000,
+        daily_realized_pnl=-15_000,
+        max_drawdown=-20_000,
+        active_days_traded=7,
+    )
+    assert out["account_equity"] == 100_000
+    assert out["daily_loss_buffer"] == 50_000 - 15_000  # 35k remaining
+    assert out["max_drawdown_buffer"] == 50_000 - 20_000  # 30k remaining
+    assert out["active_days_traded"] == 7
+    assert out["headline"] == "LIVE"
+
+
+def test_rule_enforcement_dashboard_switches_to_defensive_when_profit_hit():
+    from smc_quant import rule_enforcement_dashboard
+    out = rule_enforcement_dashboard(
+        account_equity=180_000,
+        realized_profit_this_period=85_000,  # > +80k → defensive mode
+    )
+    assert out["defensive_mode"] is True
+    assert out["headline"] == "DEFENSIVE"
+
+
+def test_rule_enforcement_dashboard_locks_on_excess_daily_loss():
+    from smc_quant import rule_enforcement_dashboard
+    out = rule_enforcement_dashboard(
+        account_equity=100_000,
+        daily_realized_pnl=-60_000,  # exceeds daily floor → locked
+    )
+    assert out["locked"] is True
+    assert out["headline"] == "LOCKED"

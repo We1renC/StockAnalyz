@@ -4625,6 +4625,67 @@ def compute_expectancy(trade_records: list[dict]) -> dict:
     }
 
 
+def rule_enforcement_dashboard(
+    account_equity: float,
+    *,
+    daily_realized_pnl: float = 0.0,
+    max_drawdown: float = 0.0,
+    active_days_traded: int = 0,
+    daily_loss_limit: float = 50_000,
+    max_drawdown_limit: float = 50_000,
+    defensive_profit_trigger: float = 80_000,
+    realized_profit_this_period: float = 0.0,
+) -> dict:
+    """§10.5 — surface the **four mandatory numbers** that the rule
+    enforcement layer MUST print before any order can be sent:
+
+      1. current account equity
+      2. daily loss-limit buffer
+      3. max drawdown buffer
+      4. active days traded
+
+    Also encodes the team's existing rules:
+      • single-stock loss limit −5%
+      • overall loss limit −NT$50k → lock
+      • profit ≥ +NT$80k → defensive mode
+
+    Returns a dict that callers can render as a compliance dashboard.
+    """
+    snap = rule_enforcement_snapshot(
+        account_equity,
+        daily_realized_pnl=daily_realized_pnl,
+        max_drawdown=max_drawdown,
+        active_days_traded=active_days_traded,
+        daily_loss_limit=daily_loss_limit,
+        max_drawdown_limit=max_drawdown_limit,
+    )
+    defensive = bool(realized_profit_this_period >= defensive_profit_trigger)
+    daily_buffer = daily_loss_limit + daily_realized_pnl
+    drawdown_buffer = max_drawdown_limit - abs(max_drawdown)
+    single_stock_limit_pct = -5.0
+    headline = "LIVE"
+    if snap.get("locked"):
+        headline = "LOCKED"
+    elif defensive:
+        headline = "DEFENSIVE"
+    return {
+        # The four mandatory numbers, in the spec order.
+        "account_equity": round(float(account_equity), 2),
+        "daily_loss_buffer": round(float(daily_buffer), 2),
+        "max_drawdown_buffer": round(float(drawdown_buffer), 2),
+        "active_days_traded": int(active_days_traded),
+        # Existing team rules
+        "single_stock_loss_limit_pct": single_stock_limit_pct,
+        "defensive_profit_trigger": float(defensive_profit_trigger),
+        "realized_profit_this_period": float(realized_profit_this_period),
+        # Final headline state
+        "defensive_mode": defensive,
+        "locked": bool(snap.get("locked")),
+        "lock_reason": snap.get("lock_reason"),
+        "headline": headline,
+    }
+
+
 def rule_enforcement_snapshot(
     account_equity: float,
     daily_realized_pnl: float = 0,
