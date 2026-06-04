@@ -1398,3 +1398,28 @@ def test_build_crypto_overlay_routes_spot_and_cvd():
     assert "cvd_aggressive_flow" in overlay["factors"]
     # Negative weight applied to the warning factor
     assert overlay["weights"]["perp_led_warning"] < 0
+
+
+def test_chart_layers_include_fvg_extensions():
+    """§6.1: C3b / C3c / C3d new chart codes for IFVG / BPR / VI."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    layers = result["visualization"]["chart_layers"]
+    for code in ("C3b_inverse_fvgs", "C3c_balanced_price_ranges", "C3d_volume_imbalances"):
+        assert code in layers
+        assert "rects" in layers[code]
+
+
+def test_unicorn_pool_accepts_inverse_fvgs():
+    """§5.3 Unicorn POI pool should include IFVGs (direction flipped, treated as fresh)."""
+    from smc_quant import detect_unicorn_entries
+    breakers = [{"index": 5, "direction": 1, "top": 12.0, "bottom": 10.0}]
+    # Original FVG was bullish but inverted → IFVG direction == -1
+    inverse_fvgs = [{"index": 7, "direction": 1, "top": 12.5, "bottom": 11.0, "mid": 11.75,
+                     "mitigated": False, "block_type": "inverse_fvg", "displacement_confirmed": True}]
+    h = normalize_ohlcv(_sample_ohlcv())
+    entries = detect_unicorn_entries(h, breakers, inverse_fvgs, [], {"state": "discount"}, "bullish")
+    assert entries
+    assert entries[0]["model"] == "unicorn"

@@ -3308,6 +3308,9 @@ def build_chart_layers(
     judas_events: list[dict],
     smt_events: list[dict],
     entry_models_combined: list[dict],
+    inverse_fvgs: Optional[list[dict]] = None,
+    balanced_price_ranges: Optional[list[dict]] = None,
+    volume_imbalances: Optional[list[dict]] = None,
 ) -> dict:
     """§6.1 / Appendix A chart-layer annotations (C1–C12).
 
@@ -3446,6 +3449,46 @@ def build_chart_layers(
                 "dol_target": e.get("dol_target"),
             }
             for e in entry_models_combined
+        ],
+    }
+    # C3b Inverse FVG overlay — flipped rectangles, distinct fill
+    layers["C3b_inverse_fvgs"] = {
+        "kind": "rect_overlay",
+        "rects": [
+            {
+                "index": int(f["index"]), "time": f.get("time"),
+                "top": f["top"], "bottom": f["bottom"],
+                "direction": f["direction"],
+                "original_direction": f.get("original_direction"),
+                "block_type": "inverse_fvg",
+            }
+            for f in (inverse_fvgs or [])
+        ],
+    }
+    # C3c Balanced Price Range — two-FVG overlap rectangles
+    layers["C3c_balanced_price_ranges"] = {
+        "kind": "rect_overlay",
+        "rects": [
+            {
+                "index_a": b["index_a"], "index_b": b["index_b"],
+                "time": b.get("time"),
+                "top": b["top"], "bottom": b["bottom"], "mid": b["mid"],
+                "block_type": "balanced_price_range",
+            }
+            for b in (balanced_price_ranges or [])
+        ],
+    }
+    # C3d Volume Imbalance — narrow 2-bar magnet zones
+    layers["C3d_volume_imbalances"] = {
+        "kind": "rect_overlay",
+        "rects": [
+            {
+                "index": int(v["index"]), "time": v.get("time"),
+                "top": v["top"], "bottom": v["bottom"],
+                "direction": v["direction"],
+                "block_type": "volume_imbalance",
+            }
+            for v in (volume_imbalances or [])
         ],
     }
     # C12 SMT Divergence overlay — paired-asset divergence connector
@@ -4031,8 +4074,13 @@ def build_smc_analysis(
     ote_entries = detect_ote_entries(
         h, ote, obs, fvgs, pd_zone, bias, session, weights=weights,
     )
+    # §3.4 — feed Inverse FVGs into the Unicorn POI pool alongside fresh FVGs.
+    # IFVGs already carry flipped direction so they overlap breakers naturally.
+    _unicorn_fvg_pool = (fvgs or []) + [
+        {**i, "mitigated": False} for i in (inverse_fvgs or [])
+    ]
     unicorn_entries = detect_unicorn_entries(
-        h, breaker_blocks, fvgs, smt_events, pd_zone, bias, session, weights=weights,
+        h, breaker_blocks, _unicorn_fvg_pool, smt_events, pd_zone, bias, session, weights=weights,
     )
     silver_bullet_entries = detect_silver_bullet_entries(
         h, liquidity, fvgs, symbol, pd_zone, bias, session, weights=weights,
@@ -4223,6 +4271,9 @@ def build_smc_analysis(
                     sweep_reversal_entries + continuation_entries + ote_entries
                     + unicorn_entries + silver_bullet_entries + power_of_three_entries
                 ),
+                inverse_fvgs=inverse_fvgs,
+                balanced_price_ranges=balanced_price_ranges,
+                volume_imbalances=volume_imbalances,
             ),
         },
         "config": cfg.__dict__,
