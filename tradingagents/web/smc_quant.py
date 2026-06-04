@@ -2483,6 +2483,68 @@ CONFLUENCE_WEIGHTS_DEFAULT = {
 CONFLUENCE_THRESHOLD_DEFAULT = 8
 
 
+def build_partial_profit_plan(
+    entry: dict,
+    *,
+    partial_fraction: float = 0.5,
+    tp1_R: float = 1.0,
+) -> dict:
+    """§6 — TP1 partial exit + move-stop-to-breakeven plan.
+
+    Spec: "TP1: Exit 1/2 at the previous liquidity target and move SL to
+    breakeven". Returns a structured plan:
+      - tp1_price / tp1_R   ← first scale-out target (default at +1R)
+      - tp2_price / tp2_R   ← runner target (existing entry["target"])
+      - move_sl_to_breakeven_after = "tp1"
+      - remaining_qty_pct  ← qty share carried past TP1
+      - partial_qty_pct    ← qty share exited at TP1
+
+    Refuses to plan if the entry is missing entry/stop/target/direction.
+    """
+    direction = int(entry.get("direction", 0))
+    entry_px = entry.get("entry")
+    stop = entry.get("stop")
+    target = entry.get("target")
+    if direction == 0 or entry_px is None or stop is None or target is None:
+        return {"status": "missing_fields"}
+    risk = abs(float(entry_px) - float(stop))
+    if risk <= 0:
+        return {"status": "zero_risk"}
+    tp1_offset = tp1_R * risk * direction
+    tp1_price = round(float(entry_px) + tp1_offset, 4)
+    full_target_R = abs(float(target) - float(entry_px)) / risk
+    # TP1 should sit between entry and full target; if 1R already overshoots
+    # the existing target, cap to halfway and surface a warning.
+    capped = False
+    if (direction == 1 and tp1_price >= float(target)) or (direction == -1 and tp1_price <= float(target)):
+        tp1_price = round((float(entry_px) + float(target)) / 2, 4)
+        capped = True
+    partial_pct = round(max(0.0, min(1.0, partial_fraction)) * 100, 2)
+    remaining_pct = round(100 - partial_pct, 2)
+    return {
+        "status": "ok",
+        "tp1_price": tp1_price,
+        "tp1_R": round(abs(tp1_price - float(entry_px)) / risk, 3),
+        "tp2_price": round(float(target), 4),
+        "tp2_R": round(full_target_R, 3),
+        "partial_qty_pct": partial_pct,
+        "remaining_qty_pct": remaining_pct,
+        "move_sl_to_breakeven_after": "tp1",
+        "breakeven_price": round(float(entry_px), 4),
+        "tp1_was_capped_to_midway": capped,
+    }
+
+
+def attach_partial_profit_plans(entries: list[dict]) -> list[dict]:
+    """Annotate every §5 entry with a §6 TP1+breakeven plan."""
+    out: list[dict] = []
+    for e in entries or []:
+        annotated = dict(e)
+        annotated["partial_profit"] = build_partial_profit_plan(e)
+        out.append(annotated)
+    return out
+
+
 def annotate_poi_displacement_validity(entries: list[dict]) -> list[dict]:
     """§3.11 — flag entries whose POI origin lacks displacement.
 
@@ -5895,6 +5957,13 @@ def build_smc_analysis(
     unicorn_entries = annotate_poi_displacement_validity(unicorn_entries)
     silver_bullet_entries = annotate_poi_displacement_validity(silver_bullet_entries)
     power_of_three_entries = annotate_poi_displacement_validity(power_of_three_entries)
+    # §6 — every entry carries a TP1 partial + move-stop-to-breakeven plan.
+    sweep_reversal_entries = attach_partial_profit_plans(sweep_reversal_entries)
+    continuation_entries = attach_partial_profit_plans(continuation_entries)
+    ote_entries = attach_partial_profit_plans(ote_entries)
+    unicorn_entries = attach_partial_profit_plans(unicorn_entries)
+    silver_bullet_entries = attach_partial_profit_plans(silver_bullet_entries)
+    power_of_three_entries = attach_partial_profit_plans(power_of_three_entries)
     # §17.10 — when a crypto overlay is present, weave its factor map
     # into every entry's confluence score so e.g. perp_led_warning
     # actually debits points and oi_drop_at_sweep adds them.

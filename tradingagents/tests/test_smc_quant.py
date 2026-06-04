@@ -3327,3 +3327,57 @@ def test_crypto_risk_check_auto_funding_blocks_within_5_min_window():
     # And the auto-derive path off by default doesn't fire on its own
     safe = crypto_risk_check(entry)
     assert not any("funding_settlement_imminent" in r for r in safe["reasons"])
+
+
+def test_build_partial_profit_plan_default_1R_tp1_and_breakeven():
+    """§6: TP1 at +1R, partial 50%, move SL to breakeven after TP1."""
+    from smc_quant import build_partial_profit_plan
+    entry = {"direction": 1, "entry": 100, "stop": 99, "target": 104}
+    plan = build_partial_profit_plan(entry)
+    assert plan["status"] == "ok"
+    assert plan["tp1_price"] == 101.0   # +1R
+    assert plan["tp1_R"] == 1.0
+    assert plan["tp2_price"] == 104.0
+    assert plan["tp2_R"] == 4.0
+    assert plan["partial_qty_pct"] == 50.0
+    assert plan["remaining_qty_pct"] == 50.0
+    assert plan["move_sl_to_breakeven_after"] == "tp1"
+    assert plan["breakeven_price"] == 100.0
+    assert plan["tp1_was_capped_to_midway"] is False
+
+
+def test_build_partial_profit_plan_caps_when_tp1_overshoots_target():
+    """If RR<1 (TP < 1R away) TP1 must collapse to halfway between entry/tgt."""
+    from smc_quant import build_partial_profit_plan
+    entry = {"direction": 1, "entry": 100, "stop": 99, "target": 100.6}  # 0.6R
+    plan = build_partial_profit_plan(entry)
+    assert plan["tp1_was_capped_to_midway"] is True
+    assert plan["tp1_price"] == 100.3
+
+
+def test_build_partial_profit_plan_short_direction_symmetric():
+    from smc_quant import build_partial_profit_plan
+    entry = {"direction": -1, "entry": 100, "stop": 101, "target": 96}
+    plan = build_partial_profit_plan(entry)
+    assert plan["tp1_price"] == 99.0   # -1R below entry
+    assert plan["tp2_price"] == 96.0
+    assert plan["tp2_R"] == 4.0
+
+
+def test_build_partial_profit_plan_rejects_missing_fields():
+    from smc_quant import build_partial_profit_plan
+    assert build_partial_profit_plan({})["status"] == "missing_fields"
+    assert build_partial_profit_plan({"direction": 1, "entry": 100, "stop": 100, "target": 102})["status"] == "zero_risk"
+
+
+def test_build_smc_analysis_attaches_partial_profit_to_entries():
+    """Every entry in concepts.entry_models carries a partial_profit block."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    em = result["concepts"]["entry_models"]
+    for key in ("sweep_reversal", "ob_fvg_continuation", "ote_retracement",
+                "unicorn", "silver_bullet", "power_of_three"):
+        for e in em[key]:
+            assert "partial_profit" in e
