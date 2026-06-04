@@ -359,6 +359,40 @@ def detect_fvgs(df: pd.DataFrame, displacements: list[dict]) -> list[dict]:
     return out
 
 
+def classify_liquidity_internal_external(
+    liquidity: list[dict],
+    pd_zone: dict,
+) -> list[dict]:
+    """§3.5 — split BSL/SSL liquidity into *internal* vs *external* pools.
+
+    External liquidity = the main dealing-range extremes (range_high /
+    range_low ± 0.5 %). Internal liquidity = every smaller cluster
+    sitting inside that range. Per the design doc the standard rhythm
+    is "sweep internal → run toward external," so callers can prefer
+    external pools as DOL targets and internal pools as Judas magnets.
+    """
+    if not liquidity:
+        return []
+    if not pd_zone:
+        return [{**l, "liquidity_kind": "unknown"} for l in liquidity]
+    range_high = float(pd_zone.get("range_high", 0) or 0)
+    range_low = float(pd_zone.get("range_low", 0) or 0)
+    if range_high <= range_low:
+        return [dict(l, liquidity_kind="unknown") for l in liquidity]
+    tol = (range_high - range_low) * 0.005  # 0.5% of leg
+    out: list[dict] = []
+    for liq in liquidity:
+        level = float(liq.get("level", 0))
+        if abs(level - range_high) <= tol or abs(level - range_low) <= tol:
+            kind = "external"
+        elif range_low < level < range_high:
+            kind = "internal"
+        else:
+            kind = "out_of_range"
+        out.append({**liq, "liquidity_kind": kind})
+    return out
+
+
 def detect_inverse_fvgs(df: pd.DataFrame, fvgs: list[dict]) -> list[dict]:
     """§3.4 — Inverse FVG (IFVG).
 
@@ -4326,6 +4360,7 @@ def build_smc_analysis(
     mitigation_blocks = detect_mitigation_blocks(obs)
     breaker_blocks = detect_breaker_blocks(obs)
     pd_zone = premium_discount(h, swings)
+    liquidity = classify_liquidity_internal_external(liquidity, pd_zone)
     bias = _latest_bias(structure)
     ote = ote_zone(swings, bias)
     prev = previous_levels(h)

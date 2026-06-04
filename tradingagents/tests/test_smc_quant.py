@@ -1609,3 +1609,36 @@ def test_crypto_overlay_routes_btc_dominance_and_altseason_tailwind():
     # altcoin + altseason → tailwind factor active
     assert overlay["factors"]["altseason_tailwind"] is True
     assert overlay["weights"]["altseason_tailwind"] == 2
+
+
+def test_classify_liquidity_internal_external_splits_by_range_extremes():
+    """§3.5: external = touches range_high/low ±0.5%, internal sits between."""
+    from smc_quant import classify_liquidity_internal_external
+    pd_zone = {"range_high": 100.0, "range_low": 80.0}
+    pools = [
+        {"type": "BSL", "level": 100.1},  # external (top)
+        {"type": "SSL", "level": 79.95},  # external (bottom)
+        {"type": "BSL", "level": 92.0},   # internal
+        {"type": "BSL", "level": 110.0},  # out_of_range
+    ]
+    out = classify_liquidity_internal_external(pools, pd_zone)
+    kinds = [p["liquidity_kind"] for p in out]
+    assert kinds == ["external", "external", "internal", "out_of_range"]
+
+
+def test_classify_liquidity_empty_zone_returns_unknown():
+    from smc_quant import classify_liquidity_internal_external
+    out = classify_liquidity_internal_external(
+        [{"type": "BSL", "level": 100}], {}
+    )
+    assert out[0]["liquidity_kind"] == "unknown"
+
+
+def test_build_smc_analysis_attaches_liquidity_kind_field():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    for liq in result["concepts"]["liquidity"]:
+        assert "liquidity_kind" in liq
+        assert liq["liquidity_kind"] in {"internal", "external", "out_of_range", "unknown"}
