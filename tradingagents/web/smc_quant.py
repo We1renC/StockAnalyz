@@ -3656,6 +3656,7 @@ def propose_strategy_yaml(
         },
         "r_distribution": r_multiple_distribution(trade_records),
         "clusters": cluster_trades_by(trade_records, ["model", "market"]),
+        "nearest_poi_clusters": cluster_trades_by(trade_records, ["model", "nearest_poi_kind"]),
         "changelog": _strategy_changelog(
             base_weights or {}, suggested_weights, mae_mfe.get("recommendations", []),
         ),

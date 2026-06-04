@@ -2854,3 +2854,25 @@ def test_sweep_reversal_nearest_poi_kind_none_when_too_far():
         pd_array_matrix=matrix,
     )
     assert entries[0]["nearest_poi_kind"] is None
+
+
+def test_strategy_yaml_emits_nearest_poi_clusters():
+    """§10.6 + §18.5: propose now slices by (model, nearest_poi_kind)."""
+    from smc_quant import propose_strategy_yaml
+    records = []
+    base = datetime(2026, 1, 1)
+    for i in range(40):
+        r = 2.0 if i % 5 != 0 else -1.0
+        records.append({
+            "entry_time": (base + timedelta(days=i)).isoformat(),
+            "r_multiple": r,
+            "factors": {"htf_bias_aligned": True},
+            "model": "sweep_reversal",
+            "market": "us",
+            "nearest_poi_kind": "balanced_price_range" if i % 2 == 0 else "order_block",
+            "mae": -0.3, "mfe": 2.2,
+        })
+    out = propose_strategy_yaml(trade_records=records, min_samples=20)
+    assert "nearest_poi_clusters" in out
+    keys = out["nearest_poi_clusters"]["clusters"].keys()
+    assert any("balanced_price_range" in k for k in keys)
