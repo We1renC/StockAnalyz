@@ -2116,3 +2116,15 @@ def test_chart_layer_c4_exposes_liquidity_kind_and_equal_tags():
         assert "equal_tag" in l
         assert "equal_tier" in l
         assert "touches" in l
+
+
+def test_chart_layer_c9_mtf_audit_present_in_chart_layers():
+    """§6.1: C9 MTF audit panel exists, even if empty for single-TF analysis."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    c9 = result["visualization"]["chart_layers"].get("C9_mtf_audit")
+    assert c9 is not None
+    assert c9["kind"] == "summary_panel"
+    assert "rows" in c9

@@ -4137,6 +4137,17 @@ def build_chart_layers(
             for v in (volume_imbalances or [])
         ],
     }
+    # C9 MTF top-down audit summary — keyless panel renderer
+    layers["C9_mtf_audit"] = {
+        "kind": "summary_panel",
+        "title": "HTF→MTF→LTF six-step audit",
+        "rows": [
+            {"step": s.get("step"), "name": s.get("name"),
+             "pass": s.get("pass"), "evidence": s.get("evidence")}
+            for s in []  # populated downstream by build_mtf_analysis caller
+        ],
+        "note": "Populated only via build_mtf_analysis() — single-TF chart_layers leave it empty.",
+    }
     # C12 SMT Divergence overlay — paired-asset divergence connector
     layers["C12_smt"] = {
         "kind": "divergence_overlay",
