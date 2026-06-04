@@ -28,6 +28,7 @@ from paper_acceptance_scenarios import (
     ensure_paper_acceptance_scenario_schema,
     load_scenario_runs,
     run_acceptance_scenario,
+    scenario_catalog,
     summarize_scenario_evidence,
 )
 from paper_acceptance_policy import build_acceptance_policy_snapshot
@@ -1287,6 +1288,7 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         "order_audit": load_order_audit_rows(conn, symbol=key, stage=stage, limit=40),
         "alert_deliveries": load_alert_deliveries(conn, symbol=key, stage=stage, limit=40),
         "scenario_runs": scenario_runs,
+        "scenario_catalog": scenario_catalog(),
         "timeline": _build_acceptance_timeline(events, scenario_runs),
         "reports": reports,
         "section_trend": _build_section_trend(reports),

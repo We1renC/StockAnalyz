@@ -261,6 +261,21 @@ def summarize_scenario_evidence(conn, *, symbol: str | None = None, stage: str =
     }
 
 
+def scenario_catalog() -> list[dict]:
+    """Return scenario metadata for UI display and trigger actions."""
+
+    return [
+        {
+            "scenario_id": item.scenario_id,
+            "gate_id": item.gate_id,
+            "title": item.title,
+            "expected_behavior": item.expected_behavior,
+            "checks": list(item.checks),
+        }
+        for item in SCENARIO_LIBRARY
+    ]
+
+
 def run_acceptance_scenario(conn, *, symbol: str, scenario_id: str, stage: str = "paper") -> dict:
     scenario = _scenario_map().get(scenario_id)
     if not scenario:
@@ -349,5 +364,6 @@ __all__ = [
     "ensure_paper_acceptance_scenario_schema",
     "load_scenario_runs",
     "run_acceptance_scenario",
+    "scenario_catalog",
     "summarize_scenario_evidence",
 ]

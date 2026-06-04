@@ -5717,6 +5717,24 @@ def api_get_paper_acceptance_scenarios(symbol: str, stage: str = "paper", limit:
         conn.close()
 
 
+@app.get("/api/paper-acceptance/scenario-library")
+def api_get_paper_acceptance_scenario_library(symbol: Optional[str] = None, stage: str = "paper"):
+    conn = get_db()
+    try:
+        workspace = build_acceptance_workspace(
+            conn,
+            symbol=(symbol.strip().upper() if symbol else "ALL"),
+            stage=stage,
+            limit_reports=1,
+        )
+        return sanitize_float_values({
+            "rows": workspace.get("scenario_catalog") or [],
+            "count": len(workspace.get("scenario_catalog") or []),
+        })
+    finally:
+        conn.close()
+
+
 @app.post("/api/paper-acceptance/scenarios/run")
 def api_run_paper_acceptance_scenario(req: PaperAcceptanceScenarioRunRequest):
     if not req.symbol.strip():

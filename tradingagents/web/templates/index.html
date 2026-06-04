@@ -1478,6 +1478,17 @@ body { background: var(--bg-base); color: var(--text-primary); }
           <div id="smc-paper-acceptance-reports" class="text-xs text-slate-500">載入中...</div>
         </div>
           <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
+            <div class="text-xs font-semibold text-slate-300 mb-2">Telemetry 與對帳證據</div>
+            <div id="smc-paper-acceptance-observed" class="text-xs text-slate-500">載入中...</div>
+          </div>
+          <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <div class="text-xs font-semibold text-slate-300">Scenario 重播</div>
+              <div id="smc-paper-acceptance-scenario-meta" class="text-[11px] text-slate-500">載入中...</div>
+            </div>
+            <div id="smc-paper-acceptance-scenarios" class="text-xs text-slate-500">載入中...</div>
+          </div>
+          <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
             <div class="text-xs font-semibold text-slate-300 mb-2">驗收趨勢</div>
             <div id="smc-paper-acceptance-trend" class="text-xs text-slate-500">載入中...</div>
           </div>
@@ -3251,6 +3262,9 @@ function renderPaperAcceptanceLoading(message = '載入前測驗收...') {
   const sections = $('smc-paper-acceptance-sections');
   const catalog = $('smc-paper-acceptance-catalog');
   const coverage = $('smc-paper-acceptance-coverage');
+  const observed = $('smc-paper-acceptance-observed');
+  const scenarios = $('smc-paper-acceptance-scenarios');
+  const scenarioMeta = $('smc-paper-acceptance-scenario-meta');
   const timeline = $('smc-paper-acceptance-timeline');
   const trend = $('smc-paper-acceptance-trend');
   const review = $('smc-paper-acceptance-review-summary');
@@ -3265,6 +3279,9 @@ function renderPaperAcceptanceLoading(message = '載入前測驗收...') {
   if (reports) reports.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
   if (sections) sections.innerHTML = `<div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 text-xs text-slate-500 md:col-span-2 xl:col-span-3">${escHtml(message)}</div>`;
   if (catalog) catalog.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
+  if (observed) observed.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
+  if (scenarios) scenarios.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
+  if (scenarioMeta) scenarioMeta.textContent = message;
   if (timeline) timeline.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
   if (trend) trend.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
   if (review) review.textContent = message;
@@ -3282,6 +3299,9 @@ function renderPaperAcceptanceEmpty(symbol) {
   const sections = $('smc-paper-acceptance-sections');
   const catalog = $('smc-paper-acceptance-catalog');
   const coverage = $('smc-paper-acceptance-coverage');
+  const observed = $('smc-paper-acceptance-observed');
+  const scenarios = $('smc-paper-acceptance-scenarios');
+  const scenarioMeta = $('smc-paper-acceptance-scenario-meta');
   const timeline = $('smc-paper-acceptance-timeline');
   const trend = $('smc-paper-acceptance-trend');
   const review = $('smc-paper-acceptance-review-summary');
@@ -3303,6 +3323,9 @@ function renderPaperAcceptanceEmpty(symbol) {
   if (sections) sections.innerHTML = '<div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 text-xs text-slate-500 md:col-span-2 xl:col-span-3">請先選擇標的。</div>';
   if (catalog) catalog.innerHTML = '<div class="text-slate-500">選擇標的後即可瀏覽條款與證據工作區。</div>';
   if (coverage) coverage.innerHTML = '尚無覆蓋摘要。';
+  if (observed) observed.innerHTML = '<div class="text-slate-500">尚無 telemetry 與對帳證據。</div>';
+  if (scenarios) scenarios.innerHTML = '<div class="text-slate-500">尚無 scenario 記錄。</div>';
+  if (scenarioMeta) scenarioMeta.textContent = '尚未載入';
   if (timeline) timeline.innerHTML = '<div class="text-slate-500">尚無異常事件時間軸。</div>';
   if (trend) trend.innerHTML = '<div class="text-slate-500">尚無驗收趨勢。</div>';
   if (review) review.textContent = '尚未載入';
@@ -3465,6 +3488,60 @@ function renderPaperAcceptanceCoverage(coverage) {
       </div>
     </div>
   `;
+}
+
+function renderPaperAcceptanceObserved(workspace) {
+  const metrics = workspace?.report?.metrics || {};
+  const runtimeMetrics = workspace?.runtime_metrics || [];
+  const reconciliationRuns = workspace?.reconciliation_runs || [];
+  const orderAudit = workspace?.order_audit || [];
+  const parts = [
+    `API latency ${metrics.average_api_latency ?? '—'} ms`,
+    `P95 ${metrics.latency_p95 ?? '—'} / P99 ${metrics.latency_p99 ?? '—'}`,
+    `API error rate ${metrics.api_error_rate != null ? `${(Number(metrics.api_error_rate) * 100).toFixed(1)}%` : '—'}`,
+    `fill rate ${metrics.fill_rate != null ? `${(Number(metrics.fill_rate) * 100).toFixed(1)}%` : '—'}`,
+    `rejection ${metrics.rejection_ratio != null ? `${(Number(metrics.rejection_ratio) * 100).toFixed(1)}%` : '—'}`,
+    `reconciliation ${reconciliationRuns.length} 筆`,
+    `order audit ${orderAudit.length} 筆`,
+    `runtime metric ${runtimeMetrics.length} 筆`,
+  ];
+  const reconList = reconciliationRuns.slice(0, 3).map(row => `
+    <div class="text-[11px] text-slate-500">
+      ${escHtml(smcJournalFormatTime(row.created_at))} · ${escHtml(row.status || 'ok')} · diff ${escHtml(String((row.order_diff_count || 0) + (row.position_diff_count || 0) + (row.balance_diff_count || 0) + (row.trade_diff_count || 0)))}
+    </div>
+  `).join('');
+  return `
+    <div class="space-y-2">
+      <div class="flex flex-wrap gap-2 text-[11px]">
+        ${parts.map(part => `<span class="inline-flex items-center rounded border border-slate-800/60 bg-slate-950/35 px-2 py-1">${escHtml(part)}</span>`).join('')}
+      </div>
+      ${reconList || '<div class="text-[11px] text-slate-500">尚無對帳紀錄。</div>'}
+    </div>
+  `;
+}
+
+function renderPaperAcceptanceScenarios(workspace) {
+  const runs = workspace?.scenario_runs || [];
+  const catalog = workspace?.scenario_catalog || [];
+  if ($('smc-paper-acceptance-scenario-meta')) {
+    $('smc-paper-acceptance-scenario-meta').textContent = `${runs.length} 筆重播 · ${catalog.length} 個情境`;
+  }
+  if (!catalog.length) return '<div class="text-slate-500">尚無 scenario catalog。</div>';
+  return catalog.map(item => {
+    const latest = runs.find(row => row.scenario_id === item.scenario_id);
+    return `
+      <div class="py-2 border-b border-slate-800/50 last:border-b-0">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0">
+            <div class="font-semibold text-slate-200">${escHtml(item.title)}</div>
+            <div class="text-[11px] text-slate-500 mt-1">§${escHtml(item.gate_id)} · ${escHtml(item.expected_behavior)}</div>
+            <div class="text-[11px] text-slate-600 mt-1">${escHtml(latest ? `${smcJournalFormatTime(latest.created_at)} · ${latest.status}` : '尚未執行')}</div>
+          </div>
+          <button onclick="runPaperAcceptanceScenario('${escJs(item.scenario_id)}')" class="btn-secondary text-[11px] px-2 py-1 shrink-0" style="border-radius: 6px;">執行</button>
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 function renderPaperAcceptanceTimeline(rows) {
@@ -3636,6 +3713,7 @@ function hydratePaperAcceptanceWorkspaceEditors(workspace) {
 function renderPaperAcceptanceWorkspace(workspace) {
   const overview = $('smc-paper-acceptance-overview');
   const coverage = $('smc-paper-acceptance-coverage');
+  const observed = $('smc-paper-acceptance-observed');
   const blockers = $('smc-paper-acceptance-blockers');
   const reportsEl = $('smc-paper-acceptance-reports');
   const meta = $('smc-paper-acceptance-meta');
@@ -3656,8 +3734,10 @@ function renderPaperAcceptanceWorkspace(workspace) {
     ].join('');
   }
   if (coverage) coverage.innerHTML = renderPaperAcceptanceCoverage(workspace?.coverage || {});
+  if (observed) observed.innerHTML = renderPaperAcceptanceObserved(workspace);
   if (blockers) blockers.innerHTML = renderPaperAcceptanceBlockers(report.blocking_issues || []);
   if (reportsEl) reportsEl.innerHTML = renderPaperAcceptanceReportList(workspace?.reports || []);
+  if ($('smc-paper-acceptance-scenarios')) $('smc-paper-acceptance-scenarios').innerHTML = renderPaperAcceptanceScenarios(workspace);
   if ($('smc-paper-acceptance-timeline')) $('smc-paper-acceptance-timeline').innerHTML = renderPaperAcceptanceTimeline(workspace?.timeline || []);
   if ($('smc-paper-acceptance-trend')) $('smc-paper-acceptance-trend').innerHTML = renderPaperAcceptanceTrend(workspace?.section_trend || []);
   renderPaperAcceptanceSections(workspace);
@@ -3775,6 +3855,31 @@ async function savePaperAcceptanceReview() {
   }
 }
 
+async function runPaperAcceptanceScenario(scenarioId) {
+  const symbol = smcJournalSelectedSymbol();
+  const meta = $('smc-paper-acceptance-meta');
+  if (!symbol) {
+    if (meta) meta.textContent = '請先選擇標的';
+    return null;
+  }
+  try {
+    const res = await fetch('/api/paper-acceptance/scenarios/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol, scenario_id: scenarioId, stage: 'paper' }),
+    }).then(r => r.json());
+    if (res.error || res.detail || res.ok === false) {
+      throw new Error(res.error || res.detail || 'scenario 執行失敗');
+    }
+    if (meta) meta.textContent = `${symbol} · scenario ${scenarioId} 已重播`;
+    await refreshPaperAcceptance(true);
+    return res;
+  } catch (e) {
+    if (meta) meta.textContent = `scenario 執行失敗：${e}`;
+    return null;
+  }
+}
+
 async function upsertPaperAcceptanceCheck(gateId, checkKey, value, note = null) {
   const symbol = smcJournalSelectedSymbol();
   const meta = $('smc-paper-acceptance-meta');
@@ -3876,6 +3981,9 @@ async function refreshPaperAcceptance(force = false) {
     const sections = $('smc-paper-acceptance-sections');
     const catalog = $('smc-paper-acceptance-catalog');
     const coverage = $('smc-paper-acceptance-coverage');
+    const observed = $('smc-paper-acceptance-observed');
+    const scenarios = $('smc-paper-acceptance-scenarios');
+    const scenarioMeta = $('smc-paper-acceptance-scenario-meta');
     const timeline = $('smc-paper-acceptance-timeline');
     const trend = $('smc-paper-acceptance-trend');
     const review = $('smc-paper-acceptance-review-summary');
@@ -3889,6 +3997,9 @@ async function refreshPaperAcceptance(force = false) {
     if (sections) sections.innerHTML = `<div class="rounded-lg border border-red-900/40 bg-red-950/10 p-3 text-xs text-red-300 md:col-span-2 xl:col-span-3">${escHtml(msg)}</div>`;
     if (catalog) catalog.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (coverage) coverage.innerHTML = escHtml(msg);
+    if (observed) observed.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
+    if (scenarios) scenarios.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
+    if (scenarioMeta) scenarioMeta.textContent = '讀取失敗';
     if (timeline) timeline.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (trend) trend.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (review) review.textContent = '讀取失敗';
