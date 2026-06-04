@@ -2600,6 +2600,8 @@ def detect_ote_entries(
     session: Optional[dict] = None,
     weights: Optional[dict[str, int]] = None,
     threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
+    atr_value: Optional[float] = None,
+    vol_bucket: Optional[str] = None,
 ) -> list[dict]:
     """§5.1 Entry Model 3 — OTE Retracement (Fibonacci 0.62–0.79, ideal 0.705).
 
@@ -2654,9 +2656,15 @@ def detect_ote_entries(
         poi_top, poi_bottom = ote_top, ote_bottom
     # Stop = beyond leg origin (structural invalidation).
     if direction == 1:
-        stop = min(stop_ref, poi_bottom) - max(0.0, (entry - poi_bottom) * 0.05)
+        structural_stop = min(stop_ref, poi_bottom) - max(0.0, (entry - poi_bottom) * 0.05)
     else:
-        stop = max(stop_ref, poi_top) + max(0.0, (poi_top - entry) * 0.05)
+        structural_stop = max(stop_ref, poi_top) + max(0.0, (poi_top - entry) * 0.05)
+    if atr_value and vol_bucket:
+        sd = atr_adaptive_stop(direction, entry, atr_value, vol_bucket,
+                                structural_stop=structural_stop)
+        stop = sd["stop"]; stop_rule = sd["rule"]
+    else:
+        stop = structural_stop; stop_rule = "structural_only"
     risk = abs(entry - stop)
     if risk <= 0:
         return out
@@ -2691,6 +2699,7 @@ def detect_ote_entries(
             "direction": direction,
             "entry": round(entry, 4),
             "stop": round(stop, 4),
+            "stop_rule": stop_rule,
             "target": round(target, 4),
             "risk": round(risk, 4),
             "rr": round(rr, 2),
@@ -2717,6 +2726,8 @@ def detect_unicorn_entries(
     bias: str,
     session: Optional[dict] = None,
     weights: Optional[dict[str, int]] = None,
+    atr_value: Optional[float] = None,
+    vol_bucket: Optional[str] = None,
     threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
 ) -> list[dict]:
     """§5.3 Unicorn Model — Breaker Block ∩ FVG (+ SMT divergence bonus).
@@ -2752,9 +2763,15 @@ def detect_unicorn_entries(
             top, bottom = ov
             entry = round((top + bottom) / 2, 4)
             if direction == 1:
-                stop = bottom - max(0.0, (entry - bottom) * 0.05)
+                structural_stop = bottom - max(0.0, (entry - bottom) * 0.05)
             else:
-                stop = top + max(0.0, (top - entry) * 0.05)
+                structural_stop = top + max(0.0, (top - entry) * 0.05)
+            if atr_value and vol_bucket:
+                sd = atr_adaptive_stop(direction, entry, atr_value, vol_bucket,
+                                        structural_stop=structural_stop)
+                stop = sd["stop"]; stop_rule = sd["rule"]
+            else:
+                stop = structural_stop; stop_rule = "structural_only"
             risk = abs(entry - stop)
             if risk <= 0:
                 continue
@@ -2788,6 +2805,7 @@ def detect_unicorn_entries(
                     "direction": direction,
                     "entry": entry,
                     "stop": round(stop, 4),
+                    "stop_rule": stop_rule,
                     "target": round(target, 4),
                     "risk": round(risk, 4),
                     "rr": round(rr, 2),
@@ -2837,6 +2855,8 @@ def detect_silver_bullet_entries(
     weights: Optional[dict[str, int]] = None,
     threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
     window_lookback: int = 20,
+    atr_value: Optional[float] = None,
+    vol_bucket: Optional[str] = None,
 ) -> list[dict]:
     """§5.3 Silver Bullet — time-windowed sweep → FVG → retest.
 
@@ -2888,9 +2908,15 @@ def detect_silver_bullet_entries(
         entry = float(fvg["mid"])
         top, bottom = float(fvg["top"]), float(fvg["bottom"])
         if direction == 1:
-            stop = bottom - max(0.0, (entry - bottom) * 0.05)
+            structural_stop = bottom - max(0.0, (entry - bottom) * 0.05)
         else:
-            stop = top + max(0.0, (top - entry) * 0.05)
+            structural_stop = top + max(0.0, (top - entry) * 0.05)
+        if atr_value and vol_bucket:
+            sd = atr_adaptive_stop(direction, entry, atr_value, vol_bucket,
+                                    structural_stop=structural_stop)
+            stop = sd["stop"]; stop_rule = sd["rule"]
+        else:
+            stop = structural_stop; stop_rule = "structural_only"
         risk = abs(entry - stop)
         if risk <= 0:
             continue
@@ -2923,6 +2949,7 @@ def detect_silver_bullet_entries(
                 "direction": direction,
                 "entry": round(entry, 4),
                 "stop": round(stop, 4),
+                "stop_rule": stop_rule,
                 "target": round(target, 4),
                 "risk": round(risk, 4),
                 "rr": round(rr, 2),
@@ -2953,6 +2980,8 @@ def detect_power_of_three_entries(
     threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
     accumulation_bars: int = 5,
     range_atr_mult: float = 0.9,
+    atr_value: Optional[float] = None,
+    vol_bucket: Optional[str] = None,
 ) -> list[dict]:
     """§5.3 Power of Three (AMD) — Accumulation → Manipulation → Distribution.
 
@@ -3022,9 +3051,15 @@ def detect_power_of_three_entries(
             entry = (poi_top + poi_bottom) / 2
             poi_kind = "accumulation_mid"
         if direction == 1:
-            stop = float(ev["false_move_low"]) - max(0.0, (entry - float(ev["false_move_low"])) * 0.05)
+            structural_stop = float(ev["false_move_low"]) - max(0.0, (entry - float(ev["false_move_low"])) * 0.05)
         else:
-            stop = float(ev["false_move_high"]) + max(0.0, (float(ev["false_move_high"]) - entry) * 0.05)
+            structural_stop = float(ev["false_move_high"]) + max(0.0, (float(ev["false_move_high"]) - entry) * 0.05)
+        if atr_value and vol_bucket:
+            sd = atr_adaptive_stop(direction, entry, atr_value, vol_bucket,
+                                    structural_stop=structural_stop)
+            stop = sd["stop"]; stop_rule = sd["rule"]
+        else:
+            stop = structural_stop; stop_rule = "structural_only"
         risk = abs(entry - stop)
         if risk <= 0:
             continue
@@ -3066,6 +3101,7 @@ def detect_power_of_three_entries(
                 "direction": direction,
                 "entry": round(entry, 4),
                 "stop": round(stop, 4),
+                "stop_rule": stop_rule,
                 "target": round(target, 4),
                 "risk": round(risk, 4),
                 "rr": round(rr, 2),
@@ -5380,8 +5416,11 @@ def build_smc_analysis(
         atr_value=(adaptive_info or {}).get("atr"),
         vol_bucket=(adaptive_info or {}).get("bucket"),
     )
+    _atr = (adaptive_info or {}).get("atr")
+    _bucket = (adaptive_info or {}).get("bucket")
     ote_entries = detect_ote_entries(
         h, ote, obs, fvgs, pd_zone, bias, session, weights=weights,
+        atr_value=_atr, vol_bucket=_bucket,
     )
     # §3.4 — feed Inverse FVGs into the Unicorn POI pool alongside fresh FVGs.
     # IFVGs already carry flipped direction so they overlap breakers naturally.
@@ -5390,12 +5429,15 @@ def build_smc_analysis(
     ]
     unicorn_entries = detect_unicorn_entries(
         h, breaker_blocks, _unicorn_fvg_pool, smt_events, pd_zone, bias, session, weights=weights,
+        atr_value=_atr, vol_bucket=_bucket,
     )
     silver_bullet_entries = detect_silver_bullet_entries(
         h, liquidity, fvgs, symbol, pd_zone, bias, session, weights=weights,
+        atr_value=_atr, vol_bucket=_bucket,
     )
     power_of_three_entries = detect_power_of_three_entries(
         h, judas_events, obs, fvgs, pd_zone, bias, session, weights=weights,
+        atr_value=_atr, vol_bucket=_bucket,
     )
     # §17 crypto overlay — only invoked when caller passes derivative data.
     crypto_overlay = None

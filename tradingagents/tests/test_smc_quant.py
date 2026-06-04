@@ -2728,3 +2728,20 @@ def test_continuation_uses_atr_adaptive_when_provided():
         assert entries_atr[0]["stop"] <= entries_static[0]["stop"] + 1e-6
         assert entries_atr[0]["stop_rule"] in {"atr_dominant", "max(atr,structural)", "atr_only"}
         assert entries_static[0]["stop_rule"] == "structural_only"
+
+
+def test_all_entry_models_carry_stop_rule_field():
+    """§17.6: every entry model now exposes stop_rule for downstream audit."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    em = result["concepts"]["entry_models"]
+    for key in ("sweep_reversal", "ob_fvg_continuation", "ote_retracement",
+                "unicorn", "silver_bullet", "power_of_three"):
+        for e in em[key]:
+            assert "stop_rule" in e
+            assert e["stop_rule"] in {
+                "atr_only", "atr_dominant", "structural_only",
+                "max(atr,structural)", "no_direction",
+            }
