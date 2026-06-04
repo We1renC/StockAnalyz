@@ -263,6 +263,16 @@ def test_telemetry_and_order_audit_are_aggregated_into_acceptance_context():
     record_runtime_metric(conn, symbol="ABAT", metric_name="risk_status", value=1)
     record_runtime_metric(conn, symbol="ABAT", metric_name="scheduled_task_ok", value=1)
     record_runtime_metric(conn, symbol="ABAT", metric_name="restart_state_recovery", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="missing_data_handled", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="duplicate_data_handled", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="out_of_order_data_handled", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="reconnect_backfill", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="real_time_equity", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="available_balance", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="current_positions", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="open_orders", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="daily_total_pnl", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="max_drawdown_displayed", value=1)
 
     record_reconciliation_run(
         conn,
@@ -294,7 +304,16 @@ def test_telemetry_and_order_audit_are_aggregated_into_acceptance_context():
         strategy_version="v1",
         parameter_version="p1",
         signal_source="smc",
-        detail={"volatility_bps": 18},
+        detail={
+            "volatility_bps": 18,
+            "maker_taker": "taker",
+            "spread_bps": 12,
+            "recent_volume_ratio": 0.08,
+            "book_depth_ratio": 1.6,
+            "expected_edge_bps": 280,
+            "liquidity_regime": "normal",
+            "market_data_source": "exchange_ws",
+        },
     )
     record_order_audit(
         conn,
@@ -319,7 +338,17 @@ def test_telemetry_and_order_audit_are_aggregated_into_acceptance_context():
         signal_source="smc",
         submitted_at="2026-06-01T09:00:00Z",
         fill_at="2026-06-01T09:00:03Z",
-        detail={"adverse_selection_bps": 12, "post_order_price_move_bps": 30},
+        detail={
+            "adverse_selection_bps": 12,
+            "post_order_price_move_bps": 30,
+            "maker_taker": "maker",
+            "spread_bps": 18,
+            "recent_volume_ratio": 0.12,
+            "book_depth_ratio": 1.3,
+            "expected_edge_bps": 190,
+            "liquidity_regime": "normal",
+            "market_data_source": "exchange_ws",
+        },
     )
     record_alert_delivery(conn, symbol="ABAT", event_type="api_error", severity="warning")
     record_alert_delivery(conn, symbol="ABAT", event_type="reconciliation", severity="warning")
@@ -345,6 +374,12 @@ def test_telemetry_and_order_audit_are_aggregated_into_acceptance_context():
         if row["key"] == "kill_switch_notifications"
     )
     assert kill_switch_check["value"] is True
+    liquidity_gate = next(item for item in workspace["catalog"] if item["section"] == "3.2")
+    spread_check = next(row for row in liquidity_gate["gates"][0]["checks"] if row["key"] == "spread_acceptable")
+    assert spread_check["value"] is True
+    trace_gate = next(item for item in workspace["catalog"] if item["section"] == "3.3")
+    duplicate_check = next(row for row in trace_gate["gates"][0]["checks"] if row["key"] == "duplicate_data_handled")
+    assert duplicate_check["value"] is True
 
     assert load_runtime_metrics(conn, symbol="ABAT")
     assert load_reconciliation_runs(conn, symbol="ABAT")

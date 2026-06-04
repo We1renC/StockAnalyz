@@ -567,9 +567,16 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
     canceled_orders = [row for row in order_rows if row.get("state") == "canceled"]
     limit_orders = [row for row in order_rows if row.get("order_type") == "limit"]
     market_orders = [row for row in order_rows if row.get("order_type") == "market"]
+    detail_rows = [row.get("detail") or {} for row in order_rows if isinstance(row.get("detail"), dict)]
     slippages = [abs(float(row["slippage_bps"])) for row in order_rows if _safe_float(row.get("slippage_bps")) is not None]
     market_impacts = [abs(float(row["market_impact_bps"])) for row in order_rows if _safe_float(row.get("market_impact_bps")) is not None]
     execution_latencies = [float(row["execution_latency_ms"]) for row in order_rows if _safe_float(row.get("execution_latency_ms")) is not None]
+    spread_bps = [float(detail["spread_bps"]) for detail in detail_rows if _safe_float(detail.get("spread_bps")) is not None]
+    recent_volume_ratios = [float(detail["recent_volume_ratio"]) for detail in detail_rows if _safe_float(detail.get("recent_volume_ratio")) is not None]
+    book_depth_ratios = [float(detail["book_depth_ratio"]) for detail in detail_rows if _safe_float(detail.get("book_depth_ratio")) is not None]
+    expected_edge_bps = [float(detail["expected_edge_bps"]) for detail in detail_rows if _safe_float(detail.get("expected_edge_bps")) is not None]
+    liquidity_regimes = {str(detail.get("liquidity_regime") or "").strip() for detail in detail_rows if detail.get("liquidity_regime")}
+    maker_taker_flags = {str(detail.get("maker_taker") or "").strip() for detail in detail_rows if detail.get("maker_taker")}
     limit_waiting_times: list[float] = []
     for row in limit_orders:
         submit_ts = _parse_ts(row.get("submitted_at"))
@@ -648,6 +655,10 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
         "limit_waiting_time": round(mean(limit_waiting_times), 4) if limit_waiting_times else None,
         "market_impact": round(mean(market_impacts), 4) if market_impacts else None,
         "signal_vs_execution_delta": round(mean(slippages), 4) if slippages else None,
+        "average_spread_bps": round(mean(spread_bps), 4) if spread_bps else None,
+        "max_recent_volume_ratio": round(max(recent_volume_ratios), 4) if recent_volume_ratios else None,
+        "min_book_depth_ratio": round(min(book_depth_ratios), 4) if book_depth_ratios else None,
+        "expected_edge_after_cost_bps": round(mean(expected_edge_bps), 4) if expected_edge_bps else None,
         "missed_fill_price_movement": round(mean(
             abs(float(row.get("detail", {}).get("post_order_price_move_bps") or 0))
             for row in order_rows
@@ -664,6 +675,23 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
     evidence: dict[str, dict[str, bool]] = {}
 
     if total_orders:
+        evidence["instrument_liquidity"] = {
+            "volume_sufficient": (metrics["max_recent_volume_ratio"] or 999) <= 0.25 if metrics["max_recent_volume_ratio"] is not None else False,
+            "spread_acceptable": (metrics["average_spread_bps"] or 999) <= 80 if metrics["average_spread_bps"] is not None else False,
+            "order_book_depth_sufficient": (metrics["min_book_depth_ratio"] or 0) >= 1.0 if metrics["min_book_depth_ratio"] is not None else False,
+            "liquidity_dry_up_checked": bool(liquidity_regimes),
+            "expected_profit_gt_cost": (metrics["expected_edge_after_cost_bps"] or 0) > (metrics["average_slippage"] or 0),
+        }
+        evidence["data_source_traceability"] = {
+            "market_data_source": any(detail.get("market_data_source") for detail in detail_rows),
+            "timestamps_recorded": all(row.get("submitted_at") or row.get("created_at") for row in order_rows),
+            "latency_handled": metrics["latency_p95"] is not None,
+            "missing_data_handled": any(row.get("metric_name") == "missing_data_handled" for row in runtime_rows),
+            "duplicate_data_handled": any(row.get("metric_name") == "duplicate_data_handled" for row in runtime_rows),
+            "out_of_order_data_handled": any(row.get("metric_name") == "out_of_order_data_handled" for row in runtime_rows),
+            "reconnect_backfill": any(row.get("metric_name") == "reconnect_backfill" for row in runtime_rows),
+            "clock_sync": (metrics["clock_offset_max_ms"] or 999999) <= 5000 if metrics["clock_offset_max_ms"] is not None else False,
+        }
         evidence["slippage_market_impact"] = {
             "signal_price_recorded": all(row.get("signal_price") is not None for row in order_rows),
             "theoretical_execution_price_recorded": all(
@@ -677,7 +705,7 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
             "volatility_adjusted_slippage": any("volatility_bps" in (row.get("detail") or {}) for row in order_rows),
         }
         evidence["fees"] = {
-            "maker_taker_distinguished": any("maker_taker" in (row.get("detail") or {}) for row in order_rows),
+            "maker_taker_distinguished": bool(maker_taker_flags),
             "fee_schedule_configured": metrics["fees_included"],
             "pair_fee_differences_considered": any("fee_schedule" in (row.get("detail") or {}) for row in order_rows),
             "fee_recorded_per_trade": metrics["fees_included"],
@@ -775,9 +803,16 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
             "time_sync": (metrics["clock_offset_max_ms"] or 0) <= 5000 if metrics["clock_offset_max_ms"] is not None else False,
         }
         evidence["monitoring_dashboard"] = {
+            "real_time_equity": any(row.get("metric_name") == "real_time_equity" for row in runtime_rows),
+            "available_balance": any(row.get("metric_name") == "available_balance" for row in runtime_rows),
+            "current_positions": any(row.get("metric_name") == "current_positions" for row in runtime_rows),
+            "open_orders": any(row.get("metric_name") == "open_orders" for row in runtime_rows),
+            "daily_total_pnl": any(row.get("metric_name") == "daily_total_pnl" for row in runtime_rows),
+            "max_drawdown_displayed": any(row.get("metric_name") == "max_drawdown_displayed" for row in runtime_rows),
             "strategy_status": True,
             "data_connection_status": reconnect_count >= 0,
             "api_error_rate": metrics["api_error_rate"] is not None,
+            "recent_trades": bool(order_rows),
             "risk_control_status": any(row.get("metric_name") == "risk_status" for row in runtime_rows),
         }
 
