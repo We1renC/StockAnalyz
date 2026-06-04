@@ -5045,6 +5045,91 @@ def _populate_backtest_panel(layers: dict, backtest_replay: dict, *, preview: in
 DAILY_REPORT_SCHEMA_VERSION = 1
 
 
+CLOSED_LOOP_SCHEMA_VERSION = 1
+
+
+def run_closed_loop_calibration(
+    trade_records: list[dict],
+    *,
+    base_weights: Optional[dict[str, int]] = None,
+    walk_forward_folds: int = 4,
+    train_fraction: float = 0.6,
+    kelly_fractional: float = 0.25,
+    kelly_cap: float = 0.05,
+    mae_min_winners: int = 20,
+) -> dict:
+    """§18.5 — orchestrate the full closed-loop calibration cycle.
+
+    Pipeline (matches §18.5 step ordering):
+      1. Backtest stats (compute_expectancy)
+      2. Attribution (extract_factor_edge stub via expectancy.lift)
+      3. Suggested calibration:
+         • New §5.2 weights via suggest_confluence_weights
+         • Fractional Kelly risk %
+         • MAE/MFE-driven stop/TP recommendations
+      4. OOS validation (walk_forward_evaluate)
+      5. Verdict: only adopt calibration if OOS passes
+
+    Returns a single structured report — caller persists to disk,
+    PRs the proposed strategy.yaml, etc.
+    """
+    if not trade_records:
+        return {
+            "schema_version": CLOSED_LOOP_SCHEMA_VERSION,
+            "status": "no_trades",
+        }
+    expect = compute_expectancy(trade_records)
+    # Build a stub factor_edge from the per-factor lift block (already in
+    # expect["lift"]) so suggest_confluence_weights has the right shape.
+    factor_edge = {
+        "factors": {
+            name: {
+                "n_with": stats["sample_size"],
+                "n_without": expect["sample_size"] - stats["sample_size"],
+                "edge": stats["expected_R"] - expect["expected_R"],
+            }
+            for name, stats in (expect.get("lift") or {}).items()
+        }
+    }
+    suggested_weights = suggest_confluence_weights(factor_edge, base_weights)
+    kelly = kelly_fraction(
+        win_rate=expect["win_rate"],
+        avg_win_R=expect["avg_win_R"],
+        avg_loss_R=expect["avg_loss_R"],
+        fractional=kelly_fractional,
+        cap=kelly_cap,
+    )
+    mae_plan = mae_mfe_recommendations(trade_records, min_samples=mae_min_winners)
+    oos = walk_forward_evaluate(
+        trade_records,
+        folds=walk_forward_folds,
+        train_fraction=train_fraction,
+    )
+    adopt = bool(oos.get("passes"))
+    return {
+        "schema_version": CLOSED_LOOP_SCHEMA_VERSION,
+        "status": "ok",
+        "sample_size": expect["sample_size"],
+        "backtest": {
+            "expected_R": expect["expected_R"],
+            "win_rate": expect["win_rate"],
+            "avg_win_R": expect["avg_win_R"],
+            "avg_loss_R": expect["avg_loss_R"],
+        },
+        "attribution": expect.get("lift") or {},
+        "proposed_calibration": {
+            "weights": suggested_weights,
+            "kelly_fraction": kelly,
+            "mae_mfe_recommendations": mae_plan,
+        },
+        "oos_validation": oos,
+        "verdict": {
+            "adopt": adopt,
+            "reason": "oos_passes" if adopt else "oos_failed",
+        },
+    }
+
+
 def build_daily_report(
     *,
     symbol: str,

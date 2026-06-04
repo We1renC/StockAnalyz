@@ -3791,3 +3791,53 @@ def test_build_daily_report_headline_signals_no_trigger():
     fake = {"summary": {"bias": "neutral"}, "concepts": {"entry_models": {"triggered": []}}}
     report = build_daily_report(symbol="AAPL", analysis=fake)
     assert "no_trigger" in report["headline"]["label"]
+
+
+def test_run_closed_loop_calibration_no_trades_returns_status():
+    """§18.5: empty ledger → status=no_trades, no calibration proposed."""
+    from smc_quant import run_closed_loop_calibration
+    out = run_closed_loop_calibration([])
+    assert out["status"] == "no_trades"
+    assert out["schema_version"] == 1
+
+
+def test_run_closed_loop_calibration_assembles_all_five_steps():
+    """Profitable, OOS-stable ledger → all 5 spec steps populated."""
+    from smc_quant import run_closed_loop_calibration
+    base = datetime(2026, 1, 1)
+    records = []
+    for i in range(30):
+        r = 2.0 if i % 3 != 2 else -1.0
+        records.append({
+            "entry_time": (base + timedelta(days=i)).isoformat(),
+            "r_multiple": r,
+            "mae": -0.4, "mfe": 2.4,
+            "factors": {"htf_bias_aligned": True, "killzone": False},
+        })
+    out = run_closed_loop_calibration(records, walk_forward_folds=3)
+    assert out["status"] == "ok"
+    assert out["sample_size"] == 30
+    assert out["backtest"]["expected_R"] > 0
+    cal = out["proposed_calibration"]
+    assert "weights" in cal
+    assert "kelly_fraction" in cal
+    assert "mae_mfe_recommendations" in cal
+    assert "folds" in out["oos_validation"]
+    assert isinstance(out["verdict"]["adopt"], bool)
+
+
+def test_run_closed_loop_calibration_blocks_adoption_when_oos_fails():
+    """Edge-decay scenario: first half all-win, second half all-loss → OOS fails."""
+    from smc_quant import run_closed_loop_calibration
+    base = datetime(2026, 1, 1)
+    records = []
+    for i in range(16):
+        r = 2.0 if i < 8 else -1.0
+        records.append({
+            "entry_time": (base + timedelta(days=i)).isoformat(),
+            "r_multiple": r,
+            "factors": {},
+        })
+    out = run_closed_loop_calibration(records, walk_forward_folds=4)
+    assert out["verdict"]["adopt"] is False
+    assert "oos_failed" in out["verdict"]["reason"]
