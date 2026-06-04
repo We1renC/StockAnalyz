@@ -3900,3 +3900,63 @@ def test_bonferroni_threshold_divides_alpha_by_n_tests():
     assert out["alpha_adjusted"] == 0.0025
     assert out["n_tests"] == 20
     assert bonferroni_threshold(0.05, 0)["note"] == "no_tests"
+
+
+def test_smc_morning_briefing_returns_one_row_per_symbol():
+    """§11.2: morning briefing payload covers HTF bias + top entry + inflow XV."""
+    from smc_quant import smc_morning_briefing
+    a = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    b = build_smc_analysis(
+        _sample_ohlcv(), "2330.TW",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    out = smc_morning_briefing(
+        {"AAPL": a, "2330.TW": b},
+        institutional_net_buy={"2330.TW": {"foreign": 5000, "investment_trust": 1000, "dealer": 0}},
+    )
+    assert out["workflow"] == "daily_morning_briefing"
+    assert len(out["rows"]) == 2
+    tw_row = next(r for r in out["rows"] if r["symbol"] == "2330.TW")
+    assert tw_row["inflow_xv"] is not None
+    assert tw_row["inflow_xv"]["status"] == "ok"
+
+
+def test_smc_intraday_execution_alerts_emits_entry_and_judas_alerts():
+    from smc_quant import smc_intraday_execution_alerts
+    a = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    alerts = smc_intraday_execution_alerts({"AAPL": a})
+    kinds = {alert["kind"] for alert in alerts}
+    assert kinds.issubset({"entry_trigger", "judas_sweep"})
+
+
+def test_smc_after_market_review_bundles_distribution_and_calibration():
+    from smc_quant import smc_after_market_review
+    base = datetime(2026, 1, 1)
+    records = []
+    for i in range(20):
+        r = 2.0 if i % 2 == 0 else -1.0
+        records.append({
+            "entry_time": (base + timedelta(days=i)).isoformat(),
+            "r_multiple": r,
+            "factors": {"htf_bias_aligned": True},
+            "mae": -0.4, "mfe": 2.0,
+        })
+    out = smc_after_market_review(records)
+    assert out["workflow"] == "after_market_review"
+    assert out["trade_count"] == 20
+    assert "r_distribution" in out
+    assert "monthly_stability" in out
+    assert "closed_loop_calibration" in out
+
+
+def test_smc_morning_briefing_empty_analyses_returns_empty_rows():
+    from smc_quant import smc_morning_briefing
+    out = smc_morning_briefing({})
+    assert out["rows"] == []
+    assert out["headline_count"] == 0

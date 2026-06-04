@@ -5042,6 +5042,129 @@ def _populate_backtest_panel(layers: dict, backtest_replay: dict, *, preview: in
     return layers
 
 
+WORKFLOW_HOOK_SCHEMA_VERSION = 1
+
+
+def smc_morning_briefing(
+    analyses: dict,
+    *,
+    institutional_net_buy: Optional[dict[str, dict]] = None,
+) -> dict:
+    """§11.2 — payload for ``daily_morning_briefing`` workflow.
+
+    Input ``analyses`` is ``{symbol: build_smc_analysis_result}``. For
+    each symbol surfaces the HTF/MTF bias, the top scored entry (POI
+    + score + DOL), and—when available—the §11.1 inflow cross-check
+    so the executor agent has everything to brief the trader in one
+    glance.
+    """
+    rows: list[dict] = []
+    for sym, analysis in (analyses or {}).items():
+        summary = (analysis or {}).get("summary") or {}
+        concepts = (analysis or {}).get("concepts") or {}
+        em = (concepts.get("entry_models") or {})
+        triggered = sorted(
+            em.get("triggered") or [],
+            key=lambda e: (e.get("confluence") or {}).get("score", 0),
+            reverse=True,
+        )
+        top = triggered[0] if triggered else None
+        inflow_block = None
+        if institutional_net_buy and sym in institutional_net_buy:
+            inflow_block = cross_validate_smc_vs_institutional(
+                summary.get("bias", "neutral"),
+                institutional_net_buy[sym],
+            )
+        rows.append({
+            "symbol": sym,
+            "bias": summary.get("bias"),
+            "top_entry": {
+                "model": top.get("model"),
+                "direction": top.get("direction"),
+                "entry": top.get("entry"),
+                "stop": top.get("stop"),
+                "target": top.get("target"),
+                "rr": top.get("rr"),
+                "score": (top.get("confluence") or {}).get("score"),
+                "dol_target": top.get("dol_target"),
+            } if top else None,
+            "inflow_xv": inflow_block,
+        })
+    return {
+        "schema_version": WORKFLOW_HOOK_SCHEMA_VERSION,
+        "workflow": "daily_morning_briefing",
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "rows": rows,
+        "headline_count": sum(1 for r in rows if r["top_entry"]),
+    }
+
+
+def smc_intraday_execution_alerts(
+    analyses: dict,
+) -> list[dict]:
+    """§11.2 — fire-and-forget alerts for ``intraday_execution``.
+
+    Returns one alert per HTF POI entry (price has reached the POI) or
+    fresh Judas sweep within the last N bars. Each alert carries the
+    minimum needed to route into the execution agent:
+      {symbol, kind, model, direction, entry, stop, target, score}.
+    """
+    alerts: list[dict] = []
+    for sym, analysis in (analyses or {}).items():
+        concepts = (analysis or {}).get("concepts") or {}
+        em = (concepts.get("entry_models") or {})
+        for entry in (em.get("triggered") or []):
+            if not entry.get("dol_target") or entry.get("dol_required"):
+                continue
+            alerts.append({
+                "symbol": sym,
+                "kind": "entry_trigger",
+                "model": entry.get("model"),
+                "direction": entry.get("direction"),
+                "entry": entry.get("entry"),
+                "stop": entry.get("stop"),
+                "target": entry.get("target"),
+                "rr": entry.get("rr"),
+                "score": (entry.get("confluence") or {}).get("score"),
+            })
+        judas = (concepts.get("judas") or {}).get("events") or []
+        for ev in judas[-3:]:
+            alerts.append({
+                "symbol": sym,
+                "kind": "judas_sweep",
+                "direction": ev.get("real_direction"),
+                "sweep_level": ev.get("sweep_level"),
+                "session": ev.get("session_at_sweep"),
+                "killzone": ev.get("killzone"),
+            })
+    return alerts
+
+
+def smc_after_market_review(
+    trade_records: list[dict],
+    *,
+    base_weights: Optional[dict[str, int]] = None,
+) -> dict:
+    """§11.2 — payload for ``after_market_review``.
+
+    Bundles the §10/§18 closed-loop calibration result with R-multiple
+    distribution and monthly stability into the agent-facing review
+    object. Designed to feed into Slack/Obsidian recap.
+    """
+    distribution = r_multiple_distribution(trade_records)
+    stability = monthly_edge_stability(trade_records)
+    calibration = run_closed_loop_calibration(trade_records, base_weights=base_weights)
+    return {
+        "schema_version": WORKFLOW_HOOK_SCHEMA_VERSION,
+        "workflow": "after_market_review",
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "trade_count": len(trade_records or []),
+        "r_distribution": distribution,
+        "monthly_stability": stability,
+        "closed_loop_calibration": calibration,
+    }
+
+
 DAILY_REPORT_SCHEMA_VERSION = 1
 
 
