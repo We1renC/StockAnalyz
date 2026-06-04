@@ -9,12 +9,20 @@ from paper_acceptance_store import (
     build_smc_acceptance_context,
     delete_acceptance_check,
     ensure_paper_acceptance_schema,
+    load_alert_deliveries,
     load_acceptance_checks,
     load_acceptance_context_overrides,
     load_acceptance_events,
     load_acceptance_reports,
+    load_order_audit_rows,
+    load_reconciliation_runs,
+    load_runtime_metrics,
     persist_acceptance_report,
+    record_alert_delivery,
     record_acceptance_event,
+    record_order_audit,
+    record_reconciliation_run,
+    record_runtime_metric,
     upsert_acceptance_check,
     upsert_acceptance_context_overrides,
 )
@@ -219,3 +227,123 @@ def test_workspace_overrides_and_manual_checks_are_reflected_in_workspace():
         if row["key"] == "entry_conditions"
     )
     assert check_after_clear["source"] != "manual"
+
+
+def test_telemetry_and_order_audit_are_aggregated_into_acceptance_context():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+    ensure_paper_acceptance_schema(conn)
+
+    record_runtime_metric(conn, symbol="ABAT", metric_name="api_request", value=10)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="api_error", value=1, severity="error")
+    record_runtime_metric(conn, symbol="ABAT", metric_name="api_latency_ms", value=120)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="api_latency_ms", value=240)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="market_data_latency_ms", value=80)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="signal_compute_time_ms", value=15)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="order_request_latency_ms", value=55)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="exchange_response_latency_ms", value=65)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="database_write_latency_ms", value=25)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="loop_runtime_ms", value=90)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="memory_pct", value=40)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="cpu_pct", value=35)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="disk_free_gb", value=18)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="clock_offset_ms", value=1200)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="log_size_mb", value=30)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="db_connection_count", value=4)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="request_weight", value=50)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="order_count", value=5)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="shared_api_budget", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="rate_limit_backoff", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="bounded_retry", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="request_priority_rule", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="latency_pause", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="risk_status", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="scheduled_task_ok", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="restart_state_recovery", value=1)
+
+    record_reconciliation_run(
+        conn,
+        symbol="ABAT",
+        status="resolved",
+        severity="warning",
+        order_diff_count=1,
+        position_diff_count=0,
+        balance_diff_count=0,
+        trade_diff_count=1,
+        auto_suspend_recommended=True,
+        restoration_result="recovered",
+    )
+    record_order_audit(
+        conn,
+        symbol="ABAT",
+        side="buy",
+        order_type="market",
+        state="filled",
+        requested_qty=5,
+        filled_qty=5,
+        signal_price=10.0,
+        avg_price=10.15,
+        notional=50.75,
+        fee=0.1,
+        slippage_bps=150.0,
+        market_impact_bps=25.0,
+        execution_latency_ms=180,
+        strategy_version="v1",
+        parameter_version="p1",
+        signal_source="smc",
+        detail={"volatility_bps": 18},
+    )
+    record_order_audit(
+        conn,
+        symbol="ABAT",
+        side="buy",
+        order_type="limit",
+        state="partially_filled",
+        requested_qty=10,
+        filled_qty=6,
+        unfilled_qty=4,
+        signal_price=10.0,
+        limit_price=10.05,
+        avg_price=10.05,
+        notional=60.3,
+        fee=0.08,
+        slippage_bps=50.0,
+        market_impact_bps=10.0,
+        execution_latency_ms=420,
+        client_order_id="cli-1",
+        strategy_version="v1",
+        parameter_version="p1",
+        signal_source="smc",
+        submitted_at="2026-06-01T09:00:00Z",
+        fill_at="2026-06-01T09:00:03Z",
+        detail={"adverse_selection_bps": 12, "post_order_price_move_bps": 30},
+    )
+    record_alert_delivery(conn, symbol="ABAT", event_type="api_error", severity="warning")
+    record_alert_delivery(conn, symbol="ABAT", event_type="reconciliation", severity="warning")
+    record_alert_delivery(conn, symbol="ABAT", event_type="kill_switch", severity="critical")
+
+    context = build_smc_acceptance_context(conn, symbol="ABAT")
+    workspace = build_acceptance_workspace(conn, symbol="ABAT")
+
+    assert context["metrics"]["fees_included"] is True
+    assert context["metrics"]["slippage_included"] is True
+    assert context["metrics"]["reconciliation_implemented"] is True
+    assert context["metrics"]["fill_rate"] == 1.0
+    assert context["metrics"]["partial_fill_ratio"] == 0.5
+    assert context["metrics"]["latency_p95"] is not None
+    assert len(workspace["runtime_metrics"]) >= 5
+    assert len(workspace["reconciliation_runs"]) == 1
+    assert len(workspace["order_audit"]) == 2
+    assert len(workspace["alert_deliveries"]) == 3
+
+    alert_gate = next(item for item in workspace["catalog"] if item["section"] == "11.2")
+    kill_switch_check = next(
+        row for row in alert_gate["gates"][0]["checks"]
+        if row["key"] == "kill_switch_notifications"
+    )
+    assert kill_switch_check["value"] is True
+
+    assert load_runtime_metrics(conn, symbol="ABAT")
+    assert load_reconciliation_runs(conn, symbol="ABAT")
+    assert load_order_audit_rows(conn, symbol="ABAT")
+    assert load_alert_deliveries(conn, symbol="ABAT")

@@ -12,6 +12,18 @@ from paper_acceptance import (
     build_acceptance_report,
     render_acceptance_markdown,
 )
+from paper_acceptance_metrics import (
+    ensure_paper_acceptance_metrics_schema,
+    load_alert_deliveries,
+    load_order_audit_rows,
+    load_reconciliation_runs,
+    load_runtime_metrics,
+    record_alert_delivery,
+    record_order_audit,
+    record_reconciliation_run,
+    record_runtime_metric,
+    summarize_acceptance_telemetry,
+)
 
 
 FRAMEWORK_CAPABILITY_CHECKS: dict[str, dict[str, bool]] = {
@@ -210,6 +222,7 @@ def ensure_paper_acceptance_schema(conn) -> None:
         """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_evidence_symbol_gate
            ON paper_acceptance_evidence(symbol, stage, gate_id, updated_at DESC)"""
     )
+    ensure_paper_acceptance_metrics_schema(conn)
     conn.commit()
 
 
@@ -916,6 +929,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
     live_rows = _load_journal_rows(conn, symbol=key, environment="live")
     backtest_runs = _load_backtest_runs(conn, symbol=key, limit=20)
     events = load_acceptance_events(conn, symbol=key, limit=500)
+    telemetry = summarize_acceptance_telemetry(conn, symbol=key, stage="paper")
     strategy_payload = dict(overrides["strategy"] or {})
     strategy_payload.update(strategy or {})
     strategy_payload.setdefault("name", "SMC Paper Acceptance")
@@ -992,6 +1006,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "live_trade_count": live_summary.get("trade_count"),
         "backtest_trade_count": latest_backtest.get("total_trades"),
     }
+    metrics.update({key: value for key, value in telemetry.get("metrics", {}).items() if value is not None})
     metrics.update({key: value for key, value in overrides["metrics"].items() if value is not None})
     evidence = _build_auto_evidence(
         strategy=strategy_payload,
@@ -1001,6 +1016,9 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         backtest_runs=backtest_runs,
         events=events,
     )
+    for gate_id, checks in (telemetry.get("evidence") or {}).items():
+        for check_key, value in (checks or {}).items():
+            _merge_check(evidence, gate_id, check_key, value, source="observed")
     _apply_manual_evidence(evidence, load_acceptance_checks(conn, key, stage="paper"))
     prohibitions = _build_auto_prohibitions(metrics, strategy_payload, evidence)
     prohibitions.update({key: bool(value) for key, value in (overrides["prohibitions"] or {}).items()})
@@ -1018,6 +1036,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
             }
             for row in _journal_closed_rows(paper_rows)
         ],
+        "telemetry": telemetry,
     }
 
 
@@ -1048,6 +1067,10 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         "sections": section_summaries,
         "catalog": catalog,
         "events": load_acceptance_events(conn, symbol=key, limit=100),
+        "runtime_metrics": load_runtime_metrics(conn, symbol=key, stage=stage, limit=60),
+        "reconciliation_runs": load_reconciliation_runs(conn, symbol=key, stage=stage, limit=30),
+        "order_audit": load_order_audit_rows(conn, symbol=key, stage=stage, limit=40),
+        "alert_deliveries": load_alert_deliveries(conn, symbol=key, stage=stage, limit=40),
         "reports": load_acceptance_reports(conn, symbol=key, limit=limit_reports),
     }
 
@@ -1058,12 +1081,20 @@ __all__ = [
     "build_smc_acceptance_context",
     "delete_acceptance_check",
     "ensure_paper_acceptance_schema",
+    "load_alert_deliveries",
     "load_acceptance_checks",
     "load_acceptance_context_overrides",
     "load_acceptance_events",
     "load_acceptance_reports",
+    "load_order_audit_rows",
+    "load_reconciliation_runs",
+    "load_runtime_metrics",
     "persist_acceptance_report",
+    "record_alert_delivery",
     "record_acceptance_event",
+    "record_order_audit",
+    "record_reconciliation_run",
+    "record_runtime_metric",
     "upsert_acceptance_check",
     "upsert_acceptance_context_overrides",
 ]

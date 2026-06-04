@@ -44,10 +44,18 @@ from paper_acceptance_store import (
     build_smc_acceptance_context,
     delete_acceptance_check,
     ensure_paper_acceptance_schema,
+    load_alert_deliveries,
     load_acceptance_context_overrides,
     load_acceptance_events,
     load_acceptance_reports,
+    load_order_audit_rows,
+    load_reconciliation_runs,
+    load_runtime_metrics,
+    record_alert_delivery,
     record_acceptance_event,
+    record_order_audit,
+    record_reconciliation_run,
+    record_runtime_metric,
     upsert_acceptance_check,
     upsert_acceptance_context_overrides,
 )
@@ -4751,6 +4759,76 @@ class PaperAcceptanceEventCreate(BaseModel):
     run_key: Optional[str] = None
 
 
+class PaperAcceptanceRuntimeMetricCreate(BaseModel):
+    symbol: str
+    metric_name: str
+    value: Optional[float] = None
+    severity: str = "info"
+    detail: Optional[dict] = None
+    stage: str = "paper"
+    recorded_at: Optional[str] = None
+
+
+class PaperAcceptanceReconciliationCreate(BaseModel):
+    symbol: str
+    status: str = "ok"
+    severity: str = "info"
+    order_diff_count: int = 0
+    position_diff_count: int = 0
+    balance_diff_count: int = 0
+    trade_diff_count: int = 0
+    auto_suspend_recommended: bool = False
+    restoration_result: Optional[str] = None
+    detail: Optional[dict] = None
+    stage: str = "paper"
+    created_at: Optional[str] = None
+
+
+class PaperAcceptanceOrderAuditCreate(BaseModel):
+    symbol: str
+    side: str
+    order_type: str
+    state: str
+    requested_qty: float
+    filled_qty: float = 0.0
+    unfilled_qty: float = 0.0
+    signal_price: Optional[float] = None
+    limit_price: Optional[float] = None
+    avg_price: Optional[float] = None
+    notional: Optional[float] = None
+    fee: Optional[float] = None
+    slippage_bps: Optional[float] = None
+    market_impact_bps: Optional[float] = None
+    execution_latency_ms: Optional[float] = None
+    client_order_id: Optional[str] = None
+    exchange_order_id: Optional[str] = None
+    strategy_version: str = ""
+    parameter_version: str = ""
+    signal_source: str = ""
+    submitted_at: Optional[str] = None
+    ack_at: Optional[str] = None
+    fill_at: Optional[str] = None
+    cancel_at: Optional[str] = None
+    reject_reason: str = ""
+    detail: Optional[dict] = None
+    stage: str = "paper"
+    created_at: Optional[str] = None
+
+
+class PaperAcceptanceAlertDeliveryCreate(BaseModel):
+    symbol: str
+    event_type: str
+    severity: str = "info"
+    channel: str = "app"
+    delivered: bool = True
+    acknowledged: bool = False
+    latency_ms: Optional[float] = None
+    payload_complete: bool = True
+    detail: Optional[dict] = None
+    stage: str = "paper"
+    created_at: Optional[str] = None
+
+
 def _json_dumps_compact(value, fallback):
     if value is None:
         value = fallback
@@ -5369,6 +5447,172 @@ def api_record_paper_acceptance_event(event: PaperAcceptanceEventCreate):
     )
     conn.close()
     return {"ok": True, "event_key": event_key}
+
+
+@app.get("/api/paper-acceptance/runtime-metrics")
+def api_get_paper_acceptance_runtime_metrics(symbol: str, stage: str = "paper", limit: int = 200):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        rows = load_runtime_metrics(conn, symbol=symbol.strip().upper(), stage=stage, limit=limit)
+        return sanitize_float_values({"rows": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+@app.post("/api/paper-acceptance/runtime-metrics")
+def api_record_paper_acceptance_runtime_metric(req: PaperAcceptanceRuntimeMetricCreate):
+    if not req.symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    if not req.metric_name.strip():
+        raise HTTPException(400, "metric_name is required")
+    conn = get_db()
+    try:
+        row = record_runtime_metric(
+            conn,
+            symbol=req.symbol.strip().upper(),
+            metric_name=req.metric_name.strip(),
+            value=req.value,
+            severity=req.severity,
+            detail=req.detail or {},
+            stage=req.stage,
+            recorded_at=req.recorded_at,
+        )
+        return sanitize_float_values({"ok": True, "row": row})
+    finally:
+        conn.close()
+
+
+@app.get("/api/paper-acceptance/reconciliation")
+def api_get_paper_acceptance_reconciliation(symbol: str, stage: str = "paper", limit: int = 100):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        rows = load_reconciliation_runs(conn, symbol=symbol.strip().upper(), stage=stage, limit=limit)
+        return sanitize_float_values({"rows": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+@app.post("/api/paper-acceptance/reconciliation")
+def api_record_paper_acceptance_reconciliation(req: PaperAcceptanceReconciliationCreate):
+    if not req.symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        row = record_reconciliation_run(
+            conn,
+            symbol=req.symbol.strip().upper(),
+            status=req.status,
+            severity=req.severity,
+            order_diff_count=req.order_diff_count,
+            position_diff_count=req.position_diff_count,
+            balance_diff_count=req.balance_diff_count,
+            trade_diff_count=req.trade_diff_count,
+            auto_suspend_recommended=req.auto_suspend_recommended,
+            restoration_result=req.restoration_result,
+            detail=req.detail or {},
+            stage=req.stage,
+            created_at=req.created_at,
+        )
+        return {"ok": True, "row": row}
+    finally:
+        conn.close()
+
+
+@app.get("/api/paper-acceptance/order-audit")
+def api_get_paper_acceptance_order_audit(symbol: str, stage: str = "paper", limit: int = 200):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        rows = load_order_audit_rows(conn, symbol=symbol.strip().upper(), stage=stage, limit=limit)
+        return sanitize_float_values({"rows": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+@app.post("/api/paper-acceptance/order-audit")
+def api_record_paper_acceptance_order_audit(req: PaperAcceptanceOrderAuditCreate):
+    if not req.symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        row = record_order_audit(
+            conn,
+            symbol=req.symbol.strip().upper(),
+            side=req.side,
+            order_type=req.order_type,
+            state=req.state,
+            requested_qty=req.requested_qty,
+            filled_qty=req.filled_qty,
+            unfilled_qty=req.unfilled_qty,
+            signal_price=req.signal_price,
+            limit_price=req.limit_price,
+            avg_price=req.avg_price,
+            notional=req.notional,
+            fee=req.fee,
+            slippage_bps=req.slippage_bps,
+            market_impact_bps=req.market_impact_bps,
+            execution_latency_ms=req.execution_latency_ms,
+            client_order_id=req.client_order_id,
+            exchange_order_id=req.exchange_order_id,
+            strategy_version=req.strategy_version,
+            parameter_version=req.parameter_version,
+            signal_source=req.signal_source,
+            submitted_at=req.submitted_at,
+            ack_at=req.ack_at,
+            fill_at=req.fill_at,
+            cancel_at=req.cancel_at,
+            reject_reason=req.reject_reason,
+            detail=req.detail or {},
+            stage=req.stage,
+            created_at=req.created_at,
+        )
+        return sanitize_float_values({"ok": True, "row": row})
+    finally:
+        conn.close()
+
+
+@app.get("/api/paper-acceptance/alert-deliveries")
+def api_get_paper_acceptance_alert_deliveries(symbol: str, stage: str = "paper", limit: int = 100):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        rows = load_alert_deliveries(conn, symbol=symbol.strip().upper(), stage=stage, limit=limit)
+        return sanitize_float_values({"rows": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+@app.post("/api/paper-acceptance/alert-deliveries")
+def api_record_paper_acceptance_alert_deliveries(req: PaperAcceptanceAlertDeliveryCreate):
+    if not req.symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    if not req.event_type.strip():
+        raise HTTPException(400, "event_type is required")
+    conn = get_db()
+    try:
+        row = record_alert_delivery(
+            conn,
+            symbol=req.symbol.strip().upper(),
+            event_type=req.event_type.strip(),
+            severity=req.severity,
+            channel=req.channel,
+            delivered=req.delivered,
+            acknowledged=req.acknowledged,
+            latency_ms=req.latency_ms,
+            payload_complete=req.payload_complete,
+            detail=req.detail or {},
+            stage=req.stage,
+            created_at=req.created_at,
+        )
+        return sanitize_float_values({"ok": True, "row": row})
+    finally:
+        conn.close()
 
 
 # ─────────────── 警報歷史篩選 ───────────────

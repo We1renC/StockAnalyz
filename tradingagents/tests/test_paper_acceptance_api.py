@@ -4,9 +4,13 @@ from unittest.mock import patch
 
 import app
 from app import (
+    PaperAcceptanceAlertDeliveryCreate,
     PaperAcceptanceCheckUpdate,
     PaperAcceptanceEventCreate,
     PaperAcceptanceGenerateRequest,
+    PaperAcceptanceOrderAuditCreate,
+    PaperAcceptanceReconciliationCreate,
+    PaperAcceptanceRuntimeMetricCreate,
     PaperAcceptanceWorkspaceUpdate,
     SMCJournalCreate,
 )
@@ -132,5 +136,70 @@ def test_api_workspace_and_check_crud(tmp_path):
             if row["key"] == "entry_conditions"
         )
         assert check_after_clear["source"] != "manual"
+    finally:
+        app.DB = original
+
+
+def test_api_runtime_metrics_reconciliation_order_audit_and_alert_delivery(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        app.api_record_paper_acceptance_runtime_metric(
+            PaperAcceptanceRuntimeMetricCreate(symbol="ABAT", metric_name="api_request", value=12)
+        )
+        app.api_record_paper_acceptance_runtime_metric(
+            PaperAcceptanceRuntimeMetricCreate(symbol="ABAT", metric_name="api_latency_ms", value=145)
+        )
+        app.api_record_paper_acceptance_reconciliation(
+            PaperAcceptanceReconciliationCreate(
+                symbol="ABAT",
+                status="resolved",
+                severity="warning",
+                order_diff_count=1,
+                trade_diff_count=1,
+                auto_suspend_recommended=True,
+            )
+        )
+        app.api_record_paper_acceptance_order_audit(
+            PaperAcceptanceOrderAuditCreate(
+                symbol="ABAT",
+                side="buy",
+                order_type="market",
+                state="filled",
+                requested_qty=5,
+                filled_qty=5,
+                signal_price=10.0,
+                avg_price=10.1,
+                notional=50.5,
+                fee=0.1,
+                slippage_bps=100.0,
+                market_impact_bps=18.0,
+                execution_latency_ms=120,
+                strategy_version="v1",
+                parameter_version="p1",
+                signal_source="smc",
+            )
+        )
+        app.api_record_paper_acceptance_alert_deliveries(
+            PaperAcceptanceAlertDeliveryCreate(
+                symbol="ABAT",
+                event_type="api_error",
+                severity="warning",
+                payload_complete=True,
+            )
+        )
+
+        metrics = app.api_get_paper_acceptance_runtime_metrics(symbol="ABAT")
+        reconciliation = app.api_get_paper_acceptance_reconciliation(symbol="ABAT")
+        orders = app.api_get_paper_acceptance_order_audit(symbol="ABAT")
+        alerts = app.api_get_paper_acceptance_alert_deliveries(symbol="ABAT")
+        workspace = app.api_get_paper_acceptance_workspace(symbol="ABAT")
+
+        assert metrics["count"] >= 2
+        assert reconciliation["count"] == 1
+        assert orders["count"] == 1
+        assert alerts["count"] == 1
+        assert workspace["report"]["metrics"]["fees_included"] is True
+        assert workspace["report"]["metrics"]["reconciliation_implemented"] is True
+        assert len(workspace["runtime_metrics"]) >= 2
     finally:
         app.DB = original
