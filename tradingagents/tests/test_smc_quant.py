@@ -1353,3 +1353,48 @@ def test_build_smc_analysis_exposes_fvg_extensions():
     for key in ("inverse_fvgs", "balanced_price_ranges", "volume_imbalances"):
         assert key in result["concepts"]
         assert isinstance(result["concepts"][key], list)
+
+
+def test_spot_perp_divergence_flags_perp_led_rallies():
+    """§17.3: perp moves +1% while spot stays flat → perp_led_up_warning."""
+    from smc_quant import detect_spot_perp_divergence
+    idx = [datetime(2026, 1, 1) + timedelta(hours=i) for i in range(15)]
+    perp_rows = [(100, 100, 100, 100 + i * 0.1, 1) for i in range(15)]
+    spot_rows = [(100, 100, 100, 100, 1)] * 15
+    perp = normalize_ohlcv(pd.DataFrame(perp_rows, columns=["Open","High","Low","Close","Volume"], index=idx))
+    spot = normalize_ohlcv(pd.DataFrame(spot_rows, columns=["Open","High","Low","Close","Volume"], index=idx))
+    out = detect_spot_perp_divergence(perp, spot, lookback=12, move_threshold_pct=0.5)
+    assert out["status"] == "ok"
+    assert out["verdict"] == "perp_led_up_warning"
+    assert out["perp_move_pct"] > out["spot_move_pct"]
+
+
+def test_spot_perp_divergence_returns_no_data_when_inputs_missing():
+    from smc_quant import detect_spot_perp_divergence
+    out = detect_spot_perp_divergence(None, None)
+    assert out["status"] == "no_data"
+
+
+def test_cvd_slope_labels_aggressive_buying_when_slope_positive():
+    from smc_quant import cvd_slope
+    s = pd.Series([0, 5, 10, 15, 22, 30, 38, 47, 55, 63, 72])
+    out = cvd_slope(s, window=10)
+    assert out["status"] == "ok"
+    assert out["slope"] > 0
+    assert out["regime"] in {"mild_buying", "aggressive_buying"}
+
+
+def test_build_crypto_overlay_routes_spot_and_cvd():
+    from smc_quant import build_crypto_overlay
+    h = normalize_ohlcv(_sample_ohlcv())
+    spot_rows = [(100, 100, 100, 100, 1)] * len(h)
+    spot = normalize_ohlcv(pd.DataFrame(spot_rows, columns=["Open","High","Low","Close","Volume"], index=h.index))
+    cvd = pd.Series(range(len(h)), index=h.index, dtype=float)
+    overlay = build_crypto_overlay(h, spot_df=spot, cvd=cvd)
+    assert overlay["spot_perp"]["status"] == "ok"
+    assert overlay["cvd_slope"]["status"] == "ok"
+    # Factor map exposes the new toggles
+    assert "perp_led_warning" in overlay["factors"]
+    assert "cvd_aggressive_flow" in overlay["factors"]
+    # Negative weight applied to the warning factor
+    assert overlay["weights"]["perp_led_warning"] < 0

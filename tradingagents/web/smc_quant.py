@@ -1198,6 +1198,89 @@ CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT = {
 }
 
 
+def detect_spot_perp_divergence(
+    perp_df: pd.DataFrame,
+    spot_df: pd.DataFrame,
+    *,
+    lookback: int = 12,
+    move_threshold_pct: float = 0.5,
+) -> dict:
+    """§17.3 — Spot vs. Perp divergence.
+
+    A spot-led rally represents real demand; a perp-led rally is
+    leveraged speculation prone to reversal. Over the last ``lookback``
+    bars, compare the % change of perp and spot last-close:
+      • perp ≥ +threshold, spot < +threshold/2  → perp_led_up (warning)
+      • spot ≥ +threshold, perp < +threshold/2  → spot_led_up (genuine)
+      • symmetric for downside
+
+    Returns a structured verdict + the underlying moves for audit.
+    """
+    if perp_df is None or spot_df is None or len(perp_df) < 2 or len(spot_df) < 2:
+        return {"status": "no_data", "verdict": None}
+    n = min(len(perp_df), len(spot_df))
+    start = max(0, n - lookback)
+    perp_close = float(perp_df["close"].iloc[-1])
+    perp_ref = float(perp_df["close"].iloc[start])
+    spot_close = float(spot_df["close"].iloc[-1])
+    spot_ref = float(spot_df["close"].iloc[start])
+    if perp_ref <= 0 or spot_ref <= 0:
+        return {"status": "no_data", "verdict": None}
+    perp_pct = (perp_close - perp_ref) / perp_ref * 100
+    spot_pct = (spot_close - spot_ref) / spot_ref * 100
+    verdict = "balanced"
+    if perp_pct >= move_threshold_pct and spot_pct < move_threshold_pct / 2:
+        verdict = "perp_led_up_warning"
+    elif spot_pct >= move_threshold_pct and perp_pct < move_threshold_pct / 2:
+        verdict = "spot_led_up_genuine"
+    elif perp_pct <= -move_threshold_pct and spot_pct > -move_threshold_pct / 2:
+        verdict = "perp_led_down_warning"
+    elif spot_pct <= -move_threshold_pct and perp_pct > -move_threshold_pct / 2:
+        verdict = "spot_led_down_genuine"
+    return {
+        "status": "ok",
+        "verdict": verdict,
+        "perp_move_pct": round(perp_pct, 3),
+        "spot_move_pct": round(spot_pct, 3),
+        "lookback_bars": lookback,
+        "threshold_pct": move_threshold_pct,
+    }
+
+
+def cvd_slope(cvd_series: Optional[pd.Series], *, window: int = 10) -> dict:
+    """§17.3 — directional bias of cumulative volume delta over a window.
+
+    Slope > 0 → net buying pressure; slope < 0 → net selling. Magnitude
+    is normalised by the series' rolling std so we can label
+    ``aggressive`` vs ``mild`` regimes for the confluence scorer.
+    """
+    if cvd_series is None or len(cvd_series) < window:
+        return {"status": "no_data", "slope": 0.0, "regime": "neutral"}
+    window_series = cvd_series.tail(window).astype(float)
+    x = list(range(len(window_series)))
+    y = list(window_series.values)
+    n = len(x)
+    mean_x = sum(x) / n
+    mean_y = sum(y) / n
+    num = sum((x[i] - mean_x) * (y[i] - mean_y) for i in range(n))
+    den = sum((xi - mean_x) ** 2 for xi in x)
+    slope = (num / den) if den else 0.0
+    std_y = (sum((yi - mean_y) ** 2 for yi in y) / n) ** 0.5
+    norm = slope / std_y if std_y else 0.0
+    if abs(norm) < 0.1:
+        regime = "neutral"
+    elif abs(norm) < 0.5:
+        regime = "mild_buying" if norm > 0 else "mild_selling"
+    else:
+        regime = "aggressive_buying" if norm > 0 else "aggressive_selling"
+    return {
+        "status": "ok",
+        "slope": round(slope, 4),
+        "normalised_slope": round(norm, 3),
+        "regime": regime,
+    }
+
+
 def build_crypto_overlay(
     df: pd.DataFrame,
     *,
@@ -1212,6 +1295,7 @@ def build_crypto_overlay(
     direction_bias: int = 0,
     is_altcoin: bool = False,
     cme_gaps: Optional[list[dict]] = None,
+    spot_df: Optional[pd.DataFrame] = None,
     sweep_lookback: int = 12,
     oi_drop_pct: float = 0.03,
     funding_extreme: float = 0.0005,
@@ -1350,6 +1434,11 @@ def build_crypto_overlay(
                 cme_hit = True; break
     out["cme_gap"] = {"hit": cme_hit}
 
+    # §17.3 — spot vs perp + CVD slope
+    out["spot_perp"] = detect_spot_perp_divergence(df, spot_df) if spot_df is not None else {"status": "no_data", "verdict": None}
+    out["cvd_slope"] = cvd_slope(cvd)
+    perp_warning = out["spot_perp"].get("verdict") in {"perp_led_up_warning", "perp_led_down_warning"}
+    cvd_aggressive = out["cvd_slope"].get("regime", "").startswith("aggressive_")
     # §17.10 crypto-confluence factors (boolean view → mergeable into score_confluence)
     out["factors"] = {
         "liquidation_cluster_sweep": cluster_swept_recently,
@@ -1362,8 +1451,12 @@ def build_crypto_overlay(
         ),
         "altcoin_btc_aligned": btc_aligned,
         "cme_gap_hit": cme_hit,
+        "perp_led_warning": perp_warning,
+        "cvd_aggressive_flow": cvd_aggressive,
     }
     out["weights"] = dict(CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT)
+    out["weights"].setdefault("perp_led_warning", -2)  # negative weight: drag, not boost
+    out["weights"].setdefault("cvd_aggressive_flow", 1)
     return out
 
 
