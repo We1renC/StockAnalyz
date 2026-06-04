@@ -3531,6 +3531,8 @@ function renderPaperAcceptanceObserved(workspace) {
     `API error rate ${metrics.api_error_rate != null ? `${(Number(metrics.api_error_rate) * 100).toFixed(1)}%` : '—'}`,
     `fill rate ${metrics.fill_rate != null ? `${(Number(metrics.fill_rate) * 100).toFixed(1)}%` : '—'}`,
     `rejection ${metrics.rejection_ratio != null ? `${(Number(metrics.rejection_ratio) * 100).toFixed(1)}%` : '—'}`,
+    `regime ${(metrics.regime_coverage_score != null ? Number(metrics.regime_coverage_score).toFixed(2) : '—')} / combo ${metrics.regime_combo_count ?? '—'}`,
+    `vol ${metrics.volatility_bucket_count ?? '—'} / liq ${metrics.liquidity_bucket_count ?? '—'} / session ${metrics.session_bucket_count ?? '—'}`,
     `reconciliation ${reconciliationRuns.length} 筆`,
     `order audit ${orderAudit.length} 筆`,
     `runtime metric ${runtimeMetrics.length} 筆`,

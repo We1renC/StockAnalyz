@@ -36,6 +36,17 @@ def _context():
             "average_api_latency": 120,
             "average_holding_minutes": 45,
             "capital_stage_count": 1,
+            "trade_day_span": 25,
+            "traded_day_count": 12,
+            "idle_day_count": 4,
+            "session_bucket_count": 3,
+            "volatility_bucket_count": 3,
+            "liquidity_bucket_count": 2,
+            "regime_combo_count": 4,
+            "high_vol_trade_count": 8,
+            "low_vol_trade_count": 7,
+            "thin_liquidity_trade_count": 5,
+            "regime_coverage_score": 0.88,
             "shadow_trace_count": 2,
             "shadow_parity_score": 0.92,
             "shadow_market_data_shared_ratio": 1.0,
@@ -78,3 +89,18 @@ def test_policy_snapshot_blocks_on_threshold_and_prohibition_failure():
     assert "20 fill_rate_threshold_failed" in payload["blockers"]
     assert "21 prohibition_flags_present" in payload["blockers"]
     assert any(row["key"] == "fill_rate" for row in payload["promotion_ladder"]["blocker_deltas"])
+
+
+def test_policy_snapshot_blocks_when_regime_coverage_is_thin():
+    ctx = _context()
+    ctx["metrics"]["regime_coverage_score"] = 0.2
+    ctx["metrics"]["regime_combo_count"] = 1
+    ctx["metrics"]["volatility_bucket_count"] = 1
+    ctx["metrics"]["liquidity_bucket_count"] = 1
+    ctx["metrics"]["session_bucket_count"] = 1
+    ctx["metrics"]["high_vol_trade_count"] = 0
+    ctx["metrics"]["low_vol_trade_count"] = 0
+    ctx["metrics"]["thin_liquidity_trade_count"] = 0
+    payload = build_acceptance_policy_snapshot(ctx, review={"review_status": "reviewing"})
+    assert "15 sample_size_or_market_regime_insufficient" in payload["blockers"]
+    assert any(row["key"] == "regime_coverage" for row in payload["promotion_ladder"]["blocker_deltas"])

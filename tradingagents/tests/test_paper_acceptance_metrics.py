@@ -78,3 +78,90 @@ def test_summarize_acceptance_telemetry_builds_metrics_and_evidence():
     assert payload["evidence"]["instrument_liquidity"]["spread_acceptable"] is True
     assert payload["evidence"]["data_source_traceability"]["duplicate_data_handled"] is True
     assert payload["evidence"]["monitoring_dashboard"]["real_time_equity"] is True
+
+
+def test_summarize_acceptance_telemetry_tracks_regime_coverage_matrix():
+    conn = _conn()
+    ensure_paper_acceptance_metrics_schema(conn)
+
+    record_order_audit(
+        conn,
+        symbol="ABAT",
+        side="buy",
+        order_type="limit",
+        state="filled",
+        requested_qty=5,
+        filled_qty=5,
+        signal_price=10.0,
+        avg_price=10.05,
+        notional=50.25,
+        fee=0.1,
+        slippage_bps=15.0,
+        execution_latency_ms=90,
+        submitted_at="2026-06-01T01:00:00Z",
+        detail={
+            "volatility_bps": 20,
+            "liquidity_regime": "normal",
+            "spread_bps": 12,
+            "recent_volume_ratio": 0.08,
+            "book_depth_ratio": 1.8,
+        },
+    )
+    record_order_audit(
+        conn,
+        symbol="ABAT",
+        side="sell",
+        order_type="limit",
+        state="filled",
+        requested_qty=5,
+        filled_qty=5,
+        signal_price=9.7,
+        avg_price=9.62,
+        notional=48.1,
+        fee=0.1,
+        slippage_bps=35.0,
+        execution_latency_ms=120,
+        submitted_at="2026-06-03T10:00:00Z",
+        detail={
+            "volatility_bps": 145,
+            "liquidity_regime": "thin",
+            "spread_bps": 96,
+            "recent_volume_ratio": 0.24,
+            "book_depth_ratio": 0.7,
+        },
+    )
+    record_order_audit(
+        conn,
+        symbol="ABAT",
+        side="buy",
+        order_type="market",
+        state="filled",
+        requested_qty=4,
+        filled_qty=4,
+        signal_price=10.2,
+        avg_price=10.22,
+        notional=40.88,
+        fee=0.1,
+        slippage_bps=10.0,
+        execution_latency_ms=80,
+        submitted_at="2026-06-05T18:30:00Z",
+        detail={
+            "volatility_bps": 70,
+            "liquidity_regime": "deep",
+            "spread_bps": 8,
+            "recent_volume_ratio": 0.04,
+            "book_depth_ratio": 2.5,
+        },
+    )
+
+    payload = summarize_acceptance_telemetry(conn, symbol="ABAT")
+
+    assert payload["metrics"]["volatility_bucket_count"] == 3
+    assert payload["metrics"]["liquidity_bucket_count"] == 3
+    assert payload["metrics"]["session_bucket_count"] == 3
+    assert payload["metrics"]["idle_day_count"] >= 2
+    assert payload["metrics"]["thin_liquidity_trade_count"] == 1
+    assert payload["metrics"]["regime_coverage_score"] >= 0.8
+    assert payload["evidence"]["sample_size_period"]["enough_market_conditions"] is True
+    assert payload["evidence"]["sample_size_period"]["vol_expansion_contraction"] is True
+    assert payload["regime_coverage"]["condition_combo_counts"]["high_vol:thin_liquidity"] == 1

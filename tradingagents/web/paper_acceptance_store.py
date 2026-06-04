@@ -1478,9 +1478,50 @@ def _build_auto_evidence(
 
     if paper_summary["trade_count"]:
         _merge_check(evidence, "sample_size_period", "sufficient_trade_samples", metrics.get("trade_count", 0) >= 1, source="observed")
-        _merge_check(evidence, "sample_size_period", "complete_trading_cycle", metrics.get("testing_days", 0) >= 1, source="observed")
-        _merge_check(evidence, "sample_size_period", "consecutive_loss_periods", metrics.get("max_consecutive_losses", 0) >= 1, source="observed")
+        _merge_check(
+            evidence,
+            "sample_size_period",
+            "complete_trading_cycle",
+            max(int(metrics.get("testing_days", 0) or 0), int(metrics.get("trade_day_span", 0) or 0)) >= 2,
+            source="observed",
+        )
+        _merge_check(
+            evidence,
+            "sample_size_period",
+            "enough_market_conditions",
+            (metrics.get("regime_coverage_score") or 0) >= 0.6
+            or int(metrics.get("regime_combo_count") or 0) >= 3,
+            source="observed",
+        )
         _merge_check(evidence, "sample_size_period", "not_only_one_way_market", paper_summary.get("win_rate") not in (None, 0.0, 1.0), source="observed")
+        _merge_check(
+            evidence,
+            "sample_size_period",
+            "vol_expansion_contraction",
+            int(metrics.get("high_vol_trade_count") or 0) > 0 and int(metrics.get("low_vol_trade_count") or 0) > 0,
+            source="observed",
+        )
+        _merge_check(
+            evidence,
+            "sample_size_period",
+            "no_trade_periods",
+            int(metrics.get("idle_day_count") or 0) > 0,
+            source="observed",
+        )
+        _merge_check(
+            evidence,
+            "sample_size_period",
+            "consecutive_loss_periods",
+            metrics.get("max_consecutive_losses", 0) >= 1,
+            source="observed",
+        )
+        _merge_check(
+            evidence,
+            "sample_size_period",
+            "weak_liquidity_periods",
+            int(metrics.get("thin_liquidity_trade_count") or 0) > 0,
+            source="observed",
+        )
 
     if strategy.get("shadow_trading_used") is True or int(metrics.get("shadow_trace_count") or 0) > 0:
         shadow_mapping = {

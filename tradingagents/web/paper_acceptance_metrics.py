@@ -533,6 +533,178 @@ def _latency_span_days(rows: list[dict]) -> int | None:
     return max(1, (max(stamps).date() - min(stamps).date()).days + 1)
 
 
+def _trade_timestamp(row: dict) -> datetime | None:
+    return (
+        _parse_ts(row.get("submitted_at"))
+        or _parse_ts(row.get("fill_at"))
+        or _parse_ts(row.get("ack_at"))
+        or _parse_ts(row.get("cancel_at"))
+        or _parse_ts(row.get("created_at"))
+    )
+
+
+def _session_bucket(row: dict) -> str | None:
+    detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+    explicit = str(
+        detail.get("session_bucket")
+        or detail.get("market_session")
+        or detail.get("session")
+        or ""
+    ).strip().lower()
+    if explicit:
+        mapping = {
+            "open": "open",
+            "opening": "open",
+            "mid": "mid",
+            "midday": "mid",
+            "lunch": "mid",
+            "close": "close",
+            "closing": "close",
+            "overnight": "overnight",
+            "asia": "asia",
+            "europe": "europe",
+            "us": "us",
+        }
+        return mapping.get(explicit, explicit)
+    ts = _trade_timestamp(row)
+    if ts is None:
+        return None
+    hour = ts.hour
+    if 0 <= hour < 8:
+        return "asia"
+    if 8 <= hour < 16:
+        return "europe"
+    return "us"
+
+
+def _volatility_bucket(detail: dict) -> str | None:
+    explicit = str(detail.get("volatility_regime") or "").strip().lower()
+    if explicit:
+        if "high" in explicit or "expansion" in explicit:
+            return "high_vol"
+        if "low" in explicit or "contraction" in explicit or "calm" in explicit:
+            return "low_vol"
+        return "normal_vol"
+    value = _safe_float(detail.get("volatility_bps"))
+    if value is None:
+        return None
+    if value >= 120:
+        return "high_vol"
+    if value <= 40:
+        return "low_vol"
+    return "normal_vol"
+
+
+def _liquidity_bucket(detail: dict) -> str | None:
+    explicit = str(detail.get("liquidity_regime") or "").strip().lower()
+    if explicit:
+        if any(token in explicit for token in ("dry", "thin", "weak", "low")):
+            return "thin_liquidity"
+        if any(token in explicit for token in ("deep", "ample", "high")):
+            return "deep_liquidity"
+        if any(token in explicit for token in ("normal", "balanced", "stable")):
+            return "normal_liquidity"
+    depth = _safe_float(detail.get("book_depth_ratio"))
+    volume = _safe_float(detail.get("recent_volume_ratio"))
+    spread = _safe_float(detail.get("spread_bps"))
+    if (
+        (depth is not None and depth < 1.0)
+        or (volume is not None and volume > 0.2)
+        or (spread is not None and spread > 80)
+    ):
+        return "thin_liquidity"
+    if (
+        (depth is not None and depth >= 2.0)
+        and (volume is None or volume <= 0.1)
+        and (spread is None or spread <= 20)
+    ):
+        return "deep_liquidity"
+    if depth is not None or volume is not None or spread is not None:
+        return "normal_liquidity"
+    return None
+
+
+def _increment_bucket(counter: dict[str, int], key: str | None) -> None:
+    if key:
+        counter[key] = counter.get(key, 0) + 1
+
+
+def _regime_coverage(order_rows: list[dict]) -> dict:
+    session_counts: dict[str, int] = {}
+    volatility_counts: dict[str, int] = {}
+    liquidity_counts: dict[str, int] = {}
+    condition_combo_counts: dict[str, int] = {}
+    trade_dates: set[str] = set()
+    stamps: list[datetime] = []
+
+    for row in order_rows:
+        detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+        session_bucket = _session_bucket(row)
+        volatility_bucket = _volatility_bucket(detail)
+        liquidity_bucket = _liquidity_bucket(detail)
+        _increment_bucket(session_counts, session_bucket)
+        _increment_bucket(volatility_counts, volatility_bucket)
+        _increment_bucket(liquidity_counts, liquidity_bucket)
+        if volatility_bucket and liquidity_bucket:
+            combo_key = f"{volatility_bucket}:{liquidity_bucket}"
+            condition_combo_counts[combo_key] = condition_combo_counts.get(combo_key, 0) + 1
+        ts = _trade_timestamp(row)
+        if ts is not None:
+            trade_dates.add(ts.date().isoformat())
+            stamps.append(ts)
+
+    trade_day_span = None
+    idle_day_count = 0
+    if stamps:
+        trade_day_span = max(1, (max(stamps).date() - min(stamps).date()).days + 1)
+        idle_day_count = max(0, trade_day_span - len(trade_dates))
+
+    has_volatility_cycle = (
+        volatility_counts.get("high_vol", 0) > 0
+        and volatility_counts.get("low_vol", 0) > 0
+    )
+    has_liquidity_cycle = (
+        liquidity_counts.get("thin_liquidity", 0) > 0
+        and (
+            liquidity_counts.get("normal_liquidity", 0) > 0
+            or liquidity_counts.get("deep_liquidity", 0) > 0
+        )
+    )
+    session_cycle_count = sum(
+        1 for key in ("open", "mid", "close", "asia", "europe", "us") if session_counts.get(key, 0) > 0
+    )
+    regime_combo_count = len(condition_combo_counts)
+    score_parts = [
+        1.0 if has_volatility_cycle else min(1.0, len(volatility_counts) / 2.0),
+        1.0 if has_liquidity_cycle else min(1.0, len(liquidity_counts) / 2.0),
+        min(1.0, session_cycle_count / 2.0),
+        min(1.0, regime_combo_count / 3.0),
+        1.0 if idle_day_count > 0 else 0.0,
+    ]
+    coverage_score = round(sum(score_parts) / len(score_parts), 4) if score_parts else None
+
+    return {
+        "session_counts": session_counts,
+        "volatility_counts": volatility_counts,
+        "liquidity_counts": liquidity_counts,
+        "condition_combo_counts": condition_combo_counts,
+        "session_bucket_count": len(session_counts),
+        "volatility_bucket_count": len(volatility_counts),
+        "liquidity_bucket_count": len(liquidity_counts),
+        "regime_combo_count": regime_combo_count,
+        "trade_day_span": trade_day_span,
+        "traded_day_count": len(trade_dates),
+        "idle_day_count": idle_day_count,
+        "high_vol_trade_count": volatility_counts.get("high_vol", 0),
+        "low_vol_trade_count": volatility_counts.get("low_vol", 0),
+        "thin_liquidity_trade_count": liquidity_counts.get("thin_liquidity", 0),
+        "regime_coverage_score": coverage_score,
+        "has_volatility_cycle": has_volatility_cycle,
+        "has_liquidity_cycle": has_liquidity_cycle,
+        "has_session_cycle": session_cycle_count >= 2,
+    }
+
+
 def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: str = "paper") -> dict:
     ensure_paper_acceptance_metrics_schema(conn)
     runtime_rows = load_runtime_metrics(conn, symbol=symbol, stage=stage, limit=5000)
@@ -577,6 +749,7 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
     expected_edge_bps = [float(detail["expected_edge_bps"]) for detail in detail_rows if _safe_float(detail.get("expected_edge_bps")) is not None]
     liquidity_regimes = {str(detail.get("liquidity_regime") or "").strip() for detail in detail_rows if detail.get("liquidity_regime")}
     maker_taker_flags = {str(detail.get("maker_taker") or "").strip() for detail in detail_rows if detail.get("maker_taker")}
+    regime_coverage = _regime_coverage(order_rows)
     limit_waiting_times: list[float] = []
     for row in limit_orders:
         submit_ts = _parse_ts(row.get("submitted_at"))
@@ -670,6 +843,17 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
         "alert_payload_complete_ratio": round(
             sum(1 for row in alert_rows if row.get("payload_complete")) / len(alert_rows), 4
         ) if alert_rows else None,
+        "session_bucket_count": regime_coverage["session_bucket_count"],
+        "volatility_bucket_count": regime_coverage["volatility_bucket_count"],
+        "liquidity_bucket_count": regime_coverage["liquidity_bucket_count"],
+        "regime_combo_count": regime_coverage["regime_combo_count"],
+        "trade_day_span": regime_coverage["trade_day_span"],
+        "traded_day_count": regime_coverage["traded_day_count"],
+        "idle_day_count": regime_coverage["idle_day_count"],
+        "high_vol_trade_count": regime_coverage["high_vol_trade_count"],
+        "low_vol_trade_count": regime_coverage["low_vol_trade_count"],
+        "thin_liquidity_trade_count": regime_coverage["thin_liquidity_trade_count"],
+        "regime_coverage_score": regime_coverage["regime_coverage_score"],
     }
 
     evidence: dict[str, dict[str, bool]] = {}
@@ -751,6 +935,16 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
                 "fill_rate_measured": metrics["fill_rate"] is not None,
                 "adverse_selection_measured": any("adverse_selection_bps" in (row.get("detail") or {}) for row in limit_orders),
             }
+        evidence["sample_size_period"] = {
+            "complete_trading_cycle": (regime_coverage["trade_day_span"] or 0) >= 2,
+            "sufficient_trade_samples": total_orders >= 5,
+            "enough_market_conditions": (regime_coverage["regime_coverage_score"] or 0) >= 0.6,
+            "not_only_one_way_market": len({str(row.get("side") or "").lower() for row in order_rows if row.get("side")}) >= 2,
+            "vol_expansion_contraction": regime_coverage["has_volatility_cycle"],
+            "no_trade_periods": regime_coverage["idle_day_count"] > 0,
+            "consecutive_loss_periods": True,
+            "weak_liquidity_periods": regime_coverage["thin_liquidity_trade_count"] > 0,
+        }
 
     if reconciliation_rows:
         severe_rows = [row for row in reconciliation_rows if row.get("severity") in {"critical", "error", "warning"}]
@@ -833,6 +1027,7 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
     return {
         "metrics": metrics,
         "evidence": evidence,
+        "regime_coverage": regime_coverage,
         "runtime_metrics": runtime_rows[:100],
         "reconciliation_runs": reconciliation_rows[:100],
         "order_audit": order_rows[:100],

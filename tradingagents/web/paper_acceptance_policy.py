@@ -9,6 +9,7 @@ DEFAULT_THRESHOLDS = {
     "intraday": {
         "min_trade_count": 50,
         "min_testing_days": 20,
+        "min_regime_coverage_score": 0.7,
         "max_api_error_rate": 0.05,
         "max_average_slippage_bps": 80.0,
         "min_fill_rate": 0.75,
@@ -20,6 +21,7 @@ DEFAULT_THRESHOLDS = {
     "swing": {
         "min_trade_count": 20,
         "min_testing_days": 30,
+        "min_regime_coverage_score": 0.55,
         "max_api_error_rate": 0.05,
         "max_average_slippage_bps": 120.0,
         "min_fill_rate": 0.7,
@@ -93,6 +95,7 @@ def _build_promotion_ladder(
     api_error_rate = metrics.get("api_error_rate")
     shadow_score = metrics.get("shadow_parity_score")
     live_deviation = metrics.get("paper_live_max_deviation_ratio")
+    regime_coverage_score = metrics.get("regime_coverage_score")
 
     checks = [
         {
@@ -139,6 +142,15 @@ def _build_promotion_ladder(
             "delta": round(max(0.0, float(api_error_rate or 0) - float(thresholds["max_api_error_rate"])), 4) if api_error_rate is not None else None,
             "pass": api_error_rate is not None and float(api_error_rate) <= thresholds["max_api_error_rate"],
             "unit": "ratio",
+        },
+        {
+            "key": "regime_coverage",
+            "label": "Regime Coverage",
+            "current": regime_coverage_score,
+            "threshold": thresholds["min_regime_coverage_score"],
+            "delta": round(max(0.0, float(thresholds["min_regime_coverage_score"]) - float(regime_coverage_score or 0)), 4) if regime_coverage_score is not None else None,
+            "pass": regime_coverage_score is not None and float(regime_coverage_score) >= thresholds["min_regime_coverage_score"],
+            "unit": "score",
         },
         {
             "key": "shadow_parity",
@@ -228,6 +240,7 @@ def build_acceptance_policy_snapshot(
 
     trade_count = int(metrics.get("trade_count") or 0)
     testing_days = int(metrics.get("testing_days") or 0)
+    traded_day_count = int(metrics.get("traded_day_count") or 0)
     api_error_rate = metrics.get("api_error_rate")
     avg_slippage = metrics.get("average_slippage")
     fill_rate = metrics.get("fill_rate")
@@ -235,6 +248,20 @@ def build_acceptance_policy_snapshot(
     drawdown_abs = abs(float(metrics.get("max_drawdown") or 0))
     paper_live_deviation = metrics.get("paper_live_max_deviation_ratio")
     capital_stage_count = int(metrics.get("capital_stage_count") or 0)
+    regime_combo_count = int(metrics.get("regime_combo_count") or 0)
+    session_bucket_count = int(metrics.get("session_bucket_count") or 0)
+    volatility_bucket_count = int(metrics.get("volatility_bucket_count") or 0)
+    liquidity_bucket_count = int(metrics.get("liquidity_bucket_count") or 0)
+    regime_coverage_score = metrics.get("regime_coverage_score")
+
+    enough_market_conditions = (
+        regime_coverage_score is not None
+        and float(regime_coverage_score) >= thresholds["min_regime_coverage_score"]
+        and regime_combo_count >= 3
+        and volatility_bucket_count >= 2
+        and liquidity_bucket_count >= 2
+        and (session_bucket_count >= 2 if strategy_type == "intraday" else session_bucket_count >= 1)
+    )
 
     derived_evidence: dict[str, dict[str, bool]] = {}
 
@@ -260,14 +287,14 @@ def build_acceptance_policy_snapshot(
     }
 
     derived_evidence["sample_size_period"] = {
-        "complete_trading_cycle": testing_days >= thresholds["min_testing_days"],
+        "complete_trading_cycle": testing_days >= thresholds["min_testing_days"] and traded_day_count >= max(5, thresholds["min_testing_days"] // 3),
         "sufficient_trade_samples": trade_count >= thresholds["min_trade_count"],
-        "enough_market_conditions": testing_days >= thresholds["min_testing_days"],
+        "enough_market_conditions": enough_market_conditions,
         "not_only_one_way_market": metrics.get("win_rate") not in (None, 0.0, 1.0),
-        "vol_expansion_contraction": bool(metrics.get("runtime_days")),
-        "no_trade_periods": trade_count >= max(1, thresholds["min_trade_count"] // 2),
-        "consecutive_loss_periods": metrics.get("max_consecutive_losses") is not None,
-        "weak_liquidity_periods": metrics.get("average_slippage") is not None,
+        "vol_expansion_contraction": int(metrics.get("high_vol_trade_count") or 0) > 0 and int(metrics.get("low_vol_trade_count") or 0) > 0,
+        "no_trade_periods": int(metrics.get("idle_day_count") or 0) > 0,
+        "consecutive_loss_periods": int(metrics.get("max_consecutive_losses") or 0) >= 2,
+        "weak_liquidity_periods": int(metrics.get("thin_liquidity_trade_count") or 0) > 0,
     }
 
     derived_evidence["research_discipline"] = {
@@ -329,7 +356,7 @@ def build_acceptance_policy_snapshot(
         "api_error_threshold": api_error_rate is not None and float(api_error_rate) <= thresholds["max_api_error_rate"],
         "risk_control_threshold": bool(metrics.get("kill_switch_tested")),
         "kill_switch_threshold": bool(metrics.get("kill_switch_tested")),
-        "sample_size_threshold": trade_count >= thresholds["min_trade_count"],
+        "sample_size_threshold": trade_count >= thresholds["min_trade_count"] and enough_market_conditions,
         "behavior_deviation_threshold": paper_live_ready,
         "logging_threshold": bool(metrics.get("major_error_count") is not None),
         "alerting_threshold": bool(metrics.get("alert_delivery_count") or metrics.get("alert_count")),

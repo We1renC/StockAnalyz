@@ -521,6 +521,56 @@ def test_shadow_parity_round_trip_and_context_mapping():
     assert context["policy"]["promotion_ladder"]["shadow_trace_count"] == 1
 
 
+def test_context_maps_regime_coverage_metrics_into_policy():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+    ensure_paper_acceptance_schema(conn)
+    conn.executemany(
+        """INSERT INTO smc_trade_journal
+           (symbol, environment, status, entry_time, created_at, pnl, r_multiple)
+           VALUES (?, 'paper', 'closed', ?, ?, ?, ?)""",
+        [
+            ("ABAT", "2026-06-01T01:00:00Z", "2026-06-01T01:00:00Z", 12.0, 1.1),
+            ("ABAT", "2026-06-03T10:00:00Z", "2026-06-03T10:00:00Z", -8.0, -0.7),
+            ("ABAT", "2026-06-05T18:30:00Z", "2026-06-05T18:30:00Z", 6.0, 0.6),
+        ],
+    )
+    conn.commit()
+
+    rows = [
+        ("2026-06-01T01:00:00Z", {"volatility_bps": 20, "liquidity_regime": "normal", "spread_bps": 12, "recent_volume_ratio": 0.08, "book_depth_ratio": 1.8}),
+        ("2026-06-03T10:00:00Z", {"volatility_bps": 145, "liquidity_regime": "thin", "spread_bps": 96, "recent_volume_ratio": 0.24, "book_depth_ratio": 0.7}),
+        ("2026-06-05T18:30:00Z", {"volatility_bps": 70, "liquidity_regime": "deep", "spread_bps": 8, "recent_volume_ratio": 0.04, "book_depth_ratio": 2.5}),
+    ]
+    for submitted_at, detail in rows:
+        record_order_audit(
+            conn,
+            symbol="ABAT",
+            side="buy",
+            order_type="limit",
+            state="filled",
+            requested_qty=5,
+            filled_qty=5,
+            signal_price=10.0,
+            avg_price=10.05,
+            notional=50.25,
+            fee=0.1,
+            slippage_bps=15.0,
+            execution_latency_ms=90,
+            submitted_at=submitted_at,
+            detail=detail,
+            stage="paper",
+        )
+
+    context = build_smc_acceptance_context(conn, symbol="ABAT", strategy={"strategy_type": "intraday"})
+
+    assert context["metrics"]["regime_coverage_score"] >= 0.8
+    assert context["metrics"]["session_bucket_count"] == 3
+    sample_gate = context["policy"]["evidence"]["sample_size_period"]
+    assert sample_gate["enough_market_conditions"] is True
+    assert sample_gate["weak_liquidity_periods"] is True
+
+
 def test_workspace_auto_generates_stage_and_deviation_from_live_telemetry():
     conn = _conn()
     _create_smc_source_tables(conn)
