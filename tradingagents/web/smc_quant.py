@@ -3399,6 +3399,17 @@ def detect_power_of_three_entries(
 
 
 def retracement_state(df: pd.DataFrame, swings: list[dict]) -> dict:
+    """§3.10 — quantify current AND deepest retracement % of the active leg.
+
+    The active leg is anchored to the most recent swing pair: if the
+    latest swing is a high then the leg is bullish (price went up to it
+    and is now pulling back); a leg low after a leg high means the move
+    reversed and we measure the bearish leg's retracement.
+
+    Outputs ``direction(±1)``, ``current_retracement_pct``, and
+    ``deepest_retracement_pct`` — the deepest retracement seen *since*
+    the swing extreme, useful for §3.7 OTE zone reach detection.
+    """
     highs = [s for s in swings if s["type"] == "high"]
     lows = [s for s in swings if s["type"] == "low"]
     if not highs or not lows or len(df) == 0:
@@ -3407,16 +3418,37 @@ def retracement_state(df: pd.DataFrame, swings: list[dict]) -> dict:
     last_high = highs[-1]
     last_low = lows[-1]
     if last_high["index"] > last_low["index"]:
+        # Bullish leg from last_low → last_high; retracement = how much of
+        # the leg has been given back (high − close) / leg.
         leg = last_high["level"] - last_low["level"]
         retr = (last_high["level"] - close) / leg * 100 if leg else None
         direction = 1
+        # Deepest retracement = lowest low strictly AFTER the swing high
+        # (the bar that formed the high is part of the leg, not the retrace).
+        anchor_idx = int(last_high["index"]) + 1
+        if anchor_idx < len(df):
+            min_low = float(df["low"].iloc[anchor_idx:].min())
+            deepest = (last_high["level"] - min_low) / leg * 100 if leg else None
+        else:
+            deepest = retr
     else:
         leg = last_high["level"] - last_low["level"]
         retr = (close - last_low["level"]) / leg * 100 if leg else None
         direction = -1
+        anchor_idx = int(last_low["index"]) + 1
+        if anchor_idx < len(df):
+            max_high = float(df["high"].iloc[anchor_idx:].max())
+            deepest = (max_high - last_low["level"]) / leg * 100 if leg else None
+        else:
+            deepest = retr
+    # §3.7 — flag whether the deepest retracement actually reached the OTE zone
+    # (0.62–0.79). The static OTE detector uses 62/79 boundaries — same threshold.
+    in_ote_zone = bool(deepest is not None and 62 <= abs(deepest) <= 79)
     return {
         "direction": direction,
         "current_retracement_pct": round(retr, 2) if retr is not None else None,
+        "deepest_retracement_pct": round(deepest, 2) if deepest is not None else None,
+        "reached_ote_zone": in_ote_zone,
     }
 
 

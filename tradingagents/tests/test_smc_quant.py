@@ -3106,3 +3106,75 @@ def test_crypto_overlay_btc_htf_factor_off_when_not_altcoin():
     out = build_crypto_overlay(df, btc_ohlcv=df, is_altcoin=False, direction_bias=1)
     assert out["factors"]["altcoin_btc_htf_aligned"] is False
     assert out["factors"]["altcoin_btc_htf_blocked"] is False
+
+
+def test_retracement_state_reports_current_and_deepest_pct_bullish_leg():
+    """§3.10: bullish leg must surface direction=+1 plus deepest_retracement_pct."""
+    from smc_quant import retracement_state
+    # 5 bars build the up-leg from low=10 to high=20; subsequent 5 retrace
+    # down to low=14 (deepest), then bounce to close=18.
+    rows = [
+        (10, 11, 10, 10.5, 1),
+        (10.5, 13, 10.4, 12.5, 1),
+        (12.5, 17, 12.4, 16.5, 1),
+        (16.5, 20, 16.4, 19.5, 1),
+        (19.5, 20, 19, 19.8, 1),     # swing high formed here (level=20)
+        (19.8, 19.9, 17, 17.5, 1),
+        (17.5, 18, 15, 15.5, 1),
+        (15.5, 16, 14, 14.5, 1),     # deepest low=14 (60% retr)
+        (14.5, 18, 14.5, 17.5, 1),
+        (17.5, 18.5, 17.4, 18, 1),   # current close = 18 (20% retr from 20)
+    ]
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(len(rows))]
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    swings = [
+        {"type": "low", "index": 0, "level": 10.0},
+        {"type": "high", "index": 4, "level": 20.0},
+    ]
+    out = retracement_state(df, swings)
+    assert out["direction"] == 1
+    # Current = (20 - 18) / (20 - 10) * 100 = 20%
+    assert out["current_retracement_pct"] == 20.0
+    # Deepest = (20 - 14) / 10 * 100 = 60%
+    assert out["deepest_retracement_pct"] == 60.0
+    # 60% is inside the 62–79 OTE band? No, it's just below → False
+    assert out["reached_ote_zone"] is False
+
+
+def test_retracement_state_flags_ote_zone_when_deepest_in_62_to_79():
+    from smc_quant import retracement_state
+    rows = [
+        (10, 11, 10, 10.5, 1),
+        (10.5, 20, 10, 19.5, 1),    # swing high at index 1
+        (19.5, 19.5, 12.5, 13, 1),  # deepest low 12.5 → (20-12.5)/10 = 75%
+        (13, 16, 12.8, 15, 1),
+    ]
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(len(rows))]
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    swings = [
+        {"type": "low", "index": 0, "level": 10.0},
+        {"type": "high", "index": 1, "level": 20.0},
+    ]
+    out = retracement_state(df, swings)
+    assert out["deepest_retracement_pct"] == 75.0
+    assert out["reached_ote_zone"] is True
+
+
+def test_retracement_state_bearish_leg_direction_and_deepest():
+    from smc_quant import retracement_state
+    rows = [
+        (20, 20, 19, 19.5, 1),
+        (19.5, 19.5, 10, 10.5, 1),  # swing low at index 1
+        (10.5, 16, 10.5, 15, 1),    # deepest high=16 → (16-10)/10 = 60% retr
+        (15, 15, 13, 13.5, 1),      # current close 13.5 → (13.5-10)/10 = 35%
+    ]
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(len(rows))]
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    swings = [
+        {"type": "high", "index": 0, "level": 20.0},
+        {"type": "low", "index": 1, "level": 10.0},
+    ]
+    out = retracement_state(df, swings)
+    assert out["direction"] == -1
+    assert out["current_retracement_pct"] == 35.0
+    assert out["deepest_retracement_pct"] == 60.0
