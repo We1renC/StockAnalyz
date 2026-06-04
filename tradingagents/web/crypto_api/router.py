@@ -2,6 +2,7 @@ import sqlite3
 import json
 import time
 import hashlib
+import asyncio
 from datetime import datetime, UTC
 from typing import List, Optional, Dict, Any
 from decimal import Decimal
@@ -394,9 +395,8 @@ async def create_order(
     # 2. Risk check and balance locks
     order_dict = req_body.model_dump()
     passed, err_code, meta = await validate_pre_trade_risk(conn, account_id, order_dict)
-    
     if not passed:
-        write_audit_log(conn, account_id, auth_info["api_key_id"], "order.create", None, None, client_ip, ua, "failed", {"error": err_code, "request": order_dict})
+        write_audit_log(conn, account_id, auth_info["api_key_id"], "order.create", "order", None, client_ip, ua, "failed", {"error": err_code, "request": order_dict})
         conn.close()
         raise HTTPException(
             status_code=400,
@@ -620,7 +620,7 @@ def query_open_orders(symbol: Optional[str] = None, auth_info: Dict[str, Any] = 
     }
 
 @router.post("/orders/{order_id}/cancel")
-def cancel_order(order_id: str, auth_info: Dict[str, Any] = Depends(require_scopes(["trade:spot"]))):
+async def cancel_order(order_id: str, auth_info: Dict[str, Any] = Depends(require_scopes(["trade:spot"]))):
     conn = get_crypto_db()
     try:
         res = cancel_single_order_sync(conn, order_id)
@@ -641,7 +641,7 @@ def cancel_order(order_id: str, auth_info: Dict[str, Any] = Depends(require_scop
         )
 
 @router.post("/orders/by-client-id/{client_order_id}/cancel")
-def cancel_order_by_client_id(client_order_id: str, auth_info: Dict[str, Any] = Depends(require_scopes(["trade:spot"]))):
+async def cancel_order_by_client_id(client_order_id: str, auth_info: Dict[str, Any] = Depends(require_scopes(["trade:spot"]))):
     conn = get_crypto_db()
     c = conn.cursor()
     row = c.execute("SELECT id FROM crypto_orders WHERE account_id = ? AND client_order_id = ?", (auth_info["account_id"], client_order_id)).fetchone()
@@ -710,7 +710,7 @@ async def create_batch_orders(
     }
 
 @router.post("/orders/cancel-batch")
-def cancel_batch_orders(req_body: CancelBatchRequest, auth_info: Dict[str, Any] = Depends(require_scopes(["trade:spot"]))):
+async def cancel_batch_orders(req_body: CancelBatchRequest, auth_info: Dict[str, Any] = Depends(require_scopes(["trade:spot"]))):
     results = []
     conn = get_crypto_db()
     for order_id in req_body.order_ids:
@@ -734,7 +734,7 @@ def cancel_batch_orders(req_body: CancelBatchRequest, auth_info: Dict[str, Any] 
     }
 
 @router.post("/orders/cancel-all")
-def cancel_all_orders(req_body: CancelAllRequest, auth_info: Dict[str, Any] = Depends(require_scopes(["trade:spot"]))):
+async def cancel_all_orders(req_body: CancelAllRequest, auth_info: Dict[str, Any] = Depends(require_scopes(["trade:spot"]))):
     account_id = auth_info["account_id"]
     conn = get_crypto_db()
     c = conn.cursor()
@@ -1043,7 +1043,7 @@ def query_kill_switch(auth_info: Dict[str, Any] = Depends(require_scopes(["risk:
     return dict(row)
 
 @router.post("/risk/kill-switch/activate")
-def activate_kill_switch(req_body: KillSwitchRequest, auth_info: Dict[str, Any] = Depends(require_scopes(["risk:write"]))):
+async def activate_kill_switch(req_body: KillSwitchRequest, auth_info: Dict[str, Any] = Depends(require_scopes(["risk:write"]))):
     conn = get_crypto_db()
     c = conn.cursor()
     
@@ -1079,7 +1079,7 @@ def activate_kill_switch(req_body: KillSwitchRequest, auth_info: Dict[str, Any] 
     }
 
 @router.post("/risk/kill-switch/deactivate")
-def deactivate_kill_switch(auth_info: Dict[str, Any] = Depends(require_scopes(["risk:write"]))):
+async def deactivate_kill_switch(auth_info: Dict[str, Any] = Depends(require_scopes(["risk:write"]))):
     conn = get_crypto_db()
     c = conn.cursor()
     

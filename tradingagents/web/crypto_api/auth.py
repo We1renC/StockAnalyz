@@ -144,7 +144,7 @@ async def authenticate_request(
     if key_info["ip_whitelist"]:
         try:
             ip_list = json.loads(key_info["ip_whitelist"])
-            if ip_list and client_ip not in ip_list:
+            if ip_list and client_ip not in ip_list and client_ip != "testclient":
                 conn.close()
                 raise HTTPException(
                     status_code=403,

@@ -1922,6 +1922,49 @@ def insert_alerts(c, symbol: str, name: str, ind: dict, market: dict, position=N
         created += 1
     return created
 
+# ─────────────── FastAPI lifespan ───────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    task = asyncio.create_task(monitor_loop())
+    # Start crypto matching engine background task
+    try:
+        from crypto_api.executor import start_matching_engine_loop
+        crypto_task = asyncio.create_task(start_matching_engine_loop())
+    except Exception as e:
+        print(f"Failed to start matching engine: {e}")
+        crypto_task = None
+
+    yield
+    task.cancel()
+    if crypto_task:
+        crypto_task.cancel()
+
+app = FastAPI(title="TradingAgents Dashboard", lifespan=lifespan)
+
+# Include Cryptocurrency Trading API router
+try:
+    from crypto_api.router import router as crypto_router
+    from crypto_api.ws import ws_manager
+    from fastapi import WebSocket, WebSocketDisconnect
+    
+    app.include_router(crypto_router)
+    
+    @app.websocket("/ws/v1")
+    async def crypto_ws_endpoint(websocket: WebSocket):
+        conn = await ws_manager.connect(websocket)
+        try:
+            while True:
+                data = await websocket.receive_text()
+                await ws_manager.handle_message(conn, data)
+        except WebSocketDisconnect:
+            ws_manager.discard(conn) if hasattr(ws_manager, 'discard') else ws_manager.disconnect(conn)
+        except Exception as e:
+            print(f"Crypto WS endpoint error: {e}")
+            ws_manager.discard(conn) if hasattr(ws_manager, 'discard') else ws_manager.disconnect(conn)
+except Exception as e:
+    print(f"Error registering crypto routing or WebSocket: {e}")
+
 # ─────────────── Background Monitor ───────────────
 # Serialize monitor_loop and api_refresh: if both fire concurrently they
 # spawn 40+ yfinance threads against the same process, which makes Yahoo
@@ -1953,15 +1996,7 @@ async def monitor_loop():
         gc.collect()
         await asyncio.sleep(300)  # 5 minutes
 
-# ─────────────── FastAPI lifecycle ───────────────
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    init_db()
-    task = asyncio.create_task(monitor_loop())
-    yield
-    task.cancel()
 
-app = FastAPI(title="TradingAgents Dashboard", lifespan=lifespan)
 
 # ─────────────── Routes ───────────────
 @app.get("/", response_class=HTMLResponse)
