@@ -3612,3 +3612,59 @@ def test_chart_layers_omits_c13_crypto_overlay_for_non_crypto():
         config=SMCConfig(swing_length=2, internal_swing_length=2),
     )
     assert "C13_crypto_overlay" not in result["visualization"]["chart_layers"]
+
+
+def test_freeze_analysis_at_index_strips_future_swings_and_structure():
+    """§12.2: swings / structure / displacements past cutoff are dropped."""
+    from smc_quant import freeze_analysis_at_index
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    last_idx = len(_sample_ohlcv()) - 1
+    cutoff = 10
+    frozen = freeze_analysis_at_index(result, cutoff)
+    for s in frozen["concepts"]["swings"]:
+        assert s["confirm_index"] <= cutoff
+    for ev in frozen["concepts"]["structure"]:
+        assert ev["broken_index"] <= cutoff
+    for d in frozen["concepts"]["displacement"]:
+        assert d["index"] <= cutoff
+    assert frozen["frozen_at_index"] == cutoff
+    # And original analysis must NOT be mutated
+    assert "frozen_at_index" not in result
+
+
+def test_freeze_analysis_at_index_resets_post_cutoff_mitigation():
+    """An OB mitigated AFTER cutoff must read as unmitigated in the freeze."""
+    from smc_quant import freeze_analysis_at_index
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    cutoff = 8
+    frozen = freeze_analysis_at_index(result, cutoff)
+    for ob in frozen["concepts"]["order_blocks"]:
+        # OB itself must be formed at/before cutoff
+        assert int(ob["event_index"]) <= cutoff
+        # mitigated_index, if set, must also be at/before cutoff
+        if ob.get("mitigated_index") is not None:
+            assert int(ob["mitigated_index"]) <= cutoff
+        else:
+            assert ob["mitigated"] is False
+            assert ob["status"] == "unmitigated"
+
+
+def test_freeze_analysis_at_index_prunes_entry_models_by_anchor():
+    from smc_quant import freeze_analysis_at_index, _entry_bar_of
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    cutoff = 12
+    frozen = freeze_analysis_at_index(result, cutoff)
+    em = frozen["concepts"]["entry_models"]
+    for key in ("sweep_reversal", "ob_fvg_continuation", "ote_retracement",
+                "unicorn", "silver_bullet", "power_of_three"):
+        for e in em.get(key, []):
+            assert _entry_bar_of(e) <= cutoff

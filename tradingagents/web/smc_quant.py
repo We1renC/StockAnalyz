@@ -5042,6 +5042,113 @@ def _populate_backtest_panel(layers: dict, backtest_replay: dict, *, preview: in
     return layers
 
 
+def freeze_analysis_at_index(analysis: dict, cutoff_index: int) -> dict:
+    """§12.2 — strip everything that wasn't *confirmed* by ``cutoff_index``.
+
+    A naive backtest replay paints OBs / FVGs / liquidity that were only
+    confirmed later in the dataset, inflating win rates. This helper
+    walks a ``build_smc_analysis`` output and drops every record whose
+    confirmation index is strictly greater than ``cutoff_index``.
+
+    Fields pruned per concept:
+      • ``swings`` — confirm_index ≤ cutoff
+      • ``structure`` — ``broken_index`` / ``index`` ≤ cutoff
+      • ``order_blocks`` — ``event_index`` (the BOS/CHoCH that gave
+        birth to the OB) ≤ cutoff; mitigation/breaker flags reset if
+        the mitigation bar is past the cutoff
+      • ``fvgs`` — ``index`` ≤ cutoff; ``mitigated`` reset if mitigation
+        bar > cutoff
+      • ``liquidity`` — ``end_index`` ≤ cutoff; sweep flags reset if
+        ``swept_index`` > cutoff
+      • ``displacement`` — ``index`` ≤ cutoff
+      • ``entry_models`` — pruned by the entry's structural anchor
+        (``_entry_bar_of``) ≤ cutoff
+
+    Returns a *new* analysis dict — the input is never mutated.
+    """
+    if not analysis or "concepts" not in analysis:
+        return analysis
+    frozen = dict(analysis)
+    concepts = dict(analysis.get("concepts") or {})
+    cutoff = int(cutoff_index)
+
+    def _le(idx) -> bool:
+        return idx is not None and int(idx) <= cutoff
+
+    # Swings — keep only those whose confirmation bar exists at/before cutoff
+    if "swings" in concepts:
+        concepts["swings"] = [
+            s for s in concepts["swings"]
+            if _le(s.get("confirm_index", s.get("index")))
+        ]
+    if "structure" in concepts:
+        concepts["structure"] = [
+            ev for ev in concepts["structure"]
+            if _le(ev.get("broken_index", ev.get("index")))
+        ]
+    if "displacement" in concepts:
+        concepts["displacement"] = [
+            d for d in concepts["displacement"] if _le(d.get("index"))
+        ]
+    # Order blocks — keep formed-before-cutoff, reset mitigation if it
+    # happened after cutoff so the OB looks "unmitigated" in replay.
+    def _freeze_ob(ob: dict) -> Optional[dict]:
+        if not _le(ob.get("event_index", ob.get("index"))):
+            return None
+        new = dict(ob)
+        if not _le(ob.get("mitigated_index")):
+            new["mitigated"] = False
+            new["mitigated_index"] = None
+            new["unmitigated"] = True
+            new["status"] = "unmitigated"
+            new["breaker"] = False
+        return new
+    for k in ("order_blocks", "mitigation_blocks", "breaker_blocks"):
+        if k in concepts:
+            concepts[k] = [x for x in (_freeze_ob(o) for o in concepts[k]) if x]
+    if "fvgs" in concepts:
+        frozen_fvgs: list[dict] = []
+        for f in concepts["fvgs"]:
+            if not _le(f.get("index")):
+                continue
+            new = dict(f)
+            if not _le(f.get("mitigated_index")):
+                new["mitigated"] = False
+                new["mitigated_index"] = None
+                new["inverse"] = False
+            frozen_fvgs.append(new)
+        concepts["fvgs"] = frozen_fvgs
+    if "liquidity" in concepts:
+        frozen_liq: list[dict] = []
+        for l in concepts["liquidity"]:
+            if not _le(l.get("end_index")):
+                continue
+            new = dict(l)
+            if not _le(l.get("swept_index")):
+                new["swept"] = False
+                new["swept_index"] = None
+            frozen_liq.append(new)
+        concepts["liquidity"] = frozen_liq
+    # Entry models — anchor index must sit at/before cutoff
+    if "entry_models" in concepts:
+        em = dict(concepts["entry_models"])
+        for model_key in ("sweep_reversal", "ob_fvg_continuation",
+                           "ote_retracement", "unicorn",
+                           "silver_bullet", "power_of_three"):
+            if model_key in em:
+                em[model_key] = [
+                    e for e in em[model_key]
+                    if _le(_entry_bar_of(e))
+                ]
+        em["triggered"] = [
+            e for e in em.get("triggered", []) if _le(_entry_bar_of(e))
+        ]
+        concepts["entry_models"] = em
+    frozen["concepts"] = concepts
+    frozen["frozen_at_index"] = cutoff
+    return frozen
+
+
 def build_chart_layers(
     df: pd.DataFrame,
     *,
