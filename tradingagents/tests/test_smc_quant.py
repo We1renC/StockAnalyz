@@ -2666,3 +2666,14 @@ def test_sweep_reversal_falls_back_when_no_atr_provided():
     h = normalize_ohlcv(_sample_ohlcv())
     entries = detect_sweep_reversal_entries(h, judas, obs, [], {"state": "discount"}, "bullish")
     assert entries[0]["stop_rule"] == "structural_only"
+
+
+def test_dol_pdh_carries_already_broken_flag_when_price_pierced():
+    """§3.5: PDH already broken → caller can choose to skip or weight differently."""
+    from smc_quant import resolve_dol_target
+    prev_levels = {"previous_high": 110, "previous_low": 90, "broken_high": True}
+    out = resolve_dol_target(
+        1, current_price=100, liquidity=[], prev_levels=prev_levels,
+    )
+    assert out is not None and out["target_kind"] == "PDH"
+    assert out.get("already_broken") is True

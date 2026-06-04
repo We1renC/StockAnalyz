@@ -2093,12 +2093,15 @@ def resolve_dol_target(
     if prev_levels:
         prev_high = prev_levels.get("previous_high")
         prev_low = prev_levels.get("previous_low")
+        broken_high = bool(prev_levels.get("broken_high"))
+        broken_low = bool(prev_levels.get("broken_low"))
         if direction == 1 and prev_high is not None and float(prev_high) > current_price:
             candidates.append({
                 "target_price": round(float(prev_high), 4),
                 "target_kind": "PDH",
                 "distance": round(float(prev_high) - current_price, 4),
                 "source_index": -1,
+                "already_broken": broken_high,
             })
         if direction == -1 and prev_low is not None and float(prev_low) < current_price:
             candidates.append({
@@ -2106,6 +2109,7 @@ def resolve_dol_target(
                 "target_kind": "PDL",
                 "distance": round(current_price - float(prev_low), 4),
                 "source_index": -1,
+                "already_broken": broken_low,
             })
     for f in fvgs or []:
         if f.get("mitigated"):
