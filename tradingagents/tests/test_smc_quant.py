@@ -2795,3 +2795,17 @@ def test_sweep_reversal_skips_nearest_poi_factor_when_matrix_missing():
         h, judas, obs, [], {"state": "discount"}, "bullish",
     )
     assert entries[0]["factors"]["nearest_poi_within"] is False
+
+
+def test_all_entry_models_credit_nearest_poi_within_factor():
+    """§3.10: every entry model exposes nearest_poi_within (default False without matrix)."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    em = result["concepts"]["entry_models"]
+    for key in ("sweep_reversal", "ob_fvg_continuation", "ote_retracement",
+                "unicorn", "silver_bullet", "power_of_three"):
+        for e in em[key]:
+            assert "nearest_poi_within" in e["factors"]
+            assert isinstance(e["factors"]["nearest_poi_within"], bool)

@@ -2486,6 +2486,7 @@ def detect_continuation_entries(
     threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
     atr_value: Optional[float] = None,
     vol_bucket: Optional[str] = None,
+    pd_array_matrix: Optional[dict] = None,
 ) -> list[dict]:
     """§5.1 Entry Model 2 — OB/FVG Continuation.
 
@@ -2568,8 +2569,11 @@ def detect_continuation_entries(
                 (direction == 1 and (pd_zone or {}).get("zone") == "pure_discount")
                 or (direction == -1 and (pd_zone or {}).get("zone") == "pure_premium")
             ),
+            "nearest_poi_within": bool(
+                nearest_poi_proximity(pd_array_matrix or {}, direction=direction).get("has_poi_within")
+            ),
         }
-        local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1}
+        local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1, "nearest_poi_within": 1}
         scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
             {
@@ -2608,6 +2612,7 @@ def detect_ote_entries(
     threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
     atr_value: Optional[float] = None,
     vol_bucket: Optional[str] = None,
+    pd_array_matrix: Optional[dict] = None,
 ) -> list[dict]:
     """§5.1 Entry Model 3 — OTE Retracement (Fibonacci 0.62–0.79, ideal 0.705).
 
@@ -2696,8 +2701,11 @@ def detect_ote_entries(
             (direction == 1 and (pd_zone or {}).get("zone") == "pure_discount")
             or (direction == -1 and (pd_zone or {}).get("zone") == "pure_premium")
         ),
+        "nearest_poi_within": bool(
+            nearest_poi_proximity(pd_array_matrix or {}, direction=direction).get("has_poi_within")
+        ),
     }
-    local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1}
+    local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1, "nearest_poi_within": 1}
     scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
     out.append(
         {
@@ -2734,6 +2742,7 @@ def detect_unicorn_entries(
     weights: Optional[dict[str, int]] = None,
     atr_value: Optional[float] = None,
     vol_bucket: Optional[str] = None,
+    pd_array_matrix: Optional[dict] = None,
     threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
 ) -> list[dict]:
     """§5.3 Unicorn Model — Breaker Block ∩ FVG (+ SMT divergence bonus).
@@ -2802,8 +2811,11 @@ def detect_unicorn_entries(
                     (direction == 1 and (pd_zone or {}).get("zone") == "pure_discount")
                     or (direction == -1 and (pd_zone or {}).get("zone") == "pure_premium")
                 ),
+                "nearest_poi_within": bool(
+                    nearest_poi_proximity(pd_array_matrix or {}, direction=direction).get("has_poi_within")
+                ),
             }
-            local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1}
+            local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1, "nearest_poi_within": 1}
             scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
             out.append(
                 {
@@ -2863,6 +2875,7 @@ def detect_silver_bullet_entries(
     window_lookback: int = 20,
     atr_value: Optional[float] = None,
     vol_bucket: Optional[str] = None,
+    pd_array_matrix: Optional[dict] = None,
 ) -> list[dict]:
     """§5.3 Silver Bullet — time-windowed sweep → FVG → retest.
 
@@ -2946,8 +2959,11 @@ def detect_silver_bullet_entries(
                 (direction == 1 and (pd_zone or {}).get("zone") == "pure_discount")
                 or (direction == -1 and (pd_zone or {}).get("zone") == "pure_premium")
             ),
+            "nearest_poi_within": bool(
+                nearest_poi_proximity(pd_array_matrix or {}, direction=direction).get("has_poi_within")
+            ),
         }
-        local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1}
+        local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1, "nearest_poi_within": 1}
         scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
             {
@@ -2988,6 +3004,7 @@ def detect_power_of_three_entries(
     range_atr_mult: float = 0.9,
     atr_value: Optional[float] = None,
     vol_bucket: Optional[str] = None,
+    pd_array_matrix: Optional[dict] = None,
 ) -> list[dict]:
     """§5.3 Power of Three (AMD) — Accumulation → Manipulation → Distribution.
 
@@ -3092,12 +3109,17 @@ def detect_power_of_three_entries(
             "displacement_extreme": ev.get("displacement_strength") == "extreme",
             "killzone_premium": is_premium_killzone(session),
             "pd_extreme": pd_extreme,
+            "nearest_poi_within": bool(
+                nearest_poi_proximity(pd_array_matrix or {}, direction=direction).get("has_poi_within")
+            ),
         }
-        # §3.11 + §3.9 + §3.6 — credit extreme displacement / killzone / PD extreme (+1 each).
+        # §3.11 + §3.9 + §3.6 + §3.10 — credit extreme displacement / killzone /
+        # PD extreme / nearest POI (+1 each).
         local_weights = {
             **(weights or {}),
             "displacement_extreme": 1,
             "killzone_premium": 1,
+            "nearest_poi_within": 1,
             "pd_extreme": 1,
         }
         scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
@@ -5423,12 +5445,14 @@ def build_smc_analysis(
         h, structure, obs, fvgs, pd_zone, bias, session, weights=weights,
         atr_value=(adaptive_info or {}).get("atr"),
         vol_bucket=(adaptive_info or {}).get("bucket"),
+        pd_array_matrix=pd_array_matrix,
     )
     _atr = (adaptive_info or {}).get("atr")
     _bucket = (adaptive_info or {}).get("bucket")
     ote_entries = detect_ote_entries(
         h, ote, obs, fvgs, pd_zone, bias, session, weights=weights,
         atr_value=_atr, vol_bucket=_bucket,
+        pd_array_matrix=pd_array_matrix,
     )
     # §3.4 — feed Inverse FVGs into the Unicorn POI pool alongside fresh FVGs.
     # IFVGs already carry flipped direction so they overlap breakers naturally.
@@ -5438,14 +5462,17 @@ def build_smc_analysis(
     unicorn_entries = detect_unicorn_entries(
         h, breaker_blocks, _unicorn_fvg_pool, smt_events, pd_zone, bias, session, weights=weights,
         atr_value=_atr, vol_bucket=_bucket,
+        pd_array_matrix=pd_array_matrix,
     )
     silver_bullet_entries = detect_silver_bullet_entries(
         h, liquidity, fvgs, symbol, pd_zone, bias, session, weights=weights,
         atr_value=_atr, vol_bucket=_bucket,
+        pd_array_matrix=pd_array_matrix,
     )
     power_of_three_entries = detect_power_of_three_entries(
         h, judas_events, obs, fvgs, pd_zone, bias, session, weights=weights,
         atr_value=_atr, vol_bucket=_bucket,
+        pd_array_matrix=pd_array_matrix,
     )
     # §17 crypto overlay — only invoked when caller passes derivative data.
     crypto_overlay = None
