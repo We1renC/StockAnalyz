@@ -1482,6 +1482,10 @@ body { background: var(--bg-base); color: var(--text-primary); }
             <div id="smc-paper-acceptance-observed" class="text-xs text-slate-500">載入中...</div>
           </div>
           <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
+            <div class="text-xs font-semibold text-slate-300 mb-2">Stage / Deviation 證據</div>
+            <div id="smc-paper-acceptance-stages" class="text-xs text-slate-500">載入中...</div>
+          </div>
+          <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
             <div class="flex items-center justify-between gap-3 mb-2">
               <div class="text-xs font-semibold text-slate-300">Scenario 重播</div>
               <div id="smc-paper-acceptance-scenario-meta" class="text-[11px] text-slate-500">載入中...</div>
@@ -3263,6 +3267,7 @@ function renderPaperAcceptanceLoading(message = '載入前測驗收...') {
   const catalog = $('smc-paper-acceptance-catalog');
   const coverage = $('smc-paper-acceptance-coverage');
   const observed = $('smc-paper-acceptance-observed');
+  const stages = $('smc-paper-acceptance-stages');
   const scenarios = $('smc-paper-acceptance-scenarios');
   const scenarioMeta = $('smc-paper-acceptance-scenario-meta');
   const timeline = $('smc-paper-acceptance-timeline');
@@ -3280,6 +3285,7 @@ function renderPaperAcceptanceLoading(message = '載入前測驗收...') {
   if (sections) sections.innerHTML = `<div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 text-xs text-slate-500 md:col-span-2 xl:col-span-3">${escHtml(message)}</div>`;
   if (catalog) catalog.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
   if (observed) observed.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
+  if (stages) stages.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
   if (scenarios) scenarios.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
   if (scenarioMeta) scenarioMeta.textContent = message;
   if (timeline) timeline.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
@@ -3300,6 +3306,7 @@ function renderPaperAcceptanceEmpty(symbol) {
   const catalog = $('smc-paper-acceptance-catalog');
   const coverage = $('smc-paper-acceptance-coverage');
   const observed = $('smc-paper-acceptance-observed');
+  const stages = $('smc-paper-acceptance-stages');
   const scenarios = $('smc-paper-acceptance-scenarios');
   const scenarioMeta = $('smc-paper-acceptance-scenario-meta');
   const timeline = $('smc-paper-acceptance-timeline');
@@ -3324,6 +3331,7 @@ function renderPaperAcceptanceEmpty(symbol) {
   if (catalog) catalog.innerHTML = '<div class="text-slate-500">選擇標的後即可瀏覽條款與證據工作區。</div>';
   if (coverage) coverage.innerHTML = '尚無覆蓋摘要。';
   if (observed) observed.innerHTML = '<div class="text-slate-500">尚無 telemetry 與對帳證據。</div>';
+  if (stages) stages.innerHTML = '<div class="text-slate-500">尚無 stage / deviation 證據。</div>';
   if (scenarios) scenarios.innerHTML = '<div class="text-slate-500">尚無 scenario 記錄。</div>';
   if (scenarioMeta) scenarioMeta.textContent = '尚未載入';
   if (timeline) timeline.innerHTML = '<div class="text-slate-500">尚無異常事件時間軸。</div>';
@@ -3547,6 +3555,33 @@ function renderPaperAcceptanceScenarios(workspace) {
   }).join('');
 }
 
+function renderPaperAcceptanceStages(workspace) {
+  const stages = workspace?.capital_stages || [];
+  const deviations = workspace?.deviation_snapshots || [];
+  if (!stages.length && !deviations.length) {
+    return '<div class="text-slate-500">尚無 stage / deviation 證據。</div>';
+  }
+  const stageRows = stages.slice(0, 4).map(row => `
+    <div class="py-1.5 border-b border-slate-800/50 last:border-b-0">
+      <div class="flex items-center justify-between gap-2">
+        <div class="text-slate-200">${escHtml(row.capital_range_label || row.stage_name || 'stage')}</div>
+        <div class="text-[11px] text-slate-500">${escHtml(String(row.trade_count || 0))} trades / ${escHtml(String(row.observation_days || 0))}d</div>
+      </div>
+      <div class="text-[11px] text-slate-500 mt-1">slippage ${escHtml(String(row.slippage_bps ?? '—'))} | fill ${(row.fill_rate != null ? `${(Number(row.fill_rate) * 100).toFixed(1)}%` : '—')} | dd ${escHtml(String(row.drawdown ?? '—'))}</div>
+    </div>
+  `).join('');
+  const devRows = deviations.slice(0, 3).map(row => `
+    <div class="py-1.5 border-b border-slate-800/50 last:border-b-0">
+      <div class="flex items-center justify-between gap-2">
+        <div class="text-slate-200">${escHtml(`${row.baseline_source || 'baseline'} -> ${row.comparison_source || 'comparison'}`)}</div>
+        <div class="text-[11px] text-slate-500">score ${escHtml(String(row.deviation_score ?? '—'))}</div>
+      </div>
+      <div class="text-[11px] text-slate-500 mt-1">win ${escHtml(String(row.win_rate_delta ?? '—'))} | drawdown ${escHtml(String(row.drawdown_delta ?? '—'))} | freq ${escHtml(String(row.trade_frequency_delta ?? '—'))}</div>
+    </div>
+  `).join('');
+  return `<div class="space-y-2">${stageRows}${devRows}</div>`;
+}
+
 function renderPaperAcceptanceTimeline(rows) {
   if (!rows || !rows.length) {
     return '<div class="text-slate-500">尚無異常事件時間軸。</div>';
@@ -3717,6 +3752,7 @@ function renderPaperAcceptanceWorkspace(workspace) {
   const overview = $('smc-paper-acceptance-overview');
   const coverage = $('smc-paper-acceptance-coverage');
   const observed = $('smc-paper-acceptance-observed');
+  const stages = $('smc-paper-acceptance-stages');
   const blockers = $('smc-paper-acceptance-blockers');
   const reportsEl = $('smc-paper-acceptance-reports');
   const meta = $('smc-paper-acceptance-meta');
@@ -3738,6 +3774,7 @@ function renderPaperAcceptanceWorkspace(workspace) {
   }
   if (coverage) coverage.innerHTML = renderPaperAcceptanceCoverage(workspace?.coverage || {});
   if (observed) observed.innerHTML = renderPaperAcceptanceObserved(workspace);
+  if (stages) stages.innerHTML = renderPaperAcceptanceStages(workspace);
   if (blockers) blockers.innerHTML = renderPaperAcceptanceBlockers(report.blocking_issues || []);
   if (reportsEl) reportsEl.innerHTML = renderPaperAcceptanceReportList(workspace?.reports || []);
   if ($('smc-paper-acceptance-scenarios')) $('smc-paper-acceptance-scenarios').innerHTML = renderPaperAcceptanceScenarios(workspace);
@@ -3985,6 +4022,7 @@ async function refreshPaperAcceptance(force = false) {
     const catalog = $('smc-paper-acceptance-catalog');
     const coverage = $('smc-paper-acceptance-coverage');
     const observed = $('smc-paper-acceptance-observed');
+    const stages = $('smc-paper-acceptance-stages');
     const scenarios = $('smc-paper-acceptance-scenarios');
     const scenarioMeta = $('smc-paper-acceptance-scenario-meta');
     const timeline = $('smc-paper-acceptance-timeline');
@@ -4001,6 +4039,7 @@ async function refreshPaperAcceptance(force = false) {
     if (catalog) catalog.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (coverage) coverage.innerHTML = escHtml(msg);
     if (observed) observed.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
+    if (stages) stages.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (scenarios) scenarios.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (scenarioMeta) scenarioMeta.textContent = '讀取失敗';
     if (timeline) timeline.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;

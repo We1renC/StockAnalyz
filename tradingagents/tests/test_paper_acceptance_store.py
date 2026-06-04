@@ -15,12 +15,16 @@ from paper_acceptance_store import (
     load_acceptance_context_overrides,
     load_acceptance_events,
     load_acceptance_reports,
+    load_capital_stages,
+    load_deviation_snapshots,
     load_order_audit_rows,
     load_reconciliation_runs,
     load_runtime_metrics,
     persist_acceptance_report,
     record_alert_delivery,
     record_acceptance_event,
+    record_capital_stage,
+    record_deviation_snapshot,
     record_order_audit,
     record_reconciliation_run,
     record_runtime_metric,
@@ -414,6 +418,110 @@ def test_workspace_includes_review_timeline_and_trend():
     assert workspace["section_trend"][0]["run_key"] == payload["run_key"]
     assert "recommendation" in workspace["policy"]
     assert "covered_ratio" in workspace["coverage"]
+    assert isinstance(workspace["capital_stages"], list)
+    assert isinstance(workspace["deviation_snapshots"], list)
     changes = load_acceptance_change_log(conn, "ABAT")
     assert any(row["change_type"] == "review_updated" for row in changes)
     assert any(item["kind"] == "change" for item in workspace["timeline"])
+
+
+def test_capital_stage_and_deviation_snapshot_round_trip():
+    conn = _conn()
+
+    stage = record_capital_stage(
+        conn,
+        symbol="ABAT",
+        stage_name="stage2_10_20",
+        capital_ratio=0.12,
+        capital_range_label="stage 2 10%-20%",
+        trade_count=32,
+        observation_days=18,
+        slippage_bps=22.5,
+        fill_rate=0.91,
+        drawdown=-0.08,
+        note="manual capacity review",
+    )
+    deviation = record_deviation_snapshot(
+        conn,
+        symbol="ABAT",
+        baseline_source="paper",
+        comparison_source="live",
+        win_rate_delta=0.08,
+        fill_rate_delta=0.04,
+        slippage_delta_bps=12.0,
+        drawdown_delta=0.03,
+        holding_time_delta_minutes=45.0,
+        trade_frequency_delta=0.2,
+        deviation_score=0.05,
+        detail={"origin": "manual"},
+    )
+
+    stages = load_capital_stages(conn, "ABAT")
+    deviations = load_deviation_snapshots(conn, "ABAT")
+
+    assert stages[0]["stage_name"] == stage["stage_name"]
+    assert stages[0]["capital_ratio"] == stage["capital_ratio"]
+    assert stages[0]["note"] == "manual capacity review"
+    assert deviations[0]["baseline_source"] == deviation["baseline_source"]
+    assert deviations[0]["comparison_source"] == deviation["comparison_source"]
+    assert deviations[0]["detail"]["origin"] == "manual"
+
+
+def test_workspace_auto_generates_stage_and_deviation_from_live_telemetry():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+    ensure_paper_acceptance_schema(conn)
+    conn.executemany(
+        """INSERT INTO smc_trade_journal
+           (symbol, environment, status, entry_time, created_at, pnl, r_multiple)
+           VALUES (?, 'live', 'closed', ?, ?, ?, ?)""",
+        [
+            ("ABAT", "2026-06-03T09:00:00Z", "2026-06-03T09:00:00Z", 12.0, 1.2),
+            ("ABAT", "2026-06-04T09:00:00Z", "2026-06-04T09:00:00Z", -4.0, -0.4),
+        ],
+    )
+    conn.commit()
+    record_order_audit(
+        conn,
+        symbol="ABAT",
+        side="buy",
+        order_type="market",
+        state="filled",
+        requested_qty=5,
+        filled_qty=5,
+        signal_price=10.0,
+        avg_price=10.12,
+        notional=50.6,
+        fee=0.1,
+        slippage_bps=12.0,
+        execution_latency_ms=100,
+        stage="paper",
+    )
+    record_order_audit(
+        conn,
+        symbol="ABAT",
+        side="buy",
+        order_type="market",
+        state="filled",
+        requested_qty=4,
+        filled_qty=4,
+        signal_price=10.0,
+        avg_price=10.18,
+        notional=40.72,
+        fee=0.09,
+        slippage_bps=18.0,
+        execution_latency_ms=90,
+        stage="live",
+    )
+
+    workspace = build_acceptance_workspace(conn, symbol="ABAT")
+
+    assert workspace["capital_stages"]
+    assert workspace["deviation_snapshots"]
+    live_deviation = next(
+        row for row in workspace["deviation_snapshots"]
+        if row["baseline_source"] == "paper" and row["comparison_source"] == "live"
+    )
+    assert live_deviation["fill_rate_delta"] == 0.0
+    assert live_deviation["slippage_delta_bps"] == 6.0
+    assert live_deviation["detail"]["live_average_slippage"] == 18.0

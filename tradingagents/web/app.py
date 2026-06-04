@@ -50,6 +50,8 @@ from paper_acceptance_store import (
     load_acceptance_events,
     load_acceptance_reports,
     load_acceptance_review,
+    load_capital_stages,
+    load_deviation_snapshots,
     load_order_audit_rows,
     load_reconciliation_runs,
     load_runtime_metrics,
@@ -57,6 +59,8 @@ from paper_acceptance_store import (
     record_alert_delivery,
     record_acceptance_change,
     record_acceptance_event,
+    record_capital_stage,
+    record_deviation_snapshot,
     record_order_audit,
     record_reconciliation_run,
     record_runtime_metric,
@@ -4853,6 +4857,35 @@ class PaperAcceptanceReviewUpdate(BaseModel):
     run_key: Optional[str] = None
 
 
+class PaperAcceptanceCapitalStageCreate(BaseModel):
+    symbol: str
+    stage_name: str
+    capital_ratio: Optional[float] = None
+    capital_range_label: str = ""
+    trade_count: int = 0
+    observation_days: int = 0
+    slippage_bps: Optional[float] = None
+    fill_rate: Optional[float] = None
+    drawdown: Optional[float] = None
+    note: str = ""
+    stage: str = "paper"
+
+
+class PaperAcceptanceDeviationSnapshotCreate(BaseModel):
+    symbol: str
+    baseline_source: str
+    comparison_source: str
+    win_rate_delta: Optional[float] = None
+    fill_rate_delta: Optional[float] = None
+    slippage_delta_bps: Optional[float] = None
+    drawdown_delta: Optional[float] = None
+    holding_time_delta_minutes: Optional[float] = None
+    trade_frequency_delta: Optional[float] = None
+    deviation_score: Optional[float] = None
+    detail: Optional[dict] = None
+    stage: str = "paper"
+
+
 def _json_dumps_compact(value, fallback):
     if value is None:
         value = fallback
@@ -5481,6 +5514,83 @@ def api_get_paper_acceptance_security_scan(symbol: str, stage: str = "paper"):
             "stage": payload["stage"],
             "security_scan": payload.get("security_scan") or {},
         })
+    finally:
+        conn.close()
+
+
+@app.get("/api/paper-acceptance/capital-stages")
+def api_get_paper_acceptance_capital_stages(symbol: str, stage: str = "paper", limit: int = 50):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        rows = load_capital_stages(conn, symbol.strip().upper(), stage=stage, limit=limit)
+        return sanitize_float_values({"rows": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+@app.post("/api/paper-acceptance/capital-stages")
+def api_record_paper_acceptance_capital_stage(req: PaperAcceptanceCapitalStageCreate):
+    if not req.symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    if not req.stage_name.strip():
+        raise HTTPException(400, "stage_name is required")
+    conn = get_db()
+    try:
+        row = record_capital_stage(
+            conn,
+            symbol=req.symbol.strip().upper(),
+            stage_name=req.stage_name.strip(),
+            capital_ratio=req.capital_ratio,
+            capital_range_label=req.capital_range_label,
+            trade_count=req.trade_count,
+            observation_days=req.observation_days,
+            slippage_bps=req.slippage_bps,
+            fill_rate=req.fill_rate,
+            drawdown=req.drawdown,
+            note=req.note,
+            stage=req.stage,
+        )
+        return sanitize_float_values({"ok": True, "row": row})
+    finally:
+        conn.close()
+
+
+@app.get("/api/paper-acceptance/deviation-snapshots")
+def api_get_paper_acceptance_deviation_snapshots(symbol: str, stage: str = "paper", limit: int = 50):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        rows = load_deviation_snapshots(conn, symbol.strip().upper(), stage=stage, limit=limit)
+        return sanitize_float_values({"rows": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+@app.post("/api/paper-acceptance/deviation-snapshots")
+def api_record_paper_acceptance_deviation_snapshot(req: PaperAcceptanceDeviationSnapshotCreate):
+    if not req.symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        row = record_deviation_snapshot(
+            conn,
+            symbol=req.symbol.strip().upper(),
+            baseline_source=req.baseline_source,
+            comparison_source=req.comparison_source,
+            win_rate_delta=req.win_rate_delta,
+            fill_rate_delta=req.fill_rate_delta,
+            slippage_delta_bps=req.slippage_delta_bps,
+            drawdown_delta=req.drawdown_delta,
+            holding_time_delta_minutes=req.holding_time_delta_minutes,
+            trade_frequency_delta=req.trade_frequency_delta,
+            deviation_score=req.deviation_score,
+            detail=req.detail or {},
+            stage=req.stage,
+        )
+        return sanitize_float_values({"ok": True, "row": row})
     finally:
         conn.close()
 

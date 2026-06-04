@@ -5,7 +5,9 @@ from unittest.mock import patch
 import app
 from app import (
     PaperAcceptanceAlertDeliveryCreate,
+    PaperAcceptanceCapitalStageCreate,
     PaperAcceptanceCheckUpdate,
+    PaperAcceptanceDeviationSnapshotCreate,
     PaperAcceptanceEventCreate,
     PaperAcceptanceGenerateRequest,
     PaperAcceptanceOrderAuditCreate,
@@ -203,6 +205,53 @@ def test_api_runtime_metrics_reconciliation_order_audit_and_alert_delivery(tmp_p
         assert workspace["report"]["metrics"]["fees_included"] is True
         assert workspace["report"]["metrics"]["reconciliation_implemented"] is True
         assert len(workspace["runtime_metrics"]) >= 2
+    finally:
+        app.DB = original
+
+
+def test_api_capital_stage_and_deviation_snapshot_round_trip(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        stage_payload = app.api_record_paper_acceptance_capital_stage(
+            PaperAcceptanceCapitalStageCreate(
+                symbol="ABAT",
+                stage_name="stage3_25_50",
+                capital_ratio=0.3,
+                capital_range_label="stage 3 25%-50%",
+                trade_count=48,
+                observation_days=25,
+                slippage_bps=16.0,
+                fill_rate=0.95,
+                drawdown=-0.07,
+                note="manual stage promotion",
+            )
+        )
+        deviation_payload = app.api_record_paper_acceptance_deviation_snapshot(
+            PaperAcceptanceDeviationSnapshotCreate(
+                symbol="ABAT",
+                baseline_source="paper",
+                comparison_source="live",
+                win_rate_delta=0.06,
+                fill_rate_delta=0.03,
+                slippage_delta_bps=8.0,
+                drawdown_delta=0.02,
+                holding_time_delta_minutes=35.0,
+                trade_frequency_delta=0.12,
+                deviation_score=0.04,
+                detail={"origin": "manual"},
+            )
+        )
+
+        stages = app.api_get_paper_acceptance_capital_stages(symbol="ABAT")
+        deviations = app.api_get_paper_acceptance_deviation_snapshots(symbol="ABAT")
+        workspace = app.api_get_paper_acceptance_workspace(symbol="ABAT")
+
+        assert stage_payload["ok"] is True
+        assert deviation_payload["ok"] is True
+        assert stages["count"] >= 1
+        assert deviations["count"] >= 1
+        assert any(row["stage_name"] == "stage3_25_50" for row in workspace["capital_stages"])
+        assert any(row["detail"]["origin"] == "manual" for row in workspace["deviation_snapshots"])
     finally:
         app.DB = original
 

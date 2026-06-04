@@ -270,6 +270,51 @@ def ensure_paper_acceptance_schema(conn) -> None:
         """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_change_log_symbol_created
            ON paper_acceptance_change_log(symbol, stage, created_at DESC, id DESC)"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_capital_stages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stage_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            stage_name TEXT NOT NULL,
+            capital_ratio REAL,
+            capital_range_label TEXT NOT NULL DEFAULT '',
+            trade_count INTEGER NOT NULL DEFAULT 0,
+            observation_days INTEGER NOT NULL DEFAULT 0,
+            slippage_bps REAL,
+            fill_rate REAL,
+            drawdown REAL,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_capital_stage_symbol_created
+           ON paper_acceptance_capital_stages(symbol, stage, created_at DESC, id DESC)"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_deviation_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            baseline_source TEXT NOT NULL DEFAULT 'backtest',
+            comparison_source TEXT NOT NULL DEFAULT 'paper',
+            win_rate_delta REAL,
+            fill_rate_delta REAL,
+            slippage_delta_bps REAL,
+            drawdown_delta REAL,
+            holding_time_delta_minutes REAL,
+            trade_frequency_delta REAL,
+            deviation_score REAL,
+            detail TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_deviation_symbol_created
+           ON paper_acceptance_deviation_snapshots(symbol, stage, created_at DESC, id DESC)"""
+    )
     ensure_paper_acceptance_metrics_schema(conn)
     ensure_paper_acceptance_scenario_schema(conn)
     conn.commit()
@@ -381,6 +426,186 @@ def load_acceptance_change_log(conn, symbol: str | None, stage: str = "paper", l
         data["detail"] = _json_loads(data.get("detail"), {})
         out.append(data)
     return out
+
+
+def record_capital_stage(
+    conn,
+    *,
+    symbol: str,
+    stage_name: str,
+    capital_ratio: float | None = None,
+    capital_range_label: str = "",
+    trade_count: int = 0,
+    observation_days: int = 0,
+    slippage_bps: float | None = None,
+    fill_rate: float | None = None,
+    drawdown: float | None = None,
+    note: str = "",
+    stage: str = "paper",
+) -> dict:
+    """Persist a staged capital exposure evidence snapshot."""
+
+    ensure_paper_acceptance_schema(conn)
+    payload = {
+        "stage_key": f"paper-capacity-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "stage_name": stage_name,
+        "capital_ratio": _safe_float(capital_ratio),
+        "capital_range_label": capital_range_label or "",
+        "trade_count": int(trade_count or 0),
+        "observation_days": int(observation_days or 0),
+        "slippage_bps": _safe_float(slippage_bps),
+        "fill_rate": _safe_float(fill_rate),
+        "drawdown": _safe_float(drawdown),
+        "note": note or "",
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_capital_stages
+           (stage_key, symbol, stage, stage_name, capital_ratio, capital_range_label,
+            trade_count, observation_days, slippage_bps, fill_rate, drawdown, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["stage_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["stage_name"],
+            payload["capital_ratio"],
+            payload["capital_range_label"],
+            payload["trade_count"],
+            payload["observation_days"],
+            payload["slippage_bps"],
+            payload["fill_rate"],
+            payload["drawdown"],
+            payload["note"],
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=payload["symbol"],
+        stage=payload["stage"],
+        change_type="capital_stage_recorded",
+        target_type="capital_stage",
+        target_key=payload["stage_name"],
+        detail={"capital_ratio": payload["capital_ratio"], "trade_count": payload["trade_count"]},
+    )
+    return payload
+
+
+def load_capital_stages(conn, symbol: str | None, stage: str = "paper", limit: int = 50) -> list[dict]:
+    """Load persisted capital stage evidence snapshots."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_capital_stages
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 500))),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def record_deviation_snapshot(
+    conn,
+    *,
+    symbol: str,
+    baseline_source: str,
+    comparison_source: str,
+    win_rate_delta: float | None = None,
+    fill_rate_delta: float | None = None,
+    slippage_delta_bps: float | None = None,
+    drawdown_delta: float | None = None,
+    holding_time_delta_minutes: float | None = None,
+    trade_frequency_delta: float | None = None,
+    deviation_score: float | None = None,
+    detail: dict | None = None,
+    stage: str = "paper",
+) -> dict:
+    """Persist a cross-stage deviation snapshot for paper/live comparison."""
+
+    ensure_paper_acceptance_schema(conn)
+    payload = {
+        "snapshot_key": f"paper-deviation-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "baseline_source": baseline_source,
+        "comparison_source": comparison_source,
+        "win_rate_delta": _safe_float(win_rate_delta),
+        "fill_rate_delta": _safe_float(fill_rate_delta),
+        "slippage_delta_bps": _safe_float(slippage_delta_bps),
+        "drawdown_delta": _safe_float(drawdown_delta),
+        "holding_time_delta_minutes": _safe_float(holding_time_delta_minutes),
+        "trade_frequency_delta": _safe_float(trade_frequency_delta),
+        "deviation_score": _safe_float(deviation_score),
+        "detail": detail or {},
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_deviation_snapshots
+           (snapshot_key, symbol, stage, baseline_source, comparison_source,
+            win_rate_delta, fill_rate_delta, slippage_delta_bps, drawdown_delta,
+            holding_time_delta_minutes, trade_frequency_delta, deviation_score,
+            detail, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["snapshot_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["baseline_source"],
+            payload["comparison_source"],
+            payload["win_rate_delta"],
+            payload["fill_rate_delta"],
+            payload["slippage_delta_bps"],
+            payload["drawdown_delta"],
+            payload["holding_time_delta_minutes"],
+            payload["trade_frequency_delta"],
+            payload["deviation_score"],
+            _json_dumps(payload["detail"]),
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=payload["symbol"],
+        stage=payload["stage"],
+        change_type="deviation_snapshot_recorded",
+        target_type="deviation_snapshot",
+        target_key=f"{baseline_source}->{comparison_source}",
+        detail={"deviation_score": payload["deviation_score"]},
+    )
+    return payload
+
+
+def load_deviation_snapshots(conn, symbol: str | None, stage: str = "paper", limit: int = 50) -> list[dict]:
+    """Load persisted paper/live deviation snapshots."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_deviation_snapshots
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 500))),
+    ).fetchall()
+    out = []
+    for row in rows:
+        data = dict(row)
+        data["detail"] = _json_loads(data.get("detail"), {})
+        out.append(data)
+    return out
+
+
+def _same_numeric(a, b, *, precision: int = 6) -> bool:
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    return round(float(a), precision) == round(float(b), precision)
 
 
 def _run_row_to_dict(row) -> dict:
@@ -1181,6 +1406,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
     backtest_runs = _load_backtest_runs(conn, symbol=key, limit=20)
     events = load_acceptance_events(conn, symbol=key, limit=500)
     telemetry = summarize_acceptance_telemetry(conn, symbol=key, stage="paper")
+    live_telemetry = summarize_acceptance_telemetry(conn, symbol=key, stage="live")
     scenarios = summarize_scenario_evidence(conn, symbol=key, stage="paper")
     security_scan = run_security_scan(Path(__file__).resolve().parents[2])
     strategy_payload = dict(overrides["strategy"] or {})
@@ -1258,7 +1484,38 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "paper_trade_count": paper_summary.get("trade_count"),
         "live_trade_count": live_summary.get("trade_count"),
         "backtest_trade_count": latest_backtest.get("total_trades"),
+        "fill_rate_live": live_telemetry.get("metrics", {}).get("fill_rate"),
+        "average_slippage_live": live_telemetry.get("metrics", {}).get("average_slippage"),
     }
+    metrics.update({key: value for key, value in telemetry.get("metrics", {}).items() if value is not None})
+    metrics.update({key: value for key, value in overrides["metrics"].items() if value is not None})
+    stage_and_deviation = _ensure_capacity_and_deviation_snapshots(
+        conn,
+        symbol=key,
+        strategy=strategy_payload,
+        metrics=metrics,
+        live_metrics=live_telemetry.get("metrics", {}),
+        paper_summary=paper_summary,
+        live_summary=live_summary,
+        latest_backtest=latest_backtest,
+    )
+    capital_stages = load_capital_stages(conn, key, stage="paper", limit=20)
+    deviation_snapshots = load_deviation_snapshots(conn, key, stage="paper", limit=20)
+    metrics["capital_stage_count"] = len({row.get("stage_name") for row in capital_stages if row.get("stage_name")})
+    latest_live_deviation = next(
+        (row for row in deviation_snapshots if row.get("baseline_source") == "paper" and row.get("comparison_source") == "live"),
+        None,
+    )
+    latest_backtest_deviation = next(
+        (row for row in deviation_snapshots if row.get("baseline_source") == "backtest" and row.get("comparison_source") == "paper"),
+        None,
+    )
+    if latest_live_deviation:
+        metrics["paper_live_max_deviation_ratio"] = _safe_float(latest_live_deviation.get("deviation_score"))
+        metrics["paper_live_comparison_ready"] = True
+        metrics["average_slippage_live"] = _safe_float(latest_live_deviation.get("detail", {}).get("live_average_slippage"))
+    if latest_backtest_deviation:
+        metrics["behavior_alignment_score"] = round(1.0 - min(1.0, _safe_float(latest_backtest_deviation.get("deviation_score")) or 0), 4)
     metrics.update({
         "hardcoded_api_keys": not bool(security_scan.get("no_hardcoded_keys")),
         "test_live_keys_separated": security_scan.get("test_live_separation"),
@@ -1267,8 +1524,6 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "security_scan_file_count": security_scan.get("scanned_files"),
         "security_scan_hit_count": security_scan.get("hardcoded_secret_count"),
     })
-    metrics.update({key: value for key, value in telemetry.get("metrics", {}).items() if value is not None})
-    metrics.update({key: value for key, value in overrides["metrics"].items() if value is not None})
     evidence = _build_auto_evidence(
         strategy=strategy_payload,
         metrics=metrics,
@@ -1316,6 +1571,8 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "scenario_runs": scenarios.get("runs") or [],
         "policy": policy,
         "security_scan": security_scan,
+        "capital_stages": capital_stages,
+        "deviation_snapshots": deviation_snapshots,
     }
 
 
@@ -1417,6 +1674,163 @@ def _build_coverage_summary(catalog: list[dict]) -> dict:
     }
 
 
+def _auto_stage_name(capital_ratio: float | None) -> tuple[str, str]:
+    ratio = float(capital_ratio or 0)
+    if ratio <= 0:
+        return "stage0_paper", "stage 0 paper"
+    if ratio <= 0.05:
+        return "stage1_1_5", "stage 1 1%-5%"
+    if ratio <= 0.20:
+        return "stage2_10_20", "stage 2 10%-20%"
+    if ratio <= 0.50:
+        return "stage3_25_50", "stage 3 25%-50%"
+    return "stage4_full", "stage 4 full"
+
+
+def _ensure_capacity_and_deviation_snapshots(
+    conn,
+    *,
+    symbol: str,
+    strategy: dict,
+    metrics: dict,
+    live_metrics: dict,
+    paper_summary: dict,
+    live_summary: dict,
+    latest_backtest: dict,
+) -> dict:
+    capital_ratio = _safe_float(strategy.get("live_capital_ratio"))
+    if capital_ratio is None:
+        capital_ratio = 0.0 if int(live_summary.get("trade_count") or 0) == 0 else 0.05
+    stage_name, stage_label = _auto_stage_name(capital_ratio)
+    latest_stage = next(iter(load_capital_stages(conn, symbol, stage="paper", limit=1)), None)
+    stage_trade_count = int(max(int(paper_summary.get("trade_count") or 0), int(live_summary.get("trade_count") or 0)))
+    stage_observation_days = int(max(int(paper_summary.get("testing_days") or 0), int(live_summary.get("testing_days") or 0)))
+    stage_slippage = _safe_float(metrics.get("average_slippage"))
+    stage_fill_rate = _safe_float(metrics.get("fill_rate"))
+    stage_drawdown = _safe_float(metrics.get("max_drawdown"))
+    if not latest_stage or any([
+        latest_stage.get("stage_name") != stage_name,
+        not _same_numeric(latest_stage.get("capital_ratio"), capital_ratio),
+        int(latest_stage.get("trade_count") or 0) != stage_trade_count,
+        int(latest_stage.get("observation_days") or 0) != stage_observation_days,
+        not _same_numeric(latest_stage.get("slippage_bps"), stage_slippage),
+        not _same_numeric(latest_stage.get("fill_rate"), stage_fill_rate),
+        not _same_numeric(latest_stage.get("drawdown"), stage_drawdown),
+    ]):
+        record_capital_stage(
+            conn,
+            symbol=symbol,
+            stage_name=stage_name,
+            capital_ratio=capital_ratio,
+            capital_range_label=stage_label,
+            trade_count=stage_trade_count,
+            observation_days=stage_observation_days,
+            slippage_bps=stage_slippage,
+            fill_rate=stage_fill_rate,
+            drawdown=stage_drawdown,
+            note="auto-generated acceptance capacity stage snapshot",
+            stage="paper",
+        )
+    latest_paper_vs_live = None
+    if live_summary.get("trade_count") and paper_summary.get("trade_count"):
+        win_rate_delta = abs((_safe_float(live_summary.get("win_rate")) or 0) - (_safe_float(paper_summary.get("win_rate")) or 0))
+        paper_fill_rate = _safe_float(metrics.get("fill_rate"))
+        live_fill_rate = _safe_float(live_metrics.get("fill_rate"))
+        fill_rate_delta = abs(live_fill_rate - paper_fill_rate) if live_fill_rate is not None and paper_fill_rate is not None else None
+        paper_slippage = _safe_float(metrics.get("average_slippage"))
+        live_slippage = _safe_float(live_metrics.get("average_slippage"))
+        slippage_delta_bps = abs(live_slippage - paper_slippage) if live_slippage is not None and paper_slippage is not None else None
+        drawdown_delta = abs(abs(_safe_float(live_summary.get("max_drawdown")) or 0) - abs(_safe_float(paper_summary.get("max_drawdown")) or 0))
+        holding_delta = abs((_safe_float(live_summary.get("average_holding_minutes")) or 0) - (_safe_float(paper_summary.get("average_holding_minutes")) or 0))
+        trade_freq_delta = abs(
+            ((live_summary.get("trade_count") or 0) / max(1, live_summary.get("testing_days") or 1))
+            - ((paper_summary.get("trade_count") or 0) / max(1, paper_summary.get("testing_days") or 1))
+        )
+        score_parts = [win_rate_delta, drawdown_delta]
+        if fill_rate_delta is not None:
+            score_parts.append(fill_rate_delta)
+        deviation_score = round(sum(score_parts) / max(1, len(score_parts)), 4)
+        latest_live_dev = next(
+            (
+                row for row in load_deviation_snapshots(conn, symbol, stage="paper", limit=10)
+                if row.get("baseline_source") == "paper" and row.get("comparison_source") == "live"
+            ),
+            None,
+        )
+        if not latest_live_dev or any([
+            not _same_numeric(latest_live_dev.get("win_rate_delta"), win_rate_delta),
+            not _same_numeric(latest_live_dev.get("fill_rate_delta"), fill_rate_delta),
+            not _same_numeric(latest_live_dev.get("slippage_delta_bps"), slippage_delta_bps),
+            not _same_numeric(latest_live_dev.get("drawdown_delta"), drawdown_delta),
+            not _same_numeric(latest_live_dev.get("holding_time_delta_minutes"), holding_delta),
+            not _same_numeric(latest_live_dev.get("trade_frequency_delta"), trade_freq_delta),
+            not _same_numeric(latest_live_dev.get("deviation_score"), deviation_score),
+        ]):
+            latest_paper_vs_live = record_deviation_snapshot(
+                conn,
+                symbol=symbol,
+                baseline_source="paper",
+                comparison_source="live",
+                win_rate_delta=win_rate_delta,
+                fill_rate_delta=fill_rate_delta,
+                slippage_delta_bps=slippage_delta_bps,
+                drawdown_delta=drawdown_delta,
+                holding_time_delta_minutes=holding_delta,
+                trade_frequency_delta=trade_freq_delta,
+                deviation_score=deviation_score,
+                detail={
+                    "origin": "auto",
+                    "paper_fill_rate": paper_fill_rate,
+                    "live_fill_rate": live_fill_rate,
+                    "paper_average_slippage": paper_slippage,
+                    "live_average_slippage": live_slippage,
+                },
+                stage="paper",
+            )
+        else:
+            latest_paper_vs_live = latest_live_dev
+    latest_backtest_vs_paper = None
+    if latest_backtest and paper_summary.get("trade_count"):
+        win_rate_delta = abs((_safe_float(latest_backtest.get("win_rate")) or 0) - (_safe_float(paper_summary.get("win_rate")) or 0))
+        drawdown_delta = abs(abs(_safe_float(latest_backtest.get("max_drawdown")) or 0) - abs(_safe_float(paper_summary.get("max_drawdown")) or 0))
+        trade_freq_delta = abs(
+            ((_safe_float(latest_backtest.get("total_trades")) or 0) / max(1, paper_summary.get("testing_days") or 1))
+            - ((paper_summary.get("trade_count") or 0) / max(1, paper_summary.get("testing_days") or 1))
+        )
+        deviation_score = round(sum([win_rate_delta, drawdown_delta, trade_freq_delta]) / 3, 4)
+        latest_backtest_dev = next(
+            (
+                row for row in load_deviation_snapshots(conn, symbol, stage="paper", limit=10)
+                if row.get("baseline_source") == "backtest" and row.get("comparison_source") == "paper"
+            ),
+            None,
+        )
+        if not latest_backtest_dev or any([
+            not _same_numeric(latest_backtest_dev.get("win_rate_delta"), win_rate_delta),
+            not _same_numeric(latest_backtest_dev.get("drawdown_delta"), drawdown_delta),
+            not _same_numeric(latest_backtest_dev.get("trade_frequency_delta"), trade_freq_delta),
+            not _same_numeric(latest_backtest_dev.get("deviation_score"), deviation_score),
+        ]):
+            latest_backtest_vs_paper = record_deviation_snapshot(
+                conn,
+                symbol=symbol,
+                baseline_source="backtest",
+                comparison_source="paper",
+                win_rate_delta=win_rate_delta,
+                drawdown_delta=drawdown_delta,
+                trade_frequency_delta=trade_freq_delta,
+                deviation_score=deviation_score,
+                detail={"origin": "auto"},
+                stage="paper",
+            )
+        else:
+            latest_backtest_vs_paper = latest_backtest_dev
+    return {
+        "latest_paper_vs_live": latest_paper_vs_live,
+        "latest_backtest_vs_paper": latest_backtest_vs_paper,
+    }
+
+
 def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", limit_reports: int = 5) -> dict:
     """Build the full acceptance workspace payload for UI editing and reporting."""
 
@@ -1453,6 +1867,8 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         "reports": reports,
         "section_trend": _build_section_trend(reports),
         "coverage": _build_coverage_summary(catalog),
+        "capital_stages": context.get("capital_stages") or [],
+        "deviation_snapshots": context.get("deviation_snapshots") or [],
     }
 
 
@@ -1470,6 +1886,8 @@ __all__ = [
     "load_acceptance_reports",
     "load_acceptance_review",
     "load_order_audit_rows",
+    "load_capital_stages",
+    "load_deviation_snapshots",
     "load_reconciliation_runs",
     "load_runtime_metrics",
     "load_scenario_runs",
@@ -1477,6 +1895,8 @@ __all__ = [
     "record_alert_delivery",
     "record_acceptance_change",
     "record_acceptance_event",
+    "record_capital_stage",
+    "record_deviation_snapshot",
     "record_order_audit",
     "record_reconciliation_run",
     "record_runtime_metric",
