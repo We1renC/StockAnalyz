@@ -3045,3 +3045,64 @@ def test_attach_dol_targets_weak_internal_pool_does_not_credit_bonus():
     out = attach_dol_targets([entry], liquidity, prev_levels=None,
                              fvgs=[], current_price=100, round_magnets=[])
     assert out[0]["factors"]["strong_dol_target"] is False
+
+
+def test_compute_btc_htf_bias_returns_directional_signal_on_trending_data():
+    """§17.7: trending BTC data should produce a bullish or bearish bias."""
+    from smc_quant import compute_btc_htf_bias
+    # Steady uptrend
+    rows = [(i, i + 1, i - 1, i + 0.5, 1) for i in range(100, 150)]
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(50)]
+    df = pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx)
+    out = compute_btc_htf_bias(df, swing_length=3)
+    assert out["status"] == "ok"
+    assert out["bias"] in {"bullish", "strong_bullish", "neutral"}
+
+
+def test_compute_btc_htf_bias_insufficient_history_status():
+    from smc_quant import compute_btc_htf_bias
+    out = compute_btc_htf_bias(None)
+    assert out["status"] == "insufficient_history"
+    assert out["bias"] == "unknown"
+
+
+def test_check_altcoin_btc_htf_alignment_permissive_when_no_data():
+    from smc_quant import check_altcoin_btc_htf_alignment
+    assert check_altcoin_btc_htf_alignment(1, {"status": "no_data"}) is True
+    assert check_altcoin_btc_htf_alignment(1, {"status": "ok", "bias": "bullish"}) is True
+    assert check_altcoin_btc_htf_alignment(1, {"status": "ok", "bias": "bearish"}) is False
+    assert check_altcoin_btc_htf_alignment(-1, {"status": "ok", "bias": "bearish"}) is True
+    # Neutral BTC bias is permissive
+    assert check_altcoin_btc_htf_alignment(1, {"status": "ok", "bias": "neutral"}) is True
+
+
+def test_crypto_overlay_flags_altcoin_btc_htf_aligned_factor():
+    """§17.7: when is_altcoin + bullish BTC HTF, altcoin long → aligned True."""
+    from smc_quant import build_crypto_overlay
+    rows = [(i, i + 1, i - 1, i + 0.5, 1) for i in range(100, 150)]
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(50)]
+    btc_df = pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx)
+    # Altcoin OHLCV — same shape but not BTC
+    alt_df = normalize_ohlcv(btc_df.copy())
+    out = build_crypto_overlay(
+        alt_df, btc_ohlcv=btc_df, is_altcoin=True, direction_bias=1,
+    )
+    assert "btc_htf_bias" in out
+    factors = out["factors"]
+    # Either aligned (bull BTC + bull alt) or blocked (bear BTC + bull alt); must be one bool
+    assert isinstance(factors.get("altcoin_btc_htf_aligned"), bool)
+    assert isinstance(factors.get("altcoin_btc_htf_blocked"), bool)
+    # Weights are wired
+    assert out["weights"]["altcoin_btc_htf_aligned"] == 2
+    assert out["weights"]["altcoin_btc_htf_blocked"] == -3
+
+
+def test_crypto_overlay_btc_htf_factor_off_when_not_altcoin():
+    """When is_altcoin=False, neither aligned nor blocked should fire."""
+    from smc_quant import build_crypto_overlay
+    rows = [(100, 101, 99, 100, 1)] * 30
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(30)]
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    out = build_crypto_overlay(df, btc_ohlcv=df, is_altcoin=False, direction_bias=1)
+    assert out["factors"]["altcoin_btc_htf_aligned"] is False
+    assert out["factors"]["altcoin_btc_htf_blocked"] is False

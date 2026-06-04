@@ -1523,6 +1523,64 @@ def aggregate_multi_exchange(
     }
 
 
+def compute_btc_htf_bias(btc_df: pd.DataFrame, *, swing_length: int = 5) -> dict:
+    """§17.7 — derive BTC's HTF bias (the macro anchor for altcoin trades).
+
+    Runs the same swing → structure pipeline used for the primary symbol
+    on the supplied BTC OHLCV. Returns ``{bias, confidence, last_event,
+    bars}``; bias is one of ``strong_bullish/bullish/neutral/bearish/
+    strong_bearish`` per ``_latest_bias`` conventions.
+    """
+    if btc_df is None or len(btc_df) < swing_length + 2:
+        return {"bias": "unknown", "confidence": 0.0, "bars": 0, "status": "insufficient_history"}
+    try:
+        h = normalize_ohlcv(btc_df)
+    except Exception:
+        return {"bias": "unknown", "confidence": 0.0, "bars": 0, "status": "bad_ohlcv"}
+    cfg = SMCConfig(swing_length=swing_length, internal_swing_length=max(2, swing_length // 2))
+    swings = detect_swings(h, cfg.swing_length)
+    structure = detect_structure(h, swings, cfg)
+    bias = _latest_bias(structure)
+    last_event = structure[-1] if structure else None
+    # Light confidence proxy: BOS in same direction within last 10% of history.
+    conf = 0.0
+    if last_event:
+        tail = max(1, int(len(h) * 0.1))
+        recent_same = [
+            ev for ev in structure
+            if ev["type"] == "BOS"
+            and ev["direction"] == last_event["direction"]
+            and ev["index"] >= len(h) - tail
+        ]
+        conf = min(1.0, 0.4 + 0.2 * len(recent_same))
+    return {
+        "bias": bias,
+        "confidence": round(conf, 3),
+        "bars": int(len(h)),
+        "last_event": {k: last_event.get(k) for k in ("type", "direction", "index")} if last_event else None,
+        "status": "ok",
+    }
+
+
+def check_altcoin_btc_htf_alignment(direction: int, btc_bias_block: dict) -> bool:
+    """§17.7 — altcoin trade is only valid when it agrees with BTC HTF bias.
+
+    ``btc_bias_block`` is the output of ``compute_btc_htf_bias``.
+    Neutral BTC bias is permissive (BTC is consolidating, alts can move
+    either way). Unknown BTC bias is also permissive (no data ≠ block).
+    """
+    if not btc_bias_block or btc_bias_block.get("status") != "ok":
+        return True  # no BTC data → don't block trades
+    bias = btc_bias_block.get("bias", "unknown")
+    if bias in {"neutral", "unknown"}:
+        return True
+    if direction == 1:
+        return bias in {"bullish", "strong_bullish"}
+    if direction == -1:
+        return bias in {"bearish", "strong_bearish"}
+    return True
+
+
 def _builtin_detect_cme_gaps(df: pd.DataFrame, threshold_pct: float = 0.005) -> list[dict]:
     """In-module fallback for §17.4 CME-gap detection.
 
@@ -1975,6 +2033,7 @@ def build_crypto_overlay(
     is_altcoin: bool = False,
     cme_gaps: Optional[list[dict]] = None,
     spot_df: Optional[pd.DataFrame] = None,
+    btc_ohlcv: Optional[pd.DataFrame] = None,
     sweep_lookback: int = 12,
     oi_drop_pct: float = 0.03,
     funding_extreme: float = 0.0005,
@@ -2103,6 +2162,15 @@ def build_crypto_overlay(
             btc_aligned = True
     out["btc_alignment"] = {"aligned": btc_aligned, "is_altcoin": is_altcoin}
 
+    # §17.7 — BTC HTF bias gate for altcoin trades (the macro anchor).
+    btc_htf = compute_btc_htf_bias(btc_ohlcv) if btc_ohlcv is not None else {
+        "bias": "unknown", "status": "no_data", "confidence": 0.0,
+    }
+    out["btc_htf_bias"] = btc_htf
+    btc_htf_aligned = True
+    if is_altcoin and direction_bias != 0:
+        btc_htf_aligned = check_altcoin_btc_htf_alignment(direction_bias, btc_htf)
+
     # §17.4 CME gap magnet — auto-detect when no precomputed gaps supplied.
     # Caveat from spec: CME has transitioned to 24/7 from 2026-05, so any gap
     # whose formation timestamp is after that date should NOT contribute to
@@ -2159,11 +2227,15 @@ def build_crypto_overlay(
         "perp_led_warning": perp_warning,
         "cvd_aggressive_flow": cvd_aggressive,
         "altseason_tailwind": bool(out["btc_dominance"].get("altseason") and is_altcoin),
+        "altcoin_btc_htf_aligned": bool(is_altcoin and btc_htf_aligned and btc_htf.get("status") == "ok"),
+        "altcoin_btc_htf_blocked": bool(is_altcoin and not btc_htf_aligned and btc_htf.get("status") == "ok"),
     }
     out["weights"] = dict(CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT)
     out["weights"].setdefault("perp_led_warning", -2)  # negative weight: drag, not boost
     out["weights"].setdefault("cvd_aggressive_flow", 1)
     out["weights"].setdefault("altseason_tailwind", 2)
+    out["weights"].setdefault("altcoin_btc_htf_aligned", 2)   # §17.7 bonus
+    out["weights"].setdefault("altcoin_btc_htf_blocked", -3)  # §17.7 hard drag
     return out
 
 
@@ -5668,6 +5740,8 @@ def build_smc_analysis(
             direction_bias=1 if "bull" in bias else (-1 if "bear" in bias else 0),
             is_altcoin=bool(crypto_inputs.get("is_altcoin")),
             cme_gaps=crypto_inputs.get("cme_gaps"),
+            spot_df=crypto_inputs.get("spot_df"),
+            btc_ohlcv=crypto_inputs.get("btc_ohlcv"),
         )
     _last_close = float(h["close"].iloc[-1]) if len(h) else 0.0
     round_magnets = detect_round_number_magnets(_last_close)
