@@ -1953,3 +1953,43 @@ def test_resolve_dol_external_still_wins_over_round_number():
     )
     assert out["target_kind"] == "BSL"
     assert out["target_price"] == 120.0
+
+
+def test_suggest_crypto_weights_only_touches_crypto_namespaced_factors():
+    """§17.10: per-crypto weight suggestion lifts cvd_divergence when edge ≥ +0.5."""
+    from smc_quant import _suggest_crypto_weights
+    edge = {
+        "factors": {
+            "crypto:cvd_divergence": {"n_with": 10, "n_without": 10, "edge": 1.0},
+            "crypto:funding_extreme_contrarian": {"n_with": 10, "n_without": 10, "edge": -0.7},
+            # Non-crypto namespace must be ignored
+            "htf_bias_aligned": {"n_with": 10, "n_without": 10, "edge": 1.5},
+        }
+    }
+    out = _suggest_crypto_weights(edge)
+    # cvd_divergence default 2 → +1 = 3
+    assert out["cvd_divergence"] == 3
+    # funding_extreme_contrarian default 1 → -1 = 0
+    assert out["funding_extreme_contrarian"] == 0
+    # non-crypto factor never appears in output
+    assert "htf_bias_aligned" not in out
+
+
+def test_propose_strategy_yaml_includes_crypto_weights_block():
+    from smc_quant import propose_strategy_yaml
+    records = []
+    base = datetime(2026, 1, 1)
+    for i in range(40):
+        r = 2.0 if i % 5 != 0 else -1.0
+        records.append({
+            "entry_time": (base + timedelta(days=i)).isoformat(),
+            "r_multiple": r,
+            "factors": {"htf_bias_aligned": True},
+            "crypto_factors": {"cvd_divergence": True, "perp_led_warning": False},
+            "mae": -0.3, "mfe": 2.2,
+        })
+    out = propose_strategy_yaml(trade_records=records, min_samples=20)
+    assert "crypto_weights_suggested" in out["confluence"]
+    crypto = out["confluence"]["crypto_weights_suggested"]
+    assert "cvd_divergence" in crypto
+    assert "altcoin_btc_aligned" in crypto  # confirms full default seed coverage

@@ -3280,6 +3280,7 @@ def propose_strategy_yaml(
             "weights_current": {**CONFLUENCE_WEIGHTS_DEFAULT, **(base_weights or {})},
             "weights_suggested": suggested_weights,
             "factor_edge": edge,
+            "crypto_weights_suggested": _suggest_crypto_weights(edge),
         },
         "risk": {
             "fractional_kelly": fractional_kelly,
@@ -3295,6 +3296,37 @@ def propose_strategy_yaml(
         ),
     }
     return proposal
+
+
+def _suggest_crypto_weights(
+    factor_edge: dict,
+    *,
+    min_sample: int = 5,
+    edge_step: float = 0.5,
+) -> dict[str, int]:
+    """§17.10 — crypto-only weight tuning derived from factor-edge stats.
+
+    Mirrors ``suggest_confluence_weights`` but operates over the crypto
+    factor namespace (``crypto:*`` keys) so callers can split which
+    settings belong to ``strategy.yaml`` vs ``crypto.yaml`` overrides.
+    """
+    base = dict(CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT)
+    stats = (factor_edge or {}).get("factors", {})
+    suggested = dict(base)
+    for name, s in stats.items():
+        if not isinstance(name, str) or not name.startswith("crypto:"):
+            continue
+        key = name.split(":", 1)[1]
+        if key not in base:
+            continue
+        if s.get("n_with", 0) < min_sample or s.get("n_without", 0) < min_sample:
+            continue
+        edge = float(s.get("edge", 0))
+        if edge >= edge_step:
+            suggested[key] = int(base.get(key, 0)) + 1
+        elif edge <= -edge_step:
+            suggested[key] = max(-2, int(base.get(key, 0)) - 1)
+    return suggested
 
 
 def _strategy_changelog(
