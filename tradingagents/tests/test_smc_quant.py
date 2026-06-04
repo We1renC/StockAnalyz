@@ -1725,3 +1725,27 @@ def test_build_smc_analysis_attaches_killzone_zone_field():
     sess = result["concepts"]["sessions"]
     assert "zone" in sess
     assert "weight" in sess
+
+
+def test_top_down_audit_emits_six_step_checklist():
+    """§4: HTF→MTF→LTF audit must enumerate all 6 design-doc steps."""
+    sample = _sample_ohlcv()
+    result = build_mtf_analysis(
+        {"htf": sample, "mtf": sample, "ltf": sample},
+        "BTCUSDT",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    audit = result["top_down"]["audit"]
+    step_names = [s["name"] for s in audit["steps"]]
+    assert step_names == [
+        "htf_bias_set",
+        "htf_poi_present",
+        "mtf_reaction_aligned",
+        "ltf_bias_aligned",
+        "ltf_choch_trigger",
+        "poi_ranked",
+    ]
+    # max_score = 6 + score field present
+    assert audit["max_score"] == 6
+    assert 0 <= audit["score"] <= audit["max_score"]
+    assert isinstance(audit["ready"], bool)

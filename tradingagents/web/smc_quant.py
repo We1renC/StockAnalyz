@@ -4695,6 +4695,92 @@ def build_smc_analysis(
     }
 
 
+def _top_down_audit(analyses: dict, biases: dict, poi: list[dict]) -> dict:
+    """§4 — step-by-step audit of the HTF → MTF → LTF process.
+
+    For each pseudocode step the design doc enumerates, emit a
+    ``{step, pass, evidence}`` entry. The final ``ready`` flag is True
+    only if every step passes — a clean "qualified" signal for the UI.
+    """
+    steps: list[dict] = []
+    htf_bias = biases.get("htf")
+    mtf_bias = biases.get("mtf")
+    ltf_bias = biases.get("ltf")
+    htf_dir = _bias_direction(htf_bias) if htf_bias else 0
+    mtf_dir = _bias_direction(mtf_bias) if mtf_bias else 0
+    ltf_dir = _bias_direction(ltf_bias) if ltf_bias else 0
+    # 1. HTF bias must be non-neutral
+    steps.append({
+        "step": 1,
+        "name": "htf_bias_set",
+        "pass": htf_dir != 0,
+        "evidence": f"htf_bias={htf_bias}",
+    })
+    # 2. HTF POI present (unmitigated OB or unfilled FVG)
+    htf_layer = analyses.get("htf") or {}
+    htf_concepts = htf_layer.get("concepts") or {}
+    htf_poi_count = sum(
+        1 for ob in (htf_concepts.get("order_blocks") or []) if ob.get("status") == "unmitigated"
+    ) + sum(
+        1 for f in (htf_concepts.get("fvgs") or []) if not f.get("mitigated")
+    )
+    steps.append({
+        "step": 2,
+        "name": "htf_poi_present",
+        "pass": htf_poi_count > 0,
+        "evidence": f"unmitigated_OB+FVG={htf_poi_count}",
+    })
+    # 3. MTF reaction — sweep or displacement in HTF direction
+    mtf_layer = analyses.get("mtf") or {}
+    mtf_concepts = mtf_layer.get("concepts") or {}
+    mtf_disp = [
+        d for d in (mtf_concepts.get("displacement") or [])
+        if int(d.get("direction", 0)) == htf_dir and htf_dir != 0
+    ]
+    mtf_sweeps = [
+        l for l in (mtf_concepts.get("liquidity") or [])
+        if l.get("swept")
+    ]
+    steps.append({
+        "step": 3,
+        "name": "mtf_reaction_aligned",
+        "pass": bool(mtf_disp or mtf_sweeps),
+        "evidence": f"displacement={len(mtf_disp)} sweep={len(mtf_sweeps)}",
+    })
+    # 4. MTF / LTF alignment with HTF bias
+    steps.append({
+        "step": 4,
+        "name": "ltf_bias_aligned",
+        "pass": htf_dir != 0 and (ltf_dir == htf_dir or mtf_dir == htf_dir),
+        "evidence": f"mtf_dir={mtf_dir} ltf_dir={ltf_dir}",
+    })
+    # 5. LTF CHoCH against the manipulation (Judas) leg
+    ltf_layer = analyses.get("ltf") or {}
+    ltf_concepts = ltf_layer.get("concepts") or {}
+    ltf_judas = (ltf_concepts.get("judas") or {}).get("events") or []
+    aligned_judas = [j for j in ltf_judas if int(j.get("real_direction", 0)) == htf_dir]
+    steps.append({
+        "step": 5,
+        "name": "ltf_choch_trigger",
+        "pass": bool(aligned_judas),
+        "evidence": f"judas_aligned={len(aligned_judas)}",
+    })
+    # 6. A POI was selected for entry
+    steps.append({
+        "step": 6,
+        "name": "poi_ranked",
+        "pass": bool(poi),
+        "evidence": f"poi_count={len(poi)}",
+    })
+    ready = all(s["pass"] for s in steps)
+    return {
+        "steps": steps,
+        "ready": ready,
+        "score": sum(1 for s in steps if s["pass"]),
+        "max_score": len(steps),
+    }
+
+
 def build_mtf_analysis(
     frames: dict[str, pd.DataFrame],
     symbol: str,
@@ -4733,6 +4819,7 @@ def build_mtf_analysis(
         selected_signal["qualified"] = bool(selected_signal.get("qualified") and alignment)
         selected_signal["status"] = "qualified" if selected_signal["qualified"] else "watch"
 
+    audit = _top_down_audit(analyses, biases, poi)
     return {
         "symbol": symbol,
         "market": infer_market(symbol),
@@ -4744,6 +4831,7 @@ def build_mtf_analysis(
             "ltf_bias": ltf_bias,
             "aligned": alignment,
             "poi_count": len(poi),
+            "audit": audit,
             "process": [
                 "HTF bias",
                 "HTF/MTF POI",
