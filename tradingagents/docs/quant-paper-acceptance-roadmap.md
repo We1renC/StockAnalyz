@@ -46,6 +46,22 @@
    - `test_paper_execution.py`
    - `test_paper_acceptance_store.py`
    - `test_paper_acceptance_api.py`
+   - `test_paper_acceptance_metrics.py`
+   - `test_paper_acceptance_policy.py`
+   - `test_paper_acceptance_scenarios.py`
+   - `test_paper_acceptance_security.py`
+
+### 2026-06-05 實作快照
+
+目前這條分支不再只是 acceptance report 生成器，已經具備下列持續運作能力：
+
+1. telemetry / reconciliation / order audit / alert delivery 已有獨立資料表與 observed evidence 聚合。
+2. abnormal scenario harness 已落地，可把 `9.x / 10.x` 結果回寫 acceptance workspace。
+3. governance workflow 已落地，包含 review、change log、promotion check、coverage audit。
+4. security hygiene 已接到 acceptance policy，可把 secret / permission hygiene 納入 promotion decision。
+5. capacity stage / deviation snapshot 已落地，並可由 paper/live telemetry 自動生成。
+6. refresh cycle 已可自動重算 acceptance report，避免 evidence 長期停在手動生成狀態。
+7. coverage summary 已細化到 section / gate / missing check 層級，可直接用來追缺口。
 
 ### 目前仍偏弱或缺失
 
@@ -58,11 +74,61 @@
 
 現有系統弱在：
 
-- runtime telemetry 蒐集不足；
-- abnormal scenario harness 尚未系統化；
-- reconciliation / latency / rate limit / monitoring 的證據多數仍靠手動覆寫；
-- paper vs live deviation 與 capacity scaling 還沒有完整資料管線；
-- acceptance 還沒有自動週期性重算與治理流程。
+- `2.2` shared architecture 仍停留在 acceptance 判定層，尚未真正把 live execution adapter 與 paper adapter 收斂到同一個 runtime contract。
+- `14` shadow trading 目前只有 gate / policy / workspace 支撐，還缺真實 shadow pipeline 與 parity trace。
+- `15` sample-size / testing-period 雖已可由 journal 推估，但缺跨 regime、跨 session、跨 market-cycle 的明確 coverage contract。
+- `16` research discipline 已有 change trail，但還缺更完整的 parameter freeze window 與 override audit taxonomy。
+- `18 / 19 / 20` 已有 capacity/deviation 基礎資料流，但 live capital stage 的自動晉級規則與 quantitative threshold calibration 仍偏保守 placeholder。
+- `22` 已能結構化輸出報告，但 `22.4 / 22.6 / 22.8 / 22.9` 還需要更完整的 event stitching 與 promotion rationale explainability。
+
+## 完成度標記
+
+- `done`：已有 framework / observed / manual 閉環，且至少有測試覆蓋。
+- `partial`：已有 schema 或 policy，但 observed evidence 或 runtime contract 尚未完整。
+- `missing`：仍需新增資料流或新模組。
+
+## 章節狀態總覽
+
+| 標準章節 | 狀態 | 目前支撐 | 主要缺口 |
+|---|---|---|---|
+| `2.2` shared architecture | `partial` | acceptance policy / report 已要求共享架構 | 缺真正共用 execution/runtime adapter contract |
+| `3.1` strategy logic | `done` | gate + manual/observed checks + report | 仍可補更嚴格 strategy spec 模板 |
+| `3.2` instrument check | `partial` | telemetry/evidence 已能覆蓋 spread/depth/volume proxy | 缺更直接的 book-capacity regression |
+| `3.3` data source | `partial` | timestamps / missing / duplicate / out-of-order evidence 已接線 | 缺 market-timestamp vs receipt-time 全鏈路追蹤 |
+| `4.1` market execution | `done` | paper execution + tests | 可再補更細的 liquidity regime calibration |
+| `4.2` limit execution | `done` | queue / partial fill / timeout / post-only tests | 可再補 venue-specific queue model |
+| `4.3` slippage impact | `partial` | order audit + telemetry + report | live-side market impact calibration 仍不足 |
+| `5.1` fee check | `partial` | fee evidence / gross-net metrics 已接入 | derivatives fee path 仍未完整 |
+| `5.2` derivatives cost | `missing` | 無完整 futures/options fee model | 需新增 derivatives-specific telemetry |
+| `6.1` order state | `done` | order lifecycle audit + tests | 可再補 exchange-specific reject taxonomy |
+| `6.2` unknown order state | `done` | simulator + scenario + evidence | 可再接真實 broker replay |
+| `7.1` virtual account | `partial` | policy/schema 已有 | 缺多幣別虛擬帳戶長期流水 |
+| `7.2` reconciliation | `done` | reconciliation runs + evidence + tests | 可再補 restore playbook evidence |
+| `8.1` API rate limits | `partial` | runtime metrics + coverage | 缺真實 provider-specific budget replay |
+| `8.2` latency | `done` | telemetry + p95/p99 + UI | 可再補 stage-specific SLA thresholds |
+| `8.3` stability | `partial` | runtime metrics + restart/reconnect evidence | 缺長週期 soak test automation |
+| `9.1` network abnormality | `done` | scenario harness + tests | 可再補 live connector fault injection |
+| `9.2` market abnormality | `done` | scenario harness + tests | 可再補更多 microstructure cases |
+| `9.3` program abnormality | `done` | scenario harness + tests | 可再補 DB corruption / disk pressure variants |
+| `10.1` risk priority | `done` | execution tests + policy | 目前足夠 |
+| `10.2` position risk | `done` | scenario/tests/policy | 目前足夠 |
+| `10.3` loss risk | `done` | scenario/tests/policy | 目前足夠 |
+| `10.4` kill switch | `done` | scenario/tests/policy/UI | 目前足夠 |
+| `11.1` dashboard | `partial` | workspace + observed panel + coverage | 缺獨立即時 dashboard 契約 |
+| `11.2` alerting | `done` | alert delivery schema + evidence | 目前足夠 |
+| `12.1` performance | `done` | report metrics / workspace / tests | 目前足夠 |
+| `12.2` trade quality | `done` | slippage/fill/reject/latency metrics | 目前足夠 |
+| `13` behavior deviation | `partial` | backtest-paper / paper-live deviation snapshot | 缺更細的 attribution 與 threshold calibration |
+| `14` shadow trading | `partial` | gate/policy/workspace only | 缺真實 shadow runtime 與 parity evidence |
+| `15` sample size | `partial` | journal-based counts / policy | 缺 regime coverage matrix |
+| `16` research discipline | `partial` | review/change log/security/policy | 缺 freeze window / override class policy |
+| `17` API security | `done` | security scan + promotion gate + tests | 目前足夠 |
+| `18` capacity scaling | `partial` | capital stage snapshots + UI | 缺真正 capital promotion workflow |
+| `19` paper vs small-live | `partial` | deviation snapshots + policy | 缺 live rollout stage policy 與 explainability |
+| `20` quantitative thresholds | `partial` | policy / promotion check 已存在 | 門檻多為保守預設，需 strategy-specific calibration |
+| `21` prohibit live trading | `done` | prohibition flags + policy + API/tests | 目前足夠 |
+| `22` final report | `partial` | structured report + markdown + persisted runs | 缺更完整 rationale stitching |
+| `23` final principles | `partial` | 整體 framework 大致對齊 | 需用 remaining gaps 收斂到 production-ready 標準 |
 
 ## 標準覆蓋矩陣
 
@@ -375,32 +441,72 @@
 4. `22` 的每個段落都由結構化資料生成，不靠自由文字拼湊。
 5. promotion decision 可由系統輸出，且能追溯到具體 blockers。
 
-## 實作順序建議
+## 實作順序建議（更新）
 
-嚴格照依賴關係，建議順序如下：
+目前 Phase 1~5 已有大部分骨架與第一輪閉環，因此後續順序不應再從 telemetry 重新開始，而應改成下面這個收斂順序：
 
-1. Phase 1 `Telemetry`
-2. Phase 2 `Reconciliation + Order Audit`
-3. Phase 3 `Scenario Harness`
-4. Phase 4 `Governance Workflow`
-5. Phase 5 `Backtest / Paper / Live Deviation`
-6. Phase 6 `Promotion Gate + Security Discipline`
+1. `2.2 / 14` shared runtime + shadow parity
+2. `15 / 16` sample regime coverage + research discipline taxonomy
+3. `18 / 19 / 20` capital promotion workflow + quantitative threshold calibration
+4. `22 / 23` final rationale stitching + production acceptance closure
 
 原因很直接：
 
-- 沒有 telemetry，就無法讓大部分 gate 從 manual 變 observed。
-- 沒有 reconciliation / order audit，就無法讓 `6.x / 7.2 / 21` 可信。
-- 沒有 scenario harness，就無法聲稱 `9.x / 10.x` 已驗證。
-- 沒有 deviation pipeline，就無法真正完成 `13 / 19 / 20 / 22.9`。
+- telemetry / reconciliation / scenarios / governance 已經有了，現在最大的風險不是沒有資料，而是 live promotion contract 還沒有完全落地。
+- 若 `shadow parity` 與 `capital promotion workflow` 沒補齊，`19 / 20 / 22.9 / 23` 仍然只能算 partial。
+- acceptance 系統現在能找出缺口，但還需要把「為什麼能升級 / 為什麼不能升級」變成可追溯的 production decision。
 
-## 近期執行建議
+## 下一輪開發工作包
 
-下一個開發段應直接做 **Phase 1 + Phase 2 的最小閉環**：
+### Workstream A: Shared Runtime / Shadow Parity
 
-1. 補 telemetry table
-2. 補 reconciliation run table
-3. 補 order audit table
-4. 讓 workspace 自動讀這三類資料
-5. 新增對應 pytest
+1. 定義 paper / shadow / live 共用 execution intent schema。
+2. 為 shadow trading 增加 parity trace：
+   - market data timestamp
+   - signal timestamp
+   - order intent timestamp
+   - risk decision timestamp
+   - execution adapter output
+3. 新增 `shadow parity summary` 到 acceptance workspace / report / policy。
 
-這樣做完，acceptance framework 會從「可編輯的報告 UI」升級成「有自動證據來源的驗收系統」。
+### Workstream B: Sample Regime Coverage
+
+1. 定義 regime buckets：
+   - low vol / high vol
+   - trend / range
+   - liquid / thin
+   - session buckets
+2. 從 journal / telemetry 聚合 regime coverage matrix。
+3. 將 `15` 的 passing rule 從單純 trade count，提升成 count + regime coverage。
+
+### Workstream C: Capital Promotion Workflow
+
+1. 將現有 `capital stage snapshots` 提升成 `promotion ladder`：
+   - current stage
+   - required thresholds
+   - blocker deltas
+   - promotion-ready boolean
+2. 為 `19 / 20 / 22.9` 增加 deterministic explanation：
+   - which metric failed
+   - threshold value
+   - compared value
+   - source row / snapshot
+3. 補 API 與 UI，讓 reviewer 能直接看 promotion rationale。
+
+### Workstream D: Final Acceptance Closure
+
+1. 補 `22.4 / 22.6 / 22.8 / 22.9` 的報告拼接欄位。
+2. 將 `23 Final Acceptance Principles` 映射成最終 production gate checklist。
+3. 補 end-to-end 測試：research -> paper -> acceptance -> promotion-check -> deny/conditional/allow。
+
+## 近期執行建議（更新）
+
+下一個開發段不該再回頭做 telemetry 基礎建設，而應直接做 **Workstream A + C 的最小閉環**：
+
+1. 定義 shared execution intent schema
+2. 補 shadow parity trace table / summary builder
+3. 將 parity summary 接入 workspace / report / promotion check
+4. 在 capital promotion workflow 顯示 stage threshold 與 blocker delta
+5. 新增對應 pytest 與 API 測試
+
+這樣做完，這條分支的 acceptance framework 就會從「有證據的驗收系統」再升級成「能約束實際升級決策的 promotion system」。
