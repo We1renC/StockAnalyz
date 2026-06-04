@@ -7,17 +7,26 @@ from datetime import datetime, UTC
 from typing import List, Optional, Dict, Any
 from decimal import Decimal
 from uuid import uuid4
+import urllib.parse
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 # Imports from auth, models and executor
-from crypto_api.auth import authenticate_request, require_scopes, get_crypto_db
+from crypto_api.auth import (
+    authenticate_request,
+    require_scopes,
+    get_crypto_db,
+    normalize_symbol,
+    authenticate_binance_request,
+    require_binance_scopes
+)
 from crypto_api.executor import price_engine, validate_pre_trade_risk, fill_order, cancel_single_order_sync
 from crypto_api.ws import ws_manager
 from crypto_api.webhooks import dispatch_webhook
 
 router = APIRouter(prefix="/v1", tags=["Cryptocurrency Trading API"])
+binance_router = APIRouter(prefix="/api/v3", tags=["Binance Spot API Compatibility Layer"])
 
 # ─────────────── Pydantic Request Models ───────────────
 
@@ -162,6 +171,7 @@ def query_markets(status: Optional[str] = None, base_asset: Optional[str] = None
 
 @router.get("/markets/{symbol}")
 def query_single_market(symbol: str):
+    symbol = normalize_symbol(symbol)
     conn = get_crypto_db()
     c = conn.cursor()
     row = c.execute("SELECT * FROM crypto_markets WHERE symbol = ?", (symbol,)).fetchone()
@@ -188,13 +198,14 @@ def query_single_market(symbol: str):
 
 @router.get("/ticker")
 async def query_ticker(symbol: str):
+    symbol = normalize_symbol(symbol)
     ticker = await price_engine.get_ticker_24h(symbol)
     return ticker
 
 @router.get("/tickers")
 async def query_tickers(symbols: Optional[str] = None):
     # symbols can be comma-separated list
-    sym_list = symbols.split(",") if symbols else ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+    sym_list = [normalize_symbol(s) for s in symbols.split(",")] if symbols else ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
     
     tickers = []
     for sym in sym_list:
@@ -218,10 +229,12 @@ async def query_tickers(symbols: Optional[str] = None):
 
 @router.get("/orderbook")
 async def query_orderbook(symbol: str, depth: int = 50):
+    symbol = normalize_symbol(symbol)
     return await price_engine.get_orderbook(symbol, depth)
 
 @router.get("/trades")
 async def query_recent_trades(symbol: str, limit: int = 100):
+    symbol = normalize_symbol(symbol)
     trades = await price_engine.get_recent_trades(symbol, limit)
     return {
         "success": True,
@@ -231,6 +244,7 @@ async def query_recent_trades(symbol: str, limit: int = 100):
 
 @router.get("/klines")
 async def query_klines(symbol: str, interval: str = "1m", limit: int = 500):
+    symbol = normalize_symbol(symbol)
     klines = await price_engine.get_klines(symbol, interval, limit)
     return {
         "symbol": symbol,
@@ -338,6 +352,8 @@ def query_ledger(asset: Optional[str] = None, type: Optional[str] = None, limit:
 
 @router.get("/fees")
 def query_fees(symbol: Optional[str] = None, auth_info: Dict[str, Any] = Depends(require_scopes(["read:account"]))):
+    if symbol:
+        symbol = normalize_symbol(symbol)
     conn = get_crypto_db()
     c = conn.cursor()
     
@@ -374,6 +390,7 @@ async def create_order(
     req_body: CreateOrderRequest,
     auth_info: Dict[str, Any] = Depends(require_scopes(["trade:spot"]))
 ):
+    req_body.symbol = normalize_symbol(req_body.symbol)
     account_id = auth_info["account_id"]
     client_ip = auth_info["client_ip"]
     ua = request.headers.get("user-agent", "")
@@ -495,6 +512,7 @@ async def create_order(
 
 @router.post("/orders/test")
 async def create_test_order(req_body: CreateOrderRequest, auth_info: Dict[str, Any] = Depends(require_scopes(["trade:spot"]))):
+    req_body.symbol = normalize_symbol(req_body.symbol)
     conn = get_crypto_db()
     passed, err_code, meta = await validate_pre_trade_risk(conn, auth_info["account_id"], req_body.model_dump())
     conn.close()
@@ -525,6 +543,8 @@ def query_orders(
     limit: int = 100,
     auth_info: Dict[str, Any] = Depends(require_scopes(["read:orders"]))
 ):
+    if symbol:
+        symbol = normalize_symbol(symbol)
     conn = get_crypto_db()
     c = conn.cursor()
     
@@ -601,6 +621,8 @@ def query_order_by_client_id(client_order_id: str, auth_info: Dict[str, Any] = D
 
 @router.get("/open-orders")
 def query_open_orders(symbol: Optional[str] = None, auth_info: Dict[str, Any] = Depends(require_scopes(["read:orders"]))):
+    if symbol:
+        symbol = normalize_symbol(symbol)
     conn = get_crypto_db()
     c = conn.cursor()
     
@@ -735,6 +757,8 @@ async def cancel_batch_orders(req_body: CancelBatchRequest, auth_info: Dict[str,
 
 @router.post("/orders/cancel-all")
 async def cancel_all_orders(req_body: CancelAllRequest, auth_info: Dict[str, Any] = Depends(require_scopes(["trade:spot"]))):
+    if req_body.symbol:
+        req_body.symbol = normalize_symbol(req_body.symbol)
     account_id = auth_info["account_id"]
     conn = get_crypto_db()
     c = conn.cursor()
@@ -825,6 +849,8 @@ def query_fills(
     limit: int = 100,
     auth_info: Dict[str, Any] = Depends(require_scopes(["read:fills"]))
 ):
+    if symbol:
+        symbol = normalize_symbol(symbol)
     conn = get_crypto_db()
     c = conn.cursor()
     
@@ -864,6 +890,7 @@ def query_fills_summary(
     end_time: str,
     auth_info: Dict[str, Any] = Depends(require_scopes(["read:fills"]))
 ):
+    symbol = normalize_symbol(symbol)
     conn = get_crypto_db()
     c = conn.cursor()
     
@@ -968,6 +995,7 @@ def update_risk_limits(req_body: UpdateRiskLimitsRequest, auth_info: Dict[str, A
 
 @router.post("/risk/validate-order")
 async def risk_validate_order(req_body: CreateOrderRequest, auth_info: Dict[str, Any] = Depends(require_scopes(["risk:read"]))):
+    req_body.symbol = normalize_symbol(req_body.symbol)
     conn = get_crypto_db()
     passed, err_code, meta = await validate_pre_trade_risk(conn, auth_info["account_id"], req_body.model_dump())
     conn.close()
@@ -1379,3 +1407,744 @@ def delete_api_key(api_key_id: str, auth_info: Dict[str, Any] = Depends(require_
         "api_key_id": api_key_id,
         "deleted": True
     }
+
+
+def order_to_binance(order: Dict[str, Any], fills_list: List[Dict[str, Any]] = []) -> Dict[str, Any]:
+    status_map = {
+        "pending": "NEW",
+        "accepted": "NEW",
+        "open": "NEW",
+        "partially_filled": "PARTIALLY_FILLED",
+        "filled": "FILLED",
+        "cancelled": "CANCELED",
+        "rejected": "REJECTED",
+        "expired": "EXPIRED"
+    }
+    
+    # Convert times to millisecond timestamps
+    created_at_dt = datetime.fromisoformat(order["created_at"].replace("Z", "+00:00"))
+    created_ms = int(created_at_dt.timestamp() * 1000)
+    
+    updated_at_dt = datetime.fromisoformat(order["updated_at"].replace("Z", "+00:00"))
+    updated_ms = int(updated_at_dt.timestamp() * 1000)
+
+    numeric_order_id = int(hashlib.md5(order["id"].encode('utf-8')).hexdigest()[:8], 16)
+
+    binance_fills = []
+    cummulative_quote_qty = Decimal("0")
+    for f in fills_list:
+        cummulative_quote_qty += Decimal(f["notional"])
+        binance_fills.append({
+            "price": f["price"],
+            "qty": f["quantity"],
+            "commission": f["fee"],
+            "commissionAsset": f["fee_asset"],
+            "tradeId": int(hashlib.md5(f["id"].encode('utf-8')).hexdigest()[:8], 16)
+        })
+
+    orig_qty = Decimal(order["quantity"])
+    filled_qty = Decimal(order["filled_quantity"])
+    
+    return {
+        "symbol": order["symbol"].replace("-", ""),
+        "orderId": numeric_order_id,
+        "orderListId": -1,
+        "clientOrderId": order["client_order_id"],
+        "transactTime": updated_ms,
+        "price": order["price"] if order["price"] else "0.00",
+        "origQty": str(orig_qty),
+        "executedQty": str(filled_qty),
+        "cummulativeQuoteQty": str(cummulative_quote_qty),
+        "status": status_map.get(order["status"], "NEW"),
+        "timeInForce": order["time_in_force"].upper() if order["time_in_force"] else "GTC",
+        "type": order["type"].upper(),
+        "side": order["side"].upper(),
+        "workingTime": created_ms,
+        "fills": binance_fills,
+        "selfTradePreventionMode": "NONE"
+    }
+
+# ─────────────── Binance Spot API Compatibility Layer ───────────────
+
+@binance_router.get("/ping")
+def binance_ping():
+    return {}
+
+@binance_router.get("/time")
+def binance_time():
+    return {"serverTime": int(time.time() * 1000)}
+
+@binance_router.get("/exchangeInfo")
+def binance_exchange_info(
+    symbol: Optional[str] = None,
+    symbols: Optional[str] = None
+):
+    conn = get_crypto_db()
+    c = conn.cursor()
+    
+    query = "SELECT * FROM crypto_markets"
+    params = []
+    
+    filter_syms = []
+    if symbol:
+        filter_syms.append(normalize_symbol(symbol))
+    elif symbols:
+        try:
+            decoded = json.loads(symbols)
+            if isinstance(decoded, list):
+                filter_syms.extend([normalize_symbol(s) for s in decoded])
+        except Exception:
+            pass
+            
+    if filter_syms:
+        placeholders = ",".join("?" for _ in filter_syms)
+        query += f" WHERE symbol IN ({placeholders})"
+        params = filter_syms
+        
+    rows = c.execute(query, params).fetchall()
+    conn.close()
+    
+    symbols_list = []
+    for r in rows:
+        m = dict(r)
+        sym_binance = m["symbol"].replace("-", "")
+        symbols_list.append({
+            "symbol": sym_binance,
+            "status": "TRADING" if m["status"] == "trading" else "HALTED",
+            "baseAsset": m["base_asset"],
+            "baseAssetPrecision": m["quantity_precision"],
+            "quoteAsset": m["quote_asset"],
+            "quotePrecision": m["price_precision"],
+            "quoteAssetPrecision": m["price_precision"],
+            "baseCommissionPrecision": 8,
+            "quoteCommissionPrecision": 8,
+            "orderTypes": ["LIMIT", "MARKET", "STOP_LOSS", "STOP_LOSS_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT", "LIMIT_MAKER"],
+            "timeInForce": ["GTC", "IOC", "FOK"],
+            "icebergAllowed": False,
+            "ocoAllowed": False,
+            "quoteOrderQtyMarketAllowed": True,
+            "allowTrailingStop": False,
+            "cancelReplaceAllowed": True,
+            "isSpotTradingAllowed": True,
+            "isMarginTradingAllowed": False,
+            "filters": [
+                {
+                    "filterType": "PRICE_FILTER",
+                    "minPrice": m["tick_size"],
+                    "maxPrice": "1000000.00",
+                    "tickSize": m["tick_size"]
+                },
+                {
+                    "filterType": "LOT_SIZE",
+                    "minQty": m["min_quantity"],
+                    "maxQty": m["max_quantity"],
+                    "stepSize": m["lot_size"]
+                },
+                {
+                    "filterType": "NOTIONAL",
+                    "minNotional": m["min_notional"],
+                    "applyMinToMarket": True,
+                    "maxNotional": "9000000.00",
+                    "applyMaxToMarket": False,
+                    "avgPriceMins": 5
+                }
+            ],
+            "permissions": ["SPOT"],
+            "defaultSelfTradePreventionMode": "NONE",
+            "allowedSelfTradePreventionModes": ["NONE"]
+        })
+        
+    return {
+        "timezone": "UTC",
+        "serverTime": int(time.time() * 1000),
+        "rateLimits": [],
+        "exchangeFilters": [],
+        "symbols": symbols_list
+    }
+
+@binance_router.get("/depth")
+async def binance_depth(symbol: str, limit: int = 100):
+    norm_symbol = normalize_symbol(symbol)
+    ob = await price_engine.get_orderbook(norm_symbol, limit)
+    return {
+        "lastUpdateId": ob["last_update_id"],
+        "bids": ob["bids"],
+        "asks": ob["asks"]
+    }
+
+@binance_router.get("/trades")
+async def binance_trades(symbol: str, limit: int = 100):
+    norm_symbol = normalize_symbol(symbol)
+    trades = await price_engine.get_recent_trades(norm_symbol, limit)
+    
+    binance_trades = []
+    for t in trades:
+        t_id = int(hashlib.md5(t["trade_id"].encode('utf-8')).hexdigest()[:8], 16)
+        dt = datetime.fromisoformat(t["executed_at"].replace("Z", "+00:00"))
+        ts_ms = int(dt.timestamp() * 1000)
+        binance_trades.append({
+            "id": t_id,
+            "price": t["price"],
+            "qty": t["quantity"],
+            "quoteQty": str(Decimal(t["price"]) * Decimal(t["quantity"])),
+            "time": ts_ms,
+            "isBuyerMaker": t["side"] == "sell",
+            "isBestMatch": True
+        })
+    return binance_trades
+
+@binance_router.get("/klines")
+async def binance_klines(
+    symbol: str,
+    interval: str,
+    limit: int = 500,
+    startTime: Optional[int] = None,
+    endTime: Optional[int] = None
+):
+    norm_symbol = normalize_symbol(symbol)
+    klines = await price_engine.get_klines(norm_symbol, interval, limit)
+    
+    result = []
+    for k in klines:
+        open_time = int(datetime.fromisoformat(k["open_time"].replace("Z", "+00:00")).timestamp() * 1000)
+        close_time = int(datetime.fromisoformat(k["close_time"].replace("Z", "+00:00")).timestamp() * 1000)
+        result.append([
+            open_time,
+            k["open"],
+            k["high"],
+            k["low"],
+            k["close"],
+            k["volume"],
+            close_time,
+            k["quote_volume"],
+            k["trade_count"],
+            str(Decimal(k["volume"]) * Decimal("0.5")),
+            str(Decimal(k["quote_volume"]) * Decimal("0.5")),
+            "0"
+        ])
+    return result
+
+@binance_router.get("/ticker/price")
+async def binance_ticker_price(symbol: Optional[str] = None):
+    sym_list = [symbol] if symbol else ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    tickers = []
+    for sym in sym_list:
+        norm_sym = normalize_symbol(sym)
+        try:
+            ticker = await price_engine.get_ticker_24h(norm_sym)
+            tickers.append({
+                "symbol": sym.upper(),
+                "price": ticker["last_price"]
+            })
+        except Exception:
+            pass
+            
+    if symbol:
+        if not tickers:
+            raise HTTPException(status_code=400, detail={"code": -1121, "msg": "Invalid symbol."})
+        return tickers[0]
+    return tickers
+
+@binance_router.get("/ticker/bookTicker")
+async def binance_ticker_book_ticker(symbol: Optional[str] = None):
+    sym_list = [symbol] if symbol else ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    tickers = []
+    for sym in sym_list:
+        norm_sym = normalize_symbol(sym)
+        try:
+            ticker = await price_engine.get_ticker_24h(norm_sym)
+            tickers.append({
+                "symbol": sym.upper(),
+                "bidPrice": ticker["best_bid"],
+                "bidQty": "1.000000",
+                "askPrice": ticker["best_ask"],
+                "askQty": "1.000000"
+            })
+        except Exception:
+            pass
+            
+    if symbol:
+        if not tickers:
+            raise HTTPException(status_code=400, detail={"code": -1121, "msg": "Invalid symbol."})
+        return tickers[0]
+    return tickers
+
+# ─────────────── Signed Private Endpoints ───────────────
+
+@binance_router.post("/order")
+async def binance_create_order(
+    request: Request,
+    auth_info: Dict[str, Any] = Depends(require_binance_scopes(["trade:spot"]))
+):
+    account_id = auth_info["account_id"]
+    client_ip = auth_info["client_ip"]
+    ua = request.headers.get("user-agent", "")
+
+    # Gather params from query and form body
+    query_params = dict(request.query_params)
+    body_bytes = await request.body()
+    body_str = body_bytes.decode('utf-8') if body_bytes else ""
+    form_params = dict(urllib.parse.parse_qsl(body_str))
+    params = {**query_params, **form_params}
+
+    symbol = params.get("symbol")
+    side = params.get("side")
+    order_type = params.get("type")
+    quantity = params.get("quantity")
+    price = params.get("price")
+    stop_price = params.get("stopPrice")
+    time_in_force = params.get("timeInForce", "GTC")
+    client_order_id = params.get("newClientOrderId") or f"binance_{uuid4().hex[:12]}"
+
+    if not symbol or not side or not order_type or not quantity:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": -1102, "msg": "Mandatory parameter 'symbol', 'side', 'type' or 'quantity' was not sent, empty, or malformed."}
+        )
+
+    norm_symbol = normalize_symbol(symbol)
+    side = side.lower()
+    order_type_mapped = {
+        "LIMIT": "limit",
+        "MARKET": "market",
+        "STOP_LOSS": "stop_market",
+        "STOP_LOSS_LIMIT": "stop_limit",
+        "TAKE_PROFIT": "take_profit_market",
+        "TAKE_PROFIT_LIMIT": "take_profit_limit",
+        "LIMIT_MAKER": "limit"
+    }.get(order_type.upper())
+
+    if not order_type_mapped:
+        raise HTTPException(status_code=400, detail={"code": -1102, "msg": f"Order type '{order_type}' is not supported."})
+
+    post_only = (order_type.upper() == "LIMIT_MAKER")
+
+    order_dict = {
+        "client_order_id": client_order_id,
+        "symbol": norm_symbol,
+        "side": side,
+        "type": order_type_mapped,
+        "price": price,
+        "quantity": quantity,
+        "stop_price": stop_price,
+        "time_in_force": time_in_force,
+        "post_only": post_only
+    }
+
+    conn = get_crypto_db()
+    c = conn.cursor()
+
+    existing = c.execute(
+        "SELECT * FROM crypto_orders WHERE account_id = ? AND client_order_id = ?",
+        (account_id, client_order_id)
+    ).fetchone()
+    
+    if existing:
+        order_data = dict(existing)
+        fills_list = [dict(f) for f in c.execute("SELECT * FROM crypto_fills WHERE order_id = ?", (order_data["id"],)).fetchall()]
+        conn.close()
+        return order_to_binance(order_data, fills_list)
+
+    passed, err_code, meta = await validate_pre_trade_risk(conn, account_id, order_dict)
+    if not passed:
+        write_audit_log(conn, account_id, auth_info["api_key_id"], "order.create", "order", None, client_ip, ua, "failed", {"error": err_code, "request": order_dict})
+        conn.close()
+        
+        binance_err_code = -2010
+        if err_code == "INSUFFICIENT_BALANCE":
+            binance_msg = "Account has insufficient balance for requested action."
+        elif err_code == "KILL_SWITCH_ACTIVE":
+            binance_msg = "Trading is currently disabled due to kill switch."
+        elif err_code == "INVALID_SYMBOL" or err_code == "SYMBOL_NOT_TRADING":
+            binance_err_code = -1121
+            binance_msg = "Invalid symbol."
+        elif err_code == "MIN_NOTIONAL_NOT_MET":
+            binance_err_code = -1013
+            binance_msg = "Filter failure: MIN_NOTIONAL"
+        elif err_code == "MIN_QUANTITY_NOT_MET" or err_code == "RISK_LIMIT_EXCEEDED" or err_code == "MAX_ORDER_NOTIONAL_EXCEEDED":
+            binance_err_code = -1013
+            binance_msg = f"Filter failure: LIMITS ({err_code})"
+        else:
+            binance_msg = f"Order rejected: {err_code}"
+
+        raise HTTPException(
+            status_code=400,
+            detail={"code": binance_err_code, "msg": binance_msg}
+        )
+
+    now_iso = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    qty_dec = Decimal(quantity)
+    price_dec = Decimal(price) if price else await price_engine.get_price(norm_symbol)
+    notional = qty_dec * price_dec
+
+    if side == "buy":
+        quote_asset = meta["quote_asset"]
+        bal = dict(c.execute("SELECT available, locked FROM crypto_balances WHERE account_id = ? AND asset = ?", (account_id, quote_asset)).fetchone())
+        new_avail = Decimal(bal["available"]) - notional
+        new_locked = Decimal(bal["locked"]) + notional
+        c.execute("""
+            INSERT OR REPLACE INTO crypto_balances (account_id, asset, available, locked, total, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (account_id, quote_asset, str(new_avail), str(new_locked), str(new_avail + new_locked), now_iso))
+    else:
+        base_asset = meta["base_asset"]
+        bal = dict(c.execute("SELECT available, locked FROM crypto_balances WHERE account_id = ? AND asset = ?", (account_id, base_asset)).fetchone())
+        new_avail = Decimal(bal["available"]) - qty_dec
+        new_locked = Decimal(bal["locked"]) + qty_dec
+        c.execute("""
+            INSERT OR REPLACE INTO crypto_balances (account_id, asset, available, locked, total, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (account_id, base_asset, str(new_avail), str(new_locked), str(new_avail + new_locked), now_iso))
+
+    order_id = f"ord_{uuid4().hex[:12]}"
+    is_market = order_type_mapped == "market"
+    
+    c.execute("""
+        INSERT INTO crypto_orders
+        (id, account_id, exchange, client_order_id, symbol, side, type, status, price, quantity, stop_price, filled_quantity, remaining_quantity, time_in_force, post_only, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        order_id, account_id, "simulated", client_order_id, norm_symbol, side, order_type_mapped,
+        "pending" if not is_market else "filled", price, quantity, stop_price,
+        "0" if not is_market else quantity, quantity if not is_market else "0",
+        time_in_force, 1 if post_only else 0, now_iso, now_iso
+    ))
+    conn.commit()
+
+    write_audit_log(conn, account_id, auth_info["api_key_id"], "order.create", "order", order_id, client_ip, ua, "success", order_dict)
+
+    saved_order_row = c.execute("SELECT * FROM crypto_orders WHERE id = ?", (order_id,)).fetchone()
+    saved_order = dict(saved_order_row)
+    asyncio.create_task(ws_manager.push_private(account_id, "orders", "order.created", saved_order))
+    asyncio.create_task(dispatch_webhook(account_id, "order.created", saved_order))
+
+    for asset in (meta["base_asset"], meta["quote_asset"]):
+        b_row = c.execute("SELECT * FROM crypto_balances WHERE account_id = ? AND asset = ?", (account_id, asset)).fetchone()
+        if b_row:
+            asyncio.create_task(ws_manager.push_private(account_id, "balances", "balance.updated", dict(b_row)))
+
+    if is_market:
+        fill_order(conn, order_id, price_dec, qty_dec, is_maker=False)
+
+    final_order = dict(c.execute("SELECT * FROM crypto_orders WHERE id = ?", (order_id,)).fetchone())
+    fills = [dict(f) for f in c.execute("SELECT * FROM crypto_fills WHERE order_id = ?", (order_id,)).fetchall()]
+    conn.close()
+
+    return order_to_binance(final_order, fills)
+
+@binance_router.post("/order/test")
+async def binance_test_order(
+    request: Request,
+    auth_info: Dict[str, Any] = Depends(require_binance_scopes(["trade:spot"]))
+):
+    account_id = auth_info["account_id"]
+    
+    query_params = dict(request.query_params)
+    body_bytes = await request.body()
+    body_str = body_bytes.decode('utf-8') if body_bytes else ""
+    form_params = dict(urllib.parse.parse_qsl(body_str))
+    params = {**query_params, **form_params}
+
+    symbol = params.get("symbol")
+    side = params.get("side")
+    order_type = params.get("type")
+    quantity = params.get("quantity")
+    price = params.get("price")
+    stop_price = params.get("stopPrice")
+
+    if not symbol or not side or not order_type or not quantity:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": -1102, "msg": "Mandatory parameter 'symbol', 'side', 'type' or 'quantity' was not sent, empty, or malformed."}
+        )
+
+    norm_symbol = normalize_symbol(symbol)
+    order_type_mapped = {
+        "LIMIT": "limit",
+        "MARKET": "market",
+        "STOP_LOSS": "stop_market",
+        "STOP_LOSS_LIMIT": "stop_limit",
+        "TAKE_PROFIT": "take_profit_market",
+        "TAKE_PROFIT_LIMIT": "take_profit_limit",
+        "LIMIT_MAKER": "limit"
+    }.get(order_type.upper())
+
+    if not order_type_mapped:
+        raise HTTPException(status_code=400, detail={"code": -1102, "msg": f"Order type '{order_type}' is not supported."})
+
+    order_dict = {
+        "client_order_id": "test_order",
+        "symbol": norm_symbol,
+        "side": side.lower(),
+        "type": order_type_mapped,
+        "price": price,
+        "quantity": quantity,
+        "stop_price": stop_price
+    }
+
+    conn = get_crypto_db()
+    passed, err_code, meta = await validate_pre_trade_risk(conn, account_id, order_dict)
+    conn.close()
+
+    if not passed:
+        raise HTTPException(status_code=400, detail={"code": -2010, "msg": f"Order rejected: {err_code}"})
+
+    return {}
+
+@binance_router.get("/order")
+def binance_query_order(
+    request: Request,
+    symbol: str,
+    orderId: Optional[int] = None,
+    origClientOrderId: Optional[str] = None,
+    auth_info: Dict[str, Any] = Depends(require_binance_scopes(["read:orders"]))
+):
+    account_id = auth_info["account_id"]
+    conn = get_crypto_db()
+    c = conn.cursor()
+    
+    row = None
+    if orderId:
+        norm_sym = normalize_symbol(symbol)
+        rows = c.execute("SELECT * FROM crypto_orders WHERE account_id = ? AND symbol = ?", (account_id, norm_sym)).fetchall()
+        for r in rows:
+            if int(hashlib.md5(r["id"].encode('utf-8')).hexdigest()[:8], 16) == orderId:
+                row = r
+                break
+    elif origClientOrderId:
+        row = c.execute(
+            "SELECT * FROM crypto_orders WHERE account_id = ? AND client_order_id = ?",
+            (account_id, origClientOrderId)
+        ).fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail={"code": -2011, "msg": "Unknown order."})
+
+    order_data = dict(row)
+    fills = [dict(f) for f in c.execute("SELECT * FROM crypto_fills WHERE order_id = ?", (order_data["id"],)).fetchall()]
+    conn.close()
+    
+    return order_to_binance(order_data, fills)
+
+@binance_router.delete("/order")
+async def binance_cancel_order(
+    request: Request,
+    symbol: str,
+    orderId: Optional[int] = None,
+    origClientOrderId: Optional[str] = None,
+    newClientOrderId: Optional[str] = None,
+    auth_info: Dict[str, Any] = Depends(require_binance_scopes(["trade:spot"]))
+):
+    account_id = auth_info["account_id"]
+    conn = get_crypto_db()
+    c = conn.cursor()
+    
+    row = None
+    if orderId:
+        norm_sym = normalize_symbol(symbol)
+        rows = c.execute("SELECT * FROM crypto_orders WHERE account_id = ? AND symbol = ?", (account_id, norm_sym)).fetchall()
+        for r in rows:
+            if int(hashlib.md5(r["id"].encode('utf-8')).hexdigest()[:8], 16) == orderId:
+                row = r
+                break
+    elif origClientOrderId:
+        row = c.execute(
+            "SELECT * FROM crypto_orders WHERE account_id = ? AND client_order_id = ?",
+            (account_id, origClientOrderId)
+        ).fetchone()
+
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail={"code": -2011, "msg": "Unknown order."})
+
+    order_data = dict(row)
+    order_id = order_data["id"]
+
+    try:
+        res = cancel_single_order_sync(conn, order_id, reason="binance_api_requested")
+    except ValueError as e:
+        conn.close()
+        raise HTTPException(status_code=400, detail={"code": -2011, "msg": f"Cancel rejected: {str(e)}"})
+
+    if newClientOrderId:
+        c.execute("UPDATE crypto_orders SET client_order_id = ? WHERE id = ?", (newClientOrderId, order_id))
+        conn.commit()
+        order_data["client_order_id"] = newClientOrderId
+
+    order_data["status"] = "cancelled"
+    conn.close()
+
+    numeric_order_id = int(hashlib.md5(order_id.encode('utf-8')).hexdigest()[:8], 16)
+    return {
+        "symbol": order_data["symbol"].replace("-", ""),
+        "origClientOrderId": order_data["client_order_id"],
+        "orderId": numeric_order_id,
+        "orderListId": -1,
+        "clientOrderId": newClientOrderId or f"cancel_{uuid4().hex[:8]}",
+        "price": order_data["price"] or "0.00",
+        "origQty": order_data["quantity"],
+        "executedQty": order_data["filled_quantity"],
+        "cummulativeQuoteQty": str(Decimal(order_data["filled_quantity"]) * Decimal(order_data["price"] or "0")),
+        "status": "CANCELED",
+        "timeInForce": order_data["time_in_force"].upper(),
+        "type": order_data["type"].upper(),
+        "side": order_data["side"].upper()
+    }
+
+@binance_router.get("/openOrders")
+def binance_open_orders(
+    symbol: Optional[str] = None,
+    auth_info: Dict[str, Any] = Depends(require_binance_scopes(["read:orders"]))
+):
+    account_id = auth_info["account_id"]
+    conn = get_crypto_db()
+    c = conn.cursor()
+    
+    query = "SELECT * FROM crypto_orders WHERE account_id = ? AND status IN ('pending', 'accepted', 'open', 'partially_filled')"
+    params = [account_id]
+    if symbol:
+        query += " AND symbol = ?"
+        params.append(normalize_symbol(symbol))
+        
+    rows = c.execute(query, params).fetchall()
+    
+    result = []
+    for r in rows:
+        order_data = dict(r)
+        fills = [dict(f) for f in c.execute("SELECT * FROM crypto_fills WHERE order_id = ?", (order_data["id"],)).fetchall()]
+        result.append(order_to_binance(order_data, fills))
+        
+    conn.close()
+    return result
+
+@binance_router.get("/allOrders")
+def binance_all_orders(
+    symbol: str,
+    orderId: Optional[int] = None,
+    startTime: Optional[int] = None,
+    endTime: Optional[int] = None,
+    limit: int = 500,
+    auth_info: Dict[str, Any] = Depends(require_binance_scopes(["read:orders"]))
+):
+    account_id = auth_info["account_id"]
+    conn = get_crypto_db()
+    c = conn.cursor()
+    
+    norm_sym = normalize_symbol(symbol)
+    query = "SELECT * FROM crypto_orders WHERE account_id = ? AND symbol = ?"
+    params = [account_id, norm_sym]
+    
+    rows = c.execute(query, params).fetchall()
+    
+    result = []
+    for r in rows:
+        order_data = dict(r)
+        
+        numeric_id = int(hashlib.md5(order_data["id"].encode('utf-8')).hexdigest()[:8], 16)
+        if orderId and numeric_id < orderId:
+            continue
+            
+        created_dt = datetime.fromisoformat(order_data["created_at"].replace("Z", "+00:00"))
+        created_ms = int(created_dt.timestamp() * 1000)
+        
+        if startTime and created_ms < startTime:
+            continue
+        if endTime and created_ms > endTime:
+            continue
+            
+        fills = [dict(f) for f in c.execute("SELECT * FROM crypto_fills WHERE order_id = ?", (order_data["id"],)).fetchall()]
+        result.append(order_to_binance(order_data, fills))
+        
+    conn.close()
+    result.sort(key=lambda x: x["transactTime"])
+    return result[:limit]
+
+@binance_router.get("/account")
+def binance_account_info(
+    auth_info: Dict[str, Any] = Depends(require_binance_scopes(["read:account"]))
+):
+    account_id = auth_info["account_id"]
+    conn = get_crypto_db()
+    c = conn.cursor()
+    
+    rows = c.execute("SELECT * FROM crypto_balances WHERE account_id = ?", (account_id,)).fetchall()
+    conn.close()
+    
+    balances = []
+    for r in rows:
+        b = dict(r)
+        balances.append({
+            "asset": b["asset"],
+            "free": b["available"],
+            "locked": b["locked"]
+        })
+        
+    return {
+        "makerCommission": 10,
+        "takerCommission": 10,
+        "buyerCommission": 0,
+        "sellerCommission": 0,
+        "canTrade": True,
+        "canWithdraw": False,
+        "canDeposit": False,
+        "updateTime": int(time.time() * 1000),
+        "accountType": "SPOT",
+        "balances": balances,
+        "permissions": ["SPOT"]
+    }
+
+@binance_router.get("/myTrades")
+def binance_my_trades(
+    symbol: str,
+    startTime: Optional[int] = None,
+    endTime: Optional[int] = None,
+    fromId: Optional[int] = None,
+    limit: int = 500,
+    auth_info: Dict[str, Any] = Depends(require_binance_scopes(["read:fills"]))
+):
+    account_id = auth_info["account_id"]
+    conn = get_crypto_db()
+    c = conn.cursor()
+    
+    norm_sym = normalize_symbol(symbol)
+    query = "SELECT * FROM crypto_fills WHERE account_id = ? AND symbol = ?"
+    params = [account_id, norm_sym]
+    
+    rows = c.execute(query, params).fetchall()
+    conn.close()
+    
+    result = []
+    for r in rows:
+        f = dict(r)
+        f_id = int(hashlib.md5(f["id"].encode('utf-8')).hexdigest()[:8], 16)
+        
+        if fromId and f_id < fromId:
+            continue
+            
+        dt = datetime.fromisoformat(f["executed_at"].replace("Z", "+00:00"))
+        ts_ms = int(dt.timestamp() * 1000)
+        
+        if startTime and ts_ms < startTime:
+            continue
+        if endTime and ts_ms > endTime:
+            continue
+            
+        result.append({
+            "symbol": symbol.upper(),
+            "id": f_id,
+            "orderId": int(hashlib.md5(f["order_id"].encode('utf-8')).hexdigest()[:8], 16),
+            "orderListId": -1,
+            "price": f["price"],
+            "qty": f["quantity"],
+            "quoteQty": f["notional"],
+            "commission": f["fee"],
+            "commissionAsset": f["fee_asset"],
+            "time": ts_ms,
+            "isBuyer": f["side"] == "buy",
+            "isMaker": f["liquidity"] == "maker",
+            "isBestMatch": True
+        })
+        
+    result.sort(key=lambda x: x["time"])
+    return result[:limit]

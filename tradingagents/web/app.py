@@ -1942,13 +1942,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="TradingAgents Dashboard", lifespan=lifespan)
 
-# Include Cryptocurrency Trading API router
 try:
-    from crypto_api.router import router as crypto_router
+    from crypto_api.router import router as crypto_router, binance_router
     from crypto_api.ws import ws_manager
     from fastapi import WebSocket, WebSocketDisconnect
     
     app.include_router(crypto_router)
+    app.include_router(binance_router)
     
     @app.websocket("/ws/v1")
     async def crypto_ws_endpoint(websocket: WebSocket):

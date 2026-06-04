@@ -515,3 +515,159 @@ def test_websocket_connectivity():
         sub_res = ws.receive_json()
         assert sub_res["op"] == "subscribed"
         assert "ticker" in sub_res["subscribed"]
+
+
+def test_binance_compatibility_api():
+    client = TestClient(app.app)
+    
+    # 1. Ping
+    res = client.get("/api/v3/ping")
+    assert res.status_code == 200
+    assert res.json() == {}
+    
+    # 2. Time
+    res = client.get("/api/v3/time")
+    assert res.status_code == 200
+    assert "serverTime" in res.json()
+    
+    # 3. ExchangeInfo
+    res = client.get("/api/v3/exchangeInfo?symbol=BTCUSDT")
+    assert res.status_code == 200
+    data = res.json()
+    assert "symbols" in data
+    assert len(data["symbols"]) == 1
+    assert data["symbols"][0]["symbol"] == "BTCUSDT"
+    assert data["symbols"][0]["baseAsset"] == "BTC"
+    assert data["symbols"][0]["quoteAsset"] == "USDT"
+
+    # 4. Depth
+    res = client.get("/api/v3/depth?symbol=BTCUSDT&limit=5")
+    assert res.status_code == 200
+    assert "bids" in res.json()
+    assert "asks" in res.json()
+
+    # 5. Trades
+    res = client.get("/api/v3/trades?symbol=BTCUSDT&limit=5")
+    assert res.status_code == 200
+    assert isinstance(res.json(), list)
+
+    # 6. Klines
+    res = client.get("/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=5")
+    assert res.status_code == 200
+    assert isinstance(res.json(), list)
+
+    # 7. Ticker price
+    res = client.get("/api/v3/ticker/price?symbol=BTCUSDT")
+    assert res.status_code == 200
+    assert res.json()["symbol"] == "BTCUSDT"
+    assert "price" in res.json()
+
+    # 8. Book Ticker
+    res = client.get("/api/v3/ticker/bookTicker?symbol=BTCUSDT")
+    assert res.status_code == 200
+    assert res.json()["symbol"] == "BTCUSDT"
+    assert "bidPrice" in res.json()
+
+    # 9. Private Account Information (signed)
+    def get_binance_signed_headers(query_params: dict, body_params: dict = {}, api_key: str = "api_key_xxx", secret: str = "secret_xxx"):
+        timestamp = str(int(time.time() * 1000))
+        query_params["timestamp"] = timestamp
+        
+        q_parts = []
+        for k, v in query_params.items():
+            q_parts.append(f"{k}={v}")
+        query_str = "&".join(q_parts)
+        
+        b_parts = []
+        for k, v in body_params.items():
+            b_parts.append(f"{k}={v}")
+        body_str = "&".join(b_parts)
+        
+        total_params = query_str
+        if body_str:
+            total_params = f"{query_str}&{body_str}"
+            
+        sig = hmac.new(
+            secret.encode('utf-8'),
+            total_params.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+        
+        query_str_with_sig = f"{query_str}&signature={sig}"
+        
+        return query_str_with_sig, {
+            "X-MBX-APIKEY": api_key
+        }
+
+    # Test GET account details
+    q_str, headers = get_binance_signed_headers({})
+    res = client.get(f"/api/v3/account?{q_str}", headers=headers)
+    assert res.status_code == 200
+    assert "balances" in res.json()
+    assert any(b["asset"] == "BTC" for b in res.json()["balances"])
+
+    # Test POST order (test)
+    q_str, headers = get_binance_signed_headers({
+        "symbol": "BTCUSDT",
+        "side": "BUY",
+        "type": "LIMIT",
+        "quantity": "0.01",
+        "price": "60000.00",
+        "timeInForce": "GTC"
+    })
+    res = client.post(f"/api/v3/order/test?{q_str}", headers=headers)
+    assert res.status_code == 200
+
+    # Test POST order (real placement)
+    q_str, headers = get_binance_signed_headers({
+        "symbol": "BTCUSDT",
+        "side": "BUY",
+        "type": "LIMIT",
+        "quantity": "0.01",
+        "price": "60000.00",
+        "timeInForce": "GTC",
+        "newClientOrderId": "bin_test_001"
+    })
+    res = client.post(f"/api/v3/order?{q_str}", headers=headers)
+    assert res.status_code == 200
+    order_id = res.json()["orderId"]
+    assert res.json()["clientOrderId"] == "bin_test_001"
+    assert res.json()["status"] == "NEW"
+
+    # Query order
+    q_str, headers = get_binance_signed_headers({
+        "symbol": "BTCUSDT",
+        "orderId": order_id
+    })
+    res = client.get(f"/api/v3/order?{q_str}", headers=headers)
+    assert res.status_code == 200
+    assert res.json()["orderId"] == order_id
+    assert res.json()["status"] == "NEW"
+
+    # Query open orders
+    q_str, headers = get_binance_signed_headers({"symbol": "BTCUSDT"})
+    res = client.get(f"/api/v3/openOrders?{q_str}", headers=headers)
+    assert res.status_code == 200
+    assert len(res.json()) >= 1
+    assert any(o["orderId"] == order_id for o in res.json())
+
+    # Cancel order
+    q_str, headers = get_binance_signed_headers({
+        "symbol": "BTCUSDT",
+        "orderId": order_id
+    })
+    res = client.delete(f"/api/v3/order?{q_str}", headers=headers)
+    assert res.status_code == 200
+    assert res.json()["status"] == "CANCELED"
+
+    # Query all orders
+    q_str, headers = get_binance_signed_headers({"symbol": "BTCUSDT"})
+    res = client.get(f"/api/v3/allOrders?{q_str}", headers=headers)
+    assert res.status_code == 200
+    assert len(res.json()) >= 1
+
+    # Query my trades
+    q_str, headers = get_binance_signed_headers({"symbol": "BTCUSDT"})
+    res = client.get(f"/api/v3/myTrades?{q_str}", headers=headers)
+    assert res.status_code == 200
+
