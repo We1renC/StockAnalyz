@@ -1542,3 +1542,40 @@ def test_multi_exchange_aggregator_returns_empty_on_no_feeds():
     out = aggregate_multi_exchange({})
     assert out["sample_size"] == 0
     assert out["consensus_df"] is None
+
+
+def test_merge_crypto_factors_appends_factor_and_weight_pairs():
+    """§17.10: crypto overlay factors must merge into the confluence map."""
+    from smc_quant import merge_crypto_factors
+    base_factors = {"htf_bias_aligned": True}
+    overlay = {
+        "status": "ok",
+        "factors": {"oi_drop_at_sweep": True, "perp_led_warning": True},
+        "weights": {"oi_drop_at_sweep": 2, "perp_led_warning": -2},
+    }
+    f, w = merge_crypto_factors(base_factors, overlay)
+    assert f["oi_drop_at_sweep"] is True
+    assert f["perp_led_warning"] is True
+    assert f["htf_bias_aligned"] is True  # base preserved
+    assert w["oi_drop_at_sweep"] == 2
+    assert w["perp_led_warning"] == -2
+
+
+def test_score_confluence_subtracts_negative_weight_factors():
+    """Drag factors (negative weight) must reduce the score."""
+    from smc_quant import score_confluence
+    factors = {"liquidity_swept": True, "ltf_choch": True, "perp_led_warning": True}
+    weights = {"perp_led_warning": -2}
+    s = score_confluence(factors, weights=weights)
+    # 2 + 2 - 2 = 2
+    assert s["score"] == 2
+    names = {f["factor"] for f in s["contributing_factors"]}
+    assert "perp_led_warning" in names
+
+
+def test_merge_crypto_factors_skips_no_data_overlay():
+    from smc_quant import merge_crypto_factors
+    base = {"htf_bias_aligned": True}
+    f, w = merge_crypto_factors(base, {"status": "no_data"})
+    assert f == base
+    assert w == {}

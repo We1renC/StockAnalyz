@@ -1723,6 +1723,30 @@ CONFLUENCE_WEIGHTS_DEFAULT = {
 CONFLUENCE_THRESHOLD_DEFAULT = 8
 
 
+def merge_crypto_factors(
+    factors: dict,
+    crypto_overlay: Optional[dict],
+) -> tuple[dict, dict]:
+    """§17.10 — fold crypto-overlay booleans into the §5.2 factor map.
+
+    Returns ``(merged_factors, merged_weights)``. Crypto factors keep
+    their own weights (incl. the negative-weight ``perp_led_warning``
+    drag from §17.3) so callers don't need to special-case them in
+    ``score_confluence``.
+    """
+    merged_factors = dict(factors or {})
+    merged_weights: dict[str, int] = {}
+    if not crypto_overlay or crypto_overlay.get("status") == "no_data":
+        return merged_factors, merged_weights
+    crypto_factors = crypto_overlay.get("factors") or {}
+    crypto_weights = crypto_overlay.get("weights") or {}
+    for name, active in crypto_factors.items():
+        merged_factors[name] = bool(active)
+        if name in crypto_weights:
+            merged_weights[name] = int(crypto_weights[name])
+    return merged_factors, merged_weights
+
+
 def score_confluence(
     factors: dict[str, bool],
     weights: Optional[dict[str, int]] = None,
@@ -1739,7 +1763,9 @@ def score_confluence(
     score = 0
     for name, active in factors.items():
         wt = int(w.get(name, 0))
-        if active and wt > 0:
+        if active and wt != 0:
+            # Negative weights (drag factors, e.g. §17.3 perp_led_warning)
+            # subtract from the score so confluence can be debited.
             score += wt
             contributing.append({"factor": name, "weight": wt})
     return {
@@ -4317,6 +4343,26 @@ def build_smc_analysis(
     unicorn_entries = attach_dol_targets(unicorn_entries, liquidity, prev, fvgs, _last_close)
     silver_bullet_entries = attach_dol_targets(silver_bullet_entries, liquidity, prev, fvgs, _last_close)
     power_of_three_entries = attach_dol_targets(power_of_three_entries, liquidity, prev, fvgs, _last_close)
+    # §17.10 — when a crypto overlay is present, weave its factor map
+    # into every entry's confluence score so e.g. perp_led_warning
+    # actually debits points and oi_drop_at_sweep adds them.
+    if crypto_overlay and crypto_overlay.get("status") == "ok":
+        def _reweight(entries: list[dict]) -> list[dict]:
+            updated: list[dict] = []
+            for e in entries:
+                merged_f, merged_w = merge_crypto_factors(e.get("factors", {}), crypto_overlay)
+                rescored = score_confluence(
+                    merged_f,
+                    weights={**(weights or {}), **merged_w},
+                )
+                updated.append({**e, "factors": merged_f, "confluence": rescored, "triggered": rescored["triggered"]})
+            return updated
+        sweep_reversal_entries = _reweight(sweep_reversal_entries)
+        continuation_entries = _reweight(continuation_entries)
+        ote_entries = _reweight(ote_entries)
+        unicorn_entries = _reweight(unicorn_entries)
+        silver_bullet_entries = _reweight(silver_bullet_entries)
+        power_of_three_entries = _reweight(power_of_three_entries)
     retracement = retracement_state(h, swings)
     generated_at = datetime.now().isoformat(timespec="seconds")
     signals = build_signals(
