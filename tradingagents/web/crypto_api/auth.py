@@ -4,8 +4,8 @@ import json
 import time
 import sqlite3
 from datetime import datetime, UTC
-from fastapi import Request, Header, HTTPException, Depends
-from typing import List, Optional, Dict, Any
+from fastapi import Request, Header, HTTPException, Depends, Response
+from typing import List, Optional, Dict, Any, Tuple
 from pathlib import Path
 
 BASE = Path(__file__).parent.parent
@@ -461,4 +461,82 @@ def require_binance_scopes(required_scopes: List[str]):
                 )
         return auth_info
     return scope_dependency
+
+
+# ─────────────── 9. Rate Limit Planning ───────────────
+import collections
+import threading
+
+class TokenBucketRateLimiter:
+    def __init__(self):
+        # Maps key -> list of timestamps
+        self.history: Dict[str, List[float]] = collections.defaultdict(list)
+        self.lock = threading.Lock()
+
+    def check_rate_limit(self, key: str, limit: int, window: int = 60) -> Tuple[bool, int, int]:
+        now = time.time()
+        window_start = now - window
+        with self.lock:
+            self.history[key] = [t for t in self.history[key] if t > window_start]
+            if len(self.history[key]) >= limit:
+                oldest = self.history[key][0]
+                reset_time_ms = int((oldest + window) * 1000)
+                remaining = 0
+                return False, remaining, reset_time_ms
+            
+            self.history[key].append(now)
+            remaining = limit - len(self.history[key])
+            reset_time_ms = int((now + window) * 1000)
+            return True, remaining, reset_time_ms
+
+global_rate_limiter = TokenBucketRateLimiter()
+
+def rate_limit(api_type: str, limit: int, window: int = 60):
+    async def dependency(request: Request, response: Response):
+        api_key = request.headers.get("X-API-Key") or request.headers.get("X-MBX-APIKEY")
+        if not api_key:
+            query_params = dict(urllib.parse.parse_qsl(request.url.query, keep_blank_values=True))
+            api_key = query_params.get("signature")
+            
+        client_ip = request.client.host if request.client else "127.0.0.1"
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            client_ip = forwarded_for.split(",")[0].strip()
+            
+        key_identifier = api_key if api_key else client_ip
+        rate_limit_key = f"{api_type}:{key_identifier}"
+        
+        passed, remaining, reset_ms = global_rate_limiter.check_rate_limit(rate_limit_key, limit, window)
+        
+        response.headers["X-RateLimit-Limit"] = str(limit)
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
+        response.headers["X-RateLimit-Reset"] = str(reset_ms)
+        
+        if not passed:
+            is_binance = request.url.path.startswith("/api/v3")
+            err_headers = {
+                "X-RateLimit-Limit": str(limit),
+                "X-RateLimit-Remaining": str(remaining),
+                "X-RateLimit-Reset": str(reset_ms)
+            }
+            if is_binance:
+                raise HTTPException(
+                    status_code=429,
+                    detail={"code": -1003, "msg": "Too many requests; please use the websocket for live updates to avoid bans."},
+                    headers=err_headers
+                )
+            else:
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "success": False,
+                        "error": {
+                            "code": "RATE_LIMIT_EXCEEDED",
+                            "message": f"Rate limit exceeded for {api_type}. Limit: {limit}/min."
+                        }
+                    },
+                    headers=err_headers
+                )
+    return dependency
+
 

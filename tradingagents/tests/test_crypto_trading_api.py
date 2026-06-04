@@ -774,4 +774,26 @@ def test_reconciliation_api():
     assert res_batch.json()["success"] is True
 
 
+def test_rate_limiting_api():
+    from crypto_api.auth import global_rate_limiter
+    global_rate_limiter.history.clear()
+    client = TestClient(app.app)
+    
+    # Call query_orders (limit 60) up to 65 times to trigger rate limit
+    for i in range(65):
+        headers = get_auth_headers("GET", "/v1/orders")
+        res = client.get("/v1/orders", headers=headers)
+        if i >= 60:
+            assert res.status_code == 429
+            assert "X-RateLimit-Limit" in res.headers
+            assert res.headers["X-RateLimit-Remaining"] == "0"
+            assert "X-RateLimit-Reset" in res.headers
+            assert res.json()["detail"]["success"] is False
+            assert res.json()["detail"]["error"]["code"] == "RATE_LIMIT_EXCEEDED"
+            break
+        else:
+            assert res.status_code == 200
+
+
+
 

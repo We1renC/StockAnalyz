@@ -19,7 +19,8 @@ from crypto_api.auth import (
     get_crypto_db,
     normalize_symbol,
     authenticate_binance_request,
-    require_binance_scopes
+    require_binance_scopes,
+    rate_limit
 )
 from crypto_api.executor import price_engine, validate_pre_trade_risk, fill_order, cancel_single_order_sync
 from crypto_api.ws import ws_manager
@@ -384,7 +385,7 @@ def query_fees(symbol: Optional[str] = None, auth_info: Dict[str, Any] = Depends
 
 # ─────────────── 13.3 Order API ───────────────
 
-@router.post("/orders")
+@router.post("/orders", dependencies=[Depends(rate_limit("order", 60))])
 async def create_order(
     request: Request,
     req_body: CreateOrderRequest,
@@ -510,7 +511,7 @@ async def create_order(
     
     return dict(final_order)
 
-@router.post("/orders/test")
+@router.post("/orders/test", dependencies=[Depends(rate_limit("order", 60))])
 async def create_test_order(req_body: CreateOrderRequest, auth_info: Dict[str, Any] = Depends(require_scopes(["trade:spot"]))):
     req_body.symbol = normalize_symbol(req_body.symbol)
     conn = get_crypto_db()
@@ -535,7 +536,7 @@ async def create_test_order(req_body: CreateOrderRequest, auth_info: Dict[str, A
         ]
     }
 
-@router.get("/orders")
+@router.get("/orders", dependencies=[Depends(rate_limit("order", 60))])
 def query_orders(
     symbol: Optional[str] = None,
     side: Optional[str] = None,
