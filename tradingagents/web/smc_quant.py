@@ -2398,6 +2398,7 @@ def detect_sweep_reversal_entries(
                 ote_overlap = leg_high - 0.79 * leg <= entry <= leg_high - 0.62 * leg
         # §3.10 nearest-POI confluence — entry sits within 0.5% of a same-dir POI
         nearest = nearest_poi_proximity(pd_array_matrix or {}, direction=real_dir)
+        nearest_kind = nearest.get("closest_kind") if nearest.get("has_poi_within") else None
         # §3.4 enhanced overlap — entry sits inside a BPR or IFVG (same dir)
         bpr_overlap = any(
             float(b["bottom"]) <= entry <= float(b["top"])
@@ -2452,6 +2453,7 @@ def detect_sweep_reversal_entries(
                 "poi_bottom": round(poi_bottom, 4),
                 "judas_index": confirm_idx,
                 "sweep_index": sweep_idx,
+                "nearest_poi_kind": nearest_kind,
                 "sweep_level": ev.get("sweep_level"),
                 "false_move_high": ev.get("false_move_high"),
                 "false_move_low": ev.get("false_move_low"),

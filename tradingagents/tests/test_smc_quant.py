@@ -2809,3 +2809,48 @@ def test_all_entry_models_credit_nearest_poi_within_factor():
         for e in em[key]:
             assert "nearest_poi_within" in e["factors"]
             assert isinstance(e["factors"]["nearest_poi_within"], bool)
+
+
+def test_sweep_reversal_records_nearest_poi_kind_when_present():
+    """§10.6 audit: sweep_reversal entry carries the kind of the nearest POI."""
+    from smc_quant import detect_sweep_reversal_entries
+    judas = [{
+        "judas": 1, "real_direction": 1, "fakeout_direction": -1,
+        "sweep_type": "SSL", "sweep_level": 9.0,
+        "sweep_index": 4, "confirm_index": 6, "confirm_time": None,
+        "false_move_high": 10.5, "false_move_low": 8.8,
+        "displacement_confirmed": True, "displacement_strength": "normal",
+        "session_at_sweep": None, "killzone": False, "sweep_time": None,
+    }]
+    obs = [{"index": 5, "direction": 1, "top": 10.0, "bottom": 9.0,
+            "refined_entry": 9.5, "status": "unmitigated", "grade": "B",
+            "displacement_confirmed": True}]
+    h = normalize_ohlcv(_sample_ohlcv())
+    matrix = {"rows": [{"kind": "balanced_price_range", "direction": 1, "distance_pct": 0.1}]}
+    entries = detect_sweep_reversal_entries(
+        h, judas, obs, [], {"state": "discount"}, "bullish",
+        pd_array_matrix=matrix,
+    )
+    assert entries[0]["nearest_poi_kind"] == "balanced_price_range"
+
+
+def test_sweep_reversal_nearest_poi_kind_none_when_too_far():
+    from smc_quant import detect_sweep_reversal_entries
+    judas = [{
+        "judas": 1, "real_direction": 1, "fakeout_direction": -1,
+        "sweep_type": "SSL", "sweep_level": 9.0,
+        "sweep_index": 4, "confirm_index": 6, "confirm_time": None,
+        "false_move_high": 10.5, "false_move_low": 8.8,
+        "displacement_confirmed": True, "displacement_strength": "normal",
+        "session_at_sweep": None, "killzone": False, "sweep_time": None,
+    }]
+    obs = [{"index": 5, "direction": 1, "top": 10.0, "bottom": 9.0,
+            "refined_entry": 9.5, "status": "unmitigated", "grade": "B",
+            "displacement_confirmed": True}]
+    h = normalize_ohlcv(_sample_ohlcv())
+    matrix = {"rows": [{"kind": "balanced_price_range", "direction": 1, "distance_pct": 5.0}]}
+    entries = detect_sweep_reversal_entries(
+        h, judas, obs, [], {"state": "discount"}, "bullish",
+        pd_array_matrix=matrix,
+    )
+    assert entries[0]["nearest_poi_kind"] is None
