@@ -4603,11 +4603,21 @@ def apply_risk_pipeline(
                 })
                 continue
         if account_equity and account_equity > 0:
+            # §12.3 — defensive mode automatically halves single-trade risk %
+            # (or applies the explicit recommended_risk_pct) once the
+            # account has reached the +NT$80k profit threshold.
+            effective_risk_pct = risk_pct
+            if lock.get("defensive_mode") and lock.get("recommended_risk_pct"):
+                effective_risk_pct = min(risk_pct, float(lock["recommended_risk_pct"]))
             sizing = calculate_position_size(
                 e,
                 account_equity=account_equity,
-                risk_pct=risk_pct,
+                risk_pct=effective_risk_pct,
                 market=market,
+            )
+            sizing["effective_risk_pct"] = effective_risk_pct
+            sizing["defensive_mode_applied"] = bool(
+                lock.get("defensive_mode") and effective_risk_pct < risk_pct
             )
             if sizing.get("blocked"):
                 rejected.append({**e, "reject_reason": f"sizing_blocked:{sizing.get('reason')}", "sizing": sizing})
@@ -4621,6 +4631,7 @@ def apply_risk_pipeline(
         "lock": lock,
         "min_rr": min_rr,
         "risk_pct": risk_pct,
+        "defensive_mode": bool(lock.get("defensive_mode")),
     }
 
 
@@ -5890,10 +5901,25 @@ def rule_enforcement_snapshot(
     active_days_traded: int = 0,
     daily_loss_limit: float = 50_000,
     max_drawdown_limit: float = 50_000,
+    defensive_profit_threshold: float = 80_000,
+    defensive_risk_pct: float = 0.005,
 ) -> dict:
+    """§10.5 + §12.3 — rule-enforcement layer.
+
+    Outputs the four numbers the spec requires before any order can be
+    placed (account equity, daily-loss buffer, max-drawdown buffer,
+    active days traded). Also implements the team's §12.3 red lines:
+      • Daily loss exceeds ``daily_loss_limit`` OR max drawdown exceeds
+        ``max_drawdown_limit`` → ``locked=True`` (no new orders).
+      • Once realised PnL ≥ ``defensive_profit_threshold`` → flips into
+        ``defensive_mode=True`` and recommends ``defensive_risk_pct``
+        (default 0.5%) per trade until the day rolls. Spec quote:
+        "shift to defensive mode upon reaching +NT$80k".
+    """
     daily_buffer = daily_loss_limit + daily_realized_pnl
     drawdown_buffer = max_drawdown_limit - abs(max_drawdown)
     locked = account_equity <= 0 or daily_buffer <= 0 or drawdown_buffer <= 0
+    defensive_mode = (not locked) and daily_realized_pnl >= defensive_profit_threshold
     return {
         "account_equity": round(float(account_equity), 2),
         "daily_loss_limit_buffer": round(float(daily_buffer), 2),
@@ -5901,6 +5927,11 @@ def rule_enforcement_snapshot(
         "active_days_traded": int(active_days_traded),
         "locked": locked,
         "lock_reason": "risk_limit_breached" if locked else "ok",
+        "defensive_mode": defensive_mode,
+        "defensive_threshold": defensive_profit_threshold,
+        "recommended_risk_pct": (
+            defensive_risk_pct if defensive_mode else None
+        ),
     }
 
 

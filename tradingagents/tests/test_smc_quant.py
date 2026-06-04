@@ -3539,3 +3539,49 @@ def test_build_smc_analysis_exposes_price_limit_levels_for_tw():
     pl = result["concepts"]["price_limit_levels"]
     assert pl["status"] == "ok"
     assert pl["limit_pct"] == 10
+
+
+def test_rule_enforcement_snapshot_flips_defensive_mode_at_threshold():
+    """§12.3: realized PnL ≥ +NT$80k → defensive_mode=True + recommended risk%."""
+    from smc_quant import rule_enforcement_snapshot
+    out = rule_enforcement_snapshot(100_000, daily_realized_pnl=85_000)
+    assert out["defensive_mode"] is True
+    assert out["recommended_risk_pct"] == 0.005
+    # Below threshold → normal mode
+    out2 = rule_enforcement_snapshot(100_000, daily_realized_pnl=10_000)
+    assert out2["defensive_mode"] is False
+    assert out2["recommended_risk_pct"] is None
+    # Locked accounts skip defensive flag (lock takes precedence)
+    out3 = rule_enforcement_snapshot(100_000, daily_realized_pnl=-60_000)
+    assert out3["locked"] is True
+    assert out3["defensive_mode"] is False
+
+
+def test_apply_risk_pipeline_halves_risk_pct_in_defensive_mode():
+    """§12.3: defensive_mode → sizing uses recommended_risk_pct (0.5%)."""
+    from smc_quant import apply_risk_pipeline
+    entries = [{"model": "x", "direction": 1, "entry": 100, "stop": 99, "rr": 2.0, "triggered": True}]
+    out = apply_risk_pipeline(
+        entries, account_equity=200_000,
+        risk_pct=0.01,
+        daily_realized_pnl=85_000,  # over +80k threshold
+    )
+    assert out["defensive_mode"] is True
+    sized = out["ready"][0]["sizing"]
+    assert sized["effective_risk_pct"] == 0.005  # halved from 0.01
+    assert sized["defensive_mode_applied"] is True
+    # Risk amount halved: 200_000 × 0.005 = 1000, vs normal 2000
+    assert sized["risk_amount"] == 1000.0
+
+
+def test_apply_risk_pipeline_keeps_normal_risk_when_below_threshold():
+    from smc_quant import apply_risk_pipeline
+    entries = [{"model": "x", "direction": 1, "entry": 100, "stop": 99, "rr": 2.0, "triggered": True}]
+    out = apply_risk_pipeline(
+        entries, account_equity=200_000,
+        risk_pct=0.01,
+        daily_realized_pnl=5_000,
+    )
+    assert out["defensive_mode"] is False
+    assert out["ready"][0]["sizing"]["effective_risk_pct"] == 0.01
+    assert out["ready"][0]["sizing"]["defensive_mode_applied"] is False
