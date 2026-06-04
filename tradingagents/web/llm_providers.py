@@ -12,7 +12,10 @@ DEFAULT_SETTINGS = {
         "anthropic": "",
         "openai": "",
         "google": "",
+        "binance_api_key": "",
+        "binance_secret_key": "",
     },
+    "binance_api_url": "https://testnet.binance.vision",
     "roles": {
         "smc_structure_analyst": {
             "provider": "openai",

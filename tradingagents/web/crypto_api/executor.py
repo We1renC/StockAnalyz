@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Tuple, Optional
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
+import sys
 
 # Import websocket and webhook dispatchers
 from crypto_api.ws import ws_manager
@@ -16,6 +17,13 @@ from crypto_api.webhooks import dispatch_webhook
 
 BASE = Path(__file__).parent.parent
 DB = BASE / "portfolio.db"
+
+# Dynamic import helper for llm_providers settings
+try:
+    from llm_providers import load_settings
+except ImportError:
+    sys.path.append(str(BASE))
+    from llm_providers import load_settings
 
 def get_crypto_db():
     conn = sqlite3.connect(DB)
@@ -32,6 +40,13 @@ class MarketPriceEngine:
             "SOL-USDT": "150.00"
         }
         self.last_fetched = 0
+        
+        # Load binance URL from settings
+        try:
+            settings = load_settings()
+            self.base_url = settings.get("binance_api_url", "https://testnet.binance.vision").rstrip('/')
+        except Exception:
+            self.base_url = "https://testnet.binance.vision"
 
     async def get_price(self, symbol: str) -> Decimal:
         await self.refresh_prices_if_needed()
@@ -40,7 +55,7 @@ class MarketPriceEngine:
     async def get_ticker_24h(self, symbol: str) -> Dict[str, str]:
         # Translate to Binance symbol, e.g. BTC-USDT -> BTCUSDT
         binance_sym = symbol.replace("-", "")
-        url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={binance_sym}"
+        url = f"{self.base_url}/api/v3/ticker/24hr?symbol={binance_sym}"
         try:
             def fetch():
                 req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -84,7 +99,7 @@ class MarketPriceEngine:
 
     async def get_orderbook(self, symbol: str, depth: int = 50) -> Dict[str, Any]:
         binance_sym = symbol.replace("-", "")
-        url = f"https://api.binance.com/api/v3/depth?symbol={binance_sym}&limit={depth}"
+        url = f"{self.base_url}/api/v3/depth?symbol={binance_sym}&limit={depth}"
         try:
             def fetch():
                 req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -118,7 +133,7 @@ class MarketPriceEngine:
 
     async def get_recent_trades(self, symbol: str, limit: int = 100) -> List[Dict[str, Any]]:
         binance_sym = symbol.replace("-", "")
-        url = f"https://api.binance.com/api/v3/trades?symbol={binance_sym}&limit={limit}"
+        url = f"{self.base_url}/api/v3/trades?symbol={binance_sym}&limit={limit}"
         try:
             def fetch():
                 req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -153,7 +168,7 @@ class MarketPriceEngine:
 
     async def get_klines(self, symbol: str, interval: str, limit: int = 500) -> List[Dict[str, Any]]:
         binance_sym = symbol.replace("-", "")
-        url = f"https://api.binance.com/api/v3/klines?symbol={binance_sym}&interval={interval}&limit={limit}"
+        url = f"{self.base_url}/api/v3/klines?symbol={binance_sym}&interval={interval}&limit={limit}"
         try:
             def fetch():
                 req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -198,7 +213,7 @@ class MarketPriceEngine:
         # Fetch prices in background to prevent blocking
         async def fetch_one(symbol: str):
             binance_sym = symbol.replace("-", "")
-            url = f"https://api.binance.com/api/v3/ticker/price?symbol={binance_sym}"
+            url = f"{self.base_url}/api/v3/ticker/price?symbol={binance_sym}"
             try:
                 def fetch():
                     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
