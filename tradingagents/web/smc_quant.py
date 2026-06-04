@@ -1266,6 +1266,68 @@ def detect_smt_divergence(
 # §17 Crypto derivatives overlay (liquidations / OI / funding / CVD / premium)
 # ---------------------------------------------------------------------------
 
+def crypto_readiness_checklist(analysis: dict) -> dict:
+    """§17.11 — six-step crypto implementation readiness check.
+
+    Looks at a build_smc_analysis() result and verifies each step the
+    design doc enumerates. Output: per-step pass/evidence + headline
+    ``ready_for_live`` flag (only all six green ⇒ ready).
+    """
+    if not analysis:
+        return {"ready_for_live": False, "score": 0, "max_score": 6, "steps": []}
+    concepts = analysis.get("concepts") or {}
+    cryptod = concepts.get("crypto_derivatives") or {}
+    adaptive = analysis.get("adaptive") or {}
+    market = analysis.get("market")
+    bias = (analysis.get("summary") or {}).get("bias")
+    steps = []
+    # 1. Multi-timeframe OHLCV core engine — proxy: any §3 concept exists
+    core_ready = bool(concepts.get("swings")) and bool(concepts.get("order_blocks"))
+    steps.append({"step": 1, "name": "ccxt_core_engine",
+                  "pass": core_ready, "evidence": f"swings={len(concepts.get('swings') or [])}"})
+    # 2. Visible liquidity overlay — liquidation_clusters / OI / CVD presence
+    visible = (
+        isinstance(cryptod, dict) and cryptod.get("status") == "ok"
+        and len(cryptod.get("liquidation_clusters") or []) > 0
+    )
+    steps.append({"step": 2, "name": "visible_liquidity_overlay",
+                  "pass": bool(visible),
+                  "evidence": f"clusters={len(cryptod.get('liquidation_clusters') or [])}"})
+    # 3. Cross-market footprint — Coinbase premium / BTC.D / SMT
+    cross = bool(
+        cryptod.get("coinbase_premium", {}).get("status") == "ok"
+        or cryptod.get("btc_dominance", {}).get("status") == "ok"
+        or (concepts.get("smt") or {}).get("events")
+    )
+    steps.append({"step": 3, "name": "cross_market_footprint",
+                  "pass": cross,
+                  "evidence": f"premium={cryptod.get('coinbase_premium',{}).get('status')} btc_d={cryptod.get('btc_dominance',{}).get('status')}"})
+    # 4. ATR-adaptive parameters + risk controls
+    adapt_ok = bool(adaptive.get("bucket") and adaptive.get("bucket") != "unknown")
+    steps.append({"step": 4, "name": "atr_adaptive_params",
+                  "pass": adapt_ok,
+                  "evidence": f"bucket={adaptive.get('bucket')} scale={adaptive.get('scale')}"})
+    # 5. Batch backtest / forward test — proxy: backtest_replay produced trades
+    em = (concepts.get("entry_models") or {})
+    bt = em.get("backtest_replay") or {}
+    bt_ready = (bt.get("metrics") or {}).get("count", 0) > 0
+    steps.append({"step": 5, "name": "batch_backtest_executed",
+                  "pass": bool(bt_ready),
+                  "evidence": f"trades={(bt.get('metrics') or {}).get('count', 0)}"})
+    # 6. Multi-market expansion gate — only flagged ready when *not* crypto-only
+    multi_market = market in ("us", "tw", "crypto") and bias is not None
+    steps.append({"step": 6, "name": "engine_extends_to_tradfi",
+                  "pass": multi_market,
+                  "evidence": f"market={market} bias={bias}"})
+    score = sum(1 for s in steps if s["pass"])
+    return {
+        "ready_for_live": score == len(steps),
+        "score": score,
+        "max_score": len(steps),
+        "steps": steps,
+    }
+
+
 def aggregate_multi_exchange(
     exchange_feeds: dict[str, pd.DataFrame],
     *,

@@ -2128,3 +2128,32 @@ def test_chart_layer_c9_mtf_audit_present_in_chart_layers():
     assert c9 is not None
     assert c9["kind"] == "summary_panel"
     assert "rows" in c9
+
+
+def test_crypto_readiness_checklist_emits_six_step_audit():
+    """§17.11: six-step crypto rollout checklist must enumerate all design-doc items."""
+    from smc_quant import crypto_readiness_checklist
+    analysis = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    out = crypto_readiness_checklist(analysis)
+    assert out["max_score"] == 6
+    names = [s["name"] for s in out["steps"]]
+    assert names == [
+        "ccxt_core_engine",
+        "visible_liquidity_overlay",
+        "cross_market_footprint",
+        "atr_adaptive_params",
+        "batch_backtest_executed",
+        "engine_extends_to_tradfi",
+    ]
+    # ready_for_live is True only when all six pass
+    assert out["ready_for_live"] == (out["score"] == 6)
+
+
+def test_crypto_readiness_handles_empty_analysis():
+    from smc_quant import crypto_readiness_checklist
+    out = crypto_readiness_checklist({})
+    assert out["ready_for_live"] is False
+    assert out["score"] == 0
