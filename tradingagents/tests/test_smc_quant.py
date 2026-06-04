@@ -1826,3 +1826,40 @@ def test_sweep_reversal_entry_credits_extreme_displacement():
     assert e["factors"]["displacement_extreme"] is True
     names = {f["factor"] for f in e["confluence"]["contributing_factors"]}
     assert "displacement_extreme" in names
+
+
+def test_is_premium_killzone_only_fires_on_top_tier_sessions():
+    """§3.9: ny_open / london_killzone / silver_bullet / tw_open count as premium."""
+    from smc_quant import is_premium_killzone
+    assert is_premium_killzone({"zone": "ny_open"})
+    assert is_premium_killzone({"zone": "london_killzone"})
+    assert is_premium_killzone({"zone": "ny_silver_bullet"})
+    assert is_premium_killzone({"zone": "tw_open"})
+    # Lower-tier zones don't count
+    assert not is_premium_killzone({"zone": "asia_session"})
+    assert not is_premium_killzone({"zone": "crypto_quiet"})
+    assert not is_premium_killzone(None)
+
+
+def test_sweep_reversal_entry_picks_up_premium_killzone_factor():
+    from smc_quant import detect_sweep_reversal_entries
+    judas = [{
+        "judas": 1, "real_direction": 1, "fakeout_direction": -1,
+        "sweep_type": "SSL", "sweep_level": 9.0,
+        "sweep_index": 4, "confirm_index": 6, "confirm_time": None,
+        "false_move_high": 10.5, "false_move_low": 8.8,
+        "displacement_confirmed": True, "displacement_strength": "normal",
+        "session_at_sweep": None, "killzone": False, "sweep_time": None,
+    }]
+    obs = [{
+        "index": 5, "direction": 1, "top": 10.0, "bottom": 9.0,
+        "refined_entry": 9.5, "status": "unmitigated", "grade": "B",
+        "displacement_confirmed": True,
+    }]
+    h = normalize_ohlcv(_sample_ohlcv())
+    entries = detect_sweep_reversal_entries(
+        h, judas, obs, [], {"state": "discount"}, "bullish",
+        session={"zone": "ny_open", "killzone": True},
+    )
+    assert entries
+    assert entries[0]["factors"]["killzone_premium"] is True

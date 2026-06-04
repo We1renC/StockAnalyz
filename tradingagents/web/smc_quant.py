@@ -950,6 +950,19 @@ def previous_levels(df: pd.DataFrame) -> dict:
     return res
 
 
+PREMIUM_KILLZONES = {
+    "ny_open", "ny_open_killzone", "london_killzone",
+    "ny_silver_bullet", "tw_open",
+}
+
+
+def is_premium_killzone(session: Optional[dict]) -> bool:
+    """§3.9 — True only for top-tier killzones (weight ≥ 1.4)."""
+    if not session:
+        return False
+    return session.get("zone") in PREMIUM_KILLZONES
+
+
 def classify_killzone(df: pd.DataFrame, market: str) -> dict:
     """§3.9 — fine-grained killzone classification per market.
 
@@ -2093,9 +2106,10 @@ def detect_sweep_reversal_entries(
             "killzone": bool(ev.get("killzone")) or bool((session or {}).get("killzone")),
             "volume_displacement": bool(ev.get("displacement_confirmed")),
             "displacement_extreme": ev.get("displacement_strength") == "extreme",
+            "killzone_premium": is_premium_killzone(session),
         }
-        # §3.11 — credit an extreme displacement explicitly (+1).
-        local_weights = {**(weights or {}), "displacement_extreme": 1}
+        # §3.11 + §3.9 — credit extreme displacement and premium killzone (+1 each).
+        local_weights = {**(weights or {}), "displacement_extreme": 1, "killzone_premium": 1}
         scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
             {
@@ -2676,9 +2690,10 @@ def detect_power_of_three_entries(
             "killzone": bool(ev.get("killzone")) or bool((session or {}).get("killzone")),
             "volume_displacement": bool(ev.get("displacement_confirmed")),
             "displacement_extreme": ev.get("displacement_strength") == "extreme",
+            "killzone_premium": is_premium_killzone(session),
         }
-        # §3.11 — credit an extreme displacement explicitly (+1).
-        local_weights = {**(weights or {}), "displacement_extreme": 1}
+        # §3.11 + §3.9 — credit extreme displacement and premium killzone (+1 each).
+        local_weights = {**(weights or {}), "displacement_extreme": 1, "killzone_premium": 1}
         scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
             {
