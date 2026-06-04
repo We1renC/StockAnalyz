@@ -1879,3 +1879,19 @@ def test_liquidity_records_carry_equal_tag_and_tier():
         else:
             assert l["equal_tag"] is None
         assert l["level_dispersion"] >= 0
+
+
+def test_dol_strong_eqh_escalates_internal_priority():
+    """§3.5: strong EQH internal escalates one bucket → beats untagged internal."""
+    from smc_quant import resolve_dol_target
+    pools = [
+        # Untagged internal pool, closer
+        {"type": "BSL", "level": 105, "swept": False, "end_index": 5, "liquidity_kind": "internal"},
+        # Strong EQH internal pool, farther
+        {"type": "BSL", "level": 110, "swept": False, "end_index": 6,
+         "liquidity_kind": "internal", "equal_tag": "EQH", "equal_tier": "strong"},
+    ]
+    out = resolve_dol_target(1, current_price=100, liquidity=pools)
+    # Strong EQH escalates 2 → 1, beats plain internal at bucket 2
+    assert out["target_price"] == 110.0
+    assert out["equal_tier"] == "strong"

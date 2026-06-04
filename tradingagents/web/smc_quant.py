@@ -1848,6 +1848,8 @@ def resolve_dol_target(
             "distance": round(abs(level - current_price), 4),
             "source_index": int(liq.get("end_index", -1)),
             "liquidity_kind": liq.get("liquidity_kind", "unknown"),
+            "equal_tag": liq.get("equal_tag"),
+            "equal_tier": liq.get("equal_tier"),
         })
     if prev_levels:
         prev_high = prev_levels.get("previous_high")
@@ -1895,10 +1897,15 @@ def resolve_dol_target(
         "unknown": 4,
         "out_of_range": 5,
     }
-    candidates.sort(key=lambda c: (
-        priority.get(c.get("liquidity_kind") or c.get("target_kind"), 9),
-        c["distance"],
-    ))
+    def _sort_key(c):
+        bucket = priority.get(c.get("liquidity_kind") or c.get("target_kind"), 9)
+        # Strong EQH/EQL escalates one bucket up, weak EQH/EQL by half (-0.5).
+        if c.get("equal_tier") == "strong":
+            bucket = max(0, bucket - 1)
+        elif c.get("equal_tier") == "weak":
+            bucket = max(0, bucket - 0.5)
+        return (bucket, c["distance"])
+    candidates.sort(key=_sort_key)
     return candidates[0]
 
 
