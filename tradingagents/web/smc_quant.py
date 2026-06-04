@@ -4971,8 +4971,8 @@ def suggest_confluence_weights(
 
 
 def _populate_pd_array_panel(layers: dict, pd_array_matrix: dict, *, top_n: int = 8) -> dict:
-    """Fill ``layers["C11_pd_array_matrix"].rows`` with the top-N closest POIs."""
-    panel = layers.get("C11_pd_array_matrix")
+    """Fill ``layers["C14_pd_array_matrix"].rows`` with the top-N closest POIs."""
+    panel = layers.get("C14_pd_array_matrix")
     if not panel or not pd_array_matrix:
         return layers
     panel["rows"] = (pd_array_matrix.get("rows") or [])[:top_n]
@@ -5032,8 +5032,12 @@ def sanitize_for_json(value):
 
 
 def _populate_backtest_panel(layers: dict, backtest_replay: dict, *, preview: int = 5) -> dict:
-    """Fill ``layers["C13_backtest_replay"]`` with metrics + last few trades."""
-    panel = layers.get("C13_backtest_replay")
+    """Fill ``layers["C11_backtest_replay"]`` with metrics + last few trades.
+
+    §15.1 spec aligns C11 with Backtest Equity & Trades Map; the previous
+    project-internal mislabel (C13) has been re-homed to C11.
+    """
+    panel = layers.get("C11_backtest_replay")
     if not panel or not backtest_replay:
         return layers
     panel["metrics"] = backtest_replay.get("metrics") or {}
@@ -6015,34 +6019,50 @@ def build_chart_layers(
             for v in (volume_imbalances or [])
         ],
     }
-    # C13 Backtest replay panel — fed downstream by build_smc_analysis caller
-    layers["C13_backtest_replay"] = {
+    # §15.1 C11 — Backtest Equity & Trades Map (spec: equity curve + drawdown +
+    # R-multiple histogram + replay markers). Populated downstream by
+    # build_smc_analysis caller from concepts.entry_models.backtest_replay.
+    layers["C11_backtest_replay"] = {
         "kind": "summary_panel",
-        "title": "Backtest replay snapshot",
-        "metrics": {},   # filled by _populate_pd_array_panel-style hook
+        "title": "Backtest equity + R-multiple replay",
+        "metrics": {},
         "trades_preview": [],
+        "equity_curve": [],
         "note": "Populated from concepts.entry_models.backtest_replay.",
     }
-    # C11 PD-Array Matrix panel — top 8 nearest POIs as a compact table
-    layers["C11_pd_array_matrix"] = {
+    # §15.1 C12 — Daily Multi-Asset Dashboard (spec: thumbnail grid of symbols
+    # + signal summary table, ranked by §5.2 confluence score).
+    layers["C12_daily_dashboard"] = {
+        "kind": "dashboard_panel",
+        "title": "Daily multi-asset SMC dashboard",
+        "rows": [],  # populated by daily report aggregator (build_daily_report)
+        "ranked_by": "confluence_score",
+        "note": "Populated by build_daily_report() / smc_morning_briefing() — single-symbol chart_layers leaves it empty.",
+    }
+    # §15.1 C13 — [Crypto Primary] Liquidation / Order Flow Overlay.
+    # Only emitted when crypto overlay data is provided; non-crypto symbols
+    # omit the layer entirely so UIs don't render an empty derivatives panel.
+    # Project-specific extension panels (kept beyond the spec's C1–C13 list).
+    # C14 PD-Array Matrix panel — top 8 nearest POIs as a compact table
+    layers["C14_pd_array_matrix"] = {
         "kind": "table_panel",
         "title": "PD-Array Matrix — nearest POIs",
-        "rows": [],  # populated by build_smc_analysis caller
-        "note": "Populated after concepts.pd_array_matrix; reproduce by reading top-N rows.",
+        "rows": [],
+        "note": "Project extension — populated after concepts.pd_array_matrix.",
     }
-    # C9 MTF top-down audit summary — keyless panel renderer
-    layers["C9_mtf_audit"] = {
+    # C15 MTF top-down audit summary
+    layers["C15_mtf_audit"] = {
         "kind": "summary_panel",
-        "title": "HTF→MTF→LTF six-step audit",
+        "title": "HTF→MTF→LTF seven-step audit",
         "rows": [
             {"step": s.get("step"), "name": s.get("name"),
              "pass": s.get("pass"), "evidence": s.get("evidence")}
-            for s in []  # populated downstream by build_mtf_analysis caller
+            for s in []
         ],
-        "note": "Populated only via build_mtf_analysis() — single-TF chart_layers leave it empty.",
+        "note": "Project extension — populated only via build_mtf_analysis().",
     }
-    # C12 SMT Divergence overlay — paired-asset divergence connector
-    layers["C12_smt"] = {
+    # C16 SMT Divergence overlay — paired-asset divergence connector
+    layers["C16_smt"] = {
         "kind": "divergence_overlay",
         "events": [
             {
@@ -6056,9 +6076,7 @@ def build_chart_layers(
             for ev in (smt_events or [])
         ],
     }
-    # §15 / Appendix A spec-aligned C13 — Liquidation / Order Flow Overlay
-    # for crypto. Distinct from the existing C13_backtest_replay panel
-    # (project-specific reuse); UIs can render whichever matches the asset.
+    # Crypto overlay payload replaces the C13 stub when data is provided
     if crypto_overlay and crypto_overlay.get("status") == "ok":
         layers["C13_crypto_overlay"] = {
             "kind": "derivatives_overlay",

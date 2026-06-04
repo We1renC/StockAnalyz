@@ -848,8 +848,15 @@ def test_chart_layers_include_all_documented_chart_codes():
         config=SMCConfig(swing_length=2, internal_swing_length=2),
     )
     layers = result["visualization"]["chart_layers"]
-    for code in ("C1_structure", "C2_order_blocks", "C3_fvgs", "C4_liquidity",
-                 "C7_session_judas", "C8_sweep_reversal", "C10_signals", "C12_smt"):
+    # §15.1 spec mandates C1–C13 (C13 is crypto-only and may be omitted for
+    # non-crypto symbols). Project extensions live at C14–C16.
+    for code in (
+        "C1_structure", "C2_order_blocks", "C3_fvgs", "C4_liquidity",
+        "C5_premium_discount", "C6_ote", "C7_session_judas",
+        "C8_sweep_reversal", "C10_signals",
+        "C11_backtest_replay", "C12_daily_dashboard",
+        "C14_pd_array_matrix", "C15_mtf_audit", "C16_smt",
+    ):
         assert code in layers, f"chart layer {code} missing"
 
 
@@ -2118,16 +2125,16 @@ def test_chart_layer_c4_exposes_liquidity_kind_and_equal_tags():
         assert "touches" in l
 
 
-def test_chart_layer_c9_mtf_audit_present_in_chart_layers():
-    """§6.1: C9 MTF audit panel exists, even if empty for single-TF analysis."""
+def test_chart_layer_c15_mtf_audit_present_in_chart_layers():
+    """§15 extension: C15 MTF audit panel exists, even if empty for single-TF."""
     result = build_smc_analysis(
         _sample_ohlcv(), "AAPL",
         config=SMCConfig(swing_length=2, internal_swing_length=2),
     )
-    c9 = result["visualization"]["chart_layers"].get("C9_mtf_audit")
-    assert c9 is not None
-    assert c9["kind"] == "summary_panel"
-    assert "rows" in c9
+    panel = result["visualization"]["chart_layers"].get("C15_mtf_audit")
+    assert panel is not None
+    assert panel["kind"] == "summary_panel"
+    assert "rows" in panel
 
 
 def test_crypto_readiness_checklist_emits_six_step_audit():
@@ -2379,19 +2386,18 @@ def test_build_smc_analysis_exposes_pd_array_matrix():
     assert matrix["above_count"] + matrix["below_count"] == matrix["total"]
 
 
-def test_chart_layer_c11_pd_array_panel_populated():
-    """§6.1: C11 PD-array panel must carry the top-N POIs from the matrix."""
+def test_chart_layer_c14_pd_array_panel_populated():
+    """§15 extension: PD-array panel re-homed to C14 (spec C11 is backtest)."""
     result = build_smc_analysis(
         _sample_ohlcv(), "AAPL",
         config=SMCConfig(swing_length=2, internal_swing_length=2),
     )
-    c11 = result["visualization"]["chart_layers"]["C11_pd_array_matrix"]
-    assert c11["kind"] == "table_panel"
-    assert "rows" in c11
-    # Panel should reflect the matrix counts
+    panel = result["visualization"]["chart_layers"]["C14_pd_array_matrix"]
+    assert panel["kind"] == "table_panel"
+    assert "rows" in panel
     matrix = result["concepts"]["pd_array_matrix"]
-    assert c11.get("current_price") == matrix["current_price"]
-    assert c11.get("above_count") == matrix["above_count"]
+    assert panel.get("current_price") == matrix["current_price"]
+    assert panel.get("above_count") == matrix["above_count"]
 
 
 def test_nearest_poi_proximity_flags_close_match():
@@ -2569,18 +2575,18 @@ def test_chart_layer_c10_trades_carry_dol_and_factor_count():
         assert isinstance(t["factor_count"], int) and t["factor_count"] >= 0
 
 
-def test_chart_layer_c13_backtest_panel_populated():
-    """§6.1: C13 panel shows backtest metrics + last few trades."""
+def test_chart_layer_c11_backtest_panel_populated():
+    """§15.1: C11 = Backtest Equity & Trades Map (spec-aligned, was mis-coded as C13)."""
     result = build_smc_analysis(
         _sample_ohlcv(), "AAPL",
         config=SMCConfig(swing_length=2, internal_swing_length=2),
     )
-    c13 = result["visualization"]["chart_layers"]["C13_backtest_replay"]
-    assert c13["kind"] == "summary_panel"
-    assert "metrics" in c13
-    assert isinstance(c13["trades_preview"], list)
+    panel = result["visualization"]["chart_layers"]["C11_backtest_replay"]
+    assert panel["kind"] == "summary_panel"
+    assert "metrics" in panel
+    assert isinstance(panel["trades_preview"], list)
     bt = result["concepts"]["entry_models"]["backtest_replay"]
-    assert c13["metrics"] == bt["metrics"]
+    assert panel["metrics"] == bt["metrics"]
 
 
 def test_sanitize_for_json_collapses_nan_inf_to_none():
