@@ -4228,6 +4228,64 @@ def build_chart_layers(
     return layers
 
 
+EMOTIONAL_STATES = {
+    "calm",        # baseline, executing per plan
+    "confident",   # post-win, plan-aligned
+    "anxious",     # uncertain entry, hesitation
+    "fomo",        # chasing late entry
+    "revenge",     # post-loss recovery attempt
+    "overconfident",  # taking outsized risk
+    "tilted",      # emotionally compromised
+}
+
+
+def validate_emotional_state(state: Optional[str]) -> dict:
+    """§10.5 — normalise + flag emotional state recorded in the journal.
+
+    Returns ``{state, risk_flag}`` — risk_flag=True for emotional
+    regimes the design doc explicitly warns about (fomo / revenge /
+    tilted / overconfident).
+    """
+    if not state:
+        return {"state": None, "risk_flag": False}
+    s = state.strip().lower()
+    if s not in EMOTIONAL_STATES:
+        return {"state": s, "risk_flag": True, "note": "unknown_state"}
+    return {"state": s, "risk_flag": s in {"fomo", "revenge", "tilted", "overconfident"}}
+
+
+def journal_emotional_summary(journal_entries: list[dict]) -> dict:
+    """§10.5 — slice avg R per emotional regime.
+
+    Highlights which emotional state leaks expectancy. Trades without
+    ``emotional_state`` are grouped as ``unspecified``.
+    """
+    if not journal_entries:
+        return {"by_state": {}, "sample_size": 0, "worst_state": None}
+    by_state: dict[str, list[float]] = {}
+    for j in journal_entries:
+        state = (j.get("emotional_state") or "unspecified").strip().lower()
+        if state not in EMOTIONAL_STATES and state != "unspecified":
+            state = "unknown"
+        by_state.setdefault(state, []).append(float(j.get("r_multiple") or 0))
+    summary = {}
+    worst_state, worst_avg = None, float("inf")
+    for state, rs in by_state.items():
+        avg_r = sum(rs) / len(rs) if rs else 0.0
+        summary[state] = {
+            "count": len(rs),
+            "avg_R": round(avg_r, 3),
+            "wins": sum(1 for r in rs if r > 0),
+        }
+        if state not in {"unspecified", "unknown"} and avg_r < worst_avg and len(rs) >= 3:
+            worst_state, worst_avg = state, avg_r
+    return {
+        "by_state": summary,
+        "sample_size": sum(len(rs) for rs in by_state.values()),
+        "worst_state": worst_state,
+    }
+
+
 JOURNAL_ENTRY_SCHEMA_VERSION = 1
 
 

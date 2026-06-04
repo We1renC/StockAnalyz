@@ -2219,3 +2219,46 @@ def test_stamp_rule_enforcement_no_op_on_empty_record():
     from smc_quant import stamp_rule_enforcement_at_entry, rule_enforcement_dashboard
     rec = stamp_rule_enforcement_at_entry({}, rule_enforcement_dashboard(account_equity=0))
     assert rec == {}
+
+
+def test_validate_emotional_state_flags_high_risk_regimes():
+    """§10.5: fomo / revenge / tilted / overconfident → risk_flag True."""
+    from smc_quant import validate_emotional_state
+    for state in ("fomo", "revenge", "tilted", "overconfident"):
+        out = validate_emotional_state(state)
+        assert out["risk_flag"] is True
+    for state in ("calm", "confident", "anxious"):
+        out = validate_emotional_state(state)
+        assert out["risk_flag"] is False
+    # Unknown state → risk_flag True + note
+    bad = validate_emotional_state("euphoric")
+    assert bad["risk_flag"] is True
+    assert bad.get("note") == "unknown_state"
+
+
+def test_journal_emotional_summary_identifies_worst_state():
+    """§10.5: emotional slicing identifies the state with the worst avg R (≥3 trades)."""
+    from smc_quant import journal_emotional_summary
+    entries = [
+        {"emotional_state": "calm", "r_multiple": 2.0},
+        {"emotional_state": "calm", "r_multiple": 1.5},
+        {"emotional_state": "calm", "r_multiple": 1.0},
+        {"emotional_state": "revenge", "r_multiple": -1.0},
+        {"emotional_state": "revenge", "r_multiple": -1.0},
+        {"emotional_state": "revenge", "r_multiple": -1.0},
+        {"emotional_state": "fomo", "r_multiple": -0.5},
+        {"emotional_state": None, "r_multiple": 0.5},
+    ]
+    out = journal_emotional_summary(entries)
+    assert out["sample_size"] == 8
+    assert out["worst_state"] == "revenge"
+    assert out["by_state"]["calm"]["avg_R"] == 1.5
+    assert out["by_state"]["revenge"]["avg_R"] == -1.0
+    assert "unspecified" in out["by_state"]
+
+
+def test_journal_emotional_summary_empty_input():
+    from smc_quant import journal_emotional_summary
+    out = journal_emotional_summary([])
+    assert out["sample_size"] == 0
+    assert out["worst_state"] is None
