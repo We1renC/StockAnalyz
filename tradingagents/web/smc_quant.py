@@ -2148,10 +2148,18 @@ def detect_sweep_reversal_entries(
         # Target: 2R fallback (§6 RR rule).
         target = entry + 2 * risk * real_dir
         rr = abs(target - entry) / risk if risk else 0.0
-        # Confluence factors per §5.2.
+        # Confluence factors per §5.2 — use the five-bucket §3.6 zone:
+        # pure_discount (long ★★) > discount (long ★) > equilibrium >
+        # premium (short ★) > pure_premium (short ★★). Pure side scores
+        # the standard +2; the extreme bucket adds a separate +1.
+        pd_zone_label = (pd_zone or {}).get("zone")
         on_correct_pd_side = bool(
             (real_dir == 1 and pd_state == "discount")
             or (real_dir == -1 and pd_state == "premium")
+        )
+        pd_extreme = bool(
+            (real_dir == 1 and pd_zone_label == "pure_discount")
+            or (real_dir == -1 and pd_zone_label == "pure_premium")
         )
         ote_overlap = False
         # §5.2 row: Enters OTE 0.62–0.79 if entry sits inside the false-move leg's OTE.
@@ -2175,9 +2183,15 @@ def detect_sweep_reversal_entries(
             "volume_displacement": bool(ev.get("displacement_confirmed")),
             "displacement_extreme": ev.get("displacement_strength") == "extreme",
             "killzone_premium": is_premium_killzone(session),
+            "pd_extreme": pd_extreme,
         }
-        # §3.11 + §3.9 — credit extreme displacement and premium killzone (+1 each).
-        local_weights = {**(weights or {}), "displacement_extreme": 1, "killzone_premium": 1}
+        # §3.11 + §3.9 + §3.6 — credit extreme displacement / killzone / PD extreme (+1 each).
+        local_weights = {
+            **(weights or {}),
+            "displacement_extreme": 1,
+            "killzone_premium": 1,
+            "pd_extreme": 1,
+        }
         scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
             {
@@ -2744,6 +2758,11 @@ def detect_power_of_three_entries(
             continue
         target = entry + 2 * risk * direction
         rr = abs(target - entry) / risk if risk else 0.0
+        pd_zone_label = (pd_zone or {}).get("zone")
+        pd_extreme = bool(
+            (direction == 1 and pd_zone_label == "pure_discount")
+            or (direction == -1 and pd_zone_label == "pure_premium")
+        )
         factors = {
             "htf_bias_aligned": bias_dir == direction,
             "premium_discount_side": (
@@ -2759,9 +2778,15 @@ def detect_power_of_three_entries(
             "volume_displacement": bool(ev.get("displacement_confirmed")),
             "displacement_extreme": ev.get("displacement_strength") == "extreme",
             "killzone_premium": is_premium_killzone(session),
+            "pd_extreme": pd_extreme,
         }
-        # §3.11 + §3.9 — credit extreme displacement and premium killzone (+1 each).
-        local_weights = {**(weights or {}), "displacement_extreme": 1, "killzone_premium": 1}
+        # §3.11 + §3.9 + §3.6 — credit extreme displacement / killzone / PD extreme (+1 each).
+        local_weights = {
+            **(weights or {}),
+            "displacement_extreme": 1,
+            "killzone_premium": 1,
+            "pd_extreme": 1,
+        }
         scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
             {

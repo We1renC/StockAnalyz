@@ -1993,3 +1993,31 @@ def test_propose_strategy_yaml_includes_crypto_weights_block():
     crypto = out["confluence"]["crypto_weights_suggested"]
     assert "cvd_divergence" in crypto
     assert "altcoin_btc_aligned" in crypto  # confirms full default seed coverage
+
+
+def test_sweep_reversal_entry_credits_pd_extreme_factor():
+    """§3.6: pure_discount + long entry → factors.pd_extreme True."""
+    from smc_quant import detect_sweep_reversal_entries
+    judas = [{
+        "judas": 1, "real_direction": 1, "fakeout_direction": -1,
+        "sweep_type": "SSL", "sweep_level": 9.0,
+        "sweep_index": 4, "confirm_index": 6, "confirm_time": None,
+        "false_move_high": 10.5, "false_move_low": 8.8,
+        "displacement_confirmed": True, "displacement_strength": "normal",
+        "session_at_sweep": None, "killzone": False, "sweep_time": None,
+    }]
+    obs = [{
+        "index": 5, "direction": 1, "top": 10.0, "bottom": 9.0,
+        "refined_entry": 9.5, "status": "unmitigated", "grade": "B",
+        "displacement_confirmed": True,
+    }]
+    h = normalize_ohlcv(_sample_ohlcv())
+    entries = detect_sweep_reversal_entries(
+        h, judas, obs, [],
+        {"state": "discount", "zone": "pure_discount"},
+        "bullish",
+    )
+    assert entries
+    assert entries[0]["factors"]["pd_extreme"] is True
+    names = {f["factor"] for f in entries[0]["confluence"]["contributing_factors"]}
+    assert "pd_extreme" in names
