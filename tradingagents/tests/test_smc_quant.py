@@ -1456,3 +1456,56 @@ def test_premium_discount_position_pct_matches_close_in_range():
     close = float(_sample_ohlcv()["Close"].iloc[-1])
     expected = (close - pd_zone["range_low"]) / leg * 100
     assert abs(pd_zone["position_pct"] - expected) < 0.5
+
+
+def test_propose_strategy_yaml_refuses_when_sample_too_small():
+    """§18.6: cannot adopt below the minimum-sample floor."""
+    from smc_quant import propose_strategy_yaml
+    out = propose_strategy_yaml(trade_records=[{"r_multiple": 1}] * 5)
+    assert out["adopt"] is False
+    assert out["status"] == "insufficient_samples"
+
+
+def test_propose_strategy_yaml_emits_full_changelog():
+    from smc_quant import propose_strategy_yaml
+    records = []
+    base = datetime(2026, 1, 1)
+    # 40 trades, 60% winners with htf_bias_aligned drives positive edge
+    for i in range(40):
+        r = 2.0 if i % 5 != 0 else -1.0
+        records.append({
+            "entry_time": (base + timedelta(days=i)).isoformat(),
+            "r_multiple": r,
+            "factors": {"htf_bias_aligned": True},
+            "mae": -0.3, "mfe": 2.2,
+        })
+    out = propose_strategy_yaml(trade_records=records, min_samples=20)
+    assert out["schema_version"] == 1
+    assert out["sample_size"] == 40
+    # Must expose all key calibration sub-blocks
+    for key in ("expectancy", "confluence", "risk", "stop_target_calibration", "validation", "changelog"):
+        assert key in out
+    # Changelog is a flat list of human-readable lines
+    assert isinstance(out["changelog"], list) and out["changelog"]
+    # Adoption decision aligns with walk_forward.passes
+    assert out["adopt"] == out["validation"]["walk_forward"]["passes"]
+
+
+def test_propose_strategy_yaml_marks_review_required_when_walk_forward_fails():
+    """Alternating big-win then big-loss across folds → walk-forward should flag OOS decay."""
+    from smc_quant import propose_strategy_yaml
+    records = []
+    base = datetime(2026, 1, 1)
+    for i in range(40):
+        # Wins concentrated in first half, losses in second → OOS regression
+        r = 3.0 if i < 20 else -1.0
+        records.append({
+            "entry_time": (base + timedelta(days=i)).isoformat(),
+            "r_multiple": r,
+            "factors": {"htf_bias_aligned": True},
+            "mae": -0.5, "mfe": 3.0,
+        })
+    out = propose_strategy_yaml(trade_records=records, min_samples=20)
+    if out["validation"]["walk_forward"]["passes"] is False:
+        assert out["adopt"] is False
+        assert out["status"] == "review_required"

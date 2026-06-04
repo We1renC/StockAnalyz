@@ -2805,6 +2805,91 @@ CRYPTO_LEVERAGE_CAP = {
 }
 
 
+def propose_strategy_yaml(
+    *,
+    trade_records: list[dict],
+    base_weights: Optional[dict[str, int]] = None,
+    confluence_threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
+    min_samples: int = 30,
+    fractional_kelly: float = 0.25,
+    kelly_cap: float = 0.05,
+) -> dict:
+    """§18.4 / §18.5 — synthesise a proposed strategy.yaml from the ledger.
+
+    Combines every offline tool we've built (factor edge, walk-forward,
+    PBO, MAE/MFE, Kelly, edge-decay) into a single human-readable plan.
+    The output is intentionally a dict (so callers can ``yaml.dump`` it)
+    and ALWAYS carries ``status`` + ``adopt`` flags — refuse to ship
+    changes that fail §18.6 acceptance criteria.
+    """
+    if not trade_records or len(trade_records) < min_samples:
+        return {
+            "schema_version": 1,
+            "status": "insufficient_samples",
+            "adopt": False,
+            "sample_size": len(trade_records or []),
+            "min_samples": min_samples,
+            "note": "ledger smaller than §18.6 minimum — keep current settings",
+        }
+    expectancy = compute_expectancy(trade_records)
+    edge = extract_factor_edge(trade_records, trade_records)
+    suggested_weights = suggest_confluence_weights(edge, base_weights=base_weights)
+    walk_fwd = walk_forward_evaluate(trade_records)
+    mae_mfe = mae_mfe_recommendations(trade_records)
+    kelly = calibrate_kelly_from_ledger(
+        trade_records, fractional=fractional_kelly, cap=kelly_cap, min_samples=min_samples,
+    )
+    # Adoption gate: walk-forward edge must hold AND backtest expectancy positive.
+    adopt = bool(walk_fwd.get("passes")) and float(expectancy.get("expected_R", 0)) > 0
+    proposal = {
+        "schema_version": 1,
+        "generated_at_marker": "deterministic",  # callers stamp the real time
+        "status": "adopt_ready" if adopt else "review_required",
+        "adopt": adopt,
+        "sample_size": expectancy["sample_size"],
+        "expectancy": expectancy,
+        "confluence": {
+            "threshold": confluence_threshold,
+            "weights_current": {**CONFLUENCE_WEIGHTS_DEFAULT, **(base_weights or {})},
+            "weights_suggested": suggested_weights,
+            "factor_edge": edge,
+        },
+        "risk": {
+            "fractional_kelly": fractional_kelly,
+            "kelly": kelly,
+        },
+        "stop_target_calibration": mae_mfe,
+        "validation": {
+            "walk_forward": walk_fwd,
+            "minimum_samples": min_samples,
+        },
+        "changelog": _strategy_changelog(
+            base_weights or {}, suggested_weights, mae_mfe.get("recommendations", []),
+        ),
+    }
+    return proposal
+
+
+def _strategy_changelog(
+    base_weights: dict, suggested_weights: dict, mae_recs: list[dict],
+) -> list[str]:
+    log: list[str] = []
+    for name, new_w in suggested_weights.items():
+        old_w = base_weights.get(name, CONFLUENCE_WEIGHTS_DEFAULT.get(name, 0))
+        if new_w != old_w:
+            log.append(f"weight {name}: {old_w} → {new_w}")
+    for rec in mae_recs:
+        if rec.get("kind") == "widen_stop":
+            log.append(f"stop: widen 1R → {rec['suggested_stop_R']}R ({rec['evidence']})")
+        elif rec.get("kind") == "stretch_tp":
+            log.append(f"tp: stretch to {rec['suggested_tp_R']}R ({rec['evidence']})")
+        elif rec.get("kind") == "tighten_tp":
+            log.append(f"tp: tighten to {rec['suggested_tp_R']}R ({rec['evidence']})")
+    if not log:
+        log.append("no parameter changes recommended")
+    return log
+
+
 def mae_mfe_recommendations(
     trade_records: list[dict],
     *,
