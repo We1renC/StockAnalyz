@@ -37,6 +37,15 @@ from technical_matrix import build_technical_matrix
 from smc_quant import SMCConfig, build_smc_analysis
 from smc_backtest import SMCBacktestConfig, run_smc_event_backtest
 from smc_store import persist_backtest_run, summarize_backtest_report
+from paper_acceptance import build_acceptance_report, render_acceptance_markdown
+from paper_acceptance_store import (
+    build_and_persist_smc_acceptance_report,
+    build_smc_acceptance_context,
+    ensure_paper_acceptance_schema,
+    load_acceptance_events,
+    load_acceptance_reports,
+    record_acceptance_event,
+)
 from smc_report import (
     build_smc_report_html,
     build_smc_scan_report_html,
@@ -331,6 +340,7 @@ def init_db():
         ON smc_trade_journal(status, environment, created_at DESC);
     """)
     conn.commit()
+    ensure_paper_acceptance_schema(conn)
 
     # Migration: positions target columns
     c = conn.cursor()
@@ -4703,6 +4713,21 @@ class SMCJournalUpdate(BaseModel):
     dol_target: Optional[dict] = None
 
 
+class PaperAcceptanceGenerateRequest(BaseModel):
+    symbol: Optional[str] = None
+    strategy: Optional[dict] = None
+    persist: bool = True
+
+
+class PaperAcceptanceEventCreate(BaseModel):
+    event_type: str
+    symbol: Optional[str] = None
+    severity: str = "info"
+    status: str = "open"
+    detail: Optional[dict] = None
+    run_key: Optional[str] = None
+
+
 def _json_dumps_compact(value, fallback):
     if value is None:
         value = fallback
@@ -5194,6 +5219,60 @@ def api_delete_smc_journal(journal_key: str):
         _obsidian_post_write_sync(vault, kinds=("smc_journal",))
     conn.close()
     return {"ok": True}
+
+
+@app.get("/api/paper-acceptance")
+def api_get_paper_acceptance_reports(symbol: Optional[str] = None, limit: int = 50):
+    conn = get_db()
+    reports = load_acceptance_reports(conn, symbol=symbol, limit=limit)
+    conn.close()
+    return sanitize_float_values({"reports": reports, "count": len(reports)})
+
+
+@app.post("/api/paper-acceptance/smc")
+def api_generate_smc_paper_acceptance(req: PaperAcceptanceGenerateRequest):
+    conn = get_db()
+    try:
+        symbol = req.symbol.upper() if req.symbol else None
+        if req.persist:
+            payload = build_and_persist_smc_acceptance_report(conn, symbol=symbol, strategy=req.strategy)
+        else:
+            context = build_smc_acceptance_context(conn, symbol=symbol, strategy=req.strategy)
+            report = build_acceptance_report(context)
+            payload = {
+                "run_key": None,
+                "report": report,
+                "markdown": render_acceptance_markdown(report),
+            }
+        return sanitize_float_values(payload)
+    finally:
+        conn.close()
+
+
+@app.get("/api/paper-acceptance/events")
+def api_get_paper_acceptance_events(symbol: Optional[str] = None, limit: int = 100):
+    conn = get_db()
+    events = load_acceptance_events(conn, symbol=symbol, limit=limit)
+    conn.close()
+    return sanitize_float_values({"events": events, "count": len(events)})
+
+
+@app.post("/api/paper-acceptance/events")
+def api_record_paper_acceptance_event(event: PaperAcceptanceEventCreate):
+    if not event.event_type.strip():
+        raise HTTPException(400, "event_type is required")
+    conn = get_db()
+    event_key = record_acceptance_event(
+        conn,
+        event_type=event.event_type.strip(),
+        symbol=event.symbol,
+        severity=event.severity,
+        status=event.status,
+        detail=event.detail or {},
+        run_key=event.run_key,
+    )
+    conn.close()
+    return {"ok": True, "event_key": event_key}
 
 
 # ─────────────── 警報歷史篩選 ───────────────
