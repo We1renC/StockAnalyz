@@ -3668,3 +3668,48 @@ def test_freeze_analysis_at_index_prunes_entry_models_by_anchor():
                 "unicorn", "silver_bullet", "power_of_three"):
         for e in em.get(key, []):
             assert _entry_bar_of(e) <= cutoff
+
+
+def test_cross_validate_smc_vs_institutional_agreement_when_aligned():
+    """§11.1: bull SMC + 外資大買 → agreement=True、dominant=foreign."""
+    from smc_quant import cross_validate_smc_vs_institutional
+    out = cross_validate_smc_vs_institutional(
+        smc_bias="bullish",
+        institutional_net_buy={"foreign": 10_000, "investment_trust": 2_000, "dealer": -500},
+    )
+    assert out["status"] == "ok"
+    assert out["smc_direction"] == 1
+    assert out["institutional_direction"] == 1
+    assert out["agreement"] is True
+    assert out["dominant_institution"] == "foreign"
+    # Weighted = 10000*0.5 + 2000*0.3 + (-500)*0.2 = 5500
+    assert out["weighted_score"] == 5500.0
+
+
+def test_cross_validate_smc_vs_institutional_disagreement_flags_divergence():
+    """Bull SMC + 外資大賣 → agreement=False（重要訊號：等待或減碼）."""
+    from smc_quant import cross_validate_smc_vs_institutional
+    out = cross_validate_smc_vs_institutional(
+        smc_bias="bullish",
+        institutional_net_buy={"foreign": -20_000, "investment_trust": -3_000, "dealer": 100},
+    )
+    assert out["agreement"] is False
+    assert out["institutional_direction"] == -1
+
+
+def test_cross_validate_smc_vs_institutional_neutral_when_below_threshold():
+    """買賣超量級不足 → institutional_direction=0、agreement=None."""
+    from smc_quant import cross_validate_smc_vs_institutional
+    out = cross_validate_smc_vs_institutional(
+        smc_bias="bullish",
+        institutional_net_buy={"foreign": 100, "investment_trust": 50, "dealer": 0},
+    )
+    assert out["institutional_direction"] == 0
+    assert out["agreement"] is None
+
+
+def test_cross_validate_smc_vs_institutional_missing_data():
+    from smc_quant import cross_validate_smc_vs_institutional
+    out = cross_validate_smc_vs_institutional("bullish", None)
+    assert out["status"] == "no_institutional_data"
+    assert out["agreement"] is None

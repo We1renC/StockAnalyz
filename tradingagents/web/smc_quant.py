@@ -5042,6 +5042,70 @@ def _populate_backtest_panel(layers: dict, backtest_replay: dict, *, preview: in
     return layers
 
 
+def cross_validate_smc_vs_institutional(
+    smc_bias: str,
+    institutional_net_buy: Optional[dict],
+    *,
+    foreign_weight: float = 0.5,
+    investment_trust_weight: float = 0.3,
+    dealer_weight: float = 0.2,
+    significance_threshold: int = 1000,
+) -> dict:
+    """§11.1 — cross-check SMC HTF bias against TW Three Major Institutions.
+
+    Inputs:
+      ``smc_bias``: "bullish"/"strong_bullish"/"bearish"/"strong_bearish"/"neutral"
+      ``institutional_net_buy``: ``{foreign, investment_trust, dealer}``
+        net-buy shares (positive = net buy; negative = net sell).
+
+    Returns ``{agreement, smc_direction, institutional_direction,
+    weighted_score, dominant_institution, status}``.
+
+    Weights default to the §9 Taiwan-market convention (foreign 0.5 /
+    investment trust 0.3 / dealer 0.2). A divergence ("disagree") is
+    valuable signal — institutions and price structure are saying
+    different things → consider waiting or downsizing.
+    """
+    if not institutional_net_buy:
+        return {"status": "no_institutional_data", "agreement": None}
+    smc_dir = 0
+    if "bull" in (smc_bias or ""):
+        smc_dir = 1
+    elif "bear" in (smc_bias or ""):
+        smc_dir = -1
+    foreign = float(institutional_net_buy.get("foreign", 0))
+    invtrust = float(institutional_net_buy.get("investment_trust", 0))
+    dealer = float(institutional_net_buy.get("dealer", 0))
+    weighted = (
+        foreign * foreign_weight
+        + invtrust * investment_trust_weight
+        + dealer * dealer_weight
+    )
+    inst_dir = 0
+    if abs(weighted) >= significance_threshold:
+        inst_dir = 1 if weighted > 0 else -1
+    abs_sizes = {"foreign": abs(foreign), "investment_trust": abs(invtrust), "dealer": abs(dealer)}
+    dominant = max(abs_sizes, key=abs_sizes.get) if any(abs_sizes.values()) else None
+    if smc_dir == 0 or inst_dir == 0:
+        agreement = None
+    else:
+        agreement = (smc_dir == inst_dir)
+    return {
+        "status": "ok",
+        "smc_direction": smc_dir,
+        "institutional_direction": inst_dir,
+        "weighted_score": round(weighted, 2),
+        "weights": {
+            "foreign": foreign_weight,
+            "investment_trust": investment_trust_weight,
+            "dealer": dealer_weight,
+        },
+        "dominant_institution": dominant,
+        "agreement": agreement,
+        "significance_threshold": significance_threshold,
+    }
+
+
 def freeze_analysis_at_index(analysis: dict, cutoff_index: int) -> dict:
     """§12.2 — strip everything that wasn't *confirmed* by ``cutoff_index``.
 
