@@ -4625,6 +4625,32 @@ def compute_expectancy(trade_records: list[dict]) -> dict:
     }
 
 
+def stamp_rule_enforcement_at_entry(
+    trade_record: dict, dashboard: dict,
+) -> dict:
+    """§10.6 — embed the rule-enforcement state into the trade ledger
+    record at the moment of entry.
+
+    This lets the §18.3 closed-loop attribution slice "trades opened in
+    DEFENSIVE mode vs. LIVE mode" without having to reconstruct equity
+    state later. We always copy a fresh dict so the input is never
+    mutated downstream.
+    """
+    if not trade_record:
+        return {}
+    out = dict(trade_record)
+    out["rule_enforcement_at_entry"] = {
+        "headline": dashboard.get("headline"),
+        "account_equity": dashboard.get("account_equity"),
+        "daily_loss_buffer": dashboard.get("daily_loss_buffer"),
+        "max_drawdown_buffer": dashboard.get("max_drawdown_buffer"),
+        "active_days_traded": dashboard.get("active_days_traded"),
+        "defensive_mode": dashboard.get("defensive_mode"),
+        "locked": dashboard.get("locked"),
+    }
+    return out
+
+
 def rule_enforcement_dashboard(
     account_equity: float,
     *,

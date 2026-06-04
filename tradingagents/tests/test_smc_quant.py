@@ -2193,3 +2193,29 @@ def test_rule_enforcement_dashboard_locks_on_excess_daily_loss():
     )
     assert out["locked"] is True
     assert out["headline"] == "LOCKED"
+
+
+def test_stamp_rule_enforcement_records_entry_time_state():
+    """§10.6: trade record must carry headline+four-numbers snapshot at entry."""
+    from smc_quant import stamp_rule_enforcement_at_entry, rule_enforcement_dashboard
+    dash = rule_enforcement_dashboard(
+        account_equity=200_000,
+        daily_realized_pnl=-5_000,
+        max_drawdown=-10_000,
+        active_days_traded=3,
+        realized_profit_this_period=85_000,  # defensive
+    )
+    rec = stamp_rule_enforcement_at_entry({"trade_id": "T1"}, dash)
+    snap = rec["rule_enforcement_at_entry"]
+    assert snap["headline"] == "DEFENSIVE"
+    assert snap["account_equity"] == 200_000
+    assert snap["active_days_traded"] == 3
+    assert snap["defensive_mode"] is True
+    # Original record fields preserved
+    assert rec["trade_id"] == "T1"
+
+
+def test_stamp_rule_enforcement_no_op_on_empty_record():
+    from smc_quant import stamp_rule_enforcement_at_entry, rule_enforcement_dashboard
+    rec = stamp_rule_enforcement_at_entry({}, rule_enforcement_dashboard(account_equity=0))
+    assert rec == {}
