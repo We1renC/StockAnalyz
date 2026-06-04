@@ -4192,6 +4192,43 @@ def calibrate_kelly_from_ledger(
     }
 
 
+DEFAULT_FUNDING_SETTLEMENT_HOURS_UTC = (0, 8, 16)  # Binance / OKX / Bybit standard
+
+
+def minutes_to_next_funding(
+    now: Optional[pd.Timestamp] = None,
+    *,
+    settlement_hours_utc: tuple[int, ...] = DEFAULT_FUNDING_SETTLEMENT_HOURS_UTC,
+) -> int:
+    """§17.8 — minutes until the next perpetual funding settlement.
+
+    Most major venues (Binance / OKX / Bybit) settle funding every 8h at
+    UTC 00:00 / 08:00 / 16:00. Pass a different ``settlement_hours_utc``
+    tuple to override (some exchanges run 4h or 1h cadences for select
+    pairs). Returns minutes-to-next, always a positive integer.
+    """
+    if not settlement_hours_utc:
+        return 10**6  # effectively "never"
+    if now is None:
+        now = pd.Timestamp.utcnow()
+    now = pd.Timestamp(now)
+    if now.tzinfo is None:
+        now = now.tz_localize("UTC")
+    else:
+        now = now.tz_convert("UTC")
+    # Candidate settlement timestamps: today + tomorrow (handles wrap-around)
+    today = now.normalize()
+    tomorrow = today + pd.Timedelta(days=1)
+    candidates = []
+    for hour in settlement_hours_utc:
+        candidates.append(today + pd.Timedelta(hours=hour))
+        candidates.append(tomorrow + pd.Timedelta(hours=hour))
+    future = [c for c in candidates if c > now]
+    next_settle = min(future)
+    delta_min = int((next_settle - now).total_seconds() // 60)
+    return max(0, delta_min)
+
+
 def crypto_risk_check(
     entry: dict,
     *,
@@ -4200,6 +4237,8 @@ def crypto_risk_check(
     leverage: Optional[float] = None,
     funding_state: Optional[str] = None,
     funding_settlement_minutes: Optional[int] = None,
+    auto_funding_settlement: bool = False,
+    funding_settlement_hours: tuple[int, ...] = DEFAULT_FUNDING_SETTLEMENT_HOURS_UTC,
 ) -> dict:
     """§17.8 — gate a crypto entry before sizing.
 
@@ -4230,6 +4269,11 @@ def crypto_risk_check(
             reasons.append(
                 f"liquidation_too_close:{liq_distance:.4f}<{2*stop_distance:.4f}"
             )
+    # §17.8 — auto-derive settlement minutes when caller asks for it.
+    if funding_settlement_minutes is None and auto_funding_settlement:
+        funding_settlement_minutes = minutes_to_next_funding(
+            settlement_hours_utc=funding_settlement_hours,
+        )
     if funding_settlement_minutes is not None and funding_settlement_minutes <= 5:
         reasons.append(f"funding_settlement_imminent:{funding_settlement_minutes}min")
     if funding_state == "long_crowded" and direction == 1:

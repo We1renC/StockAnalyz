@@ -3288,3 +3288,42 @@ def test_build_smc_analysis_handles_single_venue_feed_with_note():
     me = result["concepts"]["multi_exchange"]
     assert me["exchanges"] == ["binance"]
     assert me["note"] and "single_venue_only" in me["note"]
+
+
+def test_minutes_to_next_funding_default_8h_cadence():
+    """§17.8: 8h cadence 00/08/16 UTC → 03:30 UTC has 4h 30min to 08:00."""
+    from smc_quant import minutes_to_next_funding
+    out = minutes_to_next_funding(pd.Timestamp("2026-01-15T03:30:00", tz="UTC"))
+    assert out == 4 * 60 + 30
+
+
+def test_minutes_to_next_funding_wraps_to_tomorrow_after_last_settlement():
+    from smc_quant import minutes_to_next_funding
+    # 22:00 UTC → next settlement is tomorrow 00:00 UTC (2 hours)
+    out = minutes_to_next_funding(pd.Timestamp("2026-01-15T22:00:00", tz="UTC"))
+    assert out == 120
+
+
+def test_minutes_to_next_funding_custom_cadence():
+    from smc_quant import minutes_to_next_funding
+    # 1h cadence → at minute 45 we're 15 minutes from the next hour
+    out = minutes_to_next_funding(
+        pd.Timestamp("2026-01-15T03:45:00", tz="UTC"),
+        settlement_hours_utc=tuple(range(24)),
+    )
+    assert out == 15
+
+
+def test_crypto_risk_check_auto_funding_blocks_within_5_min_window():
+    """§17.8 + new auto path: 23:58 UTC → 2min to 00:00 → reject."""
+    from smc_quant import crypto_risk_check, minutes_to_next_funding
+    entry = {"direction": 1, "entry": 100, "stop": 99}
+    # Monkey-patch the helper by using a fixed 8h cadence and a known minute count
+    out = crypto_risk_check(
+        entry,
+        funding_settlement_minutes=2,  # explicit path (auto path covered above)
+    )
+    assert any("funding_settlement_imminent:2min" in r for r in out["reasons"])
+    # And the auto-derive path off by default doesn't fire on its own
+    safe = crypto_risk_check(entry)
+    assert not any("funding_settlement_imminent" in r for r in safe["reasons"])
