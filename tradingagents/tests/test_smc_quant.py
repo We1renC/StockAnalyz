@@ -3481,3 +3481,61 @@ def test_build_multi_batch_entry_plan_rejects_bad_inputs():
     assert build_multi_batch_entry_plan(
         {"direction": 1, "entry": 100, "stop": 100},
     )["status"] == "zero_risk"
+
+
+def test_compute_price_limit_levels_taiwan_10pct():
+    """§9: TW ±10% limit derived from prior bar's close."""
+    from smc_quant import compute_price_limit_levels
+    df = normalize_ohlcv(_sample_ohlcv())
+    out = compute_price_limit_levels(df, market="tw")
+    assert out["status"] == "ok"
+    assert out["limit_pct"] == 10
+    prev_close = float(df["close"].iloc[-2])
+    assert out["limit_up"] == round(prev_close * 1.10, 4)
+    assert out["limit_down"] == round(prev_close * 0.90, 4)
+
+
+def test_compute_price_limit_levels_us_not_applicable():
+    from smc_quant import compute_price_limit_levels
+    df = normalize_ohlcv(_sample_ohlcv())
+    out = compute_price_limit_levels(df, market="us")
+    assert out["status"] == "not_applicable"
+
+
+def test_resolve_dol_target_picks_limit_up_for_taiwan_long():
+    """§9: limit_up tier 1 → wins over weak BSL when distances comparable."""
+    from smc_quant import resolve_dol_target
+    pl = {"status": "ok", "limit_up": 22.0, "limit_down": 18.0}
+    liquidity = []  # No swing-based liquidity
+    out = resolve_dol_target(
+        1, current_price=20, liquidity=liquidity,
+        prev_levels=None, fvgs=[], round_magnets=[],
+        session_levels=None, price_limit_levels=pl,
+    )
+    assert out is not None
+    assert out["target_kind"] == "LIMIT_UP"
+    assert out["target_price"] == 22.0
+
+
+def test_resolve_dol_target_picks_limit_down_for_taiwan_short():
+    from smc_quant import resolve_dol_target
+    pl = {"status": "ok", "limit_up": 22.0, "limit_down": 18.0}
+    out = resolve_dol_target(
+        -1, current_price=20, liquidity=[],
+        prev_levels=None, fvgs=[], round_magnets=[],
+        session_levels=None, price_limit_levels=pl,
+    )
+    assert out is not None
+    assert out["target_kind"] == "LIMIT_DOWN"
+    assert out["target_price"] == 18.0
+
+
+def test_build_smc_analysis_exposes_price_limit_levels_for_tw():
+    """concepts.price_limit_levels must exist with status=ok for TW symbols."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "2330.TW",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    pl = result["concepts"]["price_limit_levels"]
+    assert pl["status"] == "ok"
+    assert pl["limit_pct"] == 10

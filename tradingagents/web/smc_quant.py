@@ -1624,6 +1624,48 @@ def _builtin_detect_cme_gaps(df: pd.DataFrame, threshold_pct: float = 0.005) -> 
     return gaps
 
 
+def compute_price_limit_levels(
+    df: pd.DataFrame,
+    *,
+    market: str = "tw",
+) -> dict:
+    """§9 — daily price-limit levels as artificial liquidity boundaries.
+
+    Taiwan stocks have a ±10% daily limit; price piercing or stacking near
+    the limit creates a *structural* boundary that institutions trade
+    against. Implementation flattens gaps inside the limit so we must
+    treat the limit itself as an additional BSL/SSL pool.
+
+    Returns ``{limit_up, limit_down, near_limit_up, near_limit_down,
+    pct_to_limit_up, pct_to_limit_down, status}`` or ``{status:
+    not_applicable}`` for markets without a hard daily limit.
+    """
+    cfg = MARKET_CONFIGS.get(market, {})
+    limit_pct = cfg.get("daily_price_limit_pct")
+    if not limit_pct or df is None or len(df) < 2:
+        return {"status": "not_applicable" if not limit_pct else "no_data"}
+    # Use the previous bar's close as the reference (the regulator's anchor).
+    prev_close = float(df["close"].iloc[-2])
+    last_close = float(df["close"].iloc[-1])
+    limit_up = round(prev_close * (1 + limit_pct / 100), 4)
+    limit_down = round(prev_close * (1 - limit_pct / 100), 4)
+    # "Near" thresholds: within 1% of the limit price → magnet pressure
+    near_band = 0.01
+    pct_up = (limit_up - last_close) / limit_up * 100 if limit_up else None
+    pct_down = (last_close - limit_down) / limit_down * 100 if limit_down else None
+    return {
+        "status": "ok",
+        "limit_pct": limit_pct,
+        "reference_close": round(prev_close, 4),
+        "limit_up": limit_up,
+        "limit_down": limit_down,
+        "pct_to_limit_up": round(pct_up, 3) if pct_up is not None else None,
+        "pct_to_limit_down": round(pct_down, 3) if pct_down is not None else None,
+        "near_limit_up": bool(pct_up is not None and pct_up <= near_band * 100),
+        "near_limit_down": bool(pct_down is not None and pct_down <= near_band * 100),
+    }
+
+
 def compute_session_range_levels(
     df: pd.DataFrame,
     *,
@@ -2251,6 +2293,7 @@ def resolve_dol_target(
     fvgs: Optional[list[dict]] = None,
     round_magnets: Optional[list[dict]] = None,
     session_levels: Optional[dict] = None,
+    price_limit_levels: Optional[dict] = None,
 ) -> Optional[dict]:
     """§3.5 DOL — pick the nearest opposite-side liquidity pool as the target.
 
@@ -2339,6 +2382,24 @@ def resolve_dol_target(
             "distance": round(abs(lvl - current_price), 4),
             "source_index": -1,
         })
+    # §9 — Taiwan ±10% daily limit acts as an artificial liquidity pool.
+    # The cap price is a regulator-imposed structural boundary that
+    # institutional orders cluster against; treat it as PDH/PDL-tier.
+    if price_limit_levels and price_limit_levels.get("status") == "ok":
+        if direction == 1 and price_limit_levels.get("limit_up") and price_limit_levels["limit_up"] > current_price:
+            candidates.append({
+                "target_price": price_limit_levels["limit_up"],
+                "target_kind": "LIMIT_UP",
+                "distance": round(price_limit_levels["limit_up"] - current_price, 4),
+                "source_index": -1,
+            })
+        if direction == -1 and price_limit_levels.get("limit_down") and price_limit_levels["limit_down"] < current_price:
+            candidates.append({
+                "target_price": price_limit_levels["limit_down"],
+                "target_kind": "LIMIT_DOWN",
+                "distance": round(current_price - price_limit_levels["limit_down"], 4),
+                "source_index": -1,
+            })
     # §3.5 mandatory: pre-market high/low + opening-range high/low.
     if session_levels and session_levels.get("status") == "ok":
         sl_pairs = [
@@ -2369,6 +2430,7 @@ def resolve_dol_target(
         "PDH": 1, "PDL": 1,
         "PMH": 1, "PML": 1,    # pre-market = same tier as prior-day extreme
         "ORH": 2, "ORL": 2,    # opening range = internal liquidity tier
+        "LIMIT_UP": 1, "LIMIT_DOWN": 1,  # §9 daily price-limit = top-tier magnet
         "internal": 2,
         "ROUND": 3,
         "FVG_MID": 4,
@@ -2398,6 +2460,7 @@ def attach_dol_targets(
     current_price: float,
     round_magnets: Optional[list[dict]] = None,
     session_levels: Optional[dict] = None,
+    price_limit_levels: Optional[dict] = None,
 ) -> list[dict]:
     """Annotate every §5 entry with a §3.5 DOL target.
 
@@ -2407,7 +2470,7 @@ def attach_dol_targets(
     out: list[dict] = []
     for e in entries or []:
         direction = int(e.get("direction", 0))
-        dol = resolve_dol_target(direction, current_price, liquidity, prev_levels, fvgs, round_magnets, session_levels)
+        dol = resolve_dol_target(direction, current_price, liquidity, prev_levels, fvgs, round_magnets, session_levels, price_limit_levels)
         annotated = dict(e)
         if dol is None:
             annotated["dol_target"] = None
@@ -6075,12 +6138,13 @@ def build_smc_analysis(
     _last_close = float(h["close"].iloc[-1]) if len(h) else 0.0
     round_magnets = detect_round_number_magnets(_last_close)
     session_levels = compute_session_range_levels(h, market=market)
-    sweep_reversal_entries = attach_dol_targets(sweep_reversal_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels)
-    continuation_entries = attach_dol_targets(continuation_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels)
-    ote_entries = attach_dol_targets(ote_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels)
-    unicorn_entries = attach_dol_targets(unicorn_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels)
-    silver_bullet_entries = attach_dol_targets(silver_bullet_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels)
-    power_of_three_entries = attach_dol_targets(power_of_three_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels)
+    price_limit_levels = compute_price_limit_levels(h, market=market)
+    sweep_reversal_entries = attach_dol_targets(sweep_reversal_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels, price_limit_levels)
+    continuation_entries = attach_dol_targets(continuation_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels, price_limit_levels)
+    ote_entries = attach_dol_targets(ote_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels, price_limit_levels)
+    unicorn_entries = attach_dol_targets(unicorn_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels, price_limit_levels)
+    silver_bullet_entries = attach_dol_targets(silver_bullet_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels, price_limit_levels)
+    power_of_three_entries = attach_dol_targets(power_of_three_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels, price_limit_levels)
     # §3.11 — uniformly drag down entries whose OB/FVG POI was not formed
     # by a displacement candle. Re-scoring may flip ``triggered`` off when
     # the missing-displacement -2 weight tips a borderline candidate.
@@ -6186,6 +6250,7 @@ def build_smc_analysis(
             "previous_levels": prev,
             "sessions": session,
             "session_range_levels": session_levels,
+            "price_limit_levels": price_limit_levels,
             "weekend_illiquidity": weekend_state,
             "multi_exchange": (
                 {
