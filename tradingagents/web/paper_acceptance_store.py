@@ -30,6 +30,7 @@ from paper_acceptance_scenarios import (
     run_acceptance_scenario,
     summarize_scenario_evidence,
 )
+from paper_acceptance_policy import build_acceptance_policy_snapshot
 
 
 FRAMEWORK_CAPABILITY_CHECKS: dict[str, dict[str, bool]] = {
@@ -1035,6 +1036,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
 
     key = _symbol_key(symbol)
     overrides = load_acceptance_context_overrides(conn, key, stage="paper")
+    review = load_acceptance_review(conn, key, stage="paper")
     paper_rows = _load_journal_rows(conn, symbol=key, environment="paper")
     live_rows = _load_journal_rows(conn, symbol=key, environment="live")
     backtest_runs = _load_backtest_runs(conn, symbol=key, limit=20)
@@ -1133,6 +1135,18 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
     for gate_id, checks in (scenarios.get("evidence") or {}).items():
         for check_key, value in (checks or {}).items():
             _merge_check(evidence, gate_id, check_key, value, source="observed")
+    policy = build_acceptance_policy_snapshot(
+        {
+            "strategy": strategy_payload,
+            "metrics": metrics,
+            "evidence": evidence,
+            "prohibitions": overrides.get("prohibitions") or {},
+        },
+        review=review,
+    )
+    for gate_id, checks in (policy.get("evidence") or {}).items():
+        for check_key, value in (checks or {}).items():
+            _merge_check(evidence, gate_id, check_key, value, source="observed")
     _apply_manual_evidence(evidence, load_acceptance_checks(conn, key, stage="paper"))
     prohibitions = _build_auto_prohibitions(metrics, strategy_payload, evidence)
     prohibitions.update({key: bool(value) for key, value in (overrides["prohibitions"] or {}).items()})
@@ -1152,6 +1166,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         ],
         "telemetry": telemetry,
         "scenario_runs": scenarios.get("runs") or [],
+        "policy": policy,
     }
 
 
@@ -1228,6 +1243,7 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         "metrics_overrides": overrides["metrics"],
         "prohibitions_overrides": overrides["prohibitions"],
         "review": load_acceptance_review(conn, key, stage=stage),
+        "policy": context.get("policy") or {},
         "report": report,
         "sections": section_summaries,
         "catalog": catalog,

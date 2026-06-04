@@ -3464,6 +3464,7 @@ function renderPaperAcceptanceTimeline(rows) {
 
 function hydratePaperAcceptanceReview(workspace) {
   const review = workspace?.review || {};
+  const policy = workspace?.policy || {};
   if ($('smc-paper-acceptance-reviewer')) $('smc-paper-acceptance-reviewer').value = review.reviewer || '';
   if ($('smc-paper-acceptance-review-status')) $('smc-paper-acceptance-review-status').value = review.review_status || 'pending';
   if ($('smc-paper-acceptance-fixed-version')) $('smc-paper-acceptance-fixed-version').value = review.fixed_in_version || '';
@@ -3471,7 +3472,7 @@ function hydratePaperAcceptanceReview(workspace) {
   if ($('smc-paper-acceptance-can-promote')) $('smc-paper-acceptance-can-promote').checked = !!review.can_promote_to_live;
   if ($('smc-paper-acceptance-review-note')) $('smc-paper-acceptance-review-note').value = review.note || '';
   if ($('smc-paper-acceptance-review-summary')) {
-    $('smc-paper-acceptance-review-summary').textContent = `${review.review_status || 'pending'} · reviewer ${review.reviewer || '未指派'} · 更新 ${review.updated_at ? smcJournalFormatTime(review.updated_at) : '尚未建立'}`;
+    $('smc-paper-acceptance-review-summary').textContent = `${review.review_status || 'pending'} · reviewer ${review.reviewer || '未指派'} · policy ${policy.recommendation || 'paper'} · blockers ${(policy.blockers || []).length || 0}`;
   }
 }
 
