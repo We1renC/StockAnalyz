@@ -46,6 +46,7 @@ from paper_acceptance_store import (
     ensure_paper_acceptance_schema,
     load_alert_deliveries,
     load_acceptance_context_overrides,
+    load_acceptance_change_log,
     load_acceptance_events,
     load_acceptance_reports,
     load_acceptance_review,
@@ -54,6 +55,7 @@ from paper_acceptance_store import (
     load_runtime_metrics,
     load_scenario_runs,
     record_alert_delivery,
+    record_acceptance_change,
     record_acceptance_event,
     record_order_audit,
     record_reconciliation_run,
@@ -5424,6 +5426,44 @@ def api_get_paper_acceptance_coverage(symbol: str, stage: str = "paper"):
             "symbol": payload["symbol"],
             "stage": payload["stage"],
             "coverage": payload.get("coverage") or {},
+        })
+    finally:
+        conn.close()
+
+
+@app.get("/api/paper-acceptance/change-log")
+def api_get_paper_acceptance_change_log(symbol: str, stage: str = "paper", limit: int = 100):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        rows = load_acceptance_change_log(conn, symbol.strip().upper(), stage=stage, limit=limit)
+        return sanitize_float_values({"rows": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+@app.get("/api/paper-acceptance/promotion-check")
+def api_get_paper_acceptance_promotion_check(symbol: str, stage: str = "paper"):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        payload = build_acceptance_workspace(conn, symbol=symbol.strip().upper(), stage=stage, limit_reports=5)
+        policy = payload.get("policy") or {}
+        blockers = list(policy.get("blockers") or [])
+        if policy.get("can_promote"):
+            decision = "allow"
+        elif blockers:
+            decision = "deny"
+        else:
+            decision = "conditional"
+        return sanitize_float_values({
+            "symbol": payload["symbol"],
+            "stage": payload["stage"],
+            "decision": decision,
+            "policy": policy,
+            "review": payload.get("review") or {},
         })
     finally:
         conn.close()

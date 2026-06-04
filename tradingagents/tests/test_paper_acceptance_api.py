@@ -244,6 +244,8 @@ def test_api_review_governance_round_trip(tmp_path):
         )
         review = app.api_get_paper_acceptance_review(symbol="ABAT")
         promotion = app.api_get_paper_acceptance_promotion(symbol="ABAT")
+        promotion_check = app.api_get_paper_acceptance_promotion_check(symbol="ABAT")
+        changes = app.api_get_paper_acceptance_change_log(symbol="ABAT")
         coverage = app.api_get_paper_acceptance_coverage(symbol="ABAT")
         workspace = app.api_get_paper_acceptance_workspace(symbol="ABAT")
 
@@ -251,6 +253,8 @@ def test_api_review_governance_round_trip(tmp_path):
         assert review["can_promote_to_live"] is True
         assert workspace["review"]["reviewer"] == "qa"
         assert "policy" in promotion
+        assert promotion_check["decision"] in {"allow", "conditional", "deny"}
+        assert changes["count"] >= 1
         assert "coverage" in coverage
     finally:
         app.DB = original

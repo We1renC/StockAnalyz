@@ -251,6 +251,23 @@ def ensure_paper_acceptance_schema(conn) -> None:
         """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_reviews_symbol_updated
            ON paper_acceptance_reviews(symbol, stage, updated_at DESC, id DESC)"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_change_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            change_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            change_type TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            target_key TEXT NOT NULL DEFAULT '',
+            detail TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_change_log_symbol_created
+           ON paper_acceptance_change_log(symbol, stage, created_at DESC, id DESC)"""
+    )
     ensure_paper_acceptance_metrics_schema(conn)
     ensure_paper_acceptance_scenario_schema(conn)
     conn.commit()
@@ -288,7 +305,80 @@ def persist_acceptance_report(conn, report: dict, markdown: str | None = None) -
         ),
     )
     conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=_symbol_key(strategy.get("symbol")),
+        stage=strategy.get("stage") or "paper",
+        change_type="report_generated",
+        target_type="report",
+        target_key=run_key,
+        detail={
+            "conclusion": summary.get("conclusion") or "failed_repeat_paper",
+            "blocking_issue_count": summary.get("blocking_issue_count") or 0,
+        },
+    )
     return run_key
+
+
+def record_acceptance_change(
+    conn,
+    *,
+    symbol: str,
+    stage: str = "paper",
+    change_type: str,
+    target_type: str,
+    target_key: str = "",
+    detail: dict | None = None,
+) -> dict:
+    """Persist a governance change trail for acceptance workspace operations."""
+
+    ensure_paper_acceptance_schema(conn)
+    payload = {
+        "change_key": f"paper-change-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "change_type": change_type,
+        "target_type": target_type,
+        "target_key": target_key or "",
+        "detail": detail or {},
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_change_log
+           (change_key, symbol, stage, change_type, target_type, target_key, detail, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["change_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["change_type"],
+            payload["target_type"],
+            payload["target_key"],
+            _json_dumps(payload["detail"]),
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    return payload
+
+
+def load_acceptance_change_log(conn, symbol: str | None, stage: str = "paper", limit: int = 100) -> list[dict]:
+    """Load recent acceptance workspace governance changes."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_change_log
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 1000))),
+    ).fetchall()
+    out = []
+    for row in rows:
+        data = dict(row)
+        data["detail"] = _json_loads(data.get("detail"), {})
+        out.append(data)
+    return out
 
 
 def _run_row_to_dict(row) -> dict:
@@ -397,6 +487,21 @@ def upsert_acceptance_review(
         ),
     )
     conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=symbol,
+        stage=stage,
+        change_type="review_updated",
+        target_type="review",
+        target_key=run_key or "",
+        detail={
+            "reviewer": reviewer or "",
+            "review_status": review_status or "pending",
+            "fixed_in_version": fixed_in_version or "",
+            "retest_required": bool(retest_required),
+            "can_promote_to_live": bool(can_promote_to_live),
+        },
+    )
     return load_acceptance_review(conn, symbol, stage=stage)
 
 
@@ -523,6 +628,19 @@ def upsert_acceptance_context_overrides(
         ),
     )
     conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=key,
+        stage=stage,
+        change_type="workspace_override_updated",
+        target_type="workspace",
+        target_key=key,
+        detail={
+            "strategy_keys": sorted(strategy_payload.keys()),
+            "metrics_keys": sorted(metrics_payload.keys()),
+            "prohibitions_keys": sorted(prohibitions_payload.keys()),
+        },
+    )
     return load_acceptance_context_overrides(conn, key, stage=stage)
 
 
@@ -588,6 +706,15 @@ def upsert_acceptance_check(
         ),
     )
     conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=_symbol_key(symbol),
+        stage=stage,
+        change_type="check_upserted",
+        target_type="check",
+        target_key=f"{gate_id}.{check_key}",
+        detail={"value": value, "source": source or "manual", "note": note or ""},
+    )
     return {
         "symbol": _symbol_key(symbol),
         "stage": stage,
@@ -610,6 +737,15 @@ def delete_acceptance_check(conn, *, symbol: str, gate_id: str, check_key: str, 
         (_symbol_key(symbol), stage, gate_id, check_key),
     )
     conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=_symbol_key(symbol),
+        stage=stage,
+        change_type="check_deleted",
+        target_type="check",
+        target_key=f"{gate_id}.{check_key}",
+        detail={},
+    )
 
 
 def _merge_check(evidence: dict, gate_id: str, check_key: str, value, *, source: str, note: str = "") -> None:
@@ -1180,7 +1316,7 @@ def build_and_persist_smc_acceptance_report(conn, symbol: str | None = None, str
     return {"run_key": run_key, "report": report}
 
 
-def _build_acceptance_timeline(events: list[dict], scenario_runs: list[dict]) -> list[dict]:
+def _build_acceptance_timeline(events: list[dict], scenario_runs: list[dict], changes: list[dict]) -> list[dict]:
     timeline: list[dict] = []
     for row in events:
         timeline.append({
@@ -1202,6 +1338,15 @@ def _build_acceptance_timeline(events: list[dict], scenario_runs: list[dict]) ->
                 "actual_behavior": row.get("actual_behavior"),
                 "scenario_id": row.get("scenario_id"),
             },
+            "created_at": row.get("created_at"),
+        })
+    for row in changes:
+        timeline.append({
+            "kind": "change",
+            "title": row.get("change_type") or "change",
+            "severity": "info",
+            "status": row.get("target_type") or "",
+            "detail": row.get("detail") or {},
             "created_at": row.get("created_at"),
         })
     timeline.sort(key=lambda item: item.get("created_at") or "", reverse=True)
@@ -1271,6 +1416,7 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
     events = load_acceptance_events(conn, symbol=key, limit=100)
     scenario_runs = load_scenario_runs(conn, symbol=key, stage=stage, limit=40)
     reports = load_acceptance_reports(conn, symbol=key, limit=limit_reports)
+    changes = load_acceptance_change_log(conn, key, stage=stage, limit=80)
     return {
         "symbol": key,
         "stage": stage,
@@ -1289,7 +1435,8 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         "alert_deliveries": load_alert_deliveries(conn, symbol=key, stage=stage, limit=40),
         "scenario_runs": scenario_runs,
         "scenario_catalog": scenario_catalog(),
-        "timeline": _build_acceptance_timeline(events, scenario_runs),
+        "change_log": changes,
+        "timeline": _build_acceptance_timeline(events, scenario_runs, changes),
         "reports": reports,
         "section_trend": _build_section_trend(reports),
         "coverage": _build_coverage_summary(catalog),
@@ -1304,6 +1451,7 @@ __all__ = [
     "ensure_paper_acceptance_schema",
     "load_alert_deliveries",
     "load_acceptance_checks",
+    "load_acceptance_change_log",
     "load_acceptance_context_overrides",
     "load_acceptance_events",
     "load_acceptance_reports",
@@ -1314,6 +1462,7 @@ __all__ = [
     "load_scenario_runs",
     "persist_acceptance_report",
     "record_alert_delivery",
+    "record_acceptance_change",
     "record_acceptance_event",
     "record_order_audit",
     "record_reconciliation_run",

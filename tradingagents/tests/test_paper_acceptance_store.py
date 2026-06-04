@@ -11,6 +11,7 @@ from paper_acceptance_store import (
     ensure_paper_acceptance_schema,
     load_alert_deliveries,
     load_acceptance_checks,
+    load_acceptance_change_log,
     load_acceptance_context_overrides,
     load_acceptance_events,
     load_acceptance_reports,
@@ -374,7 +375,10 @@ def test_workspace_includes_review_timeline_and_trend():
     assert review["review_status"] == "changes_required"
     assert workspace["review"]["reviewer"] == "qa"
     assert workspace["review"]["retest_required"] is True
-    assert workspace["timeline"][0]["kind"] in {"event", "scenario"}
+    assert workspace["timeline"][0]["kind"] in {"event", "scenario", "change"}
     assert workspace["section_trend"][0]["run_key"] == payload["run_key"]
     assert "recommendation" in workspace["policy"]
     assert "covered_ratio" in workspace["coverage"]
+    changes = load_acceptance_change_log(conn, "ABAT")
+    assert any(row["change_type"] == "review_updated" for row in changes)
+    assert any(item["kind"] == "change" for item in workspace["timeline"])
