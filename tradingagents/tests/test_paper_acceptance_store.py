@@ -23,6 +23,8 @@ from paper_acceptance_store import (
     record_order_audit,
     record_reconciliation_run,
     record_runtime_metric,
+    run_acceptance_scenario,
+    upsert_acceptance_review,
     upsert_acceptance_check,
     upsert_acceptance_context_overrides,
 )
@@ -347,3 +349,30 @@ def test_telemetry_and_order_audit_are_aggregated_into_acceptance_context():
     assert load_reconciliation_runs(conn, symbol="ABAT")
     assert load_order_audit_rows(conn, symbol="ABAT")
     assert load_alert_deliveries(conn, symbol="ABAT")
+
+
+def test_workspace_includes_review_timeline_and_trend():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+
+    run_acceptance_scenario(conn, symbol="ABAT", scenario_id="kill_switch_blocks_orders")
+    record_acceptance_event(conn, symbol="ABAT", event_type="kill_switch", severity="critical", detail={"reason": "manual test"})
+    payload = build_and_persist_smc_acceptance_report(conn, symbol="ABAT")
+    review = upsert_acceptance_review(
+        conn,
+        symbol="ABAT",
+        reviewer="qa",
+        review_status="changes_required",
+        fixed_in_version="v2",
+        retest_required=True,
+        can_promote_to_live=False,
+        note="需要補成本證據",
+        run_key=payload["run_key"],
+    )
+    workspace = build_acceptance_workspace(conn, symbol="ABAT")
+
+    assert review["review_status"] == "changes_required"
+    assert workspace["review"]["reviewer"] == "qa"
+    assert workspace["review"]["retest_required"] is True
+    assert workspace["timeline"][0]["kind"] in {"event", "scenario"}
+    assert workspace["section_trend"][0]["run_key"] == payload["run_key"]

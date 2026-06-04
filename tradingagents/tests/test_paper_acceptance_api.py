@@ -10,6 +10,7 @@ from app import (
     PaperAcceptanceGenerateRequest,
     PaperAcceptanceOrderAuditCreate,
     PaperAcceptanceReconciliationCreate,
+    PaperAcceptanceReviewUpdate,
     PaperAcceptanceRuntimeMetricCreate,
     PaperAcceptanceScenarioRunRequest,
     PaperAcceptanceWorkspaceUpdate,
@@ -223,5 +224,29 @@ def test_api_run_acceptance_scenario(tmp_path):
             if row["key"] == "new_orders_blocked_after_shutdown"
         )
         assert check["value"] is True
+    finally:
+        app.DB = original
+
+
+def test_api_review_governance_round_trip(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        app.api_update_paper_acceptance_review(
+            PaperAcceptanceReviewUpdate(
+                symbol="ABAT",
+                reviewer="qa",
+                review_status="approved",
+                fixed_in_version="v3",
+                retest_required=False,
+                can_promote_to_live=True,
+                note="條件達成",
+            )
+        )
+        review = app.api_get_paper_acceptance_review(symbol="ABAT")
+        workspace = app.api_get_paper_acceptance_workspace(symbol="ABAT")
+
+        assert review["review_status"] == "approved"
+        assert review["can_promote_to_live"] is True
+        assert workspace["review"]["reviewer"] == "qa"
     finally:
         app.DB = original

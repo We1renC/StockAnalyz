@@ -228,6 +228,27 @@ def ensure_paper_acceptance_schema(conn) -> None:
         """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_evidence_symbol_gate
            ON paper_acceptance_evidence(symbol, stage, gate_id, updated_at DESC)"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            review_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            run_key TEXT,
+            reviewer TEXT NOT NULL DEFAULT '',
+            review_status TEXT NOT NULL DEFAULT 'pending',
+            fixed_in_version TEXT NOT NULL DEFAULT '',
+            retest_required INTEGER NOT NULL DEFAULT 0,
+            can_promote_to_live INTEGER NOT NULL DEFAULT 0,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_reviews_symbol_updated
+           ON paper_acceptance_reviews(symbol, stage, updated_at DESC, id DESC)"""
+    )
     ensure_paper_acceptance_metrics_schema(conn)
     ensure_paper_acceptance_scenario_schema(conn)
     conn.commit()
@@ -293,6 +314,88 @@ def load_acceptance_reports(conn, symbol: str | None = None, limit: int = 50) ->
         params + [max(1, min(int(limit), 500))],
     ).fetchall()
     return [_run_row_to_dict(row) for row in rows]
+
+
+def load_acceptance_review(conn, symbol: str | None, stage: str = "paper") -> dict:
+    """Load the latest governance review metadata for one acceptance workspace."""
+
+    ensure_paper_acceptance_schema(conn)
+    row = conn.execute(
+        """SELECT * FROM paper_acceptance_reviews
+           WHERE symbol=? AND stage=?
+           ORDER BY updated_at DESC, id DESC
+           LIMIT 1""",
+        (_symbol_key(symbol), stage),
+    ).fetchone()
+    if not row:
+        return {
+            "symbol": _symbol_key(symbol),
+            "stage": stage,
+            "reviewer": "",
+            "review_status": "pending",
+            "fixed_in_version": "",
+            "retest_required": False,
+            "can_promote_to_live": False,
+            "note": "",
+            "run_key": None,
+            "created_at": None,
+            "updated_at": None,
+        }
+    return {
+        "symbol": row["symbol"],
+        "stage": row["stage"],
+        "reviewer": row["reviewer"],
+        "review_status": row["review_status"],
+        "fixed_in_version": row["fixed_in_version"],
+        "retest_required": bool(row["retest_required"]),
+        "can_promote_to_live": bool(row["can_promote_to_live"]),
+        "note": row["note"],
+        "run_key": row["run_key"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def upsert_acceptance_review(
+    conn,
+    *,
+    symbol: str,
+    stage: str = "paper",
+    reviewer: str = "",
+    review_status: str = "pending",
+    fixed_in_version: str = "",
+    retest_required: bool = False,
+    can_promote_to_live: bool = False,
+    note: str = "",
+    run_key: str | None = None,
+) -> dict:
+    """Persist governance metadata without overwriting review history."""
+
+    ensure_paper_acceptance_schema(conn)
+    now = _now_iso()
+    review_key = f"paper-review-{uuid4().hex[:12]}"
+    conn.execute(
+        """INSERT INTO paper_acceptance_reviews
+           (review_key, symbol, stage, run_key, reviewer, review_status, fixed_in_version,
+            retest_required, can_promote_to_live, note, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            review_key,
+            _symbol_key(symbol),
+            stage,
+            run_key,
+            reviewer or "",
+            review_status or "pending",
+            fixed_in_version or "",
+            1 if retest_required else 0,
+            1 if can_promote_to_live else 0,
+            note or "",
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    return load_acceptance_review(conn, symbol, stage=stage)
 
 
 def record_acceptance_event(
@@ -1061,6 +1164,52 @@ def build_and_persist_smc_acceptance_report(conn, symbol: str | None = None, str
     return {"run_key": run_key, "report": report}
 
 
+def _build_acceptance_timeline(events: list[dict], scenario_runs: list[dict]) -> list[dict]:
+    timeline: list[dict] = []
+    for row in events:
+        timeline.append({
+            "kind": "event",
+            "title": row.get("event_type") or "event",
+            "severity": row.get("severity") or "info",
+            "status": row.get("status") or "open",
+            "detail": row.get("detail") or {},
+            "created_at": row.get("created_at"),
+        })
+    for row in scenario_runs:
+        timeline.append({
+            "kind": "scenario",
+            "title": row.get("title") or row.get("scenario_id"),
+            "severity": "critical" if row.get("status") != "pass" else "info",
+            "status": row.get("status") or "pass",
+            "detail": {
+                "expected_behavior": row.get("expected_behavior"),
+                "actual_behavior": row.get("actual_behavior"),
+                "scenario_id": row.get("scenario_id"),
+            },
+            "created_at": row.get("created_at"),
+        })
+    timeline.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return timeline[:80]
+
+
+def _build_section_trend(reports: list[dict]) -> list[dict]:
+    trend: list[dict] = []
+    for row in reports[:10]:
+        payload = row.get("report_payload") or {}
+        summary = payload.get("summary") or row.get("gate_summary") or {}
+        trend.append({
+            "run_key": row.get("run_key"),
+            "created_at": row.get("created_at"),
+            "conclusion": summary.get("conclusion") or row.get("conclusion"),
+            "blocking_issue_count": summary.get("blocking_issue_count") or row.get("blocking_issue_count") or 0,
+            "passed_ratio": round(
+                (summary.get("passed") or 0) / max(1, summary.get("gate_count") or row.get("gate_count") or 1),
+                4,
+            ),
+        })
+    return trend
+
+
 def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", limit_reports: int = 5) -> dict:
     """Build the full acceptance workspace payload for UI editing and reporting."""
 
@@ -1069,22 +1218,28 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
     context = build_smc_acceptance_context(conn, symbol=key, strategy=overrides["strategy"])
     report = build_acceptance_report(context)
     catalog, section_summaries = _augment_report_catalog(report, context.get("evidence") or {})
+    events = load_acceptance_events(conn, symbol=key, limit=100)
+    scenario_runs = load_scenario_runs(conn, symbol=key, stage=stage, limit=40)
+    reports = load_acceptance_reports(conn, symbol=key, limit=limit_reports)
     return {
         "symbol": key,
         "stage": stage,
         "strategy_overrides": overrides["strategy"],
         "metrics_overrides": overrides["metrics"],
         "prohibitions_overrides": overrides["prohibitions"],
+        "review": load_acceptance_review(conn, key, stage=stage),
         "report": report,
         "sections": section_summaries,
         "catalog": catalog,
-        "events": load_acceptance_events(conn, symbol=key, limit=100),
+        "events": events,
         "runtime_metrics": load_runtime_metrics(conn, symbol=key, stage=stage, limit=60),
         "reconciliation_runs": load_reconciliation_runs(conn, symbol=key, stage=stage, limit=30),
         "order_audit": load_order_audit_rows(conn, symbol=key, stage=stage, limit=40),
         "alert_deliveries": load_alert_deliveries(conn, symbol=key, stage=stage, limit=40),
-        "scenario_runs": load_scenario_runs(conn, symbol=key, stage=stage, limit=40),
-        "reports": load_acceptance_reports(conn, symbol=key, limit=limit_reports),
+        "scenario_runs": scenario_runs,
+        "timeline": _build_acceptance_timeline(events, scenario_runs),
+        "reports": reports,
+        "section_trend": _build_section_trend(reports),
     }
 
 
@@ -1099,6 +1254,7 @@ __all__ = [
     "load_acceptance_context_overrides",
     "load_acceptance_events",
     "load_acceptance_reports",
+    "load_acceptance_review",
     "load_order_audit_rows",
     "load_reconciliation_runs",
     "load_runtime_metrics",
@@ -1110,6 +1266,7 @@ __all__ = [
     "record_reconciliation_run",
     "record_runtime_metric",
     "run_acceptance_scenario",
+    "upsert_acceptance_review",
     "upsert_acceptance_check",
     "upsert_acceptance_context_overrides",
 ]

@@ -48,6 +48,7 @@ from paper_acceptance_store import (
     load_acceptance_context_overrides,
     load_acceptance_events,
     load_acceptance_reports,
+    load_acceptance_review,
     load_order_audit_rows,
     load_reconciliation_runs,
     load_runtime_metrics,
@@ -58,6 +59,7 @@ from paper_acceptance_store import (
     record_reconciliation_run,
     record_runtime_metric,
     run_acceptance_scenario,
+    upsert_acceptance_review,
     upsert_acceptance_check,
     upsert_acceptance_context_overrides,
 )
@@ -4837,6 +4839,18 @@ class PaperAcceptanceScenarioRunRequest(BaseModel):
     stage: str = "paper"
 
 
+class PaperAcceptanceReviewUpdate(BaseModel):
+    symbol: str
+    stage: str = "paper"
+    reviewer: str = ""
+    review_status: str = "pending"
+    fixed_in_version: str = ""
+    retest_required: bool = False
+    can_promote_to_live: bool = False
+    note: str = ""
+    run_key: Optional[str] = None
+
+
 def _json_dumps_compact(value, fallback):
     if value is None:
         value = fallback
@@ -5366,6 +5380,41 @@ def api_update_paper_acceptance_workspace(req: PaperAcceptanceWorkspaceUpdate):
             prohibitions=req.prohibitions if req.prohibitions is not None else current["prohibitions"],
         )
         return sanitize_float_values({"ok": True, "workspace": updated})
+    finally:
+        conn.close()
+
+
+@app.get("/api/paper-acceptance/review")
+def api_get_paper_acceptance_review(symbol: str, stage: str = "paper"):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        payload = load_acceptance_review(conn, symbol.strip().upper(), stage=stage)
+        return sanitize_float_values(payload)
+    finally:
+        conn.close()
+
+
+@app.put("/api/paper-acceptance/review")
+def api_update_paper_acceptance_review(req: PaperAcceptanceReviewUpdate):
+    if not req.symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        payload = upsert_acceptance_review(
+            conn,
+            symbol=req.symbol.strip().upper(),
+            stage=req.stage,
+            reviewer=req.reviewer,
+            review_status=req.review_status,
+            fixed_in_version=req.fixed_in_version,
+            retest_required=req.retest_required,
+            can_promote_to_live=req.can_promote_to_live,
+            note=req.note,
+            run_key=req.run_key,
+        )
+        return {"ok": True, "review": payload}
     finally:
         conn.close()
 
