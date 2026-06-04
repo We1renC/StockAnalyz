@@ -3866,3 +3866,37 @@ def test_monthly_edge_stability_no_decay_when_consistent():
     out = monthly_edge_stability(records)
     assert out["decay_months"] == []
     assert out["review_required"] is False
+
+
+def test_sharpe_ratio_basic_calc():
+    """§18.6: annualised Sharpe from a known stationary return stream."""
+    from smc_quant import sharpe_ratio
+    flat = sharpe_ratio([1.0] * 252)
+    assert flat["sharpe"] == 0.0
+    returns = ([1.0, -0.5] * 50)
+    out = sharpe_ratio(returns, annualize=252)
+    assert out["sample_size"] == 100
+    assert out["sharpe"] > 0
+
+
+def test_deflated_sharpe_ratio_inflates_threshold_with_n_trials():
+    from smc_quant import deflated_sharpe_ratio
+    single = deflated_sharpe_ratio(1.5, n_trials=1, sample_size=252)
+    many = deflated_sharpe_ratio(1.5, n_trials=100, sample_size=252)
+    assert many["threshold_sharpe"] > single["threshold_sharpe"]
+    assert isinstance(many["passes"], bool)
+
+
+def test_deflated_sharpe_ratio_insufficient_samples_returns_safely():
+    from smc_quant import deflated_sharpe_ratio
+    out = deflated_sharpe_ratio(2.0, n_trials=0, sample_size=1)
+    assert out["passes"] is False
+    assert "insufficient_samples_or_trials" in out["note"]
+
+
+def test_bonferroni_threshold_divides_alpha_by_n_tests():
+    from smc_quant import bonferroni_threshold
+    out = bonferroni_threshold(0.05, 20)
+    assert out["alpha_adjusted"] == 0.0025
+    assert out["n_tests"] == 20
+    assert bonferroni_threshold(0.05, 0)["note"] == "no_tests"

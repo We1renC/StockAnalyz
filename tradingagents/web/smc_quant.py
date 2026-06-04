@@ -5048,6 +5048,116 @@ DAILY_REPORT_SCHEMA_VERSION = 1
 CLOSED_LOOP_SCHEMA_VERSION = 1
 
 
+def sharpe_ratio(returns: list[float], *, annualize: int = 252) -> dict:
+    """§18.6 — annualised Sharpe ratio.
+
+    ``returns`` is the per-period R-multiple (or % return) sequence.
+    ``annualize`` is the number of periods per year (252 daily, 52 weekly,
+    12 monthly). Returns ``{sharpe, mean, std, sample_size}``.
+    """
+    n = len(returns or [])
+    if n < 2:
+        return {"sharpe": 0.0, "mean": 0.0, "std": 0.0, "sample_size": n}
+    mean = sum(returns) / n
+    var = sum((r - mean) ** 2 for r in returns) / (n - 1)
+    std = var ** 0.5
+    if std == 0:
+        return {"sharpe": 0.0, "mean": mean, "std": 0.0, "sample_size": n}
+    sharpe = (mean / std) * (annualize ** 0.5)
+    return {
+        "sharpe": round(sharpe, 4),
+        "mean": round(mean, 4),
+        "std": round(std, 4),
+        "sample_size": n,
+    }
+
+
+def deflated_sharpe_ratio(
+    sample_sharpe: float,
+    *,
+    n_trials: int,
+    sample_size: int,
+    skew: float = 0.0,
+    kurtosis: float = 3.0,
+) -> dict:
+    """§18.6 — Deflated Sharpe Ratio (Bailey & López de Prado).
+
+    Adjusts the in-sample Sharpe for selection bias when ``n_trials``
+    candidate strategies were evaluated. The expected maximum-Sharpe
+    under the null is approximated by:
+      E[max_SR] ≈ (1 − γ) × Φ⁻¹(1 − 1/n) + γ × Φ⁻¹(1 − 1/(n·e))
+    where γ ≈ 0.5772 (Euler–Mascheroni). DSR > 0.95 (~1.96σ in the
+    standard normal sense) is the spec threshold for "not noise".
+
+    Returns ``{deflated, p_value_proxy, threshold_sharpe, passes}``.
+    """
+    import math
+    if n_trials < 1 or sample_size < 2:
+        return {
+            "deflated": 0.0, "p_value_proxy": 1.0,
+            "threshold_sharpe": float("inf"), "passes": False,
+            "note": "insufficient_samples_or_trials",
+        }
+    # Inverse normal CDF approximation (Beasley-Springer-Moro)
+    def _ndtri(p: float) -> float:
+        # clamp away from boundaries
+        p = max(min(p, 1 - 1e-12), 1e-12)
+        # Acklam's rational approximation — adequate for our threshold work
+        a = [-39.696830, 220.946098, -275.928510, 138.357751, -30.664798, 2.506628]
+        b = [-54.476098, 161.585836, -155.698979, 66.801311, -13.280681]
+        c = [-0.007784, -0.322396, -2.400758, -2.549732, 4.374664, 2.938163]
+        d = [0.007785, 0.322467, 2.445134, 3.754408]
+        p_low = 0.02425
+        if p < p_low:
+            q = math.sqrt(-2 * math.log(p))
+            return (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) / \
+                   ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1)
+        if p <= 1 - p_low:
+            q = p - 0.5
+            r = q * q
+            return (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q / \
+                   (((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1)
+        q = math.sqrt(-2 * math.log(1 - p))
+        return -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) / \
+                ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1)
+
+    gamma = 0.5772156649
+    exp_max_sr = (1 - gamma) * _ndtri(1 - 1 / n_trials) + gamma * _ndtri(1 - 1 / (n_trials * math.e))
+    # Variance of estimated Sharpe (López de Prado 2014):
+    # σ_SR² = (1 − skew·SR + (kurt−1)/4·SR²) / (n − 1)
+    sr = float(sample_sharpe)
+    sigma_sr_sq = (1 - skew * sr + (kurtosis - 1) / 4 * sr * sr) / max(1, sample_size - 1)
+    sigma_sr = max(1e-9, math.sqrt(abs(sigma_sr_sq)))
+    z = (sr - exp_max_sr) / sigma_sr
+    # Standard-normal CDF via erf
+    p_value = 1 - 0.5 * (1 + math.erf(z / math.sqrt(2)))
+    return {
+        "deflated": round(z, 4),
+        "p_value_proxy": round(p_value, 4),
+        "threshold_sharpe": round(exp_max_sr, 4),
+        "passes": bool(z >= 1.96),
+        "n_trials": n_trials,
+        "sample_size": sample_size,
+    }
+
+
+def bonferroni_threshold(alpha: float, n_tests: int) -> dict:
+    """§18.6 — Bonferroni correction for multiple-comparison testing.
+
+    Returns ``{alpha_adjusted, n_tests, note}``. With 20 candidate
+    factors at α=0.05, the per-test threshold drops to 0.0025 → only
+    findings tighter than that survive.
+    """
+    if n_tests < 1:
+        return {"alpha_adjusted": alpha, "n_tests": 0, "note": "no_tests"}
+    return {
+        "alpha_adjusted": round(alpha / n_tests, 6),
+        "n_tests": int(n_tests),
+        "original_alpha": alpha,
+        "note": "use_alpha_adjusted_as_per_test_p_value_threshold",
+    }
+
+
 def monthly_edge_stability(
     trade_records: list[dict],
     *,
