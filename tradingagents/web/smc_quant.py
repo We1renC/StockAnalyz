@@ -1523,6 +1523,49 @@ def aggregate_multi_exchange(
     }
 
 
+def _builtin_detect_cme_gaps(df: pd.DataFrame, threshold_pct: float = 0.005) -> list[dict]:
+    """In-module fallback for §17.4 CME-gap detection.
+
+    Mirrors ``crypto.cross_market.detect_cme_gaps`` so ``build_crypto_overlay``
+    works in environments where the ``crypto`` package isn't importable.
+    Looks for the Friday-close ↔ next-bar-open jump that crosses the
+    weekend (``threshold_pct`` of price). Each gap is then probed forward
+    to mark ``filled`` once price re-enters the range.
+    """
+    gaps: list[dict] = []
+    if df is None or len(df) < 2:
+        return gaps
+    try:
+        idx = pd.DatetimeIndex(df.index)
+    except Exception:
+        return gaps
+    for i in range(1, len(df)):
+        prev_ts, cur_ts = idx[i - 1], idx[i]
+        # Friday close → Saturday or later open (weekend skip)
+        if prev_ts.dayofweek != 4 or cur_ts.dayofweek not in (5, 6, 0):
+            continue
+        prev_close = float(df["close"].iloc[i - 1])
+        cur_open = float(df["open"].iloc[i])
+        if prev_close <= 0:
+            continue
+        if abs(cur_open - prev_close) / prev_close < threshold_pct:
+            continue
+        top = max(prev_close, cur_open)
+        bottom = min(prev_close, cur_open)
+        filled = False
+        for j in range(i, len(df)):
+            if float(df["low"].iloc[j]) <= bottom and float(df["high"].iloc[j]) >= top:
+                filled = True; break
+        gaps.append({
+            "top": round(top, 4),
+            "bottom": round(bottom, 4),
+            "filled": filled,
+            "time": cur_ts.isoformat(),
+            "direction": 1 if cur_open > prev_close else -1,
+        })
+    return gaps
+
+
 def compute_session_range_levels(
     df: pd.DataFrame,
     *,
@@ -2060,15 +2103,39 @@ def build_crypto_overlay(
             btc_aligned = True
     out["btc_alignment"] = {"aligned": btc_aligned, "is_altcoin": is_altcoin}
 
-    # CME gap magnet
+    # §17.4 CME gap magnet — auto-detect when no precomputed gaps supplied.
+    # Caveat from spec: CME has transitioned to 24/7 from 2026-05, so any gap
+    # whose formation timestamp is after that date should NOT contribute to
+    # new signals (still surfaced as info, but factored down).
+    if not cme_gaps and df is not None and len(df) >= 2:
+        try:
+            from crypto.cross_market import detect_cme_gaps as _detect_cme_gaps
+            cme_gaps = _detect_cme_gaps(df)
+        except Exception:
+            cme_gaps = _builtin_detect_cme_gaps(df)
     cme_hit = False
-    if cme_gaps:
-        last_close = float(df["close"].iloc[-1])
-        for g in cme_gaps:
-            top = float(g.get("top", 0)); bottom = float(g.get("bottom", 0))
-            if bottom <= last_close <= top and not g.get("filled"):
-                cme_hit = True; break
-    out["cme_gap"] = {"hit": cme_hit}
+    cme_active_gaps: list[dict] = []
+    cme_post_24_7_cutoff = pd.Timestamp("2026-05-01", tz="UTC")
+    last_close = float(df["close"].iloc[-1])
+    for g in cme_gaps or []:
+        top = float(g.get("top", 0)); bottom = float(g.get("bottom", 0))
+        if not top or not bottom or g.get("filled"):
+            continue
+        # Annotate the post-24/7 fade — surface but do not credit as confluence.
+        gap_ts = None
+        raw_ts = g.get("time")
+        if raw_ts is not None:
+            try:
+                gap_ts = pd.Timestamp(raw_ts)
+                gap_ts = gap_ts.tz_localize("UTC") if gap_ts.tzinfo is None else gap_ts.tz_convert("UTC")
+            except Exception:
+                gap_ts = None
+        fading = bool(gap_ts is not None and gap_ts >= cme_post_24_7_cutoff)
+        active = bottom <= last_close <= top
+        cme_active_gaps.append({**g, "fading_after_24_7": fading, "currently_in_zone": active})
+        if active and not fading:
+            cme_hit = True
+    out["cme_gap"] = {"hit": cme_hit, "open_gaps": cme_active_gaps[-5:], "post_24_7_cutoff": "2026-05-01"}
 
     # §17.3 — spot vs perp + CVD slope
     out["spot_perp"] = detect_spot_perp_divergence(df, spot_df) if spot_df is not None else {"status": "no_data", "verdict": None}

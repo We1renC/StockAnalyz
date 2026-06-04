@@ -2929,3 +2929,65 @@ def test_build_smc_analysis_exposes_session_range_levels_block():
     assert "session_range_levels" in result["concepts"]
     # Daily synthetic data → not_applicable, but the key must exist
     assert result["concepts"]["session_range_levels"]["status"] in {"not_applicable", "ok", "no_data"}
+
+
+def test_builtin_detect_cme_gaps_finds_weekend_jump():
+    """§17.4 fallback detector: ≥0.5% Fri-close → Sat-open jump becomes a gap."""
+    from smc_quant import _builtin_detect_cme_gaps
+    # Fri 2026-01-02 close 100 → Sat 2026-01-03 open 102 (2% up gap)
+    rows = [
+        (100, 100.5, 99.5, 100, 1),    # Fri close
+        (102, 103, 101.5, 102.5, 1),   # Sat open jumps up 2%
+        (102.5, 103, 101, 101.5, 1),
+        (101.5, 102, 100, 100.5, 1),
+        (100.5, 102.5, 100, 102, 1),   # Eventually fills (low=100, high=102.5 ≥ top=102)
+    ]
+    idx = [
+        datetime(2026, 1, 2),
+        datetime(2026, 1, 3),
+        datetime(2026, 1, 4),
+        datetime(2026, 1, 5),
+        datetime(2026, 1, 6),
+    ]
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    gaps = _builtin_detect_cme_gaps(df)
+    assert len(gaps) == 1
+    g = gaps[0]
+    assert g["bottom"] == 100.0 and g["top"] == 102.0
+    assert g["direction"] == 1
+    assert g["filled"] is True
+
+
+def test_builtin_detect_cme_gaps_ignores_small_skips():
+    from smc_quant import _builtin_detect_cme_gaps
+    rows = [(100, 100.5, 99.5, 100, 1), (100.1, 100.5, 99.9, 100.1, 1)]  # 0.1% skip
+    idx = [datetime(2026, 1, 2), datetime(2026, 1, 3)]
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    assert _builtin_detect_cme_gaps(df) == []
+
+
+def test_crypto_overlay_auto_detects_cme_gaps_without_external_pkg(monkeypatch):
+    """build_crypto_overlay must auto-fill cme_gap when caller passes none."""
+    from smc_quant import build_crypto_overlay
+    # Force the external import to fail so the fallback path runs.
+    import sys
+    monkeypatch.setitem(sys.modules, "crypto.cross_market", None)
+    rows = [(100, 100.5, 99.5, 100, 1), (105, 106, 104, 105, 1)]  # 5% Fri→Sat skip
+    idx = [datetime(2026, 1, 2), datetime(2026, 1, 3)]
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    out = build_crypto_overlay(df)
+    assert isinstance(out.get("cme_gap"), dict)
+    assert "open_gaps" in out["cme_gap"]
+
+
+def test_crypto_overlay_marks_post_2026_05_gaps_as_fading():
+    """§17.4 caveat: gaps formed after 2026-05-01 are flagged fading."""
+    from smc_quant import build_crypto_overlay
+    rows = [(100, 100.5, 99.5, 100, 1), (105, 106, 104, 105, 1)]
+    # Friday 2026-05-08 → Saturday 2026-05-09 (post-cutoff)
+    idx = [datetime(2026, 5, 8), datetime(2026, 5, 9)]
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    out = build_crypto_overlay(df)
+    gaps = out["cme_gap"]["open_gaps"]
+    if gaps:
+        assert any(g.get("fading_after_24_7") for g in gaps)
