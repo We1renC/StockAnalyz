@@ -3427,3 +3427,57 @@ def test_position_correlation_cap_passes_with_custom_cluster_map():
     )
     assert out_diff["ok"] is True
     assert out_diff["cluster"] == "AAPL"  # unknown symbol = own cluster
+
+
+def test_build_multi_batch_entry_plan_default_three_batches_long():
+    """§17.8: 3 stacked limits at entry / -0.5% / -1.0% with 30/30/40 split."""
+    from smc_quant import build_multi_batch_entry_plan
+    entry = {"direction": 1, "entry": 100, "stop": 98}
+    out = build_multi_batch_entry_plan(entry, is_altcoin=True)
+    assert out["status"] == "ok"
+    assert len(out["batches"]) == 3
+    prices = [b["limit_price"] for b in out["batches"]]
+    weights = [b["qty_pct"] for b in out["batches"]]
+    assert prices[0] == 100.0
+    assert prices[1] == 99.5
+    assert prices[2] == 99.0
+    assert weights == [30.0, 30.0, 40.0]
+    # Avg fill = 100*0.3 + 99.5*0.3 + 99.0*0.4 = 99.45
+    assert out["average_fill_price"] == 99.45
+    assert out["recommended"] is True
+
+
+def test_build_multi_batch_entry_plan_short_direction_mirrors_levels():
+    from smc_quant import build_multi_batch_entry_plan
+    entry = {"direction": -1, "entry": 100, "stop": 102}
+    out = build_multi_batch_entry_plan(entry, batches=3, spacing_pct=0.005)
+    prices = [b["limit_price"] for b in out["batches"]]
+    # Short → deeper limits sit HIGHER (price moving up against us before reversal)
+    assert prices == [100.0, 100.5, 101.0]
+
+
+def test_build_multi_batch_entry_plan_caps_to_stop_side():
+    """A deeper batch must never cross the stop — clamp at 1 tick away."""
+    from smc_quant import build_multi_batch_entry_plan
+    # Tiny stop distance: long entry=100, stop=99.5; spacing 1% would put
+    # batch 3 at 98 (well below stop). Clamp to 99.51.
+    entry = {"direction": 1, "entry": 100, "stop": 99.5}
+    out = build_multi_batch_entry_plan(entry, batches=3, spacing_pct=0.01)
+    deepest = out["batches"][-1]["limit_price"]
+    assert deepest > 99.5  # never crosses the stop
+
+
+def test_build_multi_batch_entry_plan_recommended_false_for_non_altcoin():
+    from smc_quant import build_multi_batch_entry_plan
+    out = build_multi_batch_entry_plan(
+        {"direction": 1, "entry": 100, "stop": 99}, is_altcoin=False,
+    )
+    assert out["recommended"] is False
+
+
+def test_build_multi_batch_entry_plan_rejects_bad_inputs():
+    from smc_quant import build_multi_batch_entry_plan
+    assert build_multi_batch_entry_plan({})["status"] == "missing_fields"
+    assert build_multi_batch_entry_plan(
+        {"direction": 1, "entry": 100, "stop": 100},
+    )["status"] == "zero_risk"

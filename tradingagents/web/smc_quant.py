@@ -2483,6 +2483,87 @@ CONFLUENCE_WEIGHTS_DEFAULT = {
 CONFLUENCE_THRESHOLD_DEFAULT = 8
 
 
+def build_multi_batch_entry_plan(
+    entry: dict,
+    *,
+    batches: int = 3,
+    spacing_pct: float = 0.005,
+    is_altcoin: bool = False,
+) -> dict:
+    """§17.8 — split a single entry into stacked limit orders to absorb
+    slippage / counterparty risk on illiquid alts.
+
+    Layout (long example, ``batches=3``, ``spacing_pct=0.5%``):
+      • Batch 1 — entry price (best fill, gets the smallest qty share)
+      • Batch 2 — entry × (1 − 0.5%) (mid)
+      • Batch 3 — entry × (1 − 1.0%) (deepest, gets the largest share)
+
+    Allocation tilts toward deeper batches (40/30/30 for 3 by default)
+    so the *average* fill sits below the spec entry → favours RR. Short
+    side is mirrored.
+
+    Refuses to plan when entry/stop missing or batches < 1. For non-altcoin
+    callers ``recommended=False`` is set so the UI can collapse the panel
+    by default.
+    """
+    direction = int(entry.get("direction", 0))
+    entry_px = entry.get("entry")
+    stop = entry.get("stop")
+    if direction == 0 or entry_px is None or stop is None or batches < 1:
+        return {"status": "missing_fields"}
+    risk = abs(float(entry_px) - float(stop))
+    if risk <= 0:
+        return {"status": "zero_risk"}
+    # Allocation weights tilted toward deeper fills (sum = 100)
+    weights = _tilted_weights(batches)
+    levels: list[dict] = []
+    for i in range(batches):
+        offset_pct = spacing_pct * i
+        # Long: cheaper as i grows → entry × (1 − pct)
+        # Short: pricier as i grows → entry × (1 + pct)
+        sign = -1 if direction == 1 else 1
+        price = round(float(entry_px) * (1 + sign * offset_pct), 4)
+        # Validate price stays on the right side of the stop
+        if direction == 1 and price <= float(stop):
+            price = round(float(stop) + 0.01, 4)  # at minimum 1 tick above stop
+        if direction == -1 and price >= float(stop):
+            price = round(float(stop) - 0.01, 4)
+        levels.append({
+            "batch": i + 1,
+            "limit_price": price,
+            "qty_pct": weights[i],
+        })
+    avg_fill = round(sum(l["limit_price"] * l["qty_pct"] / 100 for l in levels), 4)
+    avg_R = abs(avg_fill - float(stop)) / risk if risk else 0.0
+    return {
+        "status": "ok",
+        "batches": levels,
+        "average_fill_price": avg_fill,
+        "average_fill_R_vs_stop": round(avg_R, 3),
+        "spacing_pct": spacing_pct,
+        "recommended": bool(is_altcoin),
+    }
+
+
+def _tilted_weights(n: int) -> list[float]:
+    """Allocation tilted toward later batches (deeper fills).
+
+    n=1 → [100]; n=2 → [40, 60]; n=3 → [30, 30, 40]; n=4 → [20, 25, 25, 30].
+    """
+    if n == 1:
+        return [100.0]
+    if n == 2:
+        return [40.0, 60.0]
+    if n == 3:
+        return [30.0, 30.0, 40.0]
+    if n == 4:
+        return [20.0, 25.0, 25.0, 30.0]
+    # Generic: increasing weights summing to 100
+    base = list(range(1, n + 1))
+    total = sum(base)
+    return [round(b / total * 100, 2) for b in base]
+
+
 def build_partial_profit_plan(
     entry: dict,
     *,
