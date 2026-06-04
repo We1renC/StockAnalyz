@@ -5042,6 +5042,140 @@ def _populate_backtest_panel(layers: dict, backtest_replay: dict, *, preview: in
     return layers
 
 
+DAILY_REPORT_SCHEMA_VERSION = 1
+
+
+def build_daily_report(
+    *,
+    symbol: str,
+    analysis: dict,
+    institutional_net_buy: Optional[dict] = None,
+    macro: Optional[dict] = None,
+    sentiment: Optional[dict] = None,
+    technical: Optional[dict] = None,
+    generated_at: Optional[str] = None,
+) -> dict:
+    """§11.3 — 5-in-1 daily report skeleton: Macro + Inflow + Technical + SMC + Sentiment.
+
+    Consolidates a ``build_smc_analysis()`` output with the four
+    sibling channels into a single dict ready to be rendered into
+    ``daily_report_YYYYMMDD.html`` (or fed to an agent). Every channel
+    that wasn't supplied returns ``{"status": "not_provided"}`` rather
+    than ``None`` so downstream HTML templates can still render a
+    consistent grid.
+
+    SMC section auto-pulls:
+      • summary bias + score
+      • triggered entries (top 5 by confluence score)
+      • DOL targets + risk_gated readiness
+      • multi-TF top_down audit (when ``analysis`` came from
+        ``build_mtf_analysis``)
+    """
+    smc = _summarise_smc_for_report(analysis)
+    inflow = _summarise_inflow_for_report(analysis, institutional_net_buy)
+    return {
+        "schema_version": DAILY_REPORT_SCHEMA_VERSION,
+        "generated_at": generated_at or datetime.now().isoformat(timespec="seconds"),
+        "symbol": symbol,
+        "market": infer_market(symbol),
+        "channels": {
+            "macro": _normalise_channel(macro),
+            "inflow": inflow,
+            "technical": _normalise_channel(technical),
+            "smc": smc,
+            "sentiment": _normalise_channel(sentiment),
+        },
+        "headline": _compose_headline(smc, inflow),
+    }
+
+
+def _normalise_channel(payload: Optional[dict]) -> dict:
+    if not payload:
+        return {"status": "not_provided"}
+    return {"status": "ok", **payload}
+
+
+def _summarise_smc_for_report(analysis: dict) -> dict:
+    if not analysis:
+        return {"status": "not_provided"}
+    summary = analysis.get("summary") or {}
+    concepts = analysis.get("concepts") or {}
+    entry_models = concepts.get("entry_models") or {}
+    triggered = sorted(
+        entry_models.get("triggered") or [],
+        key=lambda e: (e.get("confluence") or {}).get("score", 0),
+        reverse=True,
+    )[:5]
+    risk_gated = (entry_models.get("risk_gated") or {}) if isinstance(entry_models, dict) else {}
+    top_down = analysis.get("top_down")  # only present from build_mtf_analysis
+    return {
+        "status": "ok",
+        "bias": summary.get("bias"),
+        "summary": summary,
+        "triggered_entries": [
+            {
+                "model": e.get("model"),
+                "direction": e.get("direction"),
+                "entry": e.get("entry"),
+                "stop": e.get("stop"),
+                "target": e.get("target"),
+                "rr": e.get("rr"),
+                "score": (e.get("confluence") or {}).get("score"),
+                "dol_target": e.get("dol_target"),
+                "partial_profit": e.get("partial_profit"),
+            }
+            for e in triggered
+        ],
+        "ready_count": len(risk_gated.get("ready", [])) if isinstance(risk_gated, dict) else 0,
+        "rejected_count": len(risk_gated.get("rejected", [])) if isinstance(risk_gated, dict) else 0,
+        "top_down_audit": top_down.get("audit") if isinstance(top_down, dict) else None,
+        "session": (concepts.get("sessions") or {}).get("name"),
+        "weekend_illiquidity": concepts.get("weekend_illiquidity"),
+    }
+
+
+def _summarise_inflow_for_report(
+    analysis: Optional[dict],
+    institutional_net_buy: Optional[dict],
+) -> dict:
+    if not institutional_net_buy:
+        return {"status": "not_provided"}
+    bias = (analysis or {}).get("summary", {}).get("bias", "neutral") if analysis else "neutral"
+    xv = cross_validate_smc_vs_institutional(bias, institutional_net_buy)
+    return {
+        "status": "ok",
+        "net_buy": institutional_net_buy,
+        "smc_cross_validation": xv,
+    }
+
+
+def _compose_headline(smc: dict, inflow: dict) -> dict:
+    if smc.get("status") != "ok":
+        return {"label": "no_smc", "text": "SMC analysis unavailable"}
+    bias = smc.get("bias", "neutral")
+    triggered = smc.get("triggered_entries") or []
+    inflow_agree = (
+        inflow.get("smc_cross_validation", {}).get("agreement")
+        if inflow.get("status") == "ok" else None
+    )
+    if not triggered:
+        return {
+            "label": f"bias_{bias}_no_trigger",
+            "text": f"Bias={bias}, no triggered entries today.",
+            "inflow_agreement": inflow_agree,
+        }
+    top = triggered[0]
+    direction = "LONG" if top["direction"] == 1 else "SHORT"
+    return {
+        "label": f"{top['model']}_{direction.lower()}",
+        "text": (
+            f"{direction} {top['model']} @ {top['entry']} "
+            f"stop {top['stop']} target {top['target']} (RR {top.get('rr')}, score {top.get('score')})"
+        ),
+        "inflow_agreement": inflow_agree,
+    }
+
+
 def cross_validate_smc_vs_institutional(
     smc_bias: str,
     institutional_net_buy: Optional[dict],

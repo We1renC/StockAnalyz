@@ -3713,3 +3713,81 @@ def test_cross_validate_smc_vs_institutional_missing_data():
     out = cross_validate_smc_vs_institutional("bullish", None)
     assert out["status"] == "no_institutional_data"
     assert out["agreement"] is None
+
+
+def test_build_daily_report_emits_five_in_one_structure():
+    """§11.3: report must always carry the 5 channels even if some are missing."""
+    from smc_quant import build_daily_report
+    analysis = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    report = build_daily_report(
+        symbol="AAPL",
+        analysis=analysis,
+        macro={"fed_decision": "hold"},
+        sentiment={"ptt_score": 0.5},
+    )
+    assert report["schema_version"] == 1
+    assert report["symbol"] == "AAPL"
+    channels = report["channels"]
+    assert set(channels.keys()) == {"macro", "inflow", "technical", "smc", "sentiment"}
+    assert channels["smc"]["status"] == "ok"
+    assert channels["macro"]["status"] == "ok"
+    assert channels["technical"]["status"] == "not_provided"
+    assert channels["inflow"]["status"] == "not_provided"
+    assert "bias" in channels["smc"]
+    assert "headline" in report
+
+
+def test_build_daily_report_smc_pulls_top_triggered_entries():
+    """SMC channel should sort triggered entries by confluence score desc."""
+    from smc_quant import build_daily_report
+    # Hand-craft an analysis dict with two triggered entries (scores 12 and 9)
+    fake = {
+        "summary": {"bias": "bullish"},
+        "concepts": {
+            "entry_models": {
+                "triggered": [
+                    {"model": "a", "direction": 1, "entry": 100, "stop": 99,
+                     "target": 102, "rr": 2.0, "confluence": {"score": 9},
+                     "dol_target": {"target_kind": "BSL"}, "partial_profit": {}},
+                    {"model": "b", "direction": 1, "entry": 100, "stop": 99,
+                     "target": 110, "rr": 10.0, "confluence": {"score": 12},
+                     "dol_target": {"target_kind": "BSL"}, "partial_profit": {}},
+                ],
+                "risk_gated": {"ready": [1, 2], "rejected": []},
+            },
+            "sessions": {"name": "US Session"},
+        },
+    }
+    report = build_daily_report(symbol="AAPL", analysis=fake)
+    triggered = report["channels"]["smc"]["triggered_entries"]
+    assert [t["model"] for t in triggered] == ["b", "a"]  # 12 > 9
+    assert report["channels"]["smc"]["ready_count"] == 2
+
+
+def test_build_daily_report_inflow_runs_cross_validation():
+    """When institutional_net_buy provided → inflow channel runs SMC×法人 XV."""
+    from smc_quant import build_daily_report
+    analysis = build_smc_analysis(
+        _sample_ohlcv(), "2330.TW",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    report = build_daily_report(
+        symbol="2330.TW",
+        analysis=analysis,
+        institutional_net_buy={"foreign": 10_000, "investment_trust": 2_000, "dealer": 500},
+    )
+    inflow = report["channels"]["inflow"]
+    assert inflow["status"] == "ok"
+    assert inflow["smc_cross_validation"]["institutional_direction"] == 1
+    assert inflow["net_buy"]["foreign"] == 10_000
+
+
+def test_build_daily_report_headline_signals_no_trigger():
+    """Empty triggered_entries → headline label says no_trigger."""
+    from smc_quant import build_daily_report
+    fake = {"summary": {"bias": "neutral"}, "concepts": {"entry_models": {"triggered": []}}}
+    report = build_daily_report(symbol="AAPL", analysis=fake)
+    assert "no_trigger" in report["headline"]["label"]
