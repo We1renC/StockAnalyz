@@ -4014,6 +4014,10 @@ def build_chart_layers(
                 "type": l["type"], "level": l["level"],
                 "start_index": l["start_index"], "end_index": l["end_index"],
                 "swept": l["swept"], "swept_index": l.get("swept_index"),
+                "liquidity_kind": l.get("liquidity_kind"),
+                "equal_tag": l.get("equal_tag"),
+                "equal_tier": l.get("equal_tier"),
+                "touches": l.get("touches"),
             }
             for l in (liquidity or [])
         ],

@@ -2102,3 +2102,17 @@ def test_chart_layer_c5_exposes_fib_grid_and_eq_reactions():
         assert level in grid
     assert "equilibrium_reactions" in c5
     assert "position_pct" in c5
+
+
+def test_chart_layer_c4_exposes_liquidity_kind_and_equal_tags():
+    """§6.1: C4 levels must carry liquidity_kind + equal_tag + equal_tier."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    levels = result["visualization"]["chart_layers"]["C4_liquidity"]["levels"]
+    for l in levels:
+        assert "liquidity_kind" in l
+        assert "equal_tag" in l
+        assert "equal_tier" in l
+        assert "touches" in l
