@@ -2377,3 +2377,18 @@ def test_build_smc_analysis_exposes_pd_array_matrix():
     assert "rows" in matrix
     assert "current_price" in matrix
     assert matrix["above_count"] + matrix["below_count"] == matrix["total"]
+
+
+def test_chart_layer_c11_pd_array_panel_populated():
+    """§6.1: C11 PD-array panel must carry the top-N POIs from the matrix."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    c11 = result["visualization"]["chart_layers"]["C11_pd_array_matrix"]
+    assert c11["kind"] == "table_panel"
+    assert "rows" in c11
+    # Panel should reflect the matrix counts
+    matrix = result["concepts"]["pd_array_matrix"]
+    assert c11.get("current_price") == matrix["current_price"]
+    assert c11.get("above_count") == matrix["above_count"]

@@ -4149,6 +4149,18 @@ def suggest_confluence_weights(
     return suggested
 
 
+def _populate_pd_array_panel(layers: dict, pd_array_matrix: dict, *, top_n: int = 8) -> dict:
+    """Fill ``layers["C11_pd_array_matrix"].rows`` with the top-N closest POIs."""
+    panel = layers.get("C11_pd_array_matrix")
+    if not panel or not pd_array_matrix:
+        return layers
+    panel["rows"] = (pd_array_matrix.get("rows") or [])[:top_n]
+    panel["above_count"] = pd_array_matrix.get("above_count")
+    panel["below_count"] = pd_array_matrix.get("below_count")
+    panel["current_price"] = pd_array_matrix.get("current_price")
+    return layers
+
+
 def build_chart_layers(
     df: pd.DataFrame,
     *,
@@ -4361,6 +4373,13 @@ def build_chart_layers(
             }
             for v in (volume_imbalances or [])
         ],
+    }
+    # C11 PD-Array Matrix panel — top 8 nearest POIs as a compact table
+    layers["C11_pd_array_matrix"] = {
+        "kind": "table_panel",
+        "title": "PD-Array Matrix — nearest POIs",
+        "rows": [],  # populated by build_smc_analysis caller
+        "note": "Populated after concepts.pd_array_matrix; reproduce by reading top-N rows.",
     }
     # C9 MTF top-down audit summary — keyless panel renderer
     layers["C9_mtf_audit"] = {
@@ -5323,26 +5342,29 @@ def build_smc_analysis(
         "visualization": {
             "enabled_charts": ["structure_map", "order_block_map", "fvg_map", "liquidity_map", "premium_discount_map", "ote_map"],
             "future_charts": ["mtf_composite", "crypto_liquidation_overlay"],
-            "chart_layers": build_chart_layers(
-                h,
-                swings=swings,
-                structure=structure,
-                order_blocks=obs,
-                mitigation_blocks=mitigation_blocks,
-                breaker_blocks=breaker_blocks,
-                fvgs=fvgs,
-                liquidity=liquidity,
-                pd_zone=pd_zone,
-                ote=ote,
-                judas_events=judas_events,
-                smt_events=smt_events,
-                entry_models_combined=(
-                    sweep_reversal_entries + continuation_entries + ote_entries
-                    + unicorn_entries + silver_bullet_entries + power_of_three_entries
+            "chart_layers": _populate_pd_array_panel(
+                build_chart_layers(
+                    h,
+                    swings=swings,
+                    structure=structure,
+                    order_blocks=obs,
+                    mitigation_blocks=mitigation_blocks,
+                    breaker_blocks=breaker_blocks,
+                    fvgs=fvgs,
+                    liquidity=liquidity,
+                    pd_zone=pd_zone,
+                    ote=ote,
+                    judas_events=judas_events,
+                    smt_events=smt_events,
+                    entry_models_combined=(
+                        sweep_reversal_entries + continuation_entries + ote_entries
+                        + unicorn_entries + silver_bullet_entries + power_of_three_entries
+                    ),
+                    inverse_fvgs=inverse_fvgs,
+                    balanced_price_ranges=balanced_price_ranges,
+                    volume_imbalances=volume_imbalances,
                 ),
-                inverse_fvgs=inverse_fvgs,
-                balanced_price_ranges=balanced_price_ranges,
-                volume_imbalances=volume_imbalances,
+                pd_array_matrix,
             ),
         },
         "config": cfg.__dict__,
