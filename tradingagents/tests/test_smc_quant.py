@@ -2567,3 +2567,17 @@ def test_chart_layer_c10_trades_carry_dol_and_factor_count():
         assert "poi_kind" in t
         assert "factor_count" in t
         assert isinstance(t["factor_count"], int) and t["factor_count"] >= 0
+
+
+def test_chart_layer_c13_backtest_panel_populated():
+    """§6.1: C13 panel shows backtest metrics + last few trades."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    c13 = result["visualization"]["chart_layers"]["C13_backtest_replay"]
+    assert c13["kind"] == "summary_panel"
+    assert "metrics" in c13
+    assert isinstance(c13["trades_preview"], list)
+    bt = result["concepts"]["entry_models"]["backtest_replay"]
+    assert c13["metrics"] == bt["metrics"]

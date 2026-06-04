@@ -4251,6 +4251,17 @@ def _populate_pd_array_panel(layers: dict, pd_array_matrix: dict, *, top_n: int 
     return layers
 
 
+def _populate_backtest_panel(layers: dict, backtest_replay: dict, *, preview: int = 5) -> dict:
+    """Fill ``layers["C13_backtest_replay"]`` with metrics + last few trades."""
+    panel = layers.get("C13_backtest_replay")
+    if not panel or not backtest_replay:
+        return layers
+    panel["metrics"] = backtest_replay.get("metrics") or {}
+    trades = backtest_replay.get("trades") or []
+    panel["trades_preview"] = trades[-preview:]
+    return layers
+
+
 def build_chart_layers(
     df: pd.DataFrame,
     *,
@@ -4466,6 +4477,14 @@ def build_chart_layers(
             }
             for v in (volume_imbalances or [])
         ],
+    }
+    # C13 Backtest replay panel — fed downstream by build_smc_analysis caller
+    layers["C13_backtest_replay"] = {
+        "kind": "summary_panel",
+        "title": "Backtest replay snapshot",
+        "metrics": {},   # filled by _populate_pd_array_panel-style hook
+        "trades_preview": [],
+        "note": "Populated from concepts.entry_models.backtest_replay.",
     }
     # C11 PD-Array Matrix panel — top 8 nearest POIs as a compact table
     layers["C11_pd_array_matrix"] = {
@@ -5487,29 +5506,32 @@ def build_smc_analysis(
         "visualization": {
             "enabled_charts": ["structure_map", "order_block_map", "fvg_map", "liquidity_map", "premium_discount_map", "ote_map"],
             "future_charts": ["mtf_composite", "crypto_liquidation_overlay"],
-            "chart_layers": _populate_pd_array_panel(
-                build_chart_layers(
-                    h,
-                    swings=swings,
-                    structure=structure,
-                    order_blocks=obs,
-                    mitigation_blocks=mitigation_blocks,
-                    breaker_blocks=breaker_blocks,
-                    fvgs=fvgs,
-                    liquidity=liquidity,
-                    pd_zone=pd_zone,
-                    ote=ote,
-                    judas_events=judas_events,
-                    smt_events=smt_events,
-                    entry_models_combined=(
-                        sweep_reversal_entries + continuation_entries + ote_entries
-                        + unicorn_entries + silver_bullet_entries + power_of_three_entries
+            "chart_layers": _populate_backtest_panel(
+                _populate_pd_array_panel(
+                    build_chart_layers(
+                        h,
+                        swings=swings,
+                        structure=structure,
+                        order_blocks=obs,
+                        mitigation_blocks=mitigation_blocks,
+                        breaker_blocks=breaker_blocks,
+                        fvgs=fvgs,
+                        liquidity=liquidity,
+                        pd_zone=pd_zone,
+                        ote=ote,
+                        judas_events=judas_events,
+                        smt_events=smt_events,
+                        entry_models_combined=(
+                            sweep_reversal_entries + continuation_entries + ote_entries
+                            + unicorn_entries + silver_bullet_entries + power_of_three_entries
+                        ),
+                        inverse_fvgs=inverse_fvgs,
+                        balanced_price_ranges=balanced_price_ranges,
+                        volume_imbalances=volume_imbalances,
                     ),
-                    inverse_fvgs=inverse_fvgs,
-                    balanced_price_ranges=balanced_price_ranges,
-                    volume_imbalances=volume_imbalances,
+                    pd_array_matrix,
                 ),
-                pd_array_matrix,
+                _bt,
             ),
         },
         "config": cfg.__dict__,
