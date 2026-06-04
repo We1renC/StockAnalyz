@@ -5413,6 +5413,22 @@ def api_get_paper_acceptance_promotion(symbol: str, stage: str = "paper"):
         conn.close()
 
 
+@app.get("/api/paper-acceptance/coverage")
+def api_get_paper_acceptance_coverage(symbol: str, stage: str = "paper"):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        payload = build_acceptance_workspace(conn, symbol=symbol.strip().upper(), stage=stage, limit_reports=5)
+        return sanitize_float_values({
+            "symbol": payload["symbol"],
+            "stage": payload["stage"],
+            "coverage": payload.get("coverage") or {},
+        })
+    finally:
+        conn.close()
+
+
 @app.put("/api/paper-acceptance/review")
 def api_update_paper_acceptance_review(req: PaperAcceptanceReviewUpdate):
     if not req.symbol.strip():

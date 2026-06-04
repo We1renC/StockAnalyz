@@ -377,3 +377,4 @@ def test_workspace_includes_review_timeline_and_trend():
     assert workspace["timeline"][0]["kind"] in {"event", "scenario"}
     assert workspace["section_trend"][0]["run_key"] == payload["run_key"]
     assert "recommendation" in workspace["policy"]
+    assert "covered_ratio" in workspace["coverage"]

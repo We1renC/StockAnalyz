@@ -1225,6 +1225,40 @@ def _build_section_trend(reports: list[dict]) -> list[dict]:
     return trend
 
 
+def _build_coverage_summary(catalog: list[dict]) -> dict:
+    source_counts = {"framework": 0, "observed": 0, "manual": 0, "unknown": 0}
+    source_gates = {"framework": set(), "observed": set(), "manual": set(), "unknown": set()}
+    missing_checks = 0
+    total_checks = 0
+    total_gates = 0
+    gates_with_missing: list[str] = []
+    for section in catalog:
+        for gate in section.get("gates") or []:
+            total_gates += 1
+            gate_has_missing = False
+            for check in gate.get("checks") or []:
+                total_checks += 1
+                source = str(check.get("source") or "unknown")
+                if source not in source_counts:
+                    source = "unknown"
+                source_counts[source] += 1
+                source_gates[source].add(gate.get("id"))
+                if check.get("value") is None:
+                    missing_checks += 1
+                    gate_has_missing = True
+            if gate_has_missing:
+                gates_with_missing.append(gate.get("id"))
+    return {
+        "total_gates": total_gates,
+        "total_checks": total_checks,
+        "missing_checks": missing_checks,
+        "covered_ratio": round((total_checks - missing_checks) / max(1, total_checks), 4),
+        "source_counts": source_counts,
+        "source_gate_counts": {key: len(value) for key, value in source_gates.items()},
+        "gates_with_missing": gates_with_missing,
+    }
+
+
 def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", limit_reports: int = 5) -> dict:
     """Build the full acceptance workspace payload for UI editing and reporting."""
 
@@ -1256,6 +1290,7 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         "timeline": _build_acceptance_timeline(events, scenario_runs),
         "reports": reports,
         "section_trend": _build_section_trend(reports),
+        "coverage": _build_coverage_summary(catalog),
     }
 
 

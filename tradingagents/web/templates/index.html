@@ -1396,6 +1396,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
       <div id="smc-paper-acceptance-overview" class="grid grid-cols-2 xl:grid-cols-6 gap-3 mb-4">
         <div class="rounded-lg border border-slate-800/70 bg-slate-950/40 p-3 text-center text-slate-500 text-xs">載入中...</div>
       </div>
+      <div id="smc-paper-acceptance-coverage" class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3 text-xs text-slate-500 mb-4">載入中...</div>
       <div class="grid grid-cols-1 2xl:grid-cols-[minmax(0,1.7fr)_minmax(360px,0.95fr)] gap-4">
         <div class="space-y-4">
           <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
@@ -3249,6 +3250,7 @@ function renderPaperAcceptanceLoading(message = '載入前測驗收...') {
   const reports = $('smc-paper-acceptance-reports');
   const sections = $('smc-paper-acceptance-sections');
   const catalog = $('smc-paper-acceptance-catalog');
+  const coverage = $('smc-paper-acceptance-coverage');
   const timeline = $('smc-paper-acceptance-timeline');
   const trend = $('smc-paper-acceptance-trend');
   const review = $('smc-paper-acceptance-review-summary');
@@ -3258,6 +3260,7 @@ function renderPaperAcceptanceLoading(message = '載入前測驗收...') {
   if (overview) {
     overview.innerHTML = `<div class="rounded-lg border border-slate-800/70 bg-slate-950/40 p-3 text-center text-slate-500 text-xs col-span-full">${escHtml(message)}</div>`;
   }
+  if (coverage) coverage.innerHTML = escHtml(message);
   if (blockers) blockers.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
   if (reports) reports.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
   if (sections) sections.innerHTML = `<div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 text-xs text-slate-500 md:col-span-2 xl:col-span-3">${escHtml(message)}</div>`;
@@ -3278,6 +3281,7 @@ function renderPaperAcceptanceEmpty(symbol) {
   const reportsEl = $('smc-paper-acceptance-reports');
   const sections = $('smc-paper-acceptance-sections');
   const catalog = $('smc-paper-acceptance-catalog');
+  const coverage = $('smc-paper-acceptance-coverage');
   const timeline = $('smc-paper-acceptance-timeline');
   const trend = $('smc-paper-acceptance-trend');
   const review = $('smc-paper-acceptance-review-summary');
@@ -3298,6 +3302,7 @@ function renderPaperAcceptanceEmpty(symbol) {
   if (reportsEl) reportsEl.innerHTML = '<div class="text-slate-500">尚無歷史報告。</div>';
   if (sections) sections.innerHTML = '<div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 text-xs text-slate-500 md:col-span-2 xl:col-span-3">請先選擇標的。</div>';
   if (catalog) catalog.innerHTML = '<div class="text-slate-500">選擇標的後即可瀏覽條款與證據工作區。</div>';
+  if (coverage) coverage.innerHTML = '尚無覆蓋摘要。';
   if (timeline) timeline.innerHTML = '<div class="text-slate-500">尚無異常事件時間軸。</div>';
   if (trend) trend.innerHTML = '<div class="text-slate-500">尚無驗收趨勢。</div>';
   if (review) review.textContent = '尚未載入';
@@ -3442,6 +3447,24 @@ function renderPaperAcceptanceTrend(rows) {
       <div class="text-[11px] text-slate-500 mt-1">通過率 ${(Number(row.passed_ratio || 0) * 100).toFixed(0)}% · 阻擋 ${escHtml(String(row.blocking_issue_count || 0))}</div>
     </div>
   `).join('');
+}
+
+function renderPaperAcceptanceCoverage(coverage) {
+  if (!coverage || !coverage.total_checks) {
+    return '尚無覆蓋摘要。';
+  }
+  const sources = coverage.source_counts || {};
+  return `
+    <div class="flex items-center justify-between gap-3 flex-wrap">
+      <div class="text-slate-300 font-semibold">證據覆蓋 ${(Number(coverage.covered_ratio || 0) * 100).toFixed(0)}%</div>
+      <div class="flex items-center gap-3 flex-wrap text-[11px] text-slate-500">
+        <span>Framework ${escHtml(String(sources.framework || 0))}</span>
+        <span>Observed ${escHtml(String(sources.observed || 0))}</span>
+        <span>Manual ${escHtml(String(sources.manual || 0))}</span>
+        <span>缺口 ${escHtml(String(coverage.missing_checks || 0))}</span>
+      </div>
+    </div>
+  `;
 }
 
 function renderPaperAcceptanceTimeline(rows) {
@@ -3612,6 +3635,7 @@ function hydratePaperAcceptanceWorkspaceEditors(workspace) {
 
 function renderPaperAcceptanceWorkspace(workspace) {
   const overview = $('smc-paper-acceptance-overview');
+  const coverage = $('smc-paper-acceptance-coverage');
   const blockers = $('smc-paper-acceptance-blockers');
   const reportsEl = $('smc-paper-acceptance-reports');
   const meta = $('smc-paper-acceptance-meta');
@@ -3631,6 +3655,7 @@ function renderPaperAcceptanceWorkspace(workspace) {
       smcDashboardMetric('交易樣本', metrics.trade_count ?? 0, (metrics.trade_count || 0) > 0 ? 'text-cyan-300' : 'text-slate-300'),
     ].join('');
   }
+  if (coverage) coverage.innerHTML = renderPaperAcceptanceCoverage(workspace?.coverage || {});
   if (blockers) blockers.innerHTML = renderPaperAcceptanceBlockers(report.blocking_issues || []);
   if (reportsEl) reportsEl.innerHTML = renderPaperAcceptanceReportList(workspace?.reports || []);
   if ($('smc-paper-acceptance-timeline')) $('smc-paper-acceptance-timeline').innerHTML = renderPaperAcceptanceTimeline(workspace?.timeline || []);
@@ -3850,6 +3875,7 @@ async function refreshPaperAcceptance(force = false) {
     const reports = $('smc-paper-acceptance-reports');
     const sections = $('smc-paper-acceptance-sections');
     const catalog = $('smc-paper-acceptance-catalog');
+    const coverage = $('smc-paper-acceptance-coverage');
     const timeline = $('smc-paper-acceptance-timeline');
     const trend = $('smc-paper-acceptance-trend');
     const review = $('smc-paper-acceptance-review-summary');
@@ -3862,6 +3888,7 @@ async function refreshPaperAcceptance(force = false) {
     if (reports) reports.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (sections) sections.innerHTML = `<div class="rounded-lg border border-red-900/40 bg-red-950/10 p-3 text-xs text-red-300 md:col-span-2 xl:col-span-3">${escHtml(msg)}</div>`;
     if (catalog) catalog.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
+    if (coverage) coverage.innerHTML = escHtml(msg);
     if (timeline) timeline.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (trend) trend.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (review) review.textContent = '讀取失敗';
