@@ -1664,3 +1664,26 @@ def test_resolve_dol_falls_through_to_internal_when_no_external():
     out = resolve_dol_target(1, current_price=100, liquidity=pools)
     assert out["target_price"] == 105.0
     assert out["liquidity_kind"] == "internal"
+
+
+def test_displacement_strength_grading_by_atr_multiple():
+    """§3.11: ATR-multiple buckets — extreme / strong / normal / body_only."""
+    from smc_quant import detect_displacement, SMCConfig
+    # Build a sequence where the last bar is a 3× ATR candle (extreme).
+    rows = [(100, 101, 99, 100, 1)] * 14 + [(100, 110, 99, 109, 5)]
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(len(rows))]
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    out = detect_displacement(df, SMCConfig())
+    assert out, "expected at least one displacement"
+    last = out[-1]
+    assert last["strength"] in {"extreme", "strong"}
+    assert last["atr_multiple"] >= 1.8
+
+
+def test_displacement_fields_present_on_every_event():
+    from smc_quant import detect_displacement, SMCConfig
+    h = normalize_ohlcv(_sample_ohlcv())
+    out = detect_displacement(h, SMCConfig())
+    for d in out:
+        assert d["strength"] in {"extreme", "strong", "normal", "body_only"}
+        assert "atr_multiple" in d

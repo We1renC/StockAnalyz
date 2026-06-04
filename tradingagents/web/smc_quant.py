@@ -230,6 +230,17 @@ def detect_displacement(df: pd.DataFrame, cfg: SMCConfig) -> list[dict]:
         body_ratio = body / rng if rng > 0 else 0
         if (atr_v > 0 and body >= cfg.displacement_atr_mult * atr_v) or body_ratio >= cfg.displacement_body_ratio:
             direction = 1 if row["close"] >= row["open"] else -1
+            # §3.11 — strength grading by ATR multiple so the §5.2 scorer can
+            # distinguish a marginal displacement from an institutional candle.
+            atr_mult = (body / atr_v) if atr_v > 0 else 0.0
+            if atr_mult >= 2.5:
+                strength = "extreme"
+            elif atr_mult >= 1.8:
+                strength = "strong"
+            elif atr_mult >= cfg.displacement_atr_mult:
+                strength = "normal"
+            else:
+                strength = "body_only"
             out.append(
                 {
                     "index": i,
@@ -239,6 +250,8 @@ def detect_displacement(df: pd.DataFrame, cfg: SMCConfig) -> list[dict]:
                     "range": round(rng, 4),
                     "atr": round(atr_v, 4),
                     "body_ratio": round(body_ratio, 3),
+                    "atr_multiple": round(atr_mult, 3),
+                    "strength": strength,
                 }
             )
     return out
