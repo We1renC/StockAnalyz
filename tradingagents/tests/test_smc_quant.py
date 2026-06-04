@@ -2553,3 +2553,17 @@ def test_suggest_weights_seeds_bpr_and_ifvg_overlap():
     out = suggest_confluence_weights({"factors": {}})
     assert out["bpr_overlap"] == 1
     assert out["ifvg_overlap"] == 1
+
+
+def test_chart_layer_c10_trades_carry_dol_and_factor_count():
+    """§6.1: C10 signals expose DOL kind, poi_kind, and active factor count."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    trades = result["visualization"]["chart_layers"]["C10_signals"]["trades"]
+    for t in trades:
+        assert "dol_required" in t
+        assert "poi_kind" in t
+        assert "factor_count" in t
+        assert isinstance(t["factor_count"], int) and t["factor_count"] >= 0

@@ -4420,6 +4420,9 @@ def build_chart_layers(
                 "score": (e.get("confluence") or {}).get("score"),
                 "triggered": e.get("triggered"),
                 "dol_target": e.get("dol_target"),
+                "dol_required": e.get("dol_required"),
+                "poi_kind": e.get("poi_kind"),
+                "factor_count": len((e.get("confluence") or {}).get("contributing_factors", [])),
             }
             for e in entry_models_combined
         ],
