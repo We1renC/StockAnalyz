@@ -1042,8 +1042,10 @@ def detect_judas_swings(
     if df is None or len(df) == 0 or not liquidity or not structure:
         return out
     disp_by_dir: dict[int, set[int]] = {1: set(), -1: set()}
+    disp_strength_by_index: dict[int, str] = {}
     for d in displacements or []:
         disp_by_dir.setdefault(int(d["direction"]), set()).add(int(d["index"]))
+        disp_strength_by_index[int(d["index"])] = d.get("strength", "normal")
     for liq in liquidity:
         swept = liq.get("swept_index")
         if swept is None:
@@ -1067,9 +1069,18 @@ def detect_judas_swings(
         window = df.iloc[swept : end + 1]
         false_high = round(float(window["high"].max()), 4) if len(window) else None
         false_low = round(float(window["low"].min()), 4) if len(window) else None
-        disp_confirmed = any(
-            swept < idx <= int(confirm["index"]) for idx in disp_by_dir.get(real_dir, set())
-        )
+        matched_disp_indexes = [
+            idx for idx in disp_by_dir.get(real_dir, set())
+            if swept < idx <= int(confirm["index"])
+        ]
+        disp_confirmed = bool(matched_disp_indexes)
+        disp_strength = "none"
+        for idx in matched_disp_indexes:
+            s = disp_strength_by_index.get(idx, "normal")
+            # rank: extreme > strong > normal > body_only
+            order = {"extreme": 3, "strong": 2, "normal": 1, "body_only": 0, "none": -1}
+            if order.get(s, 0) > order.get(disp_strength, -1):
+                disp_strength = s
         sess = session_state(df.iloc[: swept + 1], symbol)
         out.append(
             {
@@ -1085,6 +1096,7 @@ def detect_judas_swings(
                 "confirm_index": int(confirm["index"]),
                 "confirm_time": confirm.get("time"),
                 "displacement_confirmed": disp_confirmed,
+                "displacement_strength": disp_strength,
                 "session_at_sweep": sess.get("name"),
                 "killzone": bool(sess.get("killzone")),
             }
@@ -2080,8 +2092,11 @@ def detect_sweep_reversal_entries(
             "ote_zone": ote_overlap,
             "killzone": bool(ev.get("killzone")) or bool((session or {}).get("killzone")),
             "volume_displacement": bool(ev.get("displacement_confirmed")),
+            "displacement_extreme": ev.get("displacement_strength") == "extreme",
         }
-        scoring = score_confluence(factors, weights=weights, threshold=threshold)
+        # §3.11 — credit an extreme displacement explicitly (+1).
+        local_weights = {**(weights or {}), "displacement_extreme": 1}
+        scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
             {
                 "model": "sweep_reversal",
@@ -2660,8 +2675,11 @@ def detect_power_of_three_entries(
             "ote_zone": False,
             "killzone": bool(ev.get("killzone")) or bool((session or {}).get("killzone")),
             "volume_displacement": bool(ev.get("displacement_confirmed")),
+            "displacement_extreme": ev.get("displacement_strength") == "extreme",
         }
-        scoring = score_confluence(factors, weights=weights, threshold=threshold)
+        # §3.11 — credit an extreme displacement explicitly (+1).
+        local_weights = {**(weights or {}), "displacement_extreme": 1}
+        scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
             {
                 "model": "power_of_three",

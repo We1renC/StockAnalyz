@@ -1786,3 +1786,43 @@ def test_build_smc_analysis_routes_equilibrium_reactions():
     if pd_zone:
         assert "equilibrium_reactions" in pd_zone
         assert "active" in pd_zone["equilibrium_reactions"]
+
+
+def test_judas_events_carry_displacement_strength_field():
+    """§3.11: every Judas event records the strongest displacement that confirmed it."""
+    cfg = SMCConfig(swing_length=2, internal_swing_length=2)
+    h = normalize_ohlcv(_sample_ohlcv())
+    swings = detect_swings(h, cfg.swing_length)
+    structure = detect_structure(h, swings, cfg)
+    liquidity = detect_liquidity(h, swings, cfg)
+    displacements = detect_displacement(h, cfg)
+    events = detect_judas_swings(h, structure, liquidity, displacements, "AAPL")
+    for ev in events:
+        assert "displacement_strength" in ev
+        assert ev["displacement_strength"] in {"none", "body_only", "normal", "strong", "extreme"}
+
+
+def test_sweep_reversal_entry_credits_extreme_displacement():
+    """§5.2 + §3.11: an entry with displacement_strength=extreme picks up +1 displacement_extreme."""
+    from smc_quant import detect_sweep_reversal_entries
+    judas = [{
+        "judas": 1, "real_direction": 1, "fakeout_direction": -1,
+        "sweep_type": "SSL", "sweep_level": 9.0,
+        "sweep_index": 4, "confirm_index": 6, "confirm_time": None,
+        "false_move_high": 10.5, "false_move_low": 8.8,
+        "displacement_confirmed": True, "displacement_strength": "extreme",
+        "session_at_sweep": None, "killzone": False,
+        "sweep_time": None,
+    }]
+    obs = [{
+        "index": 5, "direction": 1, "top": 10.0, "bottom": 9.0,
+        "refined_entry": 9.5, "status": "unmitigated", "grade": "B",
+        "displacement_confirmed": True,
+    }]
+    h = normalize_ohlcv(_sample_ohlcv())
+    entries = detect_sweep_reversal_entries(h, judas, obs, [], {"state": "discount"}, "bullish")
+    assert entries
+    e = entries[0]
+    assert e["factors"]["displacement_extreme"] is True
+    names = {f["factor"] for f in e["confluence"]["contributing_factors"]}
+    assert "displacement_extreme" in names
