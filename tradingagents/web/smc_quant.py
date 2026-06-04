@@ -1848,6 +1848,7 @@ def resolve_dol_target(
     liquidity: list[dict],
     prev_levels: Optional[dict] = None,
     fvgs: Optional[list[dict]] = None,
+    round_magnets: Optional[list[dict]] = None,
 ) -> Optional[dict]:
     """§3.5 DOL — pick the nearest opposite-side liquidity pool as the target.
 
@@ -1918,17 +1919,32 @@ def resolve_dol_target(
             "distance": round(abs(mid - current_price), 4),
             "source_index": int(f.get("index", -1)),
         })
+    for rn in round_magnets or []:
+        lvl = float(rn.get("level", 0))
+        if lvl <= 0:
+            continue
+        if direction == 1 and lvl <= current_price:
+            continue
+        if direction == -1 and lvl >= current_price:
+            continue
+        candidates.append({
+            "target_price": round(lvl, 4),
+            "target_kind": "ROUND",
+            "distance": round(abs(lvl - current_price), 4),
+            "source_index": -1,
+        })
     if not candidates:
         return None
-    # §3.5 — external liquidity > PDH/PDL > internal > FVG mid > unknown.
+    # §3.5 — external liquidity > PDH/PDL > internal > round number > FVG mid > unknown.
     # Within the same priority bucket, take the closest pool (smallest distance).
     priority = {
         "external": 0,
         "PDH": 1, "PDL": 1,
         "internal": 2,
-        "FVG_MID": 3,
-        "unknown": 4,
-        "out_of_range": 5,
+        "ROUND": 3,
+        "FVG_MID": 4,
+        "unknown": 5,
+        "out_of_range": 6,
     }
     def _sort_key(c):
         bucket = priority.get(c.get("liquidity_kind") or c.get("target_kind"), 9)
@@ -1948,6 +1964,7 @@ def attach_dol_targets(
     prev_levels: Optional[dict],
     fvgs: Optional[list[dict]],
     current_price: float,
+    round_magnets: Optional[list[dict]] = None,
 ) -> list[dict]:
     """Annotate every §5 entry with a §3.5 DOL target.
 
@@ -1957,7 +1974,7 @@ def attach_dol_targets(
     out: list[dict] = []
     for e in entries or []:
         direction = int(e.get("direction", 0))
-        dol = resolve_dol_target(direction, current_price, liquidity, prev_levels, fvgs)
+        dol = resolve_dol_target(direction, current_price, liquidity, prev_levels, fvgs, round_magnets)
         annotated = dict(e)
         if dol is None:
             annotated["dol_target"] = None
@@ -4633,12 +4650,12 @@ def build_smc_analysis(
         )
     _last_close = float(h["close"].iloc[-1]) if len(h) else 0.0
     round_magnets = detect_round_number_magnets(_last_close)
-    sweep_reversal_entries = attach_dol_targets(sweep_reversal_entries, liquidity, prev, fvgs, _last_close)
-    continuation_entries = attach_dol_targets(continuation_entries, liquidity, prev, fvgs, _last_close)
-    ote_entries = attach_dol_targets(ote_entries, liquidity, prev, fvgs, _last_close)
-    unicorn_entries = attach_dol_targets(unicorn_entries, liquidity, prev, fvgs, _last_close)
-    silver_bullet_entries = attach_dol_targets(silver_bullet_entries, liquidity, prev, fvgs, _last_close)
-    power_of_three_entries = attach_dol_targets(power_of_three_entries, liquidity, prev, fvgs, _last_close)
+    sweep_reversal_entries = attach_dol_targets(sweep_reversal_entries, liquidity, prev, fvgs, _last_close, round_magnets)
+    continuation_entries = attach_dol_targets(continuation_entries, liquidity, prev, fvgs, _last_close, round_magnets)
+    ote_entries = attach_dol_targets(ote_entries, liquidity, prev, fvgs, _last_close, round_magnets)
+    unicorn_entries = attach_dol_targets(unicorn_entries, liquidity, prev, fvgs, _last_close, round_magnets)
+    silver_bullet_entries = attach_dol_targets(silver_bullet_entries, liquidity, prev, fvgs, _last_close, round_magnets)
+    power_of_three_entries = attach_dol_targets(power_of_three_entries, liquidity, prev, fvgs, _last_close, round_magnets)
     # §17.10 — when a crypto overlay is present, weave its factor map
     # into every entry's confluence score so e.g. perp_led_warning
     # actually debits points and oi_drop_at_sweep adds them.

@@ -1923,3 +1923,33 @@ def test_build_smc_analysis_exposes_round_number_magnets():
     assert "round_number_magnets" in result["concepts"]
     for m in result["concepts"]["round_number_magnets"]:
         assert "level" in m and "distance_pct" in m and "active_magnet" in m
+
+
+def test_resolve_dol_uses_round_number_when_no_liquidity():
+    """§3.5: round-number magnet acts as fallback when no liquidity / PDH / FVG."""
+    from smc_quant import resolve_dol_target
+    round_magnets = [
+        {"level": 105.0, "distance_pct": 5.0, "active_magnet": False},
+        {"level": 110.0, "distance_pct": 10.0, "active_magnet": False},
+    ]
+    out = resolve_dol_target(
+        1, current_price=100.0, liquidity=[],
+        round_magnets=round_magnets,
+    )
+    assert out is not None
+    assert out["target_kind"] == "ROUND"
+    assert out["target_price"] == 105.0
+
+
+def test_resolve_dol_external_still_wins_over_round_number():
+    """Round number should NOT outrank an external pool."""
+    from smc_quant import resolve_dol_target
+    pools = [
+        {"type": "BSL", "level": 120, "swept": False, "end_index": 5, "liquidity_kind": "external"},
+    ]
+    out = resolve_dol_target(
+        1, current_price=100, liquidity=pools,
+        round_magnets=[{"level": 105, "distance_pct": 5.0}],
+    )
+    assert out["target_kind"] == "BSL"
+    assert out["target_price"] == 120.0
