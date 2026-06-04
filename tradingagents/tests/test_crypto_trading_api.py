@@ -713,3 +713,65 @@ def test_exchange_adapter_management_api():
     assert res.status_code == 404
 
 
+def test_reconciliation_api():
+    client = TestClient(app.app)
+    
+    # 1. Create a limit order
+    payload = {
+        "client_order_id": "recon_test_001",
+        "symbol": "BTC-USDT",
+        "side": "buy",
+        "type": "limit",
+        "price": "60000.00",
+        "quantity": "0.01"
+    }
+    res_order = post_json(client, "/v1/orders", payload)
+    assert res_order.status_code == 200
+    order_id = res_order.json()["id"]
+
+    # Check initially no issues
+    headers = get_auth_headers("GET", "/v1/internal/reconciliation/issues")
+    res_issues = client.get("/v1/internal/reconciliation/issues", headers=headers)
+    assert res_issues.status_code == 200
+    assert res_issues.json()["total_issues"] == 0
+
+    # 2. Inject a fake fill into DB using sqlite directly
+    conn = get_crypto_db()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO crypto_fills (id, order_id, account_id, client_order_id, symbol, side, price, quantity, notional, fee, fee_asset, liquidity, executed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, ("fill_recon_001", order_id, "acct_123", "ex_fill_recon_1", "BTC-USDT", "buy", "60000.00", "0.005", "300.00", "0.00001", "BTC", "maker", "2026-06-04T12:00:00Z"))
+    conn.commit()
+    conn.close()
+
+    # 3. Check issues again, should have 1 issue (FILLED_QUANTITY_MISMATCH)
+    headers_issues2 = get_auth_headers("GET", "/v1/internal/reconciliation/issues")
+    res_issues2 = client.get("/v1/internal/reconciliation/issues", headers=headers_issues2)
+    assert res_issues2.status_code == 200
+    assert res_issues2.json()["total_issues"] == 1
+    assert res_issues2.json()["issues"][0]["type"] == "FILLED_QUANTITY_MISMATCH"
+    assert res_issues2.json()["issues"][0]["order_id"] == order_id
+
+    # 4. Trigger reconciliation for this order
+    headers_post = get_auth_headers("POST", f"/v1/internal/reconciliation/orders/{order_id}")
+    res_recon = client.post(f"/v1/internal/reconciliation/orders/{order_id}", headers=headers_post)
+    assert res_recon.status_code == 200
+    assert res_recon.json()["corrected"] is True
+    assert res_recon.json()["new_status"] == "partially_filled"
+    assert res_recon.json()["new_filled"] == "0.005"
+
+    # 5. Check issues again, should be 0 issues now
+    headers = get_auth_headers("GET", "/v1/internal/reconciliation/issues")
+    res_issues3 = client.get("/v1/internal/reconciliation/issues", headers=headers)
+    assert res_issues3.status_code == 200
+    assert res_issues3.json()["total_issues"] == 0
+
+    # 6. Run batch reconciliation
+    headers_batch = get_auth_headers("POST", "/v1/internal/reconciliation/fills")
+    res_batch = client.post("/v1/internal/reconciliation/fills", headers=headers_batch)
+    assert res_batch.status_code == 200
+    assert res_batch.json()["success"] is True
+
+
+

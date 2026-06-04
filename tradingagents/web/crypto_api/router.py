@@ -1530,6 +1530,233 @@ async def get_exchange_symbols(exchange: str, auth_info: Dict[str, Any] = Depend
     }
 
 
+# ─────────────── 13.11 Internal Reconciliation API ───────────────
+
+@router.post("/internal/reconciliation/orders/{order_id}")
+async def reconcile_order(order_id: str, auth_info: Dict[str, Any] = Depends(require_scopes(["admin:system"]))):
+    conn = get_crypto_db()
+    c = conn.cursor()
+    
+    # Query order
+    order = c.execute("SELECT * FROM crypto_orders WHERE id = ?", (order_id,)).fetchone()
+    if not order:
+        conn.close()
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "success": False,
+                "error": {
+                    "code": "ORDER_NOT_FOUND",
+                    "message": f"Order '{order_id}' was not found."
+                }
+            }
+        )
+        
+    order_dict = dict(order)
+    
+    # Query fills
+    fills = c.execute("SELECT quantity, fee, fee_asset FROM crypto_fills WHERE order_id = ?", (order_id,)).fetchall()
+    
+    sum_filled_qty = Decimal("0")
+    sum_fee = Decimal("0")
+    fee_asset = None
+    for f in fills:
+        sum_filled_qty += Decimal(f["quantity"])
+        sum_fee += Decimal(f["fee"])
+        fee_asset = f["fee_asset"]
+        
+    orig_qty = Decimal(order_dict["quantity"])
+    cur_filled = Decimal(order_dict["filled_quantity"])
+    
+    corrected = False
+    old_filled = str(cur_filled)
+    old_status = order_dict["status"]
+    
+    if sum_filled_qty != cur_filled:
+        corrected = True
+        new_remaining = orig_qty - sum_filled_qty
+        new_status = order_dict["status"]
+        if sum_filled_qty >= orig_qty:
+            new_status = "filled"
+            new_remaining = Decimal("0")
+        elif sum_filled_qty > 0:
+            new_status = "partially_filled"
+        else:
+            if order_dict["status"] in ("filled", "partially_filled"):
+                new_status = "open"
+                
+        now_iso = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        c.execute("""
+            UPDATE crypto_orders
+            SET filled_quantity = ?, remaining_quantity = ?, status = ?, fee = ?, fee_asset = ?, updated_at = ?
+            WHERE id = ?
+        """, (str(sum_filled_qty), str(new_remaining), new_status, str(sum_fee), fee_asset, now_iso, order_id))
+        conn.commit()
+        
+        # Log audit log
+        write_audit_log(conn, order_dict["account_id"], auth_info["api_key_id"], "order.reconcile", "order", order_id, "internal", "system", "success", {
+            "order_id": order_id,
+            "corrected": True,
+            "old_status": old_status,
+            "new_status": new_status,
+            "old_filled": old_filled,
+            "new_filled": str(sum_filled_qty)
+        })
+        
+        order_dict["status"] = new_status
+        order_dict["filled_quantity"] = str(sum_filled_qty)
+        order_dict["remaining_quantity"] = str(new_remaining)
+        
+    conn.close()
+    
+    return {
+        "success": True,
+        "order_id": order_id,
+        "reconciled": True,
+        "corrected": corrected,
+        "old_status": old_status,
+        "new_status": order_dict["status"],
+        "old_filled": old_filled,
+        "new_filled": order_dict["filled_quantity"]
+    }
+
+@router.post("/internal/reconciliation/fills")
+async def reconcile_fills(auth_info: Dict[str, Any] = Depends(require_scopes(["admin:system"]))):
+    conn = get_crypto_db()
+    c = conn.cursor()
+    
+    # Get all active or filled/partially filled orders
+    orders = c.execute("SELECT id FROM crypto_orders").fetchall()
+    
+    reconciled_count = 0
+    corrected_count = 0
+    corrections = []
+    
+    for r in orders:
+        order_id = r["id"]
+        res = await reconcile_order_internal(conn, order_id, auth_info["api_key_id"])
+        reconciled_count += 1
+        if res["corrected"]:
+            corrected_count += 1
+            corrections.append(res)
+            
+    conn.close()
+    return {
+        "success": True,
+        "total_reconciled": reconciled_count,
+        "total_corrected": corrected_count,
+        "corrections": corrections
+    }
+
+# Internal helper function used by endpoint and batch function
+async def reconcile_order_internal(conn: sqlite3.Connection, order_id: str, actor_id: str) -> Dict[str, Any]:
+    c = conn.cursor()
+    order = c.execute("SELECT * FROM crypto_orders WHERE id = ?", (order_id,)).fetchone()
+    if not order:
+        return {"order_id": order_id, "corrected": False, "error": "NOT_FOUND"}
+        
+    order_dict = dict(order)
+    fills = c.execute("SELECT quantity, fee, fee_asset FROM crypto_fills WHERE order_id = ?", (order_id,)).fetchall()
+    
+    sum_filled_qty = Decimal("0")
+    sum_fee = Decimal("0")
+    fee_asset = None
+    for f in fills:
+        sum_filled_qty += Decimal(f["quantity"])
+        sum_fee += Decimal(f["fee"])
+        fee_asset = f["fee_asset"]
+        
+    orig_qty = Decimal(order_dict["quantity"])
+    cur_filled = Decimal(order_dict["filled_quantity"])
+    
+    corrected = False
+    old_filled = str(cur_filled)
+    old_status = order_dict["status"]
+    new_status = old_status
+    
+    if sum_filled_qty != cur_filled:
+        corrected = True
+        new_remaining = orig_qty - sum_filled_qty
+        if sum_filled_qty >= orig_qty:
+            new_status = "filled"
+            new_remaining = Decimal("0")
+        elif sum_filled_qty > 0:
+            new_status = "partially_filled"
+        else:
+            if old_status in ("filled", "partially_filled"):
+                new_status = "open"
+                
+        now_iso = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        c.execute("""
+            UPDATE crypto_orders
+            SET filled_quantity = ?, remaining_quantity = ?, status = ?, fee = ?, fee_asset = ?, updated_at = ?
+            WHERE id = ?
+        """, (str(sum_filled_qty), str(new_remaining), new_status, str(sum_fee), fee_asset, now_iso, order_id))
+        conn.commit()
+        
+        # Log audit log
+        write_audit_log(conn, order_dict["account_id"], actor_id, "order.reconcile", "order", order_id, "internal", "system", "success", {
+            "order_id": order_id,
+            "corrected": True,
+            "old_status": old_status,
+            "new_status": new_status,
+            "old_filled": old_filled,
+            "new_filled": str(sum_filled_qty)
+        })
+        
+    return {
+        "order_id": order_id,
+        "corrected": corrected,
+        "old_status": old_status,
+        "new_status": new_status,
+        "old_filled": old_filled,
+        "new_filled": str(sum_filled_qty)
+    }
+
+@router.get("/internal/reconciliation/issues")
+async def get_reconciliation_issues(auth_info: Dict[str, Any] = Depends(require_scopes(["admin:system"]))):
+    conn = get_crypto_db()
+    c = conn.cursor()
+    
+    # Find orders with mismatching filled quantity
+    orders = c.execute("SELECT * FROM crypto_orders").fetchall()
+    
+    issues = []
+    for r in orders:
+        order_id = r["id"]
+        fills = c.execute("SELECT quantity FROM crypto_fills WHERE order_id = ?", (order_id,)).fetchall()
+        sum_filled_qty = sum(Decimal(f["quantity"]) for f in fills)
+        cur_filled = Decimal(r["filled_quantity"])
+        
+        if sum_filled_qty != cur_filled:
+            issues.append({
+                "type": "FILLED_QUANTITY_MISMATCH",
+                "order_id": order_id,
+                "symbol": r["symbol"],
+                "account_id": r["account_id"],
+                "order_filled": str(cur_filled),
+                "actual_fills_sum": str(sum_filled_qty),
+                "description": f"Order filled quantity ({cur_filled}) does not match sum of fills ({sum_filled_qty})"
+            })
+            
+        # Check if status is unknown
+        if r["status"] == "unknown":
+            issues.append({
+                "type": "UNKNOWN_STATUS",
+                "order_id": order_id,
+                "symbol": r["symbol"],
+                "account_id": r["account_id"],
+                "description": "Order status is unknown"
+            })
+            
+    conn.close()
+    return {
+        "success": True,
+        "total_issues": len(issues),
+        "issues": issues
+    }
+
+
 def order_to_binance(order: Dict[str, Any], fills_list: List[Dict[str, Any]] = []) -> Dict[str, Any]:
     status_map = {
         "pending": "NEW",
