@@ -347,6 +347,7 @@ def test_api_review_governance_round_trip(tmp_path):
         assert review["can_promote_to_live"] is True
         assert workspace["review"]["reviewer"] == "qa"
         assert "policy" in promotion
+        assert "promotion_ladder" in promotion["policy"]
         assert promotion_check["decision"] in {"allow", "conditional", "deny"}
         assert changes["count"] >= 1
         assert "coverage" in coverage

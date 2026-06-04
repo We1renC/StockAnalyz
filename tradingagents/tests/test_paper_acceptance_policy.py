@@ -36,6 +36,17 @@ def _context():
             "average_api_latency": 120,
             "average_holding_minutes": 45,
             "capital_stage_count": 1,
+            "shadow_trace_count": 2,
+            "shadow_parity_score": 0.92,
+            "shadow_market_data_shared_ratio": 1.0,
+            "shadow_signal_process_shared_ratio": 1.0,
+            "shadow_risk_module_shared_ratio": 1.0,
+            "shadow_order_generation_shared_ratio": 1.0,
+            "shadow_logging_alerting_shared_ratio": 1.0,
+            "shadow_no_exchange_submission_ratio": 1.0,
+            "shadow_order_book_snapshot_ratio": 1.0,
+            "shadow_likely_execution_price_ratio": 1.0,
+            "shadow_post_order_price_behavior_ratio": 1.0,
             "hardcoded_api_keys": False,
             "withdrawal_permission_enabled": False,
             "test_live_keys_separated": True,
@@ -43,6 +54,8 @@ def _context():
             "revocation_process": True,
             "ip_whitelist": True,
         },
+        "capital_stages": [{"stage_name": "stage1_1_5", "capital_ratio": 0.05}],
+        "deviation_snapshots": [{"baseline_source": "paper", "comparison_source": "live", "deviation_score": 0.2}],
         "evidence": evidence,
         "prohibitions": {},
     }
@@ -53,6 +66,8 @@ def test_policy_snapshot_marks_shadow_when_review_not_approved():
     assert payload["shared_architecture_ready"] is True
     assert payload["recommendation"] == "shadow"
     assert payload["can_promote"] is False
+    assert payload["promotion_ladder"]["current_stage"]["stage_name"] == "stage1_1_5"
+    assert payload["promotion_ladder"]["next_stage"]["stage_name"] == "stage2_10_20"
 
 
 def test_policy_snapshot_blocks_on_threshold_and_prohibition_failure():
@@ -62,3 +77,4 @@ def test_policy_snapshot_blocks_on_threshold_and_prohibition_failure():
     payload = build_acceptance_policy_snapshot(ctx, review={"review_status": "approved", "can_promote_to_live": True})
     assert "20 fill_rate_threshold_failed" in payload["blockers"]
     assert "21 prohibition_flags_present" in payload["blockers"]
+    assert any(row["key"] == "fill_rate" for row in payload["promotion_ladder"]["blocker_deltas"])

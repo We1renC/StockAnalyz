@@ -421,6 +421,7 @@ def test_workspace_includes_review_timeline_and_trend():
     assert workspace["timeline"][0]["kind"] in {"event", "scenario", "change"}
     assert workspace["section_trend"][0]["run_key"] == payload["run_key"]
     assert "recommendation" in workspace["policy"]
+    assert "promotion_ladder" in workspace["policy"]
     assert "covered_ratio" in workspace["coverage"]
     assert isinstance(workspace["coverage"]["sections"], list)
     assert isinstance(workspace["coverage"]["missing_details"], list)
@@ -517,6 +518,7 @@ def test_shadow_parity_round_trip_and_context_mapping():
     shadow_gate = context["evidence"]["shadow_trading"]["checks"]
     assert shadow_gate["live_market_data_source"] is True
     assert shadow_gate["no_exchange_submission"] is True
+    assert context["policy"]["promotion_ladder"]["shadow_trace_count"] == 1
 
 
 def test_workspace_auto_generates_stage_and_deviation_from_live_telemetry():

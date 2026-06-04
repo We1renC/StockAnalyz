@@ -30,6 +30,14 @@ DEFAULT_THRESHOLDS = {
     },
 }
 
+PROMOTION_STAGES = (
+    {"stage_name": "stage0_paper", "label": "Stage 0 Paper", "capital_ratio": 0.0},
+    {"stage_name": "stage1_1_5", "label": "Stage 1 1%-5%", "capital_ratio": 0.05},
+    {"stage_name": "stage2_10_20", "label": "Stage 2 10%-20%", "capital_ratio": 0.20},
+    {"stage_name": "stage3_25_50", "label": "Stage 3 25%-50%", "capital_ratio": 0.50},
+    {"stage_name": "stage4_full", "label": "Stage 4 Full", "capital_ratio": 1.00},
+)
+
 
 def _checks_for_gate(evidence: Mapping[str, Any], gate_id: str) -> dict[str, Any]:
     gate = evidence.get(gate_id) or {}
@@ -39,6 +47,164 @@ def _checks_for_gate(evidence: Mapping[str, Any], gate_id: str) -> dict[str, Any
 
 def _all_truthy(checks: Mapping[str, Any], keys: tuple[str, ...]) -> bool:
     return all(checks.get(key) is True for key in keys)
+
+
+def _stage_meta_by_name(stage_name: str | None) -> dict[str, Any]:
+    for row in PROMOTION_STAGES:
+        if row["stage_name"] == stage_name:
+            return dict(row)
+    return dict(PROMOTION_STAGES[0])
+
+
+def _infer_current_stage(metrics: Mapping[str, Any], capital_stages: list[dict]) -> dict[str, Any]:
+    if capital_stages:
+        return _stage_meta_by_name(capital_stages[0].get("stage_name"))
+    stage_count = int(metrics.get("capital_stage_count") or 0)
+    if stage_count >= 4:
+        return dict(PROMOTION_STAGES[4])
+    if stage_count >= 3:
+        return dict(PROMOTION_STAGES[3])
+    if stage_count >= 2:
+        return dict(PROMOTION_STAGES[2])
+    if stage_count >= 1:
+        return dict(PROMOTION_STAGES[1])
+    return dict(PROMOTION_STAGES[0])
+
+
+def _build_promotion_ladder(
+    *,
+    strategy: Mapping[str, Any],
+    metrics: Mapping[str, Any],
+    thresholds: Mapping[str, Any],
+    blockers: list[str],
+    review_payload: Mapping[str, Any],
+    capital_stages: list[dict],
+    deviation_snapshots: list[dict],
+    shared_architecture: bool,
+    paper_live_ready: bool,
+) -> dict[str, Any]:
+    current = _infer_current_stage(metrics, capital_stages)
+    current_index = next((idx for idx, row in enumerate(PROMOTION_STAGES) if row["stage_name"] == current["stage_name"]), 0)
+    next_stage = dict(PROMOTION_STAGES[min(current_index + 1, len(PROMOTION_STAGES) - 1)])
+    trade_count = int(metrics.get("trade_count") or 0)
+    testing_days = int(metrics.get("testing_days") or 0)
+    fill_rate = metrics.get("fill_rate")
+    avg_slippage = metrics.get("average_slippage")
+    api_error_rate = metrics.get("api_error_rate")
+    shadow_score = metrics.get("shadow_parity_score")
+    live_deviation = metrics.get("paper_live_max_deviation_ratio")
+
+    checks = [
+        {
+            "key": "trade_count",
+            "label": "Trade Count",
+            "current": trade_count,
+            "threshold": thresholds["min_trade_count"],
+            "delta": max(0, thresholds["min_trade_count"] - trade_count),
+            "pass": trade_count >= thresholds["min_trade_count"],
+            "unit": "trades",
+        },
+        {
+            "key": "testing_days",
+            "label": "Testing Days",
+            "current": testing_days,
+            "threshold": thresholds["min_testing_days"],
+            "delta": max(0, thresholds["min_testing_days"] - testing_days),
+            "pass": testing_days >= thresholds["min_testing_days"],
+            "unit": "days",
+        },
+        {
+            "key": "fill_rate",
+            "label": "Fill Rate",
+            "current": fill_rate,
+            "threshold": thresholds["min_fill_rate"],
+            "delta": round(max(0.0, float(thresholds["min_fill_rate"]) - float(fill_rate or 0)), 4) if fill_rate is not None else None,
+            "pass": fill_rate is not None and float(fill_rate) >= thresholds["min_fill_rate"],
+            "unit": "ratio",
+        },
+        {
+            "key": "average_slippage",
+            "label": "Average Slippage",
+            "current": avg_slippage,
+            "threshold": thresholds["max_average_slippage_bps"],
+            "delta": round(max(0.0, float(avg_slippage or 0) - float(thresholds["max_average_slippage_bps"])), 4) if avg_slippage is not None else None,
+            "pass": avg_slippage is not None and float(avg_slippage) <= thresholds["max_average_slippage_bps"],
+            "unit": "bps",
+        },
+        {
+            "key": "api_error_rate",
+            "label": "API Error Rate",
+            "current": api_error_rate,
+            "threshold": thresholds["max_api_error_rate"],
+            "delta": round(max(0.0, float(api_error_rate or 0) - float(thresholds["max_api_error_rate"])), 4) if api_error_rate is not None else None,
+            "pass": api_error_rate is not None and float(api_error_rate) <= thresholds["max_api_error_rate"],
+            "unit": "ratio",
+        },
+        {
+            "key": "shadow_parity",
+            "label": "Shadow Parity",
+            "current": shadow_score,
+            "threshold": 0.8,
+            "delta": round(max(0.0, 0.8 - float(shadow_score or 0)), 4) if shadow_score is not None else None,
+            "pass": shared_architecture and shadow_score is not None and float(shadow_score) >= 0.8,
+            "unit": "score",
+        },
+        {
+            "key": "paper_live_deviation",
+            "label": "Paper-Live Deviation",
+            "current": live_deviation,
+            "threshold": thresholds["max_paper_live_deviation"],
+            "delta": round(max(0.0, float(live_deviation or 0) - float(thresholds["max_paper_live_deviation"])), 4) if live_deviation is not None else None,
+            "pass": paper_live_ready,
+            "unit": "ratio",
+        },
+    ]
+
+    blocker_deltas = [row for row in checks if row["pass"] is False]
+    rationale: list[str] = []
+    if blocker_deltas:
+        for row in blocker_deltas[:5]:
+            rationale.append(
+                f"{row['label']} 未達門檻：目前 {row['current']}，標準 {row['threshold']}。"
+            )
+    if blockers:
+        rationale.extend(f"阻擋項：{item}" for item in blockers[:5])
+    if not rationale:
+        if review_payload.get("review_status") == "approved" and review_payload.get("can_promote_to_live"):
+            rationale.append("審閱已批准，且量化門檻與禁止條件均已通過。")
+        else:
+            rationale.append("量化門檻已達成，但仍需審閱批准後才能升級。")
+
+    checkpoints: list[dict[str, Any]] = []
+    for idx, row in enumerate(PROMOTION_STAGES):
+        if idx < current_index:
+            status = "completed"
+        elif idx == current_index:
+            status = "current"
+        elif idx == current_index + 1:
+            status = "ready" if not blockers and not blocker_deltas else "blocked"
+        else:
+            status = "pending"
+        checkpoints.append({
+            "stage_name": row["stage_name"],
+            "label": row["label"],
+            "capital_ratio": row["capital_ratio"],
+            "status": status,
+        })
+
+    return {
+        "strategy_type": str(strategy.get("strategy_type") or "intraday"),
+        "current_stage": current,
+        "next_stage": next_stage,
+        "checkpoints": checkpoints,
+        "threshold_checks": checks,
+        "blocker_deltas": blocker_deltas,
+        "rationale": rationale,
+        "review_ready": review_payload.get("review_status") == "approved" and not review_payload.get("retest_required"),
+        "capital_stage_count": int(metrics.get("capital_stage_count") or 0),
+        "shadow_trace_count": int(metrics.get("shadow_trace_count") or 0),
+        "deviation_snapshot_count": len(deviation_snapshots or []),
+    }
 
 
 def build_acceptance_policy_snapshot(
@@ -53,6 +219,8 @@ def build_acceptance_policy_snapshot(
     evidence = dict(context.get("evidence") or {})
     prohibitions = dict(context.get("prohibitions") or {})
     review_payload = dict(review or {})
+    capital_stages = list(context.get("capital_stages") or [])
+    deviation_snapshots = list(context.get("deviation_snapshots") or [])
 
     strategy_type = str(strategy.get("strategy_type") or "intraday").lower()
     thresholds = dict(DEFAULT_THRESHOLDS.get(strategy_type, DEFAULT_THRESHOLDS["intraday"]))
@@ -212,11 +380,25 @@ def build_acceptance_policy_snapshot(
     elif not blockers:
         recommend = "shadow"
 
+    promotion_ladder = _build_promotion_ladder(
+        strategy=strategy,
+        metrics=metrics,
+        thresholds=thresholds,
+        blockers=blockers,
+        review_payload=review_payload,
+        capital_stages=capital_stages,
+        deviation_snapshots=deviation_snapshots,
+        shared_architecture=shared_architecture,
+        paper_live_ready=paper_live_ready,
+    )
+    promotion_ladder["decision"] = recommend
+
     return {
         "thresholds": thresholds,
         "evidence": derived_evidence,
         "blockers": blockers,
         "recommendation": recommend,
+        "promotion_ladder": promotion_ladder,
         "shared_architecture_ready": shared_architecture,
         "paper_live_deviation_ok": paper_live_ready,
         "review_ready": review_payload.get("review_status") == "approved" and not review_payload.get("retest_required"),

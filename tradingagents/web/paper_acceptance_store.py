@@ -1839,9 +1839,15 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
             "metrics": metrics,
             "evidence": evidence,
             "prohibitions": overrides.get("prohibitions") or {},
+            "capital_stages": capital_stages,
+            "deviation_snapshots": deviation_snapshots,
         },
         review=review,
     )
+    ladder = policy.get("promotion_ladder") or {}
+    if ladder.get("rationale"):
+        metrics["deviation_explanation"] = " | ".join(str(item) for item in ladder.get("rationale", [])[:4])
+    metrics["thresholds_defined"] = bool(policy.get("thresholds"))
     for gate_id, checks in (policy.get("evidence") or {}).items():
         for check_key, value in (checks or {}).items():
             _merge_check(evidence, gate_id, check_key, value, source="observed")

@@ -3579,7 +3579,9 @@ function renderPaperAcceptanceScenarios(workspace) {
 function renderPaperAcceptanceStages(workspace) {
   const stages = workspace?.capital_stages || [];
   const deviations = workspace?.deviation_snapshots || [];
-  if (!stages.length && !deviations.length) {
+  const ladder = workspace?.policy?.promotion_ladder || {};
+  const shadow = workspace?.shadow_parity_summary || {};
+  if (!stages.length && !deviations.length && !ladder.current_stage) {
     return '<div class="text-slate-500">尚無 stage / deviation 證據。</div>';
   }
   const stageRows = stages.slice(0, 4).map(row => `
@@ -3600,7 +3602,20 @@ function renderPaperAcceptanceStages(workspace) {
       <div class="text-[11px] text-slate-500 mt-1">win ${escHtml(String(row.win_rate_delta ?? '—'))} | drawdown ${escHtml(String(row.drawdown_delta ?? '—'))} | freq ${escHtml(String(row.trade_frequency_delta ?? '—'))}</div>
     </div>
   `).join('');
-  return `<div class="space-y-2">${stageRows}${devRows}</div>`;
+  const deltaRows = (ladder.blocker_deltas || []).slice(0, 3).map(row => `
+    <div class="text-[11px] text-slate-500">${escHtml(row.label || row.key || 'threshold')}：目前 ${escHtml(String(row.current ?? '—'))} / 標準 ${escHtml(String(row.threshold ?? '—'))}</div>
+  `).join('');
+  const ladderHtml = ladder.current_stage ? `
+    <div class="pt-2 border-t border-slate-800/50">
+      <div class="flex items-center justify-between gap-2">
+        <div class="text-slate-200">Promotion Ladder</div>
+        <div class="text-[11px] text-slate-500">${escHtml((ladder.current_stage?.label || 'current'))} -> ${escHtml((ladder.next_stage?.label || 'next'))}</div>
+      </div>
+      <div class="text-[11px] text-slate-500 mt-1">shadow ${escHtml(String(shadow.trace_count ?? 0))} 筆 · parity ${escHtml(String(shadow.avg_parity_score ?? '—'))}</div>
+      ${deltaRows ? `<div class="mt-2 space-y-1">${deltaRows}</div>` : `<div class="text-[11px] text-emerald-300 mt-2">目前沒有量化門檻差距。</div>`}
+    </div>
+  ` : '';
+  return `<div class="space-y-2">${stageRows}${devRows}${ladderHtml}</div>`;
 }
 
 function renderPaperAcceptanceTimeline(rows) {
@@ -3631,7 +3646,9 @@ function hydratePaperAcceptanceReview(workspace) {
   if ($('smc-paper-acceptance-can-promote')) $('smc-paper-acceptance-can-promote').checked = !!review.can_promote_to_live;
   if ($('smc-paper-acceptance-review-note')) $('smc-paper-acceptance-review-note').value = review.note || '';
   if ($('smc-paper-acceptance-review-summary')) {
-    $('smc-paper-acceptance-review-summary').textContent = `${review.review_status || 'pending'} · reviewer ${review.reviewer || '未指派'} · policy ${policy.recommendation || 'paper'} · blockers ${(policy.blockers || []).length || 0}`;
+    const ladder = policy.promotion_ladder || {};
+    const currentStage = ladder.current_stage?.label || '未定義';
+    $('smc-paper-acceptance-review-summary').textContent = `${review.review_status || 'pending'} · reviewer ${review.reviewer || '未指派'} · policy ${policy.recommendation || 'paper'} · ${currentStage} · blockers ${(policy.blockers || []).length || 0}`;
   }
 }
 
