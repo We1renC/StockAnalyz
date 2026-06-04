@@ -2876,3 +2876,56 @@ def test_strategy_yaml_emits_nearest_poi_clusters():
     assert "nearest_poi_clusters" in out
     keys = out["nearest_poi_clusters"]["clusters"].keys()
     assert any("balanced_price_range" in k for k in keys)
+
+
+def test_session_range_levels_intraday_extracts_pmh_orh():
+    """§3.5: pre-market high/low + opening range high/low for intraday bars."""
+    from smc_quant import compute_session_range_levels
+    base = datetime(2026, 1, 5, 9, 0)  # Monday 09:00
+    rows = []
+    idx = []
+    # Pre-market bars (08:00–09:29 = before US 09:30 open)
+    for m in (0, 15, 30, 45, 60, 75):  # 08:00..09:15 (strictly before 09:30)
+        rows.append((100, 100.5, 99.5, 100, 1))
+        idx.append(base.replace(hour=8) + timedelta(minutes=m))
+    # Opening range: 09:30..09:44 (US session start) — wider range
+    for m in (0, 5, 10):
+        rows.append((101, 103, 100.5, 102, 1))
+        idx.append(base.replace(hour=9, minute=30) + timedelta(minutes=m))
+    # Later session bars
+    for m in (0, 5, 10):
+        rows.append((102, 102.5, 101.5, 102, 1))
+        idx.append(base.replace(hour=10, minute=0) + timedelta(minutes=m))
+    df = normalize_ohlcv(pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx))
+    out = compute_session_range_levels(df, market="us", opening_minutes=15)
+    assert out["status"] == "ok"
+    assert out["pmh"] == 100.5  # pre-market max high
+    assert out["pml"] == 99.5
+    assert out["orh"] == 103.0  # opening 15 min wider
+    assert out["orl"] == 100.5
+
+
+def test_session_range_levels_daily_bars_not_applicable():
+    from smc_quant import compute_session_range_levels
+    df = normalize_ohlcv(_sample_ohlcv())
+    out = compute_session_range_levels(df, market="us")
+    assert out["status"] == "not_applicable"
+
+
+def test_resolve_dol_target_picks_pmh_when_provided():
+    """When PMH sits inside the path and other pools missing → DOL = PMH."""
+    from smc_quant import resolve_dol_target
+    sl = {"status": "ok", "pmh": 105.0, "pml": 95.0, "orh": 106.0, "orl": 96.0}
+    out = resolve_dol_target(1, current_price=100, liquidity=[],
+                              prev_levels=None, fvgs=[], round_magnets=[], session_levels=sl)
+    assert out is not None
+    # Among PMH(105)/ORH(106), PMH wins on priority tier (1 vs 2)
+    assert out["target_kind"] == "PMH"
+    assert out["target_price"] == 105.0
+
+
+def test_build_smc_analysis_exposes_session_range_levels_block():
+    result = build_smc_analysis(_sample_ohlcv(), "AAPL")
+    assert "session_range_levels" in result["concepts"]
+    # Daily synthetic data → not_applicable, but the key must exist
+    assert result["concepts"]["session_range_levels"]["status"] in {"not_applicable", "ok", "no_data"}

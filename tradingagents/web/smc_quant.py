@@ -1523,6 +1523,63 @@ def aggregate_multi_exchange(
     }
 
 
+def compute_session_range_levels(
+    df: pd.DataFrame,
+    *,
+    market: str = "us",
+    opening_minutes: int = 15,
+) -> dict:
+    """§3.5 — mandatory liquidity targets: pre-market range + opening range.
+
+    For intraday data (bar interval < 12h) extracts:
+      • Pre-market high/low — bars on today's date BEFORE the session open
+      • Opening range high/low — first ``opening_minutes`` after open
+
+    For daily / weekly bars the spec doesn't apply → status="not_applicable".
+    Returns ``{pmh, pml, orh, orl, status}`` ready to feed
+    ``resolve_dol_target`` as additional candidate pools.
+    """
+    if df is None or len(df) == 0:
+        return {"status": "no_data"}
+    # Determine bar interval — only intraday data carries pre-market/ORB.
+    try:
+        delta = df.index[-1] - df.index[-2] if len(df) >= 2 else pd.Timedelta(days=1)
+    except Exception:
+        delta = pd.Timedelta(days=1)
+    if delta >= pd.Timedelta(hours=12):
+        return {"status": "not_applicable", "reason": "daily_or_higher_bars"}
+    session_str = MARKET_CONFIGS.get(market, {}).get("session", "")
+    if not session_str or session_str == "24/7":
+        return {"status": "not_applicable", "reason": "no_fixed_session"}
+    try:
+        open_str = session_str.split("-")[0]
+        oh, om = open_str.split(":")
+        open_minute = int(oh) * 60 + int(om)
+    except Exception:
+        return {"status": "no_data", "reason": "bad_session_format"}
+    ts_index = pd.DatetimeIndex(df.index)
+    last_date = ts_index[-1].date()
+    today_mask = pd.Series([ts.date() == last_date for ts in ts_index], index=df.index)
+    minutes_of_day = pd.Series([ts.hour * 60 + ts.minute for ts in ts_index], index=df.index)
+    pre_mask = today_mask & (minutes_of_day < open_minute)
+    open_window_end = open_minute + opening_minutes
+    or_mask = today_mask & (minutes_of_day >= open_minute) & (minutes_of_day < open_window_end)
+    pre = df[pre_mask]
+    orb = df[or_mask]
+    out = {
+        "status": "ok",
+        "session_open_minute": open_minute,
+        "opening_minutes": opening_minutes,
+        "pmh": round(float(pre["high"].max()), 4) if not pre.empty else None,
+        "pml": round(float(pre["low"].min()), 4) if not pre.empty else None,
+        "orh": round(float(orb["high"].max()), 4) if not orb.empty else None,
+        "orl": round(float(orb["low"].min()), 4) if not orb.empty else None,
+        "pre_market_bars": int(len(pre)),
+        "opening_range_bars": int(len(orb)),
+    }
+    return out
+
+
 def crypto_daily_levels(df: pd.DataFrame) -> dict:
     """§17.5 — crypto-aligned previous-day high/low using UTC 00:00 close.
 
@@ -2054,6 +2111,7 @@ def resolve_dol_target(
     prev_levels: Optional[dict] = None,
     fvgs: Optional[list[dict]] = None,
     round_magnets: Optional[list[dict]] = None,
+    session_levels: Optional[dict] = None,
 ) -> Optional[dict]:
     """§3.5 DOL — pick the nearest opposite-side liquidity pool as the target.
 
@@ -2142,6 +2200,27 @@ def resolve_dol_target(
             "distance": round(abs(lvl - current_price), 4),
             "source_index": -1,
         })
+    # §3.5 mandatory: pre-market high/low + opening-range high/low.
+    if session_levels and session_levels.get("status") == "ok":
+        sl_pairs = [
+            ("PMH", session_levels.get("pmh"), 1),
+            ("PML", session_levels.get("pml"), -1),
+            ("ORH", session_levels.get("orh"), 1),
+            ("ORL", session_levels.get("orl"), -1),
+        ]
+        for kind, lvl, side in sl_pairs:
+            if lvl is None or side != direction:
+                continue
+            if direction == 1 and lvl <= current_price:
+                continue
+            if direction == -1 and lvl >= current_price:
+                continue
+            candidates.append({
+                "target_price": round(float(lvl), 4),
+                "target_kind": kind,
+                "distance": round(abs(float(lvl) - current_price), 4),
+                "source_index": -1,
+            })
     if not candidates:
         return None
     # §3.5 — external liquidity > PDH/PDL > internal > round number > FVG mid > unknown.
@@ -2149,6 +2228,8 @@ def resolve_dol_target(
     priority = {
         "external": 0,
         "PDH": 1, "PDL": 1,
+        "PMH": 1, "PML": 1,    # pre-market = same tier as prior-day extreme
+        "ORH": 2, "ORL": 2,    # opening range = internal liquidity tier
         "internal": 2,
         "ROUND": 3,
         "FVG_MID": 4,
@@ -2177,6 +2258,7 @@ def attach_dol_targets(
     fvgs: Optional[list[dict]],
     current_price: float,
     round_magnets: Optional[list[dict]] = None,
+    session_levels: Optional[dict] = None,
 ) -> list[dict]:
     """Annotate every §5 entry with a §3.5 DOL target.
 
@@ -2186,7 +2268,7 @@ def attach_dol_targets(
     out: list[dict] = []
     for e in entries or []:
         direction = int(e.get("direction", 0))
-        dol = resolve_dol_target(direction, current_price, liquidity, prev_levels, fvgs, round_magnets)
+        dol = resolve_dol_target(direction, current_price, liquidity, prev_levels, fvgs, round_magnets, session_levels)
         annotated = dict(e)
         if dol is None:
             annotated["dol_target"] = None
@@ -5496,12 +5578,13 @@ def build_smc_analysis(
         )
     _last_close = float(h["close"].iloc[-1]) if len(h) else 0.0
     round_magnets = detect_round_number_magnets(_last_close)
-    sweep_reversal_entries = attach_dol_targets(sweep_reversal_entries, liquidity, prev, fvgs, _last_close, round_magnets)
-    continuation_entries = attach_dol_targets(continuation_entries, liquidity, prev, fvgs, _last_close, round_magnets)
-    ote_entries = attach_dol_targets(ote_entries, liquidity, prev, fvgs, _last_close, round_magnets)
-    unicorn_entries = attach_dol_targets(unicorn_entries, liquidity, prev, fvgs, _last_close, round_magnets)
-    silver_bullet_entries = attach_dol_targets(silver_bullet_entries, liquidity, prev, fvgs, _last_close, round_magnets)
-    power_of_three_entries = attach_dol_targets(power_of_three_entries, liquidity, prev, fvgs, _last_close, round_magnets)
+    session_levels = compute_session_range_levels(h, market=market)
+    sweep_reversal_entries = attach_dol_targets(sweep_reversal_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels)
+    continuation_entries = attach_dol_targets(continuation_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels)
+    ote_entries = attach_dol_targets(ote_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels)
+    unicorn_entries = attach_dol_targets(unicorn_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels)
+    silver_bullet_entries = attach_dol_targets(silver_bullet_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels)
+    power_of_three_entries = attach_dol_targets(power_of_three_entries, liquidity, prev, fvgs, _last_close, round_magnets, session_levels)
     # §17.10 — when a crypto overlay is present, weave its factor map
     # into every entry's confluence score so e.g. perp_led_warning
     # actually debits points and oi_drop_at_sweep adds them.
@@ -5590,6 +5673,7 @@ def build_smc_analysis(
             "ote": ote,
             "previous_levels": prev,
             "sessions": session,
+            "session_range_levels": session_levels,
             "weekend_illiquidity": weekend_state,
             "pd_array_matrix": pd_array_matrix,
             "round_number_magnets": round_magnets,
