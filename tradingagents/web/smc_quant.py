@@ -5675,6 +5675,20 @@ def build_smc_analysis(
 ) -> dict:
     cfg = config or SMCConfig()
     market = infer_market(symbol)
+    # §17.9 Multi-Exchange Consensus — when caller supplies a basket of
+    # exchange feeds, run the wick-anomaly filter and use the consensus
+    # frame as the analysis base. Single-exchange spikes will not survive
+    # the median-of-OHLC filter so any sweep / liquidity event we detect
+    # downstream is corroborated across venues.
+    multi_exchange_report = None
+    if crypto_inputs and crypto_inputs.get("exchange_feeds"):
+        multi_exchange_report = aggregate_multi_exchange(
+            crypto_inputs["exchange_feeds"],
+            wick_outlier_pct=crypto_inputs.get("wick_outlier_pct", 2.0),
+            min_confirmations=crypto_inputs.get("min_confirmations", 2),
+        )
+        if multi_exchange_report.get("consensus_df") is not None:
+            df = multi_exchange_report["consensus_df"]
     h = normalize_ohlcv(df)
     # §17.6 Volatility-Adaptive Parameters — auto-tune for crypto when caller
     # supplied no explicit config; for TW / US the static defaults already fit.
@@ -5927,6 +5941,16 @@ def build_smc_analysis(
             "sessions": session,
             "session_range_levels": session_levels,
             "weekend_illiquidity": weekend_state,
+            "multi_exchange": (
+                {
+                    "exchanges": multi_exchange_report.get("exchanges"),
+                    "sample_size": multi_exchange_report.get("sample_size"),
+                    "wick_anomaly_count": len(multi_exchange_report.get("wick_anomalies") or []),
+                    "wick_anomalies": (multi_exchange_report.get("wick_anomalies") or [])[-10:],
+                    "wick_outlier_pct": multi_exchange_report.get("wick_outlier_pct"),
+                    "note": multi_exchange_report.get("note"),
+                } if multi_exchange_report else {"status": "not_provided"}
+            ),
             "pd_array_matrix": pd_array_matrix,
             "round_number_magnets": round_magnets,
             "retracements": retracement,

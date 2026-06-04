@@ -3240,3 +3240,51 @@ def test_annotate_poi_displacement_validity_passes_through_when_displaced():
     assert out[0]["factors"]["poi_displacement_missing"] is False
     # No drag → same score as before
     assert out[0]["confluence"]["score"] == score_confluence(base_factors)["score"]
+
+
+def test_build_smc_analysis_uses_multi_exchange_consensus_when_provided():
+    """§17.9: caller-supplied exchange_feeds → consensus drives the analysis."""
+    base_rows = [(10 + i * 0.1, 11 + i * 0.1, 9 + i * 0.1, 10 + i * 0.1, 100) for i in range(30)]
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(30)]
+    binance = pd.DataFrame(base_rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx)
+    okx = pd.DataFrame(base_rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx)
+    # Inject a single-venue wick on Binance: row 25 high = 100 (5x consensus)
+    bin_rows = list(base_rows)
+    bin_rows[25] = (10 + 25 * 0.1, 100.0, 9 + 25 * 0.1, 10 + 25 * 0.1, 100)
+    binance = pd.DataFrame(bin_rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx)
+
+    result = build_smc_analysis(
+        binance, "BTCUSDT",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+        crypto_inputs={"exchange_feeds": {"binance": binance, "okx": okx}},
+    )
+    me = result["concepts"]["multi_exchange"]
+    assert me["sample_size"] == 30
+    assert set(me["exchanges"]) == {"binance", "okx"}
+    # Median consensus must absorb the wick → analysis high stays near baseline
+    last_high = float(binance["High"].iloc[-1])
+    assert last_high < 50  # consensus high, not the 100 wick
+
+
+def test_build_smc_analysis_marks_multi_exchange_as_not_provided_otherwise():
+    """When no exchange_feeds supplied → concepts.multi_exchange = not_provided."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "BTCUSDT",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    assert result["concepts"]["multi_exchange"]["status"] == "not_provided"
+
+
+def test_build_smc_analysis_handles_single_venue_feed_with_note():
+    """One exchange below min_confirmations → uses it but marks the note."""
+    rows = [(10, 11, 9, 10, 100)] * 20
+    idx = [datetime(2026, 1, 1) + timedelta(days=i) for i in range(20)]
+    only = pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"], index=idx)
+    result = build_smc_analysis(
+        only, "BTCUSDT",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+        crypto_inputs={"exchange_feeds": {"binance": only}},
+    )
+    me = result["concepts"]["multi_exchange"]
+    assert me["exchanges"] == ["binance"]
+    assert me["note"] and "single_venue_only" in me["note"]
