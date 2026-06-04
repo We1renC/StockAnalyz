@@ -2581,3 +2581,41 @@ def test_chart_layer_c13_backtest_panel_populated():
     assert isinstance(c13["trades_preview"], list)
     bt = result["concepts"]["entry_models"]["backtest_replay"]
     assert c13["metrics"] == bt["metrics"]
+
+
+def test_sanitize_for_json_collapses_nan_inf_to_none():
+    """NaN / inf must become None so the result serialises."""
+    from smc_quant import sanitize_for_json
+    import math, json
+    out = sanitize_for_json({
+        "ok": 1.5,
+        "nan": float("nan"),
+        "pos_inf": float("inf"),
+        "neg_inf": -float("inf"),
+        "nested": [float("nan"), 2.0, {"deep": float("inf")}],
+    })
+    assert out["ok"] == 1.5
+    assert out["nan"] is None
+    assert out["pos_inf"] is None
+    assert out["neg_inf"] is None
+    assert out["nested"][0] is None
+    assert out["nested"][2]["deep"] is None
+    json.dumps(out)  # serialises cleanly
+
+
+def test_sanitize_for_json_handles_pandas_timestamp_and_dataframes():
+    from smc_quant import sanitize_for_json
+    import json
+    ts = pd.Timestamp("2026-01-01T09:30")
+    df = pd.DataFrame({"a": [1, 2]})
+    out = sanitize_for_json({"time": ts, "table": df})
+    assert isinstance(out["time"], str) and out["time"].startswith("2026")
+    json.dumps(out)
+
+
+def test_sanitize_for_json_passes_through_safe_primitives():
+    from smc_quant import sanitize_for_json
+    assert sanitize_for_json(None) is None
+    assert sanitize_for_json("ok") == "ok"
+    assert sanitize_for_json(True) is True
+    assert sanitize_for_json(42) == 42

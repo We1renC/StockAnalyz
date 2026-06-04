@@ -4251,6 +4251,55 @@ def _populate_pd_array_panel(layers: dict, pd_array_matrix: dict, *, top_n: int 
     return layers
 
 
+def sanitize_for_json(value):
+    """Recursively make a build_smc_analysis() result JSON-safe.
+
+    Replaces NaN / ±Infinity with None, pandas Timestamps with ISO
+    strings, and numpy scalars with native floats / ints. Idempotent.
+    """
+    import math
+    try:
+        import numpy as np  # noqa: F401
+        np_available = True
+    except Exception:
+        np_available = False
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, pd.Timestamp):
+        try:
+            return value.isoformat()
+        except Exception:
+            return str(value)
+    if isinstance(value, dict):
+        return {str(k): sanitize_for_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [sanitize_for_json(v) for v in value]
+    if np_available:
+        try:
+            import numpy as np
+            if isinstance(value, np.generic):
+                native = value.item()
+                return sanitize_for_json(native)
+        except Exception:
+            pass
+    try:
+        # Pandas DataFrames/Series end up here; return shape info instead of raw.
+        if hasattr(value, "to_dict"):
+            return sanitize_for_json(value.to_dict())
+    except Exception:
+        pass
+    try:
+        return str(value)
+    except Exception:
+        return None
+
+
 def _populate_backtest_panel(layers: dict, backtest_replay: dict, *, preview: int = 5) -> dict:
     """Fill ``layers["C13_backtest_replay"]`` with metrics + last few trades."""
     panel = layers.get("C13_backtest_replay")
