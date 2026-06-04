@@ -3402,6 +3402,8 @@ def propose_strategy_yaml(
             "walk_forward": walk_fwd,
             "minimum_samples": min_samples,
         },
+        "r_distribution": r_multiple_distribution(trade_records),
+        "clusters": cluster_trades_by(trade_records, ["model", "market"]),
         "changelog": _strategy_changelog(
             base_weights or {}, suggested_weights, mae_mfe.get("recommendations", []),
         ),

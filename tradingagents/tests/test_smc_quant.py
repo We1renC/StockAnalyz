@@ -2319,3 +2319,24 @@ def test_r_multiple_distribution_empty():
     out = r_multiple_distribution([])
     assert out["sample_size"] == 0
     assert out["counts"] == []
+
+
+def test_propose_strategy_yaml_now_includes_r_distribution_and_clusters():
+    from smc_quant import propose_strategy_yaml
+    records = []
+    base = datetime(2026, 1, 1)
+    for i in range(40):
+        r = 2.0 if i % 5 != 0 else -1.0
+        records.append({
+            "entry_time": (base + timedelta(days=i)).isoformat(),
+            "r_multiple": r,
+            "factors": {"htf_bias_aligned": True},
+            "model": "sweep_reversal",
+            "market": "us",
+            "mae": -0.3, "mfe": 2.2,
+        })
+    out = propose_strategy_yaml(trade_records=records, min_samples=20)
+    assert "r_distribution" in out
+    assert "clusters" in out
+    assert out["r_distribution"]["sample_size"] == 40
+    assert "sweep_reversal / us" in out["clusters"]["clusters"]
