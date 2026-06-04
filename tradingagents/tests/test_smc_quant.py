@@ -2262,3 +2262,33 @@ def test_journal_emotional_summary_empty_input():
     out = journal_emotional_summary([])
     assert out["sample_size"] == 0
     assert out["worst_state"] is None
+
+
+def test_cluster_trades_by_groups_and_finds_best_and_worst():
+    """§18.3: grid by (model, market) → best / worst cluster identified."""
+    from smc_quant import cluster_trades_by
+    records = [
+        # silver_bullet × crypto → strong avg R 2
+        {"model": "silver_bullet", "market": "crypto", "r_multiple": 2},
+        {"model": "silver_bullet", "market": "crypto", "r_multiple": 3},
+        {"model": "silver_bullet", "market": "crypto", "r_multiple": 1},
+        # sweep_reversal × us → weak avg R -0.5
+        {"model": "sweep_reversal", "market": "us", "r_multiple": -1},
+        {"model": "sweep_reversal", "market": "us", "r_multiple": -1},
+        {"model": "sweep_reversal", "market": "us", "r_multiple": 0.5},
+        # too_small bucket
+        {"model": "unicorn", "market": "crypto", "r_multiple": 5},
+    ]
+    out = cluster_trades_by(records, ["model", "market"], min_cluster_size=3)
+    assert out["best_cluster"]["key"] == "silver_bullet / crypto"
+    assert out["best_cluster"]["avg_R"] == 2.0
+    assert out["worst_cluster"]["key"] == "sweep_reversal / us"
+    # too_small captures the 1-sample unicorn row
+    assert any(r["dims"]["model"] == "unicorn" for r in out["too_small"])
+
+
+def test_cluster_trades_by_empty_inputs():
+    from smc_quant import cluster_trades_by
+    out = cluster_trades_by([], ["model"])
+    assert out["clusters"] == {}
+    assert out["best_cluster"] is None

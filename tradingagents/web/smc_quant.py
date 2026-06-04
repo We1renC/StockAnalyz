@@ -3883,6 +3883,60 @@ def evaluate_entry_models(
     }
 
 
+def cluster_trades_by(
+    trade_records: list[dict],
+    dimensions: list[str],
+    *,
+    min_cluster_size: int = 3,
+) -> dict:
+    """§18.3 — group trades by (model, market, regime, …) cluster keys.
+
+    Each cluster reports count / win_rate / avg_R / profit_factor —
+    the exact grid the design doc says to surface for "which combination
+    performs best under which conditions". Clusters smaller than
+    ``min_cluster_size`` are folded into ``__too_small__`` to avoid
+    statistically-meaningless conclusions.
+    """
+    if not trade_records or not dimensions:
+        return {"clusters": {}, "best_cluster": None, "worst_cluster": None}
+    buckets: dict[tuple, list[float]] = {}
+    for t in trade_records:
+        key = tuple(t.get(d) or "_none_" for d in dimensions)
+        buckets.setdefault(key, []).append(float(t.get("r_multiple") or 0))
+    clusters: dict[str, dict] = {}
+    too_small: list[dict] = []
+    for key, rs in buckets.items():
+        wins = [r for r in rs if r > 0]
+        losses = [r for r in rs if r < 0]
+        gains_R = sum(wins)
+        losses_R = abs(sum(losses))
+        avg_R = sum(rs) / len(rs)
+        win_rate = (len(wins) / len(rs)) if rs else 0.0
+        pf = (gains_R / losses_R) if losses_R else (float("inf") if gains_R else 0.0)
+        row = {
+            "dims": dict(zip(dimensions, key)),
+            "count": len(rs),
+            "avg_R": round(avg_R, 3),
+            "win_rate": round(win_rate, 4),
+            "profit_factor": round(pf, 3) if pf != float("inf") else None,
+        }
+        if len(rs) < min_cluster_size:
+            too_small.append(row)
+            continue
+        clusters[" / ".join(str(x) for x in key)] = row
+    if not clusters:
+        return {"clusters": {}, "too_small": too_small, "best_cluster": None, "worst_cluster": None}
+    best = max(clusters.items(), key=lambda kv: kv[1]["avg_R"])
+    worst = min(clusters.items(), key=lambda kv: kv[1]["avg_R"])
+    return {
+        "clusters": clusters,
+        "too_small": too_small,
+        "best_cluster": {"key": best[0], **best[1]},
+        "worst_cluster": {"key": worst[0], **worst[1]},
+        "dimensions": dimensions,
+    }
+
+
 def extract_factor_edge(
     entries: list[dict],
     trades: list[dict],
