@@ -222,19 +222,33 @@ class SmcPaperRunner:
     # --- entry selection ------------------------------------------------
 
     def _pick_best_entry(self, analysis: dict) -> Optional[dict]:
+        """Pick the strongest entry candidate.
+
+        If ``config.min_confluence_score`` is BELOW the SMC engine's own
+        ``confluence.threshold`` we still consider non-``triggered``
+        candidates — this is the explicit "lower the bar for paper
+        testing" knob. Production should keep ``min_confluence_score``
+        ≥ the engine's threshold (default 8) so only fully-qualified
+        signals reach order placement.
+        """
         em = (analysis.get("concepts") or {}).get("entry_models") or {}
-        triggered = list(em.get("triggered") or [])
-        if not triggered:
+        # Gather every model's candidates so we can use min_confluence_score
+        # as the *effective* gate rather than the engine's default 8.
+        all_entries: list[dict] = []
+        for key in ("sweep_reversal", "ob_fvg_continuation", "ote_retracement",
+                    "unicorn", "silver_bullet", "power_of_three"):
+            for e in (em.get(key) or []):
+                all_entries.append(e)
+        if not all_entries:
             return None
-        # Highest confluence score wins; tie-break on best RR.
-        triggered.sort(
+        all_entries.sort(
             key=lambda e: (
                 (e.get("confluence") or {}).get("score", 0),
                 e.get("rr", 0),
             ),
             reverse=True,
         )
-        for e in triggered:
+        for e in all_entries:
             score = (e.get("confluence") or {}).get("score", 0)
             if score < self.config.min_confluence_score:
                 continue
@@ -242,7 +256,14 @@ class SmcPaperRunner:
                 continue
             if e.get("dol_required") and not e.get("dol_target"):
                 continue
-            return e
+            # The engine's own ``triggered`` flag is gated by its default
+            # threshold (8). When the runner deliberately accepts lower
+            # scores (paper-testing knob), we mirror that decision onto
+            # the entry's flag so apply_risk_pipeline's
+            # ``confluence_below_threshold`` check doesn't reject again.
+            picked = dict(e)
+            picked["triggered"] = True
+            return picked
         return None
 
     # --- order placement -----------------------------------------------
@@ -352,12 +373,15 @@ class SmcPaperRunner:
             "dol_target": entry.get("dol_target"),
         }
 
-        # §6 risk pipeline
+        # §6 risk pipeline — propagate the runner's risk_pct so crypto sizing
+        # can use a more generous % (math.floor in calculate_position_size
+        # zeroes-out tiny notionals at 1% on high-priced assets like BTC).
         gate = apply_risk_pipeline(
             [entry],
             account_equity=cfg.account_equity,
             market="crypto",
             min_rr=cfg.min_rr,
+            risk_pct=cfg.risk_pct,
         )
         result.risk_gate = {
             "ready_count": len(gate.get("ready", [])),
