@@ -2292,3 +2292,30 @@ def test_cluster_trades_by_empty_inputs():
     out = cluster_trades_by([], ["model"])
     assert out["clusters"] == {}
     assert out["best_cluster"] is None
+
+
+def test_r_multiple_distribution_buckets_fat_tails():
+    """§18.3: distribution exposes counts per bin + fat-loss / fat-win shares."""
+    from smc_quant import r_multiple_distribution
+    records = [
+        {"r_multiple": -3},   # fat loss
+        {"r_multiple": -1.5}, # fat loss
+        {"r_multiple": -0.5}, # mid loss
+        {"r_multiple": 0.3},  # small win
+        {"r_multiple": 1.2},  # mid win
+        {"r_multiple": 2.5},  # fat win
+        {"r_multiple": 3.5},  # fat win
+    ]
+    out = r_multiple_distribution(records)
+    assert out["sample_size"] == 7
+    # Two values in ≤ -1R, two values in ≥ +2R
+    assert out["fat_loss_share"] == round(2 / 7, 4)
+    assert out["fat_win_share"] == round(2 / 7, 4)
+    assert sum(out["counts"]) == 7
+
+
+def test_r_multiple_distribution_empty():
+    from smc_quant import r_multiple_distribution
+    out = r_multiple_distribution([])
+    assert out["sample_size"] == 0
+    assert out["counts"] == []

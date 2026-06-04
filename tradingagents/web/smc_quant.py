@@ -3883,6 +3883,42 @@ def evaluate_entry_models(
     }
 
 
+def r_multiple_distribution(
+    trade_records: list[dict],
+    *,
+    bins: Optional[list[float]] = None,
+) -> dict:
+    """§18.3 — R-multiple distribution histogram + tail metrics.
+
+    Default bin edges: -∞, -2R, -1R, -0.5R, 0R, +0.5R, +1R, +2R, +3R, +∞.
+    Tail counts surface fat losses / fat wins for design-doc-style
+    R-multiple histograms. Returns a JSON-friendly dict.
+    """
+    if not trade_records:
+        return {"bins": [], "counts": [], "sample_size": 0,
+                "fat_loss_share": 0.0, "fat_win_share": 0.0}
+    if bins is None:
+        bins = [-float("inf"), -2, -1, -0.5, 0, 0.5, 1, 2, 3, float("inf")]
+    counts = [0] * (len(bins) - 1)
+    for t in trade_records:
+        r = float(t.get("r_multiple") or 0)
+        for i in range(len(bins) - 1):
+            lo, hi = bins[i], bins[i + 1]
+            if lo <= r < hi or (hi == float("inf") and r >= lo):
+                counts[i] += 1
+                break
+    n = sum(counts)
+    fat_loss = counts[0] + counts[1]   # ≤ -1R
+    fat_win = counts[-1] + counts[-2]  # ≥ +2R
+    return {
+        "bins": [None if b in (-float("inf"), float("inf")) else b for b in bins],
+        "counts": counts,
+        "sample_size": n,
+        "fat_loss_share": round(fat_loss / n, 4) if n else 0.0,
+        "fat_win_share": round(fat_win / n, 4) if n else 0.0,
+    }
+
+
 def cluster_trades_by(
     trade_records: list[dict],
     dimensions: list[str],
