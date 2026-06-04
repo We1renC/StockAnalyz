@@ -3381,3 +3381,49 @@ def test_build_smc_analysis_attaches_partial_profit_to_entries():
                 "unicorn", "silver_bullet", "power_of_three"):
         for e in em[key]:
             assert "partial_profit" in e
+
+
+def test_position_correlation_cap_blocks_when_cluster_full():
+    """§6: ≥3 active positions in the same correlation cluster → block."""
+    from smc_quant import position_correlation_cap
+    active = [
+        {"symbol": "BTCUSDT"}, {"symbol": "ETHUSDT"}, {"symbol": "SOLUSDT"},
+    ]
+    cand = {"symbol": "BTCUSDT"}
+    out = position_correlation_cap(active, cand)
+    assert out["ok"] is False
+    assert "cluster_cap:crypto_btc=3/3" in out["reason"]
+    assert out["cluster"] == "crypto_btc"
+    assert out["cluster_count"] == 3
+
+
+def test_position_correlation_cap_blocks_when_total_full():
+    from smc_quant import position_correlation_cap
+    # 4 uncorrelated positions → total cap hits before cluster cap
+    active = [
+        {"symbol": "AAPL"}, {"symbol": "TSLA"},
+        {"symbol": "NVDA"}, {"symbol": "MSFT"},
+    ]
+    cand = {"symbol": "META"}
+    out = position_correlation_cap(active, cand)
+    assert out["ok"] is False
+    assert "total_positions_cap:4/4" in out["reason"]
+
+
+def test_position_correlation_cap_passes_with_custom_cluster_map():
+    """Custom cluster_map → enforce sector grouping; non-cluster passes."""
+    from smc_quant import position_correlation_cap
+    semis_map = {"NVDA": "us_semis", "AMD": "us_semis", "TSM": "us_semis"}
+    active = [{"symbol": "NVDA"}, {"symbol": "AMD"}]
+    # Same-cluster candidate but only 2 occupied (cap default 3) → OK
+    out_same = position_correlation_cap(
+        active, {"symbol": "TSM"}, cluster_map=semis_map,
+    )
+    assert out_same["ok"] is True
+    assert out_same["cluster"] == "us_semis"
+    # Different cluster → OK
+    out_diff = position_correlation_cap(
+        active, {"symbol": "AAPL"}, cluster_map=semis_map,
+    )
+    assert out_diff["ok"] is True
+    assert out_diff["cluster"] == "AAPL"  # unknown symbol = own cluster

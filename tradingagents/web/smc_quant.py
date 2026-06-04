@@ -4254,6 +4254,58 @@ def calibrate_kelly_from_ledger(
     }
 
 
+DEFAULT_POSITION_CLUSTER_MAP: dict[str, str] = {
+    # Crypto majors all move with BTC → one cluster.
+    "BTCUSDT": "crypto_btc",
+    "ETHUSDT": "crypto_btc",
+    "SOLUSDT": "crypto_btc",
+    # Loose taxonomy — callers override as their portfolio dictates.
+}
+
+
+def position_correlation_cap(
+    active_positions: list[dict],
+    candidate: dict,
+    *,
+    cluster_map: Optional[dict[str, str]] = None,
+    max_correlated_positions: int = 3,
+    max_total_positions: int = 4,
+) -> dict:
+    """§6 — bound concurrent positions by correlation cluster.
+
+    Each position is keyed by ``symbol``; a ``cluster_map`` (symbol →
+    cluster) groups correlated names (BTC + alts move together, US
+    semis move together). Two limits enforced:
+      • ``max_correlated_positions`` per cluster (default 3)
+      • ``max_total_positions`` across all clusters (default 4)
+
+    Returns ``{ok, reason, cluster, cluster_count, total}`` so callers
+    can show *why* a candidate was blocked.
+    """
+    clusters = cluster_map or DEFAULT_POSITION_CLUSTER_MAP
+    candidate_symbol = candidate.get("symbol")
+    if not candidate_symbol:
+        return {"ok": False, "reason": "missing_symbol"}
+    cluster = clusters.get(candidate_symbol, candidate_symbol)
+    total = len(active_positions or [])
+    cluster_count = sum(
+        1 for p in (active_positions or [])
+        if clusters.get(p.get("symbol"), p.get("symbol")) == cluster
+    )
+    reasons: list[str] = []
+    if total >= max_total_positions:
+        reasons.append(f"total_positions_cap:{total}/{max_total_positions}")
+    if cluster_count >= max_correlated_positions:
+        reasons.append(f"cluster_cap:{cluster}={cluster_count}/{max_correlated_positions}")
+    return {
+        "ok": not reasons,
+        "reason": ";".join(reasons) if reasons else "ok",
+        "cluster": cluster,
+        "cluster_count": cluster_count,
+        "total": total,
+    }
+
+
 DEFAULT_FUNDING_SETTLEMENT_HOURS_UTC = (0, 8, 16)  # Binance / OKX / Bybit standard
 
 
