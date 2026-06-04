@@ -2358,6 +2358,29 @@ def attach_dol_targets(
                         annotated["target_source"] = f"dol:{dol['target_kind']}"
             except Exception:
                 pass
+            # §3.5 — credit a strong/external DOL into the §5.2 confluence
+            # score so the same OB entry pointing at strong external BSL
+            # ranks higher than one pointing at a weak internal pool.
+            try:
+                strong = (
+                    dol.get("equal_tier") == "strong"
+                    or dol.get("liquidity_kind") == "external"
+                    or dol.get("target_kind") in {"PDH", "PDL", "PWH", "PWL"}
+                )
+                if isinstance(annotated.get("factors"), dict):
+                    factors = dict(annotated["factors"])
+                    factors["strong_dol_target"] = bool(strong)
+                    annotated["factors"] = factors
+                    if isinstance(annotated.get("confluence"), dict):
+                        rescored = score_confluence(
+                            factors,
+                            weights=annotated["confluence"].get("weights"),
+                            threshold=annotated["confluence"].get("threshold", CONFLUENCE_THRESHOLD_DEFAULT),
+                        )
+                        annotated["confluence"] = rescored
+                        annotated["triggered"] = rescored["triggered"]
+            except Exception:
+                pass
         out.append(annotated)
     return out
 
@@ -2376,6 +2399,9 @@ CONFLUENCE_WEIGHTS_DEFAULT = {
     "ote_zone": 1,
     "killzone": 1,
     "volume_displacement": 1,
+    # §3.5 — DOL pulling toward external / strong equal-highs magnets earns
+    # a confluence bonus over weak / internal pools.
+    "strong_dol_target": 1,
 }
 CONFLUENCE_THRESHOLD_DEFAULT = 8
 

@@ -2991,3 +2991,57 @@ def test_crypto_overlay_marks_post_2026_05_gaps_as_fading():
     gaps = out["cme_gap"]["open_gaps"]
     if gaps:
         assert any(g.get("fading_after_24_7") for g in gaps)
+
+
+def test_attach_dol_targets_credits_strong_dol_into_confluence():
+    """§3.5: external / strong-equal-highs DOL → strong_dol_target factor=True."""
+    from smc_quant import attach_dol_targets, score_confluence
+    base_factors = {
+        "htf_bias_aligned": True, "premium_discount_side": True,
+        "unmitigated_ob": True, "unfilled_fvg": True,
+        "liquidity_swept": True, "ltf_choch": True,
+        "ote_zone": False, "killzone": False, "volume_displacement": False,
+    }
+    entry = {
+        "model": "x", "direction": 1, "entry": 100, "stop": 99,
+        "target": 102, "risk": 1, "rr": 2.0,
+        "factors": base_factors,
+        "confluence": score_confluence(base_factors),
+        "triggered": True,
+    }
+    liquidity = [{
+        "type": "BSL", "level": 110, "swept": False, "end_index": 5,
+        "equal_tier": "strong", "liquidity_kind": "external",
+    }]
+    out = attach_dol_targets([entry], liquidity, prev_levels=None,
+                             fvgs=[], current_price=100, round_magnets=[])
+    annotated = out[0]
+    assert annotated["dol_target"]["target_kind"] == "BSL"
+    assert annotated["factors"]["strong_dol_target"] is True
+    # Score should reflect the +1 strong-DOL bonus
+    assert annotated["confluence"]["score"] >= score_confluence(base_factors)["score"] + 1
+
+
+def test_attach_dol_targets_weak_internal_pool_does_not_credit_bonus():
+    """Weak internal liquidity → strong_dol_target factor=False."""
+    from smc_quant import attach_dol_targets, score_confluence
+    base_factors = {
+        "htf_bias_aligned": True, "premium_discount_side": True,
+        "unmitigated_ob": True, "unfilled_fvg": True,
+        "liquidity_swept": True, "ltf_choch": True,
+        "ote_zone": False, "killzone": False, "volume_displacement": False,
+    }
+    entry = {
+        "model": "x", "direction": 1, "entry": 100, "stop": 99,
+        "target": 102, "risk": 1, "rr": 2.0,
+        "factors": base_factors,
+        "confluence": score_confluence(base_factors),
+        "triggered": True,
+    }
+    liquidity = [{
+        "type": "BSL", "level": 110, "swept": False, "end_index": 5,
+        "equal_tier": "weak", "liquidity_kind": "internal",
+    }]
+    out = attach_dol_targets([entry], liquidity, prev_levels=None,
+                             fvgs=[], current_price=100, round_magnets=[])
+    assert out[0]["factors"]["strong_dol_target"] is False
