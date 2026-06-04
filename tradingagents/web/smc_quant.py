@@ -2299,6 +2299,7 @@ def detect_sweep_reversal_entries(
     inverse_fvgs: Optional[list[dict]] = None,
     atr_value: Optional[float] = None,
     vol_bucket: Optional[str] = None,
+    pd_array_matrix: Optional[dict] = None,
 ) -> list[dict]:
     """§5.1 Entry Model 1 — Liquidity Sweep Reversal (Sweep + CHoCH).
 
@@ -2395,6 +2396,8 @@ def detect_sweep_reversal_entries(
                 ote_overlap = leg_low + 0.62 * leg <= entry <= leg_low + 0.79 * leg
             else:
                 ote_overlap = leg_high - 0.79 * leg <= entry <= leg_high - 0.62 * leg
+        # §3.10 nearest-POI confluence — entry sits within 0.5% of a same-dir POI
+        nearest = nearest_poi_proximity(pd_array_matrix or {}, direction=real_dir)
         # §3.4 enhanced overlap — entry sits inside a BPR or IFVG (same dir)
         bpr_overlap = any(
             float(b["bottom"]) <= entry <= float(b["top"])
@@ -2420,8 +2423,10 @@ def detect_sweep_reversal_entries(
             "pd_extreme": pd_extreme,
             "bpr_overlap": bpr_overlap,
             "ifvg_overlap": ifvg_overlap,
+            "nearest_poi_within": bool(nearest.get("has_poi_within")),
         }
-        # §3.11 + §3.9 + §3.6 + §3.4 — extreme displacement / killzone / PD extreme / BPR / IFVG (+1 each).
+        # §3.11 + §3.9 + §3.6 + §3.4 + §3.10 — extreme displacement / killzone /
+        # PD extreme / BPR / IFVG / nearest-POI (+1 each).
         local_weights = {
             **(weights or {}),
             "displacement_extreme": 1,
@@ -2429,6 +2434,7 @@ def detect_sweep_reversal_entries(
             "pd_extreme": 1,
             "bpr_overlap": 1,
             "ifvg_overlap": 1,
+            "nearest_poi_within": 1,
         }
         scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
@@ -4284,6 +4290,7 @@ def suggest_confluence_weights(
         "altseason_tailwind": 2,
         "bpr_overlap": 1,
         "ifvg_overlap": 1,
+        "nearest_poi_within": 1,
     }
     base = {**extension_defaults, **base}
     stats = (factor_edge or {}).get("factors", {})
@@ -5410,6 +5417,7 @@ def build_smc_analysis(
         inverse_fvgs=inverse_fvgs,
         atr_value=(adaptive_info or {}).get("atr"),
         vol_bucket=(adaptive_info or {}).get("bucket"),
+        pd_array_matrix=pd_array_matrix,
     )
     continuation_entries = detect_continuation_entries(
         h, structure, obs, fvgs, pd_zone, bias, session, weights=weights,

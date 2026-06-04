@@ -2745,3 +2745,53 @@ def test_all_entry_models_carry_stop_rule_field():
                 "atr_only", "atr_dominant", "structural_only",
                 "max(atr,structural)", "no_direction",
             }
+
+
+def test_sweep_reversal_credits_nearest_poi_within_factor():
+    """§3.10 + §5.2: entry within 0.5% of a same-dir POI → nearest_poi_within True."""
+    from smc_quant import detect_sweep_reversal_entries
+    judas = [{
+        "judas": 1, "real_direction": 1, "fakeout_direction": -1,
+        "sweep_type": "SSL", "sweep_level": 9.0,
+        "sweep_index": 4, "confirm_index": 6, "confirm_time": None,
+        "false_move_high": 10.5, "false_move_low": 8.8,
+        "displacement_confirmed": True, "displacement_strength": "normal",
+        "session_at_sweep": None, "killzone": False, "sweep_time": None,
+    }]
+    obs = [{
+        "index": 5, "direction": 1, "top": 10.0, "bottom": 9.0,
+        "refined_entry": 9.5, "status": "unmitigated", "grade": "B",
+        "displacement_confirmed": True,
+    }]
+    h = normalize_ohlcv(_sample_ohlcv())
+    matrix = {
+        "rows": [
+            # closest same-dir POI well within 0.5%
+            {"kind": "order_block", "direction": 1, "distance_pct": 0.2},
+        ]
+    }
+    entries = detect_sweep_reversal_entries(
+        h, judas, obs, [], {"state": "discount"}, "bullish",
+        pd_array_matrix=matrix,
+    )
+    assert entries[0]["factors"]["nearest_poi_within"] is True
+
+
+def test_sweep_reversal_skips_nearest_poi_factor_when_matrix_missing():
+    from smc_quant import detect_sweep_reversal_entries
+    judas = [{
+        "judas": 1, "real_direction": 1, "fakeout_direction": -1,
+        "sweep_type": "SSL", "sweep_level": 9.0,
+        "sweep_index": 4, "confirm_index": 6, "confirm_time": None,
+        "false_move_high": 10.5, "false_move_low": 8.8,
+        "displacement_confirmed": True, "displacement_strength": "normal",
+        "session_at_sweep": None, "killzone": False, "sweep_time": None,
+    }]
+    obs = [{"index": 5, "direction": 1, "top": 10.0, "bottom": 9.0,
+            "refined_entry": 9.5, "status": "unmitigated", "grade": "B",
+            "displacement_confirmed": True}]
+    h = normalize_ohlcv(_sample_ohlcv())
+    entries = detect_sweep_reversal_entries(
+        h, judas, obs, [], {"state": "discount"}, "bullish",
+    )
+    assert entries[0]["factors"]["nearest_poi_within"] is False
