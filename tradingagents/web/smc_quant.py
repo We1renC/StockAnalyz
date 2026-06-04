@@ -3896,16 +3896,31 @@ def suggest_confluence_weights(
     Returns a *new* weights dict, never mutates the input.
     """
     base = {**CONFLUENCE_WEIGHTS_DEFAULT, **(base_weights or {})}
+    # §3.5 / §3.6 / §3.9 / §3.11 / §17 — the extended factors aren't part of
+    # the static default seed; assume their conventional starting weights
+    # so the change-log can diff sensibly.
+    extension_defaults = {
+        "displacement_extreme": 1,
+        "killzone_premium": 1,
+        "pd_extreme": 1,
+        "perp_led_warning": -2,
+        "cvd_aggressive_flow": 1,
+        "altseason_tailwind": 2,
+    }
+    base = {**extension_defaults, **base}
     stats = (factor_edge or {}).get("factors", {})
     suggested = dict(base)
     for name, s in stats.items():
         if s.get("n_with", 0) < min_sample or s.get("n_without", 0) < min_sample:
             continue
         edge = float(s.get("edge", 0))
+        current = int(base.get(name, 0))
         if edge >= edge_step:
-            suggested[name] = int(base.get(name, 0)) + 1
+            # Positive edge ⇒ +1 (drag factors move closer to 0, support factors push higher).
+            suggested[name] = current + 1
         elif edge <= -edge_step:
-            suggested[name] = max(0, int(base.get(name, 0)) - 1)
+            # Negative edge ⇒ -1 with floor of -3 (allow stronger drag for proven misleads).
+            suggested[name] = max(-3, current - 1)
     return suggested
 
 

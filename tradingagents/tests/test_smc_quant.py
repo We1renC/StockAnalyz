@@ -2054,3 +2054,36 @@ def test_pd_extreme_and_killzone_premium_propagate_to_all_entry_models():
         for e in collection:
             assert "pd_extreme" in e["factors"]
             assert "killzone_premium" in e["factors"]
+
+
+def test_suggest_weights_includes_extension_factor_seeds():
+    """§3.5/§3.6/§3.9/§3.11 + §17 extension factors get default seeds."""
+    from smc_quant import suggest_confluence_weights
+    out = suggest_confluence_weights({"factors": {}})
+    # Extension factors must appear in the suggested weights baseline
+    for key in ("displacement_extreme", "killzone_premium", "pd_extreme",
+                "perp_led_warning", "cvd_aggressive_flow", "altseason_tailwind"):
+        assert key in out
+    assert out["perp_led_warning"] == -2  # drag retained
+
+
+def test_suggest_weights_lets_drag_factor_grow_more_negative():
+    """Negative edge ≤ -0.5 on a drag factor → weight decreases (floor -3)."""
+    from smc_quant import suggest_confluence_weights
+    edge = {
+        "factors": {
+            "perp_led_warning": {"n_with": 10, "n_without": 10, "edge": -1.5},
+        }
+    }
+    out = suggest_confluence_weights(edge)
+    # base -2, edge ≤ -0.5 → -3 (capped)
+    assert out["perp_led_warning"] == -3
+
+
+def test_suggest_weights_lifts_positive_edge_extension_factor():
+    """A positive edge ≥ +0.5 on pd_extreme bumps its weight."""
+    from smc_quant import suggest_confluence_weights
+    edge = {"factors": {"pd_extreme": {"n_with": 10, "n_without": 10, "edge": 1.2}}}
+    out = suggest_confluence_weights(edge)
+    # Extension default 1 + 1 = 2
+    assert out["pd_extreme"] == 2
