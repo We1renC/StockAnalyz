@@ -1167,3 +1167,35 @@ def test_calibrate_kelly_uses_ledger_expectancy_when_enough_samples():
     out = calibrate_kelly_from_ledger(records)
     assert out["sample_size"] == 35
     assert out["f_recommended"] <= 0.05
+
+
+def test_mae_mfe_recommendations_suggests_widening_stop_when_winners_breach():
+    """§18.3: ≥30% of winners breach 1R stop → recommend widening."""
+    from smc_quant import mae_mfe_recommendations
+    records = []
+    # 25 winners — 60% deep-MAE breaches (MAE > 1R), 40% tight
+    for i in range(25):
+        deep = i < 15
+        records.append({"r_multiple": 2.0, "mae": -1.4 if deep else -0.4, "mfe": 2.5})
+    out = mae_mfe_recommendations(records, min_samples=20)
+    assert out["sample_size"] == 25
+    assert out["deep_mae_share"] >= 0.3
+    kinds = {r["kind"] for r in out["recommendations"]}
+    assert "widen_stop" in kinds
+    widen = next(r for r in out["recommendations"] if r["kind"] == "widen_stop")
+    assert widen["suggested_stop_R"] > 1.0
+
+
+def test_mae_mfe_recommendations_suggests_stretching_tp_when_mfe_runs_far():
+    """If winners' MFE far exceeds realised R → stretch TP."""
+    from smc_quant import mae_mfe_recommendations
+    records = [{"r_multiple": 2.0, "mae": -0.3, "mfe": 5.5} for _ in range(25)]
+    out = mae_mfe_recommendations(records, min_samples=20)
+    kinds = {r["kind"] for r in out["recommendations"]}
+    assert "stretch_tp" in kinds
+
+
+def test_mae_mfe_recommendations_blocks_when_sample_too_small():
+    from smc_quant import mae_mfe_recommendations
+    out = mae_mfe_recommendations([{"r_multiple": 2.0, "mae": -0.5, "mfe": 2.0}] * 5)
+    assert "insufficient_winners" in out["note"]

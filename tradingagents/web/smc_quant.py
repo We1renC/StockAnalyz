@@ -2498,6 +2498,97 @@ CRYPTO_LEVERAGE_CAP = {
 }
 
 
+def mae_mfe_recommendations(
+    trade_records: list[dict],
+    *,
+    winner_mae_pct: float = 0.3,
+    widen_factor: float = 1.25,
+    tighten_tp_factor: float = 0.85,
+    min_samples: int = 20,
+) -> dict:
+    """§18.3 — derive stop / target tweaks from the MAE & MFE distributions.
+
+    Heuristics (paraphrased from the design doc):
+      • If ≥ ``winner_mae_pct`` of *winning* trades show an MAE deeper
+        than the current 1R stop, the stop sits inside market noise →
+        recommend widening to ``widen_factor`` × current stop distance
+        (~ +0.33R → +0.42R lift documented in the spec).
+      • If the average winner MFE exceeds the average TP-take by a wide
+        margin, suggest stretching TP toward the median MFE.
+      • If the average winner MFE *fails to reach* the planned TP,
+        suggest tightening TP toward ``tighten_tp_factor`` × MFE so the
+        trade actually realises edge before mean-reverting.
+
+    Refuses to give a recommendation below ``min_samples`` winners; the
+    response still includes the underlying distribution stats for audit.
+    """
+    if not trade_records:
+        return {"sample_size": 0, "note": "no_records"}
+    winners = [t for t in trade_records if float(t.get("r_multiple", 0)) > 0]
+    if len(winners) < min_samples:
+        return {
+            "sample_size": len(winners),
+            "note": "insufficient_winners",
+            "min_samples": min_samples,
+        }
+    # Winners' MAE in R (already negative); take absolute for clarity.
+    maes = [abs(float(t.get("mae", 0))) for t in winners if t.get("mae") is not None]
+    mfes = [float(t.get("mfe", 0)) for t in winners if t.get("mfe") is not None]
+    if not maes or not mfes:
+        return {
+            "sample_size": len(winners),
+            "note": "missing_mae_mfe_fields",
+        }
+    maes_sorted = sorted(maes)
+    mfes_sorted = sorted(mfes)
+    def _median(xs: list[float]) -> float:
+        n = len(xs)
+        return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
+    def _avg(xs: list[float]) -> float:
+        return sum(xs) / len(xs) if xs else 0.0
+    median_mae = _median(maes_sorted)
+    avg_mae = _avg(maes)
+    median_mfe = _median(mfes_sorted)
+    avg_mfe = _avg(mfes)
+    # Fraction of winners whose MAE ran past the 1R stop (current stop sits in noise).
+    deep_mae_share = sum(1 for m in maes if m > 1.0) / len(maes)
+    recommendations: list[dict] = []
+    if deep_mae_share >= winner_mae_pct:
+        recommendations.append({
+            "kind": "widen_stop",
+            "deep_mae_share": round(deep_mae_share, 3),
+            "current_stop_R": 1.0,
+            "suggested_stop_R": round(widen_factor, 3),
+            "evidence": f"{int(deep_mae_share*100)}% of winners breached 1R stop; widen to {widen_factor}R",
+        })
+    avg_realised_tp = _avg([float(t.get("r_multiple", 0)) for t in winners])
+    if avg_mfe >= 1.5 * avg_realised_tp and avg_mfe > avg_realised_tp + 0.5:
+        recommendations.append({
+            "kind": "stretch_tp",
+            "avg_realised_R": round(avg_realised_tp, 3),
+            "avg_mfe_R": round(avg_mfe, 3),
+            "suggested_tp_R": round(median_mfe, 3),
+            "evidence": "winners are leaving > 50% of MFE on the table",
+        })
+    if avg_mfe < avg_realised_tp:
+        recommendations.append({
+            "kind": "tighten_tp",
+            "avg_realised_R": round(avg_realised_tp, 3),
+            "avg_mfe_R": round(avg_mfe, 3),
+            "suggested_tp_R": round(avg_mfe * tighten_tp_factor, 3),
+            "evidence": "winners rarely reach planned TP; pull in toward typical MFE",
+        })
+    return {
+        "sample_size": len(winners),
+        "median_mae_R": round(median_mae, 3),
+        "avg_mae_R": round(avg_mae, 3),
+        "median_mfe_R": round(median_mfe, 3),
+        "avg_mfe_R": round(avg_mfe, 3),
+        "deep_mae_share": round(deep_mae_share, 3),
+        "recommendations": recommendations,
+    }
+
+
 def kelly_fraction(
     win_rate: float,
     avg_win_R: float,
