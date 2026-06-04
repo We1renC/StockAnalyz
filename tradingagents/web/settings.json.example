@@ -4,8 +4,11 @@
   "api_keys": {
     "anthropic": "sk-ant-...",
     "openai": "sk-proj-... 或 sk-...",
-    "google": "AIza..."
+    "google": "AIza...",
+    "binance_api_key": "YOUR_BINANCE_API_KEY",
+    "binance_secret_key": "YOUR_BINANCE_SECRET_KEY"
   },
+  "binance_api_url": "https://testnet.binance.vision",
 
   "roles": {
     "analyst": {
