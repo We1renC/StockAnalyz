@@ -2309,9 +2309,15 @@ def detect_continuation_entries(
             "ltf_choch": False,
             "ote_zone": False,
             "killzone": bool((session or {}).get("killzone")),
+            "killzone_premium": is_premium_killzone(session),
             "volume_displacement": bool(poi.get("displacement_confirmed", True)) if is_ob else bool(poi.get("displacement_confirmed")),
+            "pd_extreme": bool(
+                (direction == 1 and (pd_zone or {}).get("zone") == "pure_discount")
+                or (direction == -1 and (pd_zone or {}).get("zone") == "pure_premium")
+            ),
         }
-        scoring = score_confluence(factors, weights=weights, threshold=threshold)
+        local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1}
+        scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
             {
                 "model": "ob_fvg_continuation",
@@ -2419,12 +2425,18 @@ def detect_ote_entries(
         "ltf_choch": False,
         "ote_zone": True,  # By construction
         "killzone": bool((session or {}).get("killzone")),
+        "killzone_premium": is_premium_killzone(session),
         "volume_displacement": (
             (ob_overlap is not None and ob_overlap.get("displacement_confirmed", True))
             or (fvg_overlap is not None and fvg_overlap.get("displacement_confirmed"))
         ),
+        "pd_extreme": bool(
+            (direction == 1 and (pd_zone or {}).get("zone") == "pure_discount")
+            or (direction == -1 and (pd_zone or {}).get("zone") == "pure_premium")
+        ),
     }
-    scoring = score_confluence(factors, weights=weights, threshold=threshold)
+    local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1}
+    scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
     out.append(
         {
             "model": "ote_retracement",
@@ -2513,9 +2525,15 @@ def detect_unicorn_entries(
                 "ltf_choch": True,        # Direction flip requires CHoCH
                 "ote_zone": False,
                 "killzone": bool((session or {}).get("killzone")),
+                "killzone_premium": is_premium_killzone(session),
                 "volume_displacement": bool(f.get("displacement_confirmed")),
+                "pd_extreme": bool(
+                    (direction == 1 and (pd_zone or {}).get("zone") == "pure_discount")
+                    or (direction == -1 and (pd_zone or {}).get("zone") == "pure_premium")
+                ),
             }
-            scoring = score_confluence(factors, weights=weights, threshold=threshold)
+            local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1}
+            scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
             out.append(
                 {
                     "model": "unicorn",
@@ -2642,9 +2660,15 @@ def detect_silver_bullet_entries(
             "ltf_choch": False,  # Silver Bullet does not strictly require CHoCH
             "ote_zone": False,
             "killzone": time_filtered or bool((session or {}).get("killzone")),
+            "killzone_premium": is_premium_killzone(session),
             "volume_displacement": bool(fvg.get("displacement_confirmed")),
+            "pd_extreme": bool(
+                (direction == 1 and (pd_zone or {}).get("zone") == "pure_discount")
+                or (direction == -1 and (pd_zone or {}).get("zone") == "pure_premium")
+            ),
         }
-        scoring = score_confluence(factors, weights=weights, threshold=threshold)
+        local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1}
+        scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
             {
                 "model": "silver_bullet",

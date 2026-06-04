@@ -2021,3 +2021,36 @@ def test_sweep_reversal_entry_credits_pd_extreme_factor():
     assert entries[0]["factors"]["pd_extreme"] is True
     names = {f["factor"] for f in entries[0]["confluence"]["contributing_factors"]}
     assert "pd_extreme" in names
+
+
+def test_pd_extreme_and_killzone_premium_propagate_to_all_entry_models():
+    """§3.6 + §3.9: pd_extreme + killzone_premium must appear in every model's factors."""
+    from smc_quant import (
+        detect_continuation_entries, detect_ote_entries,
+        detect_unicorn_entries, detect_silver_bullet_entries, ote_zone,
+    )
+    cfg = SMCConfig(swing_length=2, internal_swing_length=2)
+    h = normalize_ohlcv(_sample_ohlcv())
+    swings = detect_swings(h, cfg.swing_length)
+    structure = detect_structure(h, swings, cfg)
+    liquidity = detect_liquidity(h, swings, cfg)
+    displacements = detect_displacement(h, cfg)
+    obs = detect_order_blocks(h, structure, displacements, liquidity)
+    fvgs = [{"index": 22, "direction": 1, "top": 18.0, "bottom": 17.0, "mid": 17.5, "mitigated": False, "displacement_confirmed": True}]
+    pd_zone = {"state": "discount", "zone": "pure_discount"}
+    session = {"zone": "ny_open", "killzone": True}
+    bias = "bullish"
+    # Continuation
+    cont = detect_continuation_entries(h, structure, obs, fvgs, pd_zone, bias, session)
+    # OTE
+    ote_block = ote_zone(swings, bias)
+    ote = detect_ote_entries(h, ote_block, obs, fvgs, pd_zone, bias, session)
+    # Unicorn
+    breakers = [{"index": 5, "direction": 1, "top": 18.0, "bottom": 17.0}]
+    uni = detect_unicorn_entries(h, breakers, fvgs, [], pd_zone, bias, session)
+    # Silver Bullet
+    sb = detect_silver_bullet_entries(h, liquidity, fvgs, "AAPL", pd_zone, bias, session)
+    for collection in (cont, ote, uni, sb):
+        for e in collection:
+            assert "pd_extreme" in e["factors"]
+            assert "killzone_premium" in e["factors"]
