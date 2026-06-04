@@ -2478,6 +2478,8 @@ def detect_continuation_entries(
     session: Optional[dict] = None,
     weights: Optional[dict[str, int]] = None,
     threshold: int = CONFLUENCE_THRESHOLD_DEFAULT,
+    atr_value: Optional[float] = None,
+    vol_bucket: Optional[str] = None,
 ) -> list[dict]:
     """§5.1 Entry Model 2 — OB/FVG Continuation.
 
@@ -2528,9 +2530,15 @@ def detect_continuation_entries(
             poi_kind = "fvg"
         # Stop = beyond POI boundary (structural invalidation).
         if direction == 1:
-            stop = bottom - max(0.0, (entry - bottom) * 0.05)
+            structural_stop = bottom - max(0.0, (entry - bottom) * 0.05)
         else:
-            stop = top + max(0.0, (top - entry) * 0.05)
+            structural_stop = top + max(0.0, (top - entry) * 0.05)
+        if atr_value and vol_bucket:
+            sd = atr_adaptive_stop(direction, entry, atr_value, vol_bucket,
+                                    structural_stop=structural_stop)
+            stop = sd["stop"]; stop_rule = sd["rule"]
+        else:
+            stop = structural_stop; stop_rule = "structural_only"
         risk = abs(entry - stop)
         if risk <= 0:
             continue
@@ -2563,6 +2571,7 @@ def detect_continuation_entries(
                 "direction": direction,
                 "entry": round(entry, 4),
                 "stop": round(stop, 4),
+                "stop_rule": stop_rule,
                 "target": round(target, 4),
                 "risk": round(risk, 4),
                 "rr": round(rr, 2),
@@ -5368,6 +5377,8 @@ def build_smc_analysis(
     )
     continuation_entries = detect_continuation_entries(
         h, structure, obs, fvgs, pd_zone, bias, session, weights=weights,
+        atr_value=(adaptive_info or {}).get("atr"),
+        vol_bucket=(adaptive_info or {}).get("bucket"),
     )
     ote_entries = detect_ote_entries(
         h, ote, obs, fvgs, pd_zone, bias, session, weights=weights,

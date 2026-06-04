@@ -2707,3 +2707,24 @@ def test_dol_intact_pdh_still_beats_strong_internal():
     # PDH at 103 closer than internal at 108 → PDH wins
     assert out["target_kind"] == "PDH"
     assert out["target_price"] == 103
+
+
+def test_continuation_uses_atr_adaptive_when_provided():
+    """§17.6 + §5.1 Model 2: ATR + bucket widens stop on extreme vol."""
+    from smc_quant import detect_continuation_entries
+    cfg = SMCConfig(swing_length=2, internal_swing_length=2)
+    h = normalize_ohlcv(_sample_ohlcv())
+    swings = detect_swings(h, cfg.swing_length)
+    structure = detect_structure(h, swings, cfg)
+    liquidity = detect_liquidity(h, swings, cfg)
+    displacements = detect_displacement(h, cfg)
+    obs = detect_order_blocks(h, structure, displacements, liquidity)
+    entries_static = detect_continuation_entries(h, structure, obs, [], {"state": "discount"}, "bullish")
+    entries_atr = detect_continuation_entries(h, structure, obs, [], {"state": "discount"}, "bullish",
+                                              atr_value=1.0, vol_bucket="extreme")
+    if entries_static and entries_atr:
+        # Same entry POI → ATR-widened stop must be ≤ structural stop
+        # for long direction
+        assert entries_atr[0]["stop"] <= entries_static[0]["stop"] + 1e-6
+        assert entries_atr[0]["stop_rule"] in {"atr_dominant", "max(atr,structural)", "atr_only"}
+        assert entries_static[0]["stop_rule"] == "structural_only"
