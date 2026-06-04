@@ -416,8 +416,9 @@ async def create_order(
     if not passed:
         write_audit_log(conn, account_id, auth_info["api_key_id"], "order.create", "order", None, client_ip, ua, "failed", {"error": err_code, "request": order_dict})
         conn.close()
+        status_code = 423 if err_code == "KILL_SWITCH_ACTIVE" else 400
         raise HTTPException(
-            status_code=400,
+            status_code=status_code,
             detail={
                 "success": False,
                 "error": {

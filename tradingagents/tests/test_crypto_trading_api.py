@@ -449,7 +449,7 @@ def test_kill_switch_blocking():
         "quantity": "0.01"
     }
     res_order = post_json(client, order_path, order_payload)
-    assert res_order.status_code == 400
+    assert res_order.status_code == 423
     assert res_order.json()["detail"]["error"]["code"] == "KILL_SWITCH_ACTIVE"
 
     # 3. Deactivate Kill Switch
