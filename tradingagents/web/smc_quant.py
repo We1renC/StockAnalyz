@@ -7401,3 +7401,302 @@ def _rank_poi(analysis: dict) -> list[dict]:
             }
         )
     return sorted(poi, key=lambda x: (x.get("score") or 0, x.get("source_index") or 0), reverse=True)[:20]
+
+
+def evaluate_pipeline_stage_transition(
+    current_stage: str,
+    stage_metrics: dict,
+    *,
+    min_backtest_samples: int = 100,
+    min_paper_samples: int = 50,
+    min_paper_days: int = 30,
+    min_small_cap_samples: int = 50,
+    min_small_cap_days: int = 30,
+    max_drawdown_limit: float = 0.20,
+) -> dict:
+    """§10.4 — Forward / Paper Testing → Small-capital → Production automated validation pipeline.
+
+    Evaluates performance acceptance criteria (§10.3) and discipline rules (§10.5)
+    to determine if the system is allowed to transition to the next phase of deployment.
+    """
+    allowed = {"backtest", "paper_testing", "small_capital", "production", "review"}
+    curr = current_stage.lower() if current_stage else "backtest"
+    if curr not in allowed:
+        curr = "backtest"
+
+    metrics = stage_metrics or {}
+    sample_size = int(metrics.get("sample_size", 0))
+    duration_days = int(metrics.get("duration_days", 0))
+    win_rate = float(metrics.get("win_rate", 0.0))
+    profit_factor = float(metrics.get("profit_factor", 0.0))
+    max_dd = float(metrics.get("max_drawdown", 0.0))
+    edge_decay = bool(metrics.get("edge_decay", False))
+
+    next_stage = curr
+    action = "maintain"
+    reasons = []
+
+    if curr == "backtest":
+        passed = True
+        if sample_size < min_backtest_samples:
+            passed = False
+            reasons.append(f"Insufficient sample size: {sample_size}/{min_backtest_samples}")
+        if win_rate < 0.55:
+            passed = False
+            reasons.append(f"Win rate below threshold: {win_rate:.2f} < 0.55")
+        if profit_factor < 1.5:
+            passed = False
+            reasons.append(f"Profit factor below threshold: {profit_factor:.2f} < 1.5")
+        if max_dd > max_drawdown_limit:
+            passed = False
+            reasons.append(f"Max drawdown too high: {max_dd:.2f} > {max_drawdown_limit:.2f}")
+
+        if passed:
+            next_stage = "paper_testing"
+            action = "promote"
+            reasons.append("Backtest metrics passed acceptance criteria. Promoted to paper testing.")
+        else:
+            action = "reject"
+
+    elif curr == "paper_testing":
+        passed = True
+        if sample_size < min_paper_samples:
+            passed = False
+            reasons.append(f"Insufficient paper trades: {sample_size}/{min_paper_samples}")
+        if duration_days < min_paper_days:
+            passed = False
+            reasons.append(f"Insufficient testing duration: {duration_days}/{min_paper_days} days")
+        if win_rate < 0.55:
+            passed = False
+            reasons.append(f"Paper win rate below threshold: {win_rate:.2f} < 0.55")
+        if profit_factor < 1.5:
+            passed = False
+            reasons.append(f"Paper profit factor below threshold: {profit_factor:.2f} < 1.5")
+        if max_dd > max_drawdown_limit:
+            passed = False
+            reasons.append(f"Paper drawdown too high: {max_dd:.2f} > {max_drawdown_limit:.2f}")
+
+        if passed:
+            next_stage = "small_capital"
+            action = "promote"
+            reasons.append("Paper testing completed successfully. Promoted to small-capital live trading.")
+        else:
+            action = "maintain"
+
+    elif curr == "small_capital":
+        passed = True
+        if sample_size < min_small_cap_samples:
+            passed = False
+            reasons.append(f"Insufficient small-capital trades: {sample_size}/{min_small_cap_samples}")
+        if duration_days < min_small_cap_days:
+            passed = False
+            reasons.append(f"Insufficient small-capital duration: {duration_days}/{min_small_cap_days} days")
+        if win_rate < 0.55:
+            passed = False
+            reasons.append(f"Small-capital win rate below threshold: {win_rate:.2f} < 0.55")
+        if profit_factor < 1.5:
+            passed = False
+            reasons.append(f"Small-capital profit factor below threshold: {profit_factor:.2f} < 1.5")
+
+        small_cap_dd_limit = max_drawdown_limit * 0.75
+        if max_dd > small_cap_dd_limit:
+            passed = False
+            reasons.append(f"Small-capital drawdown too high: {max_dd:.2f} > {small_cap_dd_limit:.2f}")
+
+        if passed:
+            next_stage = "production"
+            action = "promote"
+            reasons.append("Small-capital trial passed. Ready for full Production deployment.")
+        else:
+            action = "maintain"
+
+    elif curr == "production":
+        triggered_demotion = False
+        if max_dd > max_drawdown_limit:
+            triggered_demotion = True
+            reasons.append(f"Production drawdown exceeded limit: {max_dd:.2f} > {max_drawdown_limit:.2f}")
+        if edge_decay:
+            triggered_demotion = True
+            reasons.append("Monthly edge stability monitor triggered edge decay alert.")
+
+        if triggered_demotion:
+            next_stage = "review"
+            action = "demote"
+            reasons.append("Production risk rules violated. Demoting to review stage.")
+        else:
+            action = "maintain"
+
+    elif curr == "review":
+        action = "maintain"
+        reasons.append("System is in review/calibration mode. Re-run optimization and backtests first.")
+
+    return {
+        "current_stage": current_stage,
+        "next_stage": next_stage,
+        "action": action,
+        "reasons": reasons,
+        "metrics_evaluated": {
+            "sample_size": sample_size,
+            "duration_days": duration_days,
+            "win_rate": win_rate,
+            "profit_factor": profit_factor,
+            "max_drawdown": max_dd,
+            "edge_decay": edge_decay,
+        }
+    }
+
+
+def train_multi_factor_logistic(
+    trades: list[dict],
+    feature_cols: list[str],
+    *,
+    learning_rate: float = 0.5,
+    epochs: int = 1000,
+    l2_penalty: float = 0.1,
+) -> dict:
+    """§18.4 — Train a lightweight Multi-Factor Logistic Regression classifier in pure Python/NumPy.
+
+    Returns the coefficients, intercept, feature means, training log loss, accuracy, and SHAP-based feature
+    importance contribution values for each trade.
+    """
+    n = len(trades or [])
+    k = len(feature_cols or [])
+    if n == 0 or k == 0:
+        return {
+            "coefficients": {col: 0.0 for col in (feature_cols or [])},
+            "intercept": 0.0,
+            "feature_means": {col: 0.0 for col in (feature_cols or [])},
+            "shap_values": [],
+            "accuracy": 0.0,
+            "log_loss": 0.0,
+        }
+
+    # Extract X and y
+    X = np.zeros((n, k))
+    y = np.zeros(n)
+    for i, t in enumerate(trades):
+        factors = t.get("factors") or {}
+        for j, col in enumerate(feature_cols):
+            val = factors.get(col, False)
+            X[i, j] = 1.0 if val is True or val == 1 else (0.0 if val is False or val == 0 else float(val or 0.0))
+        y[i] = 1.0 if float(t.get("r_multiple", 0.0)) > 0 else 0.0
+
+    # Fit Logistic Regression via Gradient Descent
+    theta = np.zeros(k)
+    b = 0.0
+
+    for epoch in range(epochs):
+        z = np.dot(X, theta) + b
+        p = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+
+        # Gradients
+        dz = p - y
+        dtheta = (np.dot(X.T, dz) + l2_penalty * theta) / n
+        db = np.sum(dz) / n
+
+        # Update
+        theta -= learning_rate * dtheta
+        b -= learning_rate * db
+
+    # Final metrics
+    z_final = np.dot(X, theta) + b
+    p_final = 1.0 / (1.0 + np.exp(-np.clip(z_final, -20.0, 20.0)))
+    predictions = (p_final >= 0.5).astype(float)
+    accuracy = float(np.mean(predictions == y))
+
+    # Avoid log(0)
+    p_clipped = np.clip(p_final, 1e-15, 1 - 1e-15)
+    log_loss = float(-np.mean(y * np.log(p_clipped) + (1 - y) * np.log(1 - p_clipped)) + (l2_penalty / (2 * n)) * np.sum(theta**2))
+
+    # Compute Feature Means
+    feature_means = np.mean(X, axis=0)
+
+    # Compute SHAP values: phi_{i, j} = theta_j * (X_{i, j} - mu_j)
+    shap_list = []
+    for i in range(n):
+        shap_dict = {}
+        for j, col in enumerate(feature_cols):
+            shap_dict[col] = float(theta[j] * (X[i, j] - feature_means[j]))
+        shap_list.append(shap_dict)
+
+    return {
+        "coefficients": {col: float(theta[j]) for j, col in enumerate(feature_cols)},
+        "intercept": float(b),
+        "feature_means": {col: float(feature_means[j]) for j, col in enumerate(feature_cols)},
+        "shap_values": shap_list,
+        "accuracy": round(accuracy, 4),
+        "log_loss": round(log_loss, 4),
+    }
+
+
+def generate_strategy_proposal(
+    current_config: dict,
+    proposed_weights: dict,
+    proposed_risk: Optional[float] = None,
+    notes: Optional[str] = None,
+) -> dict:
+    """§18.4 — Output strategy config updates as a serialized proposal + change log.
+
+    Compares current configurations to proposed optimizations, generates a detailed log
+    of changes, and outputs the proposed configuration format.
+    """
+    curr_weights = (current_config or {}).get("weights") or {}
+    change_log: list[dict] = []
+
+    # Analyze changes in weights
+    all_keys = set(curr_weights.keys()) | set(proposed_weights.keys())
+    for key in sorted(all_keys):
+        old_val = curr_weights.get(key)
+        new_val = proposed_weights.get(key)
+
+        if old_val is None:
+            action = "add"
+        elif new_val is None:
+            action = "remove"
+        elif new_val > old_val:
+            action = "increase"
+        elif new_val < old_val:
+            action = "decrease"
+        else:
+            action = "no_change"
+
+        change_log.append({
+            "factor_name": key,
+            "old_value": old_val,
+            "new_value": new_val,
+            "action": action,
+        })
+
+    # Generate proposal dictionary
+    proposal_dict = {
+        "weights": proposed_weights,
+    }
+    if proposed_risk is not None:
+        proposal_dict["risk_parameters"] = {
+            "risk_pct": proposed_risk,
+        }
+
+    # Manual YAML serialization to keep formatting clean
+    yaml_lines = []
+    yaml_lines.append("# SMC Strategy Proposal Configuration")
+    if notes:
+        yaml_lines.append(f"# Notes: {notes}")
+    yaml_lines.append(f"# Generated: {datetime.now().isoformat(timespec='seconds')}")
+    yaml_lines.append("")
+    yaml_lines.append("weights:")
+    for key, val in sorted(proposed_weights.items()):
+        yaml_lines.append(f"  {key}: {val}")
+
+    if proposed_risk is not None:
+        yaml_lines.append("")
+        yaml_lines.append("risk_parameters:")
+        yaml_lines.append(f"  risk_pct: {proposed_risk}")
+
+    proposal_yaml = "\n".join(yaml_lines)
+
+    return {
+        "proposal_dict": proposal_dict,
+        "proposal_yaml": proposal_yaml,
+        "change_log": change_log,
+        "weights_changed_count": sum(1 for c in change_log if c["action"] != "no_change"),
+    }

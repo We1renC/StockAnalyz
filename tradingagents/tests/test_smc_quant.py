@@ -3995,3 +3995,122 @@ def test_cross_validate_swing_detection_divergent_when_primary_empty():
     out = cross_validate_swing_detection(df, [], left=2, right=2)
     assert out["status"] == "divergent"
     assert out["iou"] == 0.0
+
+
+def test_evaluate_pipeline_stage_transition_backtest_cases():
+    from smc_quant import evaluate_pipeline_stage_transition
+
+    # Promotion case
+    out1 = evaluate_pipeline_stage_transition(
+        "backtest",
+        {"sample_size": 120, "win_rate": 0.60, "profit_factor": 1.8, "max_drawdown": 0.12}
+    )
+    assert out1["next_stage"] == "paper_testing"
+    assert out1["action"] == "promote"
+
+    # Rejection case
+    out2 = evaluate_pipeline_stage_transition(
+        "backtest",
+        {"sample_size": 80, "win_rate": 0.60, "profit_factor": 1.8, "max_drawdown": 0.12}
+    )
+    assert out2["next_stage"] == "backtest"
+    assert out2["action"] == "reject"
+
+
+def test_evaluate_pipeline_stage_transition_paper_to_small_cap():
+    from smc_quant import evaluate_pipeline_stage_transition
+
+    out = evaluate_pipeline_stage_transition(
+        "paper_testing",
+        {"sample_size": 60, "duration_days": 35, "win_rate": 0.58, "profit_factor": 1.6, "max_drawdown": 0.10}
+    )
+    assert out["next_stage"] == "small_capital"
+    assert out["action"] == "promote"
+
+
+def test_evaluate_pipeline_stage_transition_production_demotion():
+    from smc_quant import evaluate_pipeline_stage_transition
+
+    # Revert via drawdown
+    out1 = evaluate_pipeline_stage_transition(
+        "production",
+        {"max_drawdown": 0.25, "edge_decay": False}
+    )
+    assert out1["next_stage"] == "review"
+    assert out1["action"] == "demote"
+
+    # Revert via edge decay
+    out2 = evaluate_pipeline_stage_transition(
+        "production",
+        {"max_drawdown": 0.05, "edge_decay": True}
+    )
+    assert out2["next_stage"] == "review"
+    assert out2["action"] == "demote"
+
+
+def test_train_multi_factor_logistic_with_perfect_feature():
+    from smc_quant import train_multi_factor_logistic
+    # Create trades where feature_a is perfectly predictive of win (r_multiple > 0)
+    trades = []
+    for i in range(20):
+        trades.append({
+            "r_multiple": 2.0 if i % 2 == 0 else -1.0,
+            "factors": {"feature_a": True if i % 2 == 0 else False, "feature_b": False}
+        })
+
+    out = train_multi_factor_logistic(trades, ["feature_a", "feature_b"], epochs=100)
+    assert out["accuracy"] >= 0.85
+    # feature_a should have a positive coefficient, feature_b should be near 0
+    assert out["coefficients"]["feature_a"] > 0
+    assert abs(out["coefficients"]["feature_b"]) < 1.0
+    assert len(out["shap_values"]) == 20
+
+    # Test SHAP Additivity Property: sum(shap_j) == log_odds_i - expected_log_odds
+    coef_a = out["coefficients"]["feature_a"]
+    coef_b = out["coefficients"]["feature_b"]
+    intercept = out["intercept"]
+    mean_a = out["feature_means"]["feature_a"]
+    mean_b = out["feature_means"]["feature_b"]
+
+    expected_z = coef_a * mean_a + coef_b * mean_b + intercept
+
+    for i in range(20):
+        # Calculate log-odds prediction z_i
+        val_a = 1.0 if i % 2 == 0 else 0.0
+        val_b = 0.0
+        z_i = coef_a * val_a + coef_b * val_b + intercept
+        
+        shap_sum = out["shap_values"][i]["feature_a"] + out["shap_values"][i]["feature_b"]
+        assert abs(shap_sum - (z_i - expected_z)) < 1e-7
+
+
+def test_generate_strategy_proposal_creates_yaml_and_changelog():
+    from smc_quant import generate_strategy_proposal
+    current = {
+        "weights": {
+            "htf_bias_aligned": 2,
+            "unmitigated_ob": 2,
+            "killzone": 1
+        }
+    }
+    proposed = {
+        "htf_bias_aligned": 3,  # increase
+        "unmitigated_ob": 1,   # decrease
+        "killzone": 1,          # no_change
+        "new_factor": 2        # add
+    }
+
+    out = generate_strategy_proposal(current, proposed, proposed_risk=0.015, notes="Calibration June 2026")
+    
+    assert out["weights_changed_count"] == 3
+    change_log = {c["factor_name"]: c for c in out["change_log"]}
+    
+    assert change_log["htf_bias_aligned"]["action"] == "increase"
+    assert change_log["unmitigated_ob"]["action"] == "decrease"
+    assert change_log["killzone"]["action"] == "no_change"
+    assert change_log["new_factor"]["action"] == "add"
+
+    assert "risk_pct: 0.015" in out["proposal_yaml"]
+    assert "htf_bias_aligned: 3" in out["proposal_yaml"]
+    assert "new_factor: 2" in out["proposal_yaml"]
+
