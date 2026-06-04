@@ -2392,3 +2392,33 @@ def test_chart_layer_c11_pd_array_panel_populated():
     matrix = result["concepts"]["pd_array_matrix"]
     assert c11.get("current_price") == matrix["current_price"]
     assert c11.get("above_count") == matrix["above_count"]
+
+
+def test_nearest_poi_proximity_flags_close_match():
+    """direction match + ≤ threshold% → has_poi_within True."""
+    from smc_quant import nearest_poi_proximity
+    matrix = {
+        "rows": [
+            {"kind": "order_block", "direction": 1, "distance_pct": 0.3},
+            {"kind": "fvg", "direction": -1, "distance_pct": 0.1},
+        ]
+    }
+    # Long entry: same-direction-only filters out the bearish FVG
+    out = nearest_poi_proximity(matrix, direction=1, threshold_pct=0.5)
+    assert out["has_poi_within"] is True
+    assert out["closest_kind"] == "order_block"
+    assert out["distance_pct"] == 0.3
+
+
+def test_nearest_poi_proximity_returns_false_when_too_far():
+    from smc_quant import nearest_poi_proximity
+    matrix = {"rows": [{"kind": "order_block", "direction": 1, "distance_pct": 2.5}]}
+    out = nearest_poi_proximity(matrix, direction=1, threshold_pct=0.5)
+    assert out["has_poi_within"] is False
+    assert out["closest_kind"] == "order_block"
+
+
+def test_nearest_poi_proximity_empty_matrix():
+    from smc_quant import nearest_poi_proximity
+    out = nearest_poi_proximity({}, direction=1)
+    assert out["has_poi_within"] is False

@@ -372,6 +372,33 @@ def detect_fvgs(df: pd.DataFrame, displacements: list[dict]) -> list[dict]:
     return out
 
 
+def nearest_poi_proximity(
+    pd_array_matrix: dict, *, direction: int,
+    same_direction_only: bool = True,
+    threshold_pct: float = 0.5,
+) -> dict:
+    """Surface the closest matching POI from the PD-array matrix.
+
+    Returns ``{has_poi_within, closest_kind, distance_pct}`` so entry
+    models can credit a confluence bonus when price is hugging a
+    qualified POI.
+    """
+    if not pd_array_matrix:
+        return {"has_poi_within": False, "closest_kind": None, "distance_pct": None}
+    rows = pd_array_matrix.get("rows") or []
+    if same_direction_only and direction != 0:
+        rows = [r for r in rows if int(r.get("direction", 0)) == direction]
+    if not rows:
+        return {"has_poi_within": False, "closest_kind": None, "distance_pct": None}
+    closest = rows[0]
+    return {
+        "has_poi_within": closest["distance_pct"] <= threshold_pct,
+        "closest_kind": closest["kind"],
+        "distance_pct": closest["distance_pct"],
+        "threshold_pct": threshold_pct,
+    }
+
+
 def build_pd_array_matrix(
     *,
     current_price: float,
