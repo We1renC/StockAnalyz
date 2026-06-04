@@ -1727,8 +1727,8 @@ def test_build_smc_analysis_attaches_killzone_zone_field():
     assert "weight" in sess
 
 
-def test_top_down_audit_emits_six_step_checklist():
-    """§4: HTF→MTF→LTF audit must enumerate all 6 design-doc steps."""
+def test_top_down_audit_emits_full_seven_step_checklist():
+    """§4: HTF→MTF→LTF audit must enumerate all 7 design-doc steps."""
     sample = _sample_ohlcv()
     result = build_mtf_analysis(
         {"htf": sample, "mtf": sample, "ltf": sample},
@@ -1740,13 +1740,13 @@ def test_top_down_audit_emits_six_step_checklist():
     assert step_names == [
         "htf_bias_set",
         "htf_poi_present",
+        "htf_pd_alignment",       # §4 step 3 — was missing pre-Stage 30
         "mtf_reaction_aligned",
-        "ltf_bias_aligned",
         "ltf_choch_trigger",
         "poi_ranked",
+        "dol_target_available",   # §4 step 7 — was missing pre-Stage 30
     ]
-    # max_score = 6 + score field present
-    assert audit["max_score"] == 6
+    assert audit["max_score"] == 7
     assert 0 <= audit["score"] <= audit["max_score"]
     assert isinstance(audit["ready"], bool)
 

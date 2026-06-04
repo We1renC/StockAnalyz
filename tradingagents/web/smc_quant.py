@@ -6071,7 +6071,16 @@ def _top_down_audit(analyses: dict, biases: dict, poi: list[dict]) -> dict:
         "pass": htf_poi_count > 0,
         "evidence": f"unmitigated_OB+FVG={htf_poi_count}",
     })
-    # 3. MTF reaction — sweep or displacement in HTF direction
+    # 3. Price enters an HTF POI AND aligns with the correct PD zone
+    htf_pd = (htf_concepts.get("premium_discount") or {}).get("state")
+    correct_pd = ("discount" if htf_dir == 1 else "premium" if htf_dir == -1 else None)
+    steps.append({
+        "step": 3,
+        "name": "htf_pd_alignment",
+        "pass": correct_pd is not None and htf_pd == correct_pd,
+        "evidence": f"htf_pd={htf_pd} expected={correct_pd}",
+    })
+    # 4. MTF reaction — sweep or displacement in HTF direction
     mtf_layer = analyses.get("mtf") or {}
     mtf_concepts = mtf_layer.get("concepts") or {}
     mtf_disp = [
@@ -6083,17 +6092,10 @@ def _top_down_audit(analyses: dict, biases: dict, poi: list[dict]) -> dict:
         if l.get("swept")
     ]
     steps.append({
-        "step": 3,
+        "step": 4,
         "name": "mtf_reaction_aligned",
         "pass": bool(mtf_disp or mtf_sweeps),
         "evidence": f"displacement={len(mtf_disp)} sweep={len(mtf_sweeps)}",
-    })
-    # 4. MTF / LTF alignment with HTF bias
-    steps.append({
-        "step": 4,
-        "name": "ltf_bias_aligned",
-        "pass": htf_dir != 0 and (ltf_dir == htf_dir or mtf_dir == htf_dir),
-        "evidence": f"mtf_dir={mtf_dir} ltf_dir={ltf_dir}",
     })
     # 5. LTF CHoCH against the manipulation (Judas) leg
     ltf_layer = analyses.get("ltf") or {}
@@ -6112,6 +6114,18 @@ def _top_down_audit(analyses: dict, biases: dict, poi: list[dict]) -> dict:
         "name": "poi_ranked",
         "pass": bool(poi),
         "evidence": f"poi_count={len(poi)}",
+    })
+    # 7. DOL target available (next HTF liquidity pool per spec step 7)
+    ltf_entry_models = (ltf_concepts.get("entry_models") or {})
+    triggered_entries = ltf_entry_models.get("triggered") or []
+    dol_targets = [e for e in triggered_entries if e.get("dol_target") and not e.get("dol_required")]
+    # Fallback: any HTF unswept BSL/SSL counts as a target pool
+    htf_unswept = [l for l in (htf_concepts.get("liquidity") or []) if not l.get("swept")]
+    steps.append({
+        "step": 7,
+        "name": "dol_target_available",
+        "pass": bool(dol_targets) or bool(htf_unswept),
+        "evidence": f"ltf_with_dol={len(dol_targets)} htf_unswept_liq={len(htf_unswept)}",
     })
     ready = all(s["pass"] for s in steps)
     return {
