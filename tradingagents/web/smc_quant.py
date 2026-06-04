@@ -1702,6 +1702,7 @@ def resolve_dol_target(
             "target_kind": target_type,
             "distance": round(abs(level - current_price), 4),
             "source_index": int(liq.get("end_index", -1)),
+            "liquidity_kind": liq.get("liquidity_kind", "unknown"),
         })
     if prev_levels:
         prev_high = prev_levels.get("previous_high")
@@ -1739,7 +1740,20 @@ def resolve_dol_target(
         })
     if not candidates:
         return None
-    candidates.sort(key=lambda c: c["distance"])
+    # §3.5 — external liquidity > PDH/PDL > internal > FVG mid > unknown.
+    # Within the same priority bucket, take the closest pool (smallest distance).
+    priority = {
+        "external": 0,
+        "PDH": 1, "PDL": 1,
+        "internal": 2,
+        "FVG_MID": 3,
+        "unknown": 4,
+        "out_of_range": 5,
+    }
+    candidates.sort(key=lambda c: (
+        priority.get(c.get("liquidity_kind") or c.get("target_kind"), 9),
+        c["distance"],
+    ))
     return candidates[0]
 
 

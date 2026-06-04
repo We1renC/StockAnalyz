@@ -1642,3 +1642,25 @@ def test_build_smc_analysis_attaches_liquidity_kind_field():
     for liq in result["concepts"]["liquidity"]:
         assert "liquidity_kind" in liq
         assert liq["liquidity_kind"] in {"internal", "external", "out_of_range", "unknown"}
+
+
+def test_resolve_dol_prefers_external_over_internal_liquidity():
+    """§3.5: external pool wins even if an internal pool is closer."""
+    from smc_quant import resolve_dol_target
+    pools = [
+        {"type": "BSL", "level": 105, "swept": False, "end_index": 5, "liquidity_kind": "internal"},
+        {"type": "BSL", "level": 120, "swept": False, "end_index": 6, "liquidity_kind": "external"},
+    ]
+    out = resolve_dol_target(1, current_price=100, liquidity=pools)
+    assert out["target_price"] == 120.0  # external wins despite being farther
+    assert out["liquidity_kind"] == "external"
+
+
+def test_resolve_dol_falls_through_to_internal_when_no_external():
+    from smc_quant import resolve_dol_target
+    pools = [
+        {"type": "BSL", "level": 105, "swept": False, "end_index": 5, "liquidity_kind": "internal"},
+    ]
+    out = resolve_dol_target(1, current_price=100, liquidity=pools)
+    assert out["target_price"] == 105.0
+    assert out["liquidity_kind"] == "internal"
