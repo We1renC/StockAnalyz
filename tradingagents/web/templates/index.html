@@ -1262,6 +1262,122 @@ body { background: var(--bg-base); color: var(--text-primary); }
       </div>
     </div>
 
+    <div class="glass-card p-4 mb-6">
+      <div class="font-semibold text-emerald-300 mb-3 border-b border-slate-800/60 pb-2 flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span>SMC 前測交易日誌</span>
+          <span id="smc-journal-meta" class="text-[11px] text-slate-500">尚未載入</span>
+        </div>
+        <div class="flex items-center gap-2 flex-wrap">
+          <button onclick="refreshSmcJournal(true)" class="btn-secondary text-xs px-2.5 py-1.5" style="border-radius: 6px; padding: 4px 8px; font-size: 11px;">
+            重新整理
+          </button>
+          <button onclick="prefillSmcJournalFromSignal()" class="btn-secondary text-xs px-2.5 py-1.5" style="border-radius: 6px; padding: 4px 8px; font-size: 11px;">
+            用目前訊號帶入
+          </button>
+          <button onclick="submitSmcJournal()" id="smc-journal-submit-btn" class="btn-primary text-xs px-2.5 py-1.5" style="border-radius: 6px; padding: 4px 10px; font-size: 11px;">
+            記錄前測
+          </button>
+        </div>
+      </div>
+
+      <div id="smc-journal-summary" class="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-4">
+        <div class="rounded-lg border border-slate-800/70 bg-slate-950/40 p-3 text-center text-slate-500 text-xs">載入中...</div>
+      </div>
+
+      <div class="grid grid-cols-1 xl:grid-cols-12 gap-3 mb-4">
+        <div class="xl:col-span-2">
+          <label class="block text-[11px] text-slate-500 mb-1">環境</label>
+          <select id="smc-journal-env" class="input-field text-xs w-full" style="padding:6px 8px">
+            <option value="paper" selected>前測</option>
+            <option value="live">實盤</option>
+          </select>
+        </div>
+        <div class="xl:col-span-2">
+          <label class="block text-[11px] text-slate-500 mb-1">狀態</label>
+          <select id="smc-journal-status" class="input-field text-xs w-full" style="padding:6px 8px">
+            <option value="planned" selected>計畫</option>
+            <option value="open">進行中</option>
+            <option value="closed">已結案</option>
+            <option value="cancelled">取消</option>
+          </select>
+        </div>
+        <div class="xl:col-span-2">
+          <label class="block text-[11px] text-slate-500 mb-1">方向</label>
+          <select id="smc-journal-direction" class="input-field text-xs w-full" style="padding:6px 8px">
+            <option value="long" selected>做多</option>
+            <option value="short">做空</option>
+          </select>
+        </div>
+        <div class="xl:col-span-3">
+          <label class="block text-[11px] text-slate-500 mb-1">模型</label>
+          <input id="smc-journal-model" class="input-field text-xs w-full font-mono" style="padding:6px 8px" placeholder="liquidity_sweep_reversal">
+        </div>
+        <div class="xl:col-span-1">
+          <label class="block text-[11px] text-slate-500 mb-1">分數</label>
+          <input id="smc-journal-score" type="number" step="0.1" class="input-field text-xs w-full font-mono text-center" style="padding:6px 8px" placeholder="8.0">
+        </div>
+        <div class="xl:col-span-2">
+          <label class="block text-[11px] text-slate-500 mb-1">情緒/紀律</label>
+          <input id="smc-journal-emotion" class="input-field text-xs w-full" style="padding:6px 8px" placeholder="冷靜 / 追價 / 猶豫">
+        </div>
+        <div class="xl:col-span-2">
+          <label class="block text-[11px] text-slate-500 mb-1">進場</label>
+          <input id="smc-journal-entry" type="number" step="0.0001" class="input-field text-xs w-full font-mono text-center" style="padding:6px 8px" placeholder="Entry">
+        </div>
+        <div class="xl:col-span-2">
+          <label class="block text-[11px] text-slate-500 mb-1">停損</label>
+          <input id="smc-journal-stop" type="number" step="0.0001" class="input-field text-xs w-full font-mono text-center" style="padding:6px 8px" placeholder="Stop">
+        </div>
+        <div class="xl:col-span-2">
+          <label class="block text-[11px] text-slate-500 mb-1">TP1</label>
+          <input id="smc-journal-tp1" type="number" step="0.0001" class="input-field text-xs w-full font-mono text-center" style="padding:6px 8px" placeholder="TP1">
+        </div>
+        <div class="xl:col-span-2">
+          <label class="block text-[11px] text-slate-500 mb-1">出場</label>
+          <input id="smc-journal-exit" type="number" step="0.0001" class="input-field text-xs w-full font-mono text-center" style="padding:6px 8px" placeholder="Exit">
+        </div>
+        <div class="xl:col-span-2">
+          <label class="block text-[11px] text-slate-500 mb-1">數量</label>
+          <input id="smc-journal-qty" type="number" step="0.0001" class="input-field text-xs w-full font-mono text-center" style="padding:6px 8px" placeholder="Qty">
+        </div>
+        <div class="xl:col-span-6">
+          <label class="block text-[11px] text-slate-500 mb-1">交易理由</label>
+          <textarea id="smc-journal-rationale" class="input-field text-xs w-full" rows="2" style="padding:6px 8px" placeholder="記錄流動性掃取、CHoCH、PD 區間、OB/FVG 等前測依據"></textarea>
+        </div>
+        <div class="xl:col-span-4">
+          <label class="block text-[11px] text-slate-500 mb-1">筆記</label>
+          <textarea id="smc-journal-notes" class="input-field text-xs w-full" rows="2" style="padding:6px 8px" placeholder="執行品質、等待條件、復盤重點"></textarea>
+        </div>
+        <div class="xl:col-span-2">
+          <label class="block text-[11px] text-slate-500 mb-1">截圖路徑</label>
+          <textarea id="smc-journal-screenshots" class="input-field text-xs w-full font-mono" rows="2" style="padding:6px 8px" placeholder="每行一個路徑"></textarea>
+        </div>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs text-left text-slate-300">
+          <thead>
+            <tr class="text-slate-500 border-b border-slate-800/50">
+              <th class="py-2 text-left">時間</th>
+              <th class="py-2 text-center">環境/狀態</th>
+              <th class="py-2 text-center">方向</th>
+              <th class="py-2 text-left">模型</th>
+              <th class="py-2 text-right">進場</th>
+              <th class="py-2 text-right">停損</th>
+              <th class="py-2 text-right">TP1</th>
+              <th class="py-2 text-right">出場 / R</th>
+              <th class="py-2 text-left">重點</th>
+              <th class="py-2 text-center">操作</th>
+            </tr>
+          </thead>
+          <tbody id="smc-journal-tbody">
+            <tr><td colspan="10" class="py-5 text-center text-slate-500">載入中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Bottom Stage: Detection Panel List -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
       
@@ -2220,6 +2336,7 @@ function onSmcTabLoad() {
     drawSmcTabChart(select.value, $('smc-chart-period').value);
   }
   refreshSmcDashboard();
+  refreshSmcJournal();
 }
 
 let _smcTabChart = null;
@@ -2232,6 +2349,7 @@ let _smcTabMarkerFilter = 'all';
 let _smcTabAnalysis = null;
 let _smcTabMatrix = null;
 let _smcDashboardCache = new Map();
+let _smcJournalBusy = false;
 
 async function drawSmcTabChart(symbol, period, isRefresh = false) {
   if (!isRefresh) {
@@ -2563,6 +2681,7 @@ function onSmcSymbolChange() {
   const select = $('smc-symbol-select');
   if (select) {
     drawSmcTabChart(select.value, $('smc-chart-period').value);
+    refreshSmcJournal();
   }
 }
 
@@ -2583,6 +2702,310 @@ function refreshSmcAnalysis() {
 }
 
 const escJs = v => String(v ?? '').replace(/['"\\]/g, '\\$&');
+
+function smcJournalStatusLabel(status) {
+  return {
+    planned: '計畫',
+    open: '進行中',
+    closed: '已結案',
+    cancelled: '取消',
+  }[status] || status || '—';
+}
+
+function smcJournalEnvironmentLabel(environment) {
+  return {
+    paper: '前測',
+    live: '實盤',
+  }[environment] || environment || '—';
+}
+
+function smcJournalFormatTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('zh-TW', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function smcJournalNumberInput(id) {
+  const raw = ($(id)?.value || '').trim();
+  if (!raw) return null;
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : null;
+}
+
+function smcJournalTextInput(id) {
+  return ($(id)?.value || '').trim();
+}
+
+function smcJournalSelectedSymbol() {
+  return ($('smc-symbol-select')?.value || '').trim().toUpperCase();
+}
+
+function smcJournalResolveName(symbol) {
+  const position = (window._portfolioData?.positions || []).find(p => (p.symbol || '').toUpperCase() === symbol);
+  if (position?.name) return position.name;
+  const watch = (window._watchlist || []).find(w => (w.symbol || '').toUpperCase() === symbol);
+  return watch?.name || symbol;
+}
+
+function smcJournalMarket(symbol) {
+  if (_smcTabAnalysis?.market) return _smcTabAnalysis.market;
+  return symbol.endsWith('.TW') ? 'tw' : 'us';
+}
+
+function smcJournalPrimarySignal() {
+  return (_smcTabAnalysis?.signals || [])[0] || null;
+}
+
+function smcJournalFeatureVector(signal) {
+  const vector = {};
+  (signal?.factors || []).forEach(f => {
+    if (!f || !f.id) return;
+    vector[f.id] = !!f.active;
+    if (f.weight !== undefined && f.weight !== null) {
+      vector[`${f.id}_weight`] = Number(f.weight);
+    }
+  });
+  if (signal) {
+    vector.qualified = !!signal.qualified;
+    if (signal.risk_reward_ratio !== undefined && signal.risk_reward_ratio !== null) {
+      vector.risk_reward_ratio = Number(signal.risk_reward_ratio);
+    }
+  }
+  return vector;
+}
+
+function renderSmcJournalLoading(message = '載入中...') {
+  const summaryEl = $('smc-journal-summary');
+  const tbody = $('smc-journal-tbody');
+  const meta = $('smc-journal-meta');
+  if (summaryEl) {
+    summaryEl.innerHTML = `<div class="rounded-lg border border-slate-800/70 bg-slate-950/40 p-3 text-center text-slate-500 text-xs col-span-full">${escHtml(message)}</div>`;
+  }
+  if (tbody) {
+    tbody.innerHTML = `<tr><td colspan="10" class="py-5 text-center text-slate-500">${escHtml(message)}</td></tr>`;
+  }
+  if (meta) meta.textContent = message;
+}
+
+function renderSmcJournalSummary(payload, symbol) {
+  const summaryEl = $('smc-journal-summary');
+  if (!summaryEl) return;
+  const summary = payload?.summary || {};
+  const topModel = (summary.top_models || [])[0] || {};
+  summaryEl.innerHTML = [
+    smcDashboardMetric('目前標的', escHtml(symbol || '—'), 'text-cyan-300'),
+    smcDashboardMetric('總筆數', summary.total_entries ?? 0),
+    smcDashboardMetric('進行 / 計畫', `${summary.open_entries ?? 0} / ${summary.planned_entries ?? 0}`),
+    smcDashboardMetric('已結案勝率', smcDashboardPct(summary.win_rate, 1), smcDashboardTone(summary.win_rate)),
+    smcDashboardMetric('平均 R', smcDashboardNum(summary.avg_r, 2), smcDashboardTone(summary.avg_r)),
+    smcDashboardMetric('最佳模型', escHtml(topModel.model || '—'), smcDashboardTone(topModel.expectancy_r)),
+  ].join('');
+}
+
+function renderSmcJournalRows(entries) {
+  const tbody = $('smc-journal-tbody');
+  if (!tbody) return;
+  if (!entries || !entries.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="py-5 text-center text-slate-500">此標的尚無 SMC 前測日誌。</td></tr>';
+    return;
+  }
+  tbody.innerHTML = entries.map(entry => {
+    const isLong = entry.direction === 'long';
+    const dirClass = isLong ? 'text-red-300 border-red-900/40 bg-red-950/20' : 'text-emerald-300 border-emerald-900/40 bg-emerald-950/20';
+    const statusClass = entry.status === 'closed' ? 'text-cyan-300' : entry.status === 'cancelled' ? 'text-slate-500' : 'text-amber-300';
+    const rTone = smcDashboardTone(entry.r_multiple);
+    const score = entry.confluence_score == null ? '—' : smcDashboardNum(entry.confluence_score, 1);
+    const emotion = entry.emotion ? ` · ${escHtml(entry.emotion)}` : '';
+    const rationale = entry.rationale || entry.notes || '未填寫重點';
+    const model = entry.model || '—';
+    const key = entry.journal_key || '';
+    return `<tr class="border-b border-slate-800/40 hover:bg-slate-800/20">
+      <td class="py-2.5 text-slate-500 font-mono whitespace-nowrap">${escHtml(smcJournalFormatTime(entry.entry_time || entry.created_at))}</td>
+      <td class="py-2.5 text-center">
+        <div class="font-semibold ${entry.environment === 'live' ? 'text-red-300' : 'text-cyan-300'}">${escHtml(smcJournalEnvironmentLabel(entry.environment))}</div>
+        <div class="text-[11px] ${statusClass}">${escHtml(smcJournalStatusLabel(entry.status))}</div>
+      </td>
+      <td class="py-2.5 text-center">
+        <span class="inline-flex px-2 py-0.5 rounded border ${dirClass} font-semibold">${escHtml(smcDirectionLabel(entry.direction))}</span>
+      </td>
+      <td class="py-2.5 font-mono text-slate-300 max-w-[180px] truncate" title="${escHtml(model)}">${escHtml(model)}</td>
+      <td class="py-2.5 text-right font-mono text-slate-200">${fmt(entry.entry_price)}</td>
+      <td class="py-2.5 text-right font-mono text-red-300">${fmt(entry.stop_price)}</td>
+      <td class="py-2.5 text-right font-mono text-emerald-300">${fmt(entry.tp1_price)}</td>
+      <td class="py-2.5 text-right font-mono">
+        <div class="text-slate-200">${fmt(entry.exit_price)}</div>
+        <div class="text-[11px] ${rTone}">${entry.r_multiple == null ? '—' : `${smcDashboardNum(entry.r_multiple, 2)}R`}</div>
+      </td>
+      <td class="py-2.5">
+        <div class="text-slate-200 max-w-[360px] truncate" title="${escHtml(rationale)}">${escHtml(rationale)}</div>
+        <div class="text-[11px] text-slate-500">分數 ${score}${emotion}</div>
+      </td>
+      <td class="py-2.5 text-center">
+        <button onclick="deleteSmcJournalEntry('${escJs(key)}')" class="btn-action-danger text-[11px]" style="padding:3px 7px" title="刪除此筆日誌">刪除</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function refreshSmcJournal(force = false) {
+  const symbol = smcJournalSelectedSymbol();
+  if (!symbol) {
+    renderSmcJournalLoading('尚未選擇標的。');
+    return null;
+  }
+  if (_smcJournalBusy && !force) return null;
+  _smcJournalBusy = true;
+  renderSmcJournalLoading('讀取 SMC 前測日誌...');
+  try {
+    const qs = `symbol=${encodeURIComponent(symbol)}`;
+    const [listPayload, summaryPayload] = await Promise.all([
+      fetch(`/api/smc-journal?${qs}&limit=12`).then(r => r.json()),
+      fetch(`/api/smc-journal/summary?${qs}&limit=200`).then(r => r.json()),
+    ]);
+    if (listPayload.error || listPayload.detail) throw new Error(listPayload.error || listPayload.detail);
+    if (summaryPayload.error || summaryPayload.detail) throw new Error(summaryPayload.error || summaryPayload.detail);
+    renderSmcJournalSummary(summaryPayload, symbol);
+    renderSmcJournalRows(listPayload.entries || []);
+    const meta = $('smc-journal-meta');
+    if (meta) {
+      const count = listPayload.count ?? (listPayload.entries || []).length;
+      meta.textContent = `${symbol} · 最近 ${count} 筆 · SQLite / Obsidian 同步`;
+    }
+    return { list: listPayload, summary: summaryPayload };
+  } catch (e) {
+    const msg = `SMC 日誌讀取失敗：${e}`;
+    const summaryEl = $('smc-journal-summary');
+    const tbody = $('smc-journal-tbody');
+    const meta = $('smc-journal-meta');
+    if (summaryEl) summaryEl.innerHTML = `<div class="rounded-lg border border-red-900/40 bg-red-950/10 p-3 text-center text-red-300 text-xs col-span-full">${escHtml(msg)}</div>`;
+    if (tbody) tbody.innerHTML = `<tr><td colspan="10" class="py-5 text-center text-red-400">${escHtml(msg)}</td></tr>`;
+    if (meta) meta.textContent = '讀取失敗';
+    return null;
+  } finally {
+    _smcJournalBusy = false;
+  }
+}
+
+function prefillSmcJournalFromSignal() {
+  const signal = smcJournalPrimarySignal();
+  const symbol = smcJournalSelectedSymbol();
+  const meta = $('smc-journal-meta');
+  if (!signal) {
+    if (meta) meta.textContent = '目前沒有可帶入的 SMC 訊號';
+    return;
+  }
+  const model = signal.model || signal.model_name || 'smc_signal';
+  const rr = signal.risk_reward_ratio == null ? '—' : smcDashboardNum(signal.risk_reward_ratio, 2);
+  if ($('smc-journal-direction')) $('smc-journal-direction').value = signal.direction === 'short' ? 'short' : 'long';
+  if ($('smc-journal-model')) $('smc-journal-model').value = model;
+  if ($('smc-journal-entry')) $('smc-journal-entry').value = signal.entry_price ?? '';
+  if ($('smc-journal-stop')) $('smc-journal-stop').value = signal.stop_loss ?? '';
+  if ($('smc-journal-tp1')) $('smc-journal-tp1').value = signal.take_profit ?? '';
+  if ($('smc-journal-score')) $('smc-journal-score').value = signal.score ?? _smcTabAnalysis?.summary?.confluence_score ?? '';
+  if ($('smc-journal-rationale')) {
+    $('smc-journal-rationale').value = `依 ${symbol} 目前 SMC 訊號建立前測：${smcDirectionLabel(signal.direction)}，模型 ${model}，分數 ${signal.score ?? '—'}，RR ${rr}。`;
+  }
+  if ($('smc-journal-notes')) {
+    const activeFactors = (signal.factors || []).filter(f => f.active).map(f => smcFactorLabel(f.id)).slice(0, 6).join('、');
+    $('smc-journal-notes').value = activeFactors ? `重點因子：${activeFactors}` : '';
+  }
+  if (meta) meta.textContent = '已帶入目前 SMC 訊號';
+}
+
+function buildSmcJournalPayload() {
+  const symbol = smcJournalSelectedSymbol();
+  const signal = smcJournalPrimarySignal();
+  const model = smcJournalTextInput('smc-journal-model') || signal?.model || signal?.model_name || 'smc_signal';
+  const screenshots = smcJournalTextInput('smc-journal-screenshots')
+    .split(/\n|,/)
+    .map(item => item.trim())
+    .filter(Boolean);
+  const payload = {
+    symbol,
+    name: smcJournalResolveName(symbol),
+    market: smcJournalMarket(symbol),
+    environment: $('smc-journal-env')?.value || 'paper',
+    status: $('smc-journal-status')?.value || 'planned',
+    direction: $('smc-journal-direction')?.value || signal?.direction || 'long',
+    timeframe: $('smc-chart-period')?.value || null,
+    model,
+    entry_time: new Date().toISOString(),
+    entry_price: smcJournalNumberInput('smc-journal-entry'),
+    exit_price: smcJournalNumberInput('smc-journal-exit'),
+    stop_price: smcJournalNumberInput('smc-journal-stop'),
+    tp1_price: smcJournalNumberInput('smc-journal-tp1'),
+    qty: smcJournalNumberInput('smc-journal-qty'),
+    confluence_score: smcJournalNumberInput('smc-journal-score'),
+    emotion: smcJournalTextInput('smc-journal-emotion'),
+    rationale: smcJournalTextInput('smc-journal-rationale'),
+    notes: smcJournalTextInput('smc-journal-notes'),
+    screenshots,
+    tags: ['smc', $('smc-journal-env')?.value || 'paper', model].filter(Boolean),
+    feature_vector: smcJournalFeatureVector(signal),
+    dol_target: signal?.dol_target || {},
+  };
+  return payload;
+}
+
+async function submitSmcJournal() {
+  const btn = $('smc-journal-submit-btn');
+  const meta = $('smc-journal-meta');
+  const payload = buildSmcJournalPayload();
+  if (!payload.symbol) {
+    if (meta) meta.textContent = '請先選擇標的';
+    return;
+  }
+  if (!payload.direction || !['long', 'short'].includes(payload.direction)) {
+    if (meta) meta.textContent = '方向必須是做多或做空';
+    return;
+  }
+  const originalText = btn?.textContent || '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '寫入中...';
+  }
+  try {
+    const res = await fetch('/api/smc-journal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(r => r.json());
+    if (res.error || res.detail || res.ok === false) {
+      throw new Error(res.error || res.detail || '寫入失敗');
+    }
+    if (meta) meta.textContent = `已寫入 ${res.journal_key || payload.symbol}`;
+    await refreshSmcJournal(true);
+  } catch (e) {
+    if (meta) meta.textContent = `寫入失敗：${e}`;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  }
+}
+
+async function deleteSmcJournalEntry(journalKey) {
+  if (!journalKey) return;
+  if (!window.confirm('刪除此筆 SMC 前測日誌？')) return;
+  const meta = $('smc-journal-meta');
+  try {
+    const res = await fetch(`/api/smc-journal/${encodeURIComponent(journalKey)}`, { method: 'DELETE' }).then(r => r.json());
+    if (res.error || res.detail || res.ok === false) {
+      throw new Error(res.error || res.detail || '刪除失敗');
+    }
+    if (meta) meta.textContent = '已刪除日誌並觸發同步';
+    await refreshSmcJournal(true);
+  } catch (e) {
+    if (meta) meta.textContent = `刪除失敗：${e}`;
+  }
+}
 
 function smcDashboardMetric(label, value, tone = 'text-slate-100') {
   return `
