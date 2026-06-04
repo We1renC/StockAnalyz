@@ -419,6 +419,8 @@ def test_workspace_includes_review_timeline_and_trend():
     assert workspace["section_trend"][0]["run_key"] == payload["run_key"]
     assert "recommendation" in workspace["policy"]
     assert "covered_ratio" in workspace["coverage"]
+    assert isinstance(workspace["coverage"]["sections"], list)
+    assert isinstance(workspace["coverage"]["missing_details"], list)
     assert isinstance(workspace["capital_stages"], list)
     assert isinstance(workspace["deviation_snapshots"], list)
     changes = load_acceptance_change_log(conn, "ABAT")

@@ -1726,12 +1726,19 @@ def _build_coverage_summary(catalog: list[dict]) -> dict:
     total_checks = 0
     total_gates = 0
     gates_with_missing: list[str] = []
+    section_rows: list[dict] = []
+    missing_details: list[dict] = []
     for section in catalog:
+        section_total = 0
+        section_missing = 0
+        section_gates_with_missing: list[str] = []
         for gate in section.get("gates") or []:
             total_gates += 1
             gate_has_missing = False
+            gate_missing_checks: list[str] = []
             for check in gate.get("checks") or []:
                 total_checks += 1
+                section_total += 1
                 source = str(check.get("source") or "unknown")
                 if source not in source_counts:
                     source = "unknown"
@@ -1739,9 +1746,28 @@ def _build_coverage_summary(catalog: list[dict]) -> dict:
                 source_gates[source].add(gate.get("id"))
                 if check.get("value") is None:
                     missing_checks += 1
+                    section_missing += 1
                     gate_has_missing = True
+                    gate_missing_checks.append(check.get("key") or "")
             if gate_has_missing:
                 gates_with_missing.append(gate.get("id"))
+                section_gates_with_missing.append(gate.get("id"))
+                missing_details.append({
+                    "section": section.get("section"),
+                    "section_title": section.get("title"),
+                    "gate_id": gate.get("id"),
+                    "gate_name": gate.get("name"),
+                    "missing_checks": gate_missing_checks,
+                    "missing_count": len(gate_missing_checks),
+                })
+        section_rows.append({
+            "section": section.get("section"),
+            "title": section.get("title"),
+            "total_checks": section_total,
+            "missing_checks": section_missing,
+            "covered_ratio": round((section_total - section_missing) / max(1, section_total), 4),
+            "gates_with_missing": section_gates_with_missing,
+        })
     return {
         "total_gates": total_gates,
         "total_checks": total_checks,
@@ -1750,6 +1776,8 @@ def _build_coverage_summary(catalog: list[dict]) -> dict:
         "source_counts": source_counts,
         "source_gate_counts": {key: len(value) for key, value in source_gates.items()},
         "gates_with_missing": gates_with_missing,
+        "sections": section_rows,
+        "missing_details": missing_details[:20],
     }
 
 

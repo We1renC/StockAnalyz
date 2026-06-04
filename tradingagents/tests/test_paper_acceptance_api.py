@@ -306,6 +306,8 @@ def test_api_review_governance_round_trip(tmp_path):
         assert promotion_check["decision"] in {"allow", "conditional", "deny"}
         assert changes["count"] >= 1
         assert "coverage" in coverage
+        assert isinstance(coverage["coverage"]["sections"], list)
+        assert isinstance(coverage["coverage"]["missing_details"], list)
         assert "security_scan" in security
     finally:
         app.DB = original

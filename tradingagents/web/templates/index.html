@@ -3485,6 +3485,25 @@ function renderPaperAcceptanceCoverage(coverage) {
     return '尚無覆蓋摘要。';
   }
   const sources = coverage.source_counts || {};
+  const sectionRows = (coverage.sections || []).filter(row => Number(row.missing_checks || 0) > 0).slice(0, 4);
+  const missingRows = (coverage.missing_details || []).slice(0, 3);
+  const sectionHtml = sectionRows.length ? `
+    <div class="mt-2 space-y-1 text-[11px] text-slate-500">
+      ${sectionRows.map(row => `
+        <div class="flex items-center justify-between gap-3">
+          <span>${escHtml(`${row.section} ${row.title || ''}`.trim())}</span>
+          <span>缺 ${escHtml(String(row.missing_checks || 0))} / ${(Number(row.covered_ratio || 0) * 100).toFixed(0)}%</span>
+        </div>
+      `).join('')}
+    </div>
+  ` : '';
+  const missingHtml = missingRows.length ? `
+    <div class="mt-2 space-y-1 text-[11px] text-slate-500">
+      ${missingRows.map(row => `
+        <div>${escHtml(`${row.section} ${row.gate_name || row.gate_id || ''}`.trim())}：${escHtml((row.missing_checks || []).slice(0, 3).join(', ') || '缺證據')}</div>
+      `).join('')}
+    </div>
+  ` : '';
   return `
     <div class="flex items-center justify-between gap-3 flex-wrap">
       <div class="text-slate-300 font-semibold">證據覆蓋 ${(Number(coverage.covered_ratio || 0) * 100).toFixed(0)}%</div>
@@ -3495,6 +3514,8 @@ function renderPaperAcceptanceCoverage(coverage) {
         <span>缺口 ${escHtml(String(coverage.missing_checks || 0))}</span>
       </div>
     </div>
+    ${sectionHtml}
+    ${missingHtml}
   `;
 }
 
