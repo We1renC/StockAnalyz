@@ -2458,3 +2458,33 @@ def test_paper_trading_report_blocked_when_edge_decayed():
     out = paper_trading_report(paper, bt, min_paper_trades=20)
     assert out["edge_decay"]["status"] == "decay_detected"
     assert out["ready_for_live"] is False
+
+
+def test_atr_adaptive_stop_uses_bucket_multiple():
+    """§17.6: stop = entry - m*ATR for longs, with m scaling per vol bucket."""
+    from smc_quant import atr_adaptive_stop
+    # mid: 1.2 × ATR(1.0) = 1.2 below 100 → 98.8
+    out = atr_adaptive_stop(direction=1, entry=100, atr=1.0, vol_bucket="mid")
+    assert out["atr_multiple"] == 1.2
+    assert out["stop"] == 98.8
+    assert out["distance"] == 1.2
+    # extreme: 2.5 × ATR(1.0) → 97.5
+    ext = atr_adaptive_stop(direction=1, entry=100, atr=1.0, vol_bucket="extreme")
+    assert ext["stop"] == 97.5
+
+
+def test_atr_adaptive_stop_prefers_wider_structural_stop():
+    """When structural stop > ATR stop, the structural one wins (longer leash)."""
+    from smc_quant import atr_adaptive_stop
+    # ATR-only would put stop at 98.8; structural sits at 98 → take 98 (farther)
+    out = atr_adaptive_stop(direction=1, entry=100, atr=1.0, vol_bucket="mid",
+                             structural_stop=98)
+    assert out["stop"] == 98.0
+    assert out["rule"] == "max(atr,structural)"
+
+
+def test_atr_adaptive_stop_falls_back_when_no_direction():
+    from smc_quant import atr_adaptive_stop
+    out = atr_adaptive_stop(direction=0, entry=100, atr=1.0, vol_bucket="mid")
+    assert out["stop"] == 100
+    assert out["rule"] == "no_direction"

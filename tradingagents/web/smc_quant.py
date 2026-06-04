@@ -1628,6 +1628,51 @@ def classify_asset_volatility(df: pd.DataFrame, *, window: int = 14) -> dict:
     }
 
 
+def atr_adaptive_stop(
+    direction: int, entry: float, atr: float, vol_bucket: str,
+    *, structural_stop: Optional[float] = None,
+) -> dict:
+    """§17.6 — pick stop distance by both ATR multiple AND structural level.
+
+    Multiples scale with vol bucket per §17.6 ("tighten on majors,
+    widen on alts"):
+      low      0.8 × ATR
+      mid      1.2 × ATR
+      high     1.8 × ATR
+      extreme  2.5 × ATR
+
+    When ``structural_stop`` is supplied we take the *farther* of (ATR
+    distance, structural distance) — that way SMC's "stop outside
+    structural invalidation" rule wins when the structure is wider than
+    typical volatility.
+    """
+    multiples = {"low": 0.8, "mid": 1.2, "high": 1.8, "extreme": 2.5}
+    m = multiples.get(vol_bucket, 1.2)
+    atr_distance = m * float(atr or 0)
+    if direction == 1:
+        atr_stop = entry - atr_distance
+    elif direction == -1:
+        atr_stop = entry + atr_distance
+    else:
+        return {"stop": entry, "distance": 0.0, "rule": "no_direction"}
+    if structural_stop is None:
+        stop = atr_stop
+        rule = "atr_only"
+    else:
+        if direction == 1:
+            stop = min(atr_stop, float(structural_stop))
+        else:
+            stop = max(atr_stop, float(structural_stop))
+        rule = "max(atr,structural)" if stop != atr_stop else "atr_dominant"
+    return {
+        "stop": round(float(stop), 4),
+        "distance": round(abs(entry - float(stop)), 4),
+        "atr_multiple": m,
+        "vol_bucket": vol_bucket,
+        "rule": rule,
+    }
+
+
 def adaptive_smc_config(
     df: pd.DataFrame,
     base: Optional[SMCConfig] = None,
