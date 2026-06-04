@@ -10,6 +10,20 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 import sys
+import logging
+
+_logger = logging.getLogger(__name__)
+
+
+def _safe_create_task(coro):
+    """Schedule an async task if an event loop is running, otherwise silently skip."""
+    try:
+        asyncio.create_task(coro)
+    except RuntimeError:
+        # No running event loop (e.g. sync test context) — close coroutine to avoid warning
+        coro.close()
+        _logger.debug("No running event loop; skipped async dispatch")
+
 
 # Import websocket and webhook dispatchers
 from crypto_api.ws import ws_manager
@@ -534,22 +548,22 @@ def fill_order(conn: sqlite3.Connection, order_id: str, fill_price: Decimal, fil
     updated_order = dict(updated_order_row)
     
     # Broadcast order event
-    asyncio.create_task(ws_manager.push_private(account_id, "orders", "order.updated", updated_order))
+    _safe_create_task(ws_manager.push_private(account_id, "orders", "order.updated", updated_order))
     
     # Broadcast fill event
     fill_row = c.execute("SELECT * FROM crypto_fills WHERE id = ?", (fill_id,)).fetchone()
     fill_data = dict(fill_row)
-    asyncio.create_task(ws_manager.push_private(account_id, "fills", "fill.created", fill_data))
+    _safe_create_task(ws_manager.push_private(account_id, "fills", "fill.created", fill_data))
     
     # Dispatch webhooks
-    asyncio.create_task(dispatch_webhook(account_id, "order.updated", updated_order))
-    asyncio.create_task(dispatch_webhook(account_id, "fill.created", fill_data))
+    _safe_create_task(dispatch_webhook(account_id, "order.updated", updated_order))
+    _safe_create_task(dispatch_webhook(account_id, "fill.created", fill_data))
 
     # Balances push
     for asset in (base_asset, quote_asset):
         b_row = c.execute("SELECT * FROM crypto_balances WHERE account_id = ? AND asset = ?", (account_id, asset)).fetchone()
         if b_row:
-            asyncio.create_task(ws_manager.push_private(account_id, "balances", "balance.updated", dict(b_row)))
+            _safe_create_task(ws_manager.push_private(account_id, "balances", "balance.updated", dict(b_row)))
 
 # Cancel order and release balance lock
 def cancel_single_order_sync(conn: sqlite3.Connection, order_id: str, reason: str = "user_requested") -> Dict[str, Any]:
@@ -615,13 +629,13 @@ def cancel_single_order_sync(conn: sqlite3.Connection, order_id: str, reason: st
     updated_order = dict(updated_order_row)
 
     # Push and Webhook triggers
-    asyncio.create_task(ws_manager.push_private(account_id, "orders", "order.updated", updated_order))
-    asyncio.create_task(dispatch_webhook(account_id, "order.cancelled", updated_order))
+    _safe_create_task(ws_manager.push_private(account_id, "orders", "order.updated", updated_order))
+    _safe_create_task(dispatch_webhook(account_id, "order.cancelled", updated_order))
 
     for asset in (base_asset, quote_asset):
         b_row = c.execute("SELECT * FROM crypto_balances WHERE account_id = ? AND asset = ?", (account_id, asset)).fetchone()
         if b_row:
-            asyncio.create_task(ws_manager.push_private(account_id, "balances", "balance.updated", dict(b_row)))
+            _safe_create_task(ws_manager.push_private(account_id, "balances", "balance.updated", dict(b_row)))
 
     # Write audit log
     audit_id = f"audit_{uuid4().hex[:12]}"
@@ -669,7 +683,7 @@ async def start_matching_engine_loop():
                     c.execute("UPDATE crypto_orders SET status = 'open', updated_at = ? WHERE id = ?", (now_iso, order_id))
                     conn.commit()
                     order["status"] = "open"
-                    asyncio.create_task(ws_manager.push_private(order["account_id"], "orders", "order.updated", order))
+                    _safe_create_task(ws_manager.push_private(order["account_id"], "orders", "order.updated", order))
 
                 # Handle conditional triggers (stop orders)
                 if order_type in ("stop_market", "stop_limit", "take_profit_market", "take_profit_limit"):
@@ -705,7 +719,7 @@ async def start_matching_engine_loop():
                             conn.commit()
                             
                             updated_row = c.execute("SELECT * FROM crypto_orders WHERE id = ?", (order_id,)).fetchone()
-                            asyncio.create_task(ws_manager.push_private(order["account_id"], "orders", "order.updated", dict(updated_row)))
+                            _safe_create_task(ws_manager.push_private(order["account_id"], "orders", "order.updated", dict(updated_row)))
                     continue
 
                 # Handle standard Limit Order match checking
