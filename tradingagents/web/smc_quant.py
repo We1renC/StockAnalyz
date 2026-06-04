@@ -1318,6 +1318,48 @@ CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT = {
 }
 
 
+def classify_btc_dominance_regime(
+    btc_dominance: Optional[pd.Series],
+    *,
+    short_window: int = 5,
+    long_window: int = 20,
+    altseason_threshold: float = -0.5,
+) -> dict:
+    """§17.4 + §17.7 — BTC dominance regime + altseason signal.
+
+    Computes short-window slope and short vs. long MA gap of the BTC.D
+    series. Falling BTC.D below ``altseason_threshold`` % over the long
+    window flags ``altseason=True`` per §17.7 ("declining BTC.D often
+    marks the onset of altcoin season").
+    """
+    if btc_dominance is None or len(btc_dominance) < long_window:
+        return {"status": "no_data", "regime": "unknown", "altseason": False}
+    series = btc_dominance.astype(float).dropna()
+    if len(series) < long_window:
+        return {"status": "no_data", "regime": "unknown", "altseason": False}
+    short_ma = float(series.tail(short_window).mean())
+    long_ma = float(series.tail(long_window).mean())
+    last = float(series.iloc[-1])
+    earlier = float(series.iloc[-long_window])
+    pct_change = (last - earlier) / earlier * 100 if earlier else 0.0
+    if short_ma > long_ma and pct_change > 0:
+        regime = "btc_dominance_rising"
+    elif short_ma < long_ma and pct_change < 0:
+        regime = "btc_dominance_falling"
+    else:
+        regime = "mixed"
+    altseason = bool(regime == "btc_dominance_falling" and pct_change <= altseason_threshold)
+    return {
+        "status": "ok",
+        "regime": regime,
+        "altseason": altseason,
+        "last": round(last, 4),
+        "short_ma": round(short_ma, 4),
+        "long_ma": round(long_ma, 4),
+        "long_window_change_pct": round(pct_change, 3),
+    }
+
+
 def detect_spot_perp_divergence(
     perp_df: pd.DataFrame,
     spot_df: pd.DataFrame,
@@ -1557,6 +1599,8 @@ def build_crypto_overlay(
     # §17.3 — spot vs perp + CVD slope
     out["spot_perp"] = detect_spot_perp_divergence(df, spot_df) if spot_df is not None else {"status": "no_data", "verdict": None}
     out["cvd_slope"] = cvd_slope(cvd)
+    # §17.4 / §17.7 — BTC dominance regime + altseason signal
+    out["btc_dominance"] = classify_btc_dominance_regime(btc_dominance)
     perp_warning = out["spot_perp"].get("verdict") in {"perp_led_up_warning", "perp_led_down_warning"}
     cvd_aggressive = out["cvd_slope"].get("regime", "").startswith("aggressive_")
     # §17.10 crypto-confluence factors (boolean view → mergeable into score_confluence)
@@ -1573,10 +1617,12 @@ def build_crypto_overlay(
         "cme_gap_hit": cme_hit,
         "perp_led_warning": perp_warning,
         "cvd_aggressive_flow": cvd_aggressive,
+        "altseason_tailwind": bool(out["btc_dominance"].get("altseason") and is_altcoin),
     }
     out["weights"] = dict(CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT)
     out["weights"].setdefault("perp_led_warning", -2)  # negative weight: drag, not boost
     out["weights"].setdefault("cvd_aggressive_flow", 1)
+    out["weights"].setdefault("altseason_tailwind", 2)
     return out
 
 

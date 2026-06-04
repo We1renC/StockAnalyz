@@ -1579,3 +1579,33 @@ def test_merge_crypto_factors_skips_no_data_overlay():
     f, w = merge_crypto_factors(base, {"status": "no_data"})
     assert f == base
     assert w == {}
+
+
+def test_btc_dominance_regime_flags_altseason_when_falling_hard():
+    """§17.4 / §17.7: BTC.D dropping ≥0.5% over long window + falling regime → altseason."""
+    from smc_quant import classify_btc_dominance_regime
+    idx = pd.date_range("2026-01-01", periods=25, freq="D")
+    # Linear decline from 55 → 50 (-9% over the window)
+    btc_d = pd.Series([55 - i * 0.2 for i in range(25)], index=idx)
+    out = classify_btc_dominance_regime(btc_d, short_window=5, long_window=20)
+    assert out["status"] == "ok"
+    assert out["regime"] == "btc_dominance_falling"
+    assert out["altseason"] is True
+
+
+def test_btc_dominance_regime_returns_no_data_when_history_short():
+    from smc_quant import classify_btc_dominance_regime
+    out = classify_btc_dominance_regime(pd.Series([55, 54, 53]))
+    assert out["status"] == "no_data"
+    assert out["altseason"] is False
+
+
+def test_crypto_overlay_routes_btc_dominance_and_altseason_tailwind():
+    from smc_quant import build_crypto_overlay
+    h = normalize_ohlcv(_sample_ohlcv())
+    btc_d = pd.Series([55 - i * 0.2 for i in range(25)])
+    overlay = build_crypto_overlay(h, btc_dominance=btc_d, is_altcoin=True)
+    assert overlay["btc_dominance"]["regime"] == "btc_dominance_falling"
+    # altcoin + altseason → tailwind factor active
+    assert overlay["factors"]["altseason_tailwind"] is True
+    assert overlay["weights"]["altseason_tailwind"] == 2
