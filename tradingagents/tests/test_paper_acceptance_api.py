@@ -10,6 +10,7 @@ from app import (
     PaperAcceptanceDeviationSnapshotCreate,
     PaperAcceptanceEventCreate,
     PaperAcceptanceGenerateRequest,
+    PaperAcceptanceGovernanceEventCreate,
     PaperAcceptanceOrderAuditCreate,
     PaperAcceptanceReconciliationCreate,
     PaperAcceptanceReviewUpdate,
@@ -354,5 +355,37 @@ def test_api_review_governance_round_trip(tmp_path):
         assert isinstance(coverage["coverage"]["sections"], list)
         assert isinstance(coverage["coverage"]["missing_details"], list)
         assert "security_scan" in security
+    finally:
+        app.DB = original
+
+
+def test_api_governance_event_round_trip(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        payload = app.api_record_paper_acceptance_governance(
+            PaperAcceptanceGovernanceEventCreate(
+                symbol="ABAT",
+                change_scope="parameter",
+                change_class="research_override",
+                version_tag="v2",
+                approved_by="qa",
+                requires_restart_stats=True,
+                stats_restarted=False,
+                freeze_window_started_at="2026-06-05T00:00:00Z",
+                freeze_window_ended_at="2026-06-10T00:00:00Z",
+                event_timestamp="2026-06-06T09:00:00Z",
+                reason="freeze 期間修補",
+                detail={"ticket": "PA-22"},
+            )
+        )
+
+        rows = app.api_get_paper_acceptance_governance(symbol="ABAT")
+        workspace = app.api_get_paper_acceptance_workspace(symbol="ABAT")
+
+        assert payload["ok"] is True
+        assert rows["count"] == 1
+        assert rows["summary"]["freeze_violation_count"] == 1
+        assert workspace["governance_summary"]["freeze_violation_count"] == 1
+        assert workspace["policy"]["evidence"]["research_discipline"]["strategy_parameters_frozen"] is False
     finally:
         app.DB = original

@@ -14,6 +14,7 @@ from paper_acceptance_store import (
     load_acceptance_change_log,
     load_acceptance_context_overrides,
     load_acceptance_events,
+    load_governance_events,
     load_acceptance_reports,
     load_capital_stages,
     load_deviation_snapshots,
@@ -26,12 +27,14 @@ from paper_acceptance_store import (
     record_acceptance_event,
     record_capital_stage,
     record_deviation_snapshot,
+    record_governance_event,
     record_shadow_parity_trace,
     record_order_audit,
     record_reconciliation_run,
     record_runtime_metric,
     refresh_acceptance_reports_for_symbols,
     run_acceptance_scenario,
+    summarize_governance_events,
     summarize_shadow_parity_traces,
     upsert_acceptance_review,
     upsert_acceptance_check,
@@ -569,6 +572,42 @@ def test_context_maps_regime_coverage_metrics_into_policy():
     sample_gate = context["policy"]["evidence"]["sample_size_period"]
     assert sample_gate["enough_market_conditions"] is True
     assert sample_gate["weak_liquidity_periods"] is True
+
+
+def test_governance_events_feed_research_discipline_metrics():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+    ensure_paper_acceptance_schema(conn)
+
+    record_governance_event(
+        conn,
+        symbol="ABAT",
+        change_scope="parameter",
+        change_class="research_override",
+        version_tag="v2",
+        approved_by="qa",
+        requires_restart_stats=True,
+        stats_restarted=False,
+        freeze_window_started_at="2026-06-05T00:00:00Z",
+        freeze_window_ended_at="2026-06-10T00:00:00Z",
+        event_timestamp="2026-06-06T09:00:00Z",
+        reason="微調風險參數",
+        detail={"restart_ticket": "PA-12"},
+    )
+
+    rows = load_governance_events(conn, "ABAT")
+    summary = summarize_governance_events(conn, "ABAT")
+    context = build_smc_acceptance_context(conn, symbol="ABAT", strategy={"strategy_type": "intraday"})
+
+    assert rows[0]["change_scope"] == "parameter"
+    assert rows[0]["inside_freeze_window"] is True
+    assert summary["freeze_violation_count"] == 1
+    assert summary["restart_stats_completion_ratio"] == 0.0
+    assert context["metrics"]["freeze_violation_count"] == 1
+    assert context["metrics"]["parameter_change_count"] == 1
+    research_gate = context["policy"]["evidence"]["research_discipline"]
+    assert research_gate["strategy_parameters_frozen"] is False
+    assert research_gate["modifications_restart_stats"] is False
 
 
 def test_workspace_auto_generates_stage_and_deviation_from_live_telemetry():

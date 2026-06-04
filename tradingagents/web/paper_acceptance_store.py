@@ -271,6 +271,31 @@ def ensure_paper_acceptance_schema(conn) -> None:
            ON paper_acceptance_change_log(symbol, stage, created_at DESC, id DESC)"""
     )
     conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_governance_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            governance_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            change_scope TEXT NOT NULL DEFAULT 'parameter',
+            change_class TEXT NOT NULL DEFAULT 'research',
+            version_tag TEXT NOT NULL DEFAULT '',
+            approved_by TEXT NOT NULL DEFAULT '',
+            requires_restart_stats INTEGER NOT NULL DEFAULT 0,
+            stats_restarted INTEGER NOT NULL DEFAULT 0,
+            inside_freeze_window INTEGER NOT NULL DEFAULT 0,
+            freeze_window_started_at TEXT,
+            freeze_window_ended_at TEXT,
+            event_timestamp TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            detail TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_governance_symbol_created
+           ON paper_acceptance_governance_events(symbol, stage, created_at DESC, id DESC)"""
+    )
+    conn.execute(
         """CREATE TABLE IF NOT EXISTS paper_acceptance_capital_stages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             stage_key TEXT NOT NULL UNIQUE,
@@ -463,6 +488,157 @@ def load_acceptance_change_log(conn, symbol: str | None, stage: str = "paper", l
         data["detail"] = _json_loads(data.get("detail"), {})
         out.append(data)
     return out
+
+
+def record_governance_event(
+    conn,
+    *,
+    symbol: str,
+    change_scope: str = "parameter",
+    change_class: str = "research",
+    version_tag: str = "",
+    approved_by: str = "",
+    requires_restart_stats: bool = False,
+    stats_restarted: bool = False,
+    freeze_window_started_at: str | None = None,
+    freeze_window_ended_at: str | None = None,
+    event_timestamp: str | None = None,
+    reason: str = "",
+    detail: dict | None = None,
+    stage: str = "paper",
+) -> dict:
+    """Persist one research-governance or freeze-window event."""
+
+    ensure_paper_acceptance_schema(conn)
+    effective_at = event_timestamp or _now_iso()
+    event_ts = _parse_ts(effective_at)
+    freeze_start = _parse_ts(freeze_window_started_at)
+    freeze_end = _parse_ts(freeze_window_ended_at)
+    inside_freeze_window = False
+    if event_ts and freeze_start:
+        inside_freeze_window = event_ts >= freeze_start and (freeze_end is None or event_ts <= freeze_end)
+    payload = {
+        "governance_key": f"paper-governance-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "change_scope": (change_scope or "parameter").strip().lower(),
+        "change_class": (change_class or "research").strip().lower(),
+        "version_tag": version_tag or "",
+        "approved_by": approved_by or "",
+        "requires_restart_stats": bool(requires_restart_stats),
+        "stats_restarted": bool(stats_restarted),
+        "inside_freeze_window": bool(inside_freeze_window),
+        "freeze_window_started_at": freeze_window_started_at,
+        "freeze_window_ended_at": freeze_window_ended_at,
+        "event_timestamp": effective_at,
+        "reason": reason or "",
+        "detail": detail or {},
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_governance_events
+           (governance_key, symbol, stage, change_scope, change_class, version_tag, approved_by,
+            requires_restart_stats, stats_restarted, inside_freeze_window,
+            freeze_window_started_at, freeze_window_ended_at, event_timestamp,
+            reason, detail, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["governance_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["change_scope"],
+            payload["change_class"],
+            payload["version_tag"],
+            payload["approved_by"],
+            1 if payload["requires_restart_stats"] else 0,
+            1 if payload["stats_restarted"] else 0,
+            1 if payload["inside_freeze_window"] else 0,
+            payload["freeze_window_started_at"],
+            payload["freeze_window_ended_at"],
+            payload["event_timestamp"],
+            payload["reason"],
+            _json_dumps(payload["detail"]),
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=symbol,
+        stage=stage,
+        change_type="governance_event_recorded",
+        target_type="governance",
+        target_key=payload["governance_key"],
+        detail={
+            "change_scope": payload["change_scope"],
+            "change_class": payload["change_class"],
+            "inside_freeze_window": payload["inside_freeze_window"],
+            "version_tag": payload["version_tag"],
+        },
+    )
+    return payload
+
+
+def load_governance_events(conn, symbol: str | None, stage: str = "paper", limit: int = 100) -> list[dict]:
+    """Load recent governance events for one acceptance workspace."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_governance_events
+           WHERE symbol=? AND stage=?
+           ORDER BY event_timestamp DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 1000))),
+    ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        data = dict(row)
+        data["requires_restart_stats"] = bool(data.get("requires_restart_stats"))
+        data["stats_restarted"] = bool(data.get("stats_restarted"))
+        data["inside_freeze_window"] = bool(data.get("inside_freeze_window"))
+        data["detail"] = _json_loads(data.get("detail"), {})
+        out.append(data)
+    return out
+
+
+def summarize_governance_events(conn, symbol: str | None, stage: str = "paper", limit: int = 200) -> dict:
+    """Summarize governance event discipline for policy evaluation."""
+
+    rows = load_governance_events(conn, symbol, stage=stage, limit=limit)
+    by_scope: dict[str, int] = {}
+    by_class: dict[str, int] = {}
+    for row in rows:
+        scope = str(row.get("change_scope") or "unknown")
+        by_scope[scope] = by_scope.get(scope, 0) + 1
+        change_class = str(row.get("change_class") or "unknown")
+        by_class[change_class] = by_class.get(change_class, 0) + 1
+    freeze_violations = [
+        row for row in rows
+        if row.get("inside_freeze_window") and row.get("change_scope") in {"parameter", "logic", "risk"}
+    ]
+    restart_required_rows = [row for row in rows if row.get("requires_restart_stats")]
+    restart_completed = [row for row in restart_required_rows if row.get("stats_restarted")]
+    version_tagged = [row for row in rows if str(row.get("version_tag") or "").strip()]
+    approved_rows = [row for row in rows if str(row.get("approved_by") or "").strip()]
+    reasoned_rows = [row for row in rows if str(row.get("reason") or "").strip()]
+    override_rows = [row for row in rows if "override" in str(row.get("change_class") or "")]
+    return {
+        "rows": rows,
+        "total_changes": len(rows),
+        "by_scope": by_scope,
+        "by_class": by_class,
+        "parameter_change_count": by_scope.get("parameter", 0),
+        "risk_change_count": by_scope.get("risk", 0),
+        "logic_change_count": by_scope.get("logic", 0),
+        "freeze_violation_count": len(freeze_violations),
+        "restart_required_count": len(restart_required_rows),
+        "restart_completed_count": len(restart_completed),
+        "restart_stats_completion_ratio": round(len(restart_completed) / len(restart_required_rows), 4) if restart_required_rows else 1.0,
+        "reason_coverage_ratio": round(len(reasoned_rows) / len(rows), 4) if rows else 1.0,
+        "version_mapping_ratio": round(len(version_tagged) / len(rows), 4) if rows else 1.0,
+        "approved_change_ratio": round(len(approved_rows) / len(rows), 4) if rows else 1.0,
+        "override_event_count": len(override_rows),
+    }
 
 
 def record_capital_stage(
@@ -1548,6 +1724,30 @@ def _build_auto_evidence(
         _merge_check(evidence, "research_discipline", "strategy_parameters_frozen", bool(metrics.get("parameters_frozen")), source="observed")
     if metrics.get("parameter_change_count") is not None:
         _merge_check(evidence, "research_discipline", "no_short_term_parameter_tuning", metrics.get("parameter_change_count") == 0, source="observed")
+    if metrics.get("restart_stats_completion_ratio") is not None:
+        _merge_check(
+            evidence,
+            "research_discipline",
+            "modifications_restart_stats",
+            float(metrics.get("restart_stats_completion_ratio") or 0) >= 1.0,
+            source="observed",
+        )
+    if metrics.get("governance_reason_coverage_ratio") is not None:
+        _merge_check(
+            evidence,
+            "research_discipline",
+            "modification_reasons_recorded",
+            float(metrics.get("governance_reason_coverage_ratio") or 0) >= 1.0,
+            source="observed",
+        )
+    if metrics.get("governance_version_mapping_ratio") is not None:
+        _merge_check(
+            evidence,
+            "research_discipline",
+            "version_result_mapping",
+            float(metrics.get("governance_version_mapping_ratio") or 0) >= 1.0,
+            source="observed",
+        )
     if strategy.get("strategy_version") or strategy.get("parameter_version"):
         _merge_check(evidence, "research_discipline", "version_result_mapping", True, source="observed")
 
@@ -1723,6 +1923,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
     events = load_acceptance_events(conn, symbol=key, limit=500)
     shadow_parity = summarize_shadow_parity_traces(conn, symbol=key, stage="paper", limit=200)
     shadow_rows = load_shadow_parity_traces(conn, key, stage="paper", limit=50)
+    governance_summary = summarize_governance_events(conn, key, stage="paper", limit=200)
     telemetry = summarize_acceptance_telemetry(conn, symbol=key, stage="paper")
     live_telemetry = summarize_acceptance_telemetry(conn, symbol=key, stage="live")
     scenarios = summarize_scenario_evidence(conn, symbol=key, stage="paper")
@@ -1794,6 +1995,10 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "kill_switch_tested": False,
         "parameters_frozen": False,
         "parameter_change_count": None,
+        "freeze_violation_count": 0,
+        "governance_reason_coverage_ratio": 1.0,
+        "governance_version_mapping_ratio": 1.0,
+        "restart_stats_completion_ratio": 1.0,
         "hardcoded_api_keys": False,
         "withdrawal_permission_enabled": False,
         "api_key_permissions_minimized": None,
@@ -1822,6 +2027,16 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "shadow_post_order_price_behavior_ratio": shadow_parity.get("post_order_price_behavior_ratio"),
         "shadow_avg_execution_latency_ms": shadow_parity.get("avg_execution_latency_ms"),
         "shadow_avg_intent_to_adapter_ms": shadow_parity.get("avg_intent_to_adapter_ms"),
+        "parameter_change_count": governance_summary.get("parameter_change_count"),
+        "risk_change_count": governance_summary.get("risk_change_count"),
+        "logic_change_count": governance_summary.get("logic_change_count"),
+        "freeze_violation_count": governance_summary.get("freeze_violation_count"),
+        "restart_stats_completion_ratio": governance_summary.get("restart_stats_completion_ratio"),
+        "governance_reason_coverage_ratio": governance_summary.get("reason_coverage_ratio"),
+        "governance_version_mapping_ratio": governance_summary.get("version_mapping_ratio"),
+        "governance_approved_change_ratio": governance_summary.get("approved_change_ratio"),
+        "governance_override_event_count": governance_summary.get("override_event_count"),
+        "parameters_frozen": governance_summary.get("parameter_change_count", 0) == 0 and governance_summary.get("freeze_violation_count", 0) == 0,
     }
     metrics.update({key: value for key, value in telemetry.get("metrics", {}).items() if value is not None})
     metrics.update({key: value for key, value in overrides["metrics"].items() if value is not None})
@@ -1917,6 +2132,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "deviation_snapshots": deviation_snapshots,
         "shadow_parity_summary": shadow_parity,
         "shadow_parity_traces": shadow_rows,
+        "governance_summary": governance_summary,
     }
 
 
@@ -2322,6 +2538,8 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         "deviation_snapshots": context.get("deviation_snapshots") or [],
         "shadow_parity_summary": context.get("shadow_parity_summary") or {},
         "shadow_parity_traces": context.get("shadow_parity_traces") or [],
+        "governance_summary": context.get("governance_summary") or {},
+        "governance_events": load_governance_events(conn, key, stage=stage, limit=50),
     }
 
 
@@ -2336,6 +2554,7 @@ __all__ = [
     "load_acceptance_change_log",
     "load_acceptance_context_overrides",
     "load_acceptance_events",
+    "load_governance_events",
     "load_acceptance_reports",
     "load_acceptance_review",
     "load_order_audit_rows",
@@ -2351,11 +2570,13 @@ __all__ = [
     "record_acceptance_event",
     "record_capital_stage",
     "record_deviation_snapshot",
+    "record_governance_event",
     "record_shadow_parity_trace",
     "record_order_audit",
     "record_reconciliation_run",
     "record_runtime_metric",
     "refresh_acceptance_reports_for_symbols",
+    "summarize_governance_events",
     "summarize_shadow_parity_traces",
     "run_acceptance_scenario",
     "upsert_acceptance_review",

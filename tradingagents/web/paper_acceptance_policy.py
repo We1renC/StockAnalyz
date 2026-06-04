@@ -298,15 +298,18 @@ def build_acceptance_policy_snapshot(
     }
 
     derived_evidence["research_discipline"] = {
-        "strategy_logic_frozen": bool(strategy.get("logic_frozen", True)),
-        "strategy_parameters_frozen": bool(metrics.get("parameters_frozen")),
-        "risk_parameters_frozen": bool(strategy.get("risk_parameters_frozen", True)),
-        "no_short_term_parameter_tuning": int(metrics.get("parameter_change_count") or 0) == 0,
-        "modifications_restart_stats": bool(strategy.get("modifications_restart_stats", True)),
-        "modification_reasons_recorded": bool(strategy.get("modification_log") or trade_count > 0),
+        "strategy_logic_frozen": bool(strategy.get("logic_frozen", True)) and int(metrics.get("logic_change_count") or 0) == 0 and int(metrics.get("freeze_violation_count") or 0) == 0,
+        "strategy_parameters_frozen": bool(metrics.get("parameters_frozen")) and int(metrics.get("freeze_violation_count") or 0) == 0,
+        "risk_parameters_frozen": bool(strategy.get("risk_parameters_frozen", True)) and int(metrics.get("risk_change_count") or 0) == 0 and int(metrics.get("freeze_violation_count") or 0) == 0,
+        "no_short_term_parameter_tuning": int(metrics.get("parameter_change_count") or 0) == 0 and int(metrics.get("freeze_violation_count") or 0) == 0,
+        "modifications_restart_stats": float(metrics.get("restart_stats_completion_ratio") or 0) >= 1.0,
+        "modification_reasons_recorded": float(metrics.get("governance_reason_coverage_ratio") or 0) >= 1.0,
         "failed_versions_retained": bool(strategy.get("failed_versions_retained", True)),
         "no_selective_best_result_retention": bool(strategy.get("retain_all_variants", True)),
-        "version_result_mapping": bool(strategy.get("strategy_version") and strategy.get("parameter_version")),
+        "version_result_mapping": (
+            bool(strategy.get("strategy_version") and strategy.get("parameter_version"))
+            or float(metrics.get("governance_version_mapping_ratio") or 0) >= 1.0
+        ),
     }
 
     derived_evidence["api_security"] = {

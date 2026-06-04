@@ -48,6 +48,7 @@ from paper_acceptance_store import (
     load_acceptance_context_overrides,
     load_acceptance_change_log,
     load_acceptance_events,
+    load_governance_events,
     load_acceptance_reports,
     load_acceptance_review,
     load_capital_stages,
@@ -62,12 +63,14 @@ from paper_acceptance_store import (
     record_acceptance_event,
     record_capital_stage,
     record_deviation_snapshot,
+    record_governance_event,
     record_shadow_parity_trace,
     record_order_audit,
     record_reconciliation_run,
     record_runtime_metric,
     refresh_acceptance_reports_for_symbols,
     run_acceptance_scenario,
+    summarize_governance_events,
     summarize_shadow_parity_traces,
     upsert_acceptance_review,
     upsert_acceptance_check,
@@ -4938,6 +4941,22 @@ class PaperAcceptanceShadowParityCreate(BaseModel):
     stage: str = "paper"
 
 
+class PaperAcceptanceGovernanceEventCreate(BaseModel):
+    symbol: str
+    change_scope: str = "parameter"
+    change_class: str = "research"
+    version_tag: str = ""
+    approved_by: str = ""
+    requires_restart_stats: bool = False
+    stats_restarted: bool = False
+    freeze_window_started_at: Optional[str] = None
+    freeze_window_ended_at: Optional[str] = None
+    event_timestamp: Optional[str] = None
+    reason: str = ""
+    detail: Optional[dict] = None
+    stage: str = "paper"
+
+
 def _json_dumps_compact(value, fallback):
     if value is None:
         value = fallback
@@ -5692,6 +5711,46 @@ def api_record_paper_acceptance_shadow_parity(req: PaperAcceptanceShadowParityCr
             likely_execution_price_recorded=req.likely_execution_price_recorded,
             post_order_price_behavior_recorded=req.post_order_price_behavior_recorded,
             parity_score=req.parity_score,
+            detail=req.detail or {},
+            stage=req.stage,
+        )
+        return sanitize_float_values({"ok": True, "row": row})
+    finally:
+        conn.close()
+
+
+@app.get("/api/paper-acceptance/governance")
+def api_get_paper_acceptance_governance(symbol: str, stage: str = "paper", limit: int = 100):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        rows = load_governance_events(conn, symbol.strip().upper(), stage=stage, limit=limit)
+        summary = summarize_governance_events(conn, symbol.strip().upper(), stage=stage, limit=limit)
+        return sanitize_float_values({"rows": rows, "summary": summary, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+@app.post("/api/paper-acceptance/governance")
+def api_record_paper_acceptance_governance(req: PaperAcceptanceGovernanceEventCreate):
+    if not req.symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        row = record_governance_event(
+            conn,
+            symbol=req.symbol.strip().upper(),
+            change_scope=req.change_scope,
+            change_class=req.change_class,
+            version_tag=req.version_tag,
+            approved_by=req.approved_by,
+            requires_restart_stats=req.requires_restart_stats,
+            stats_restarted=req.stats_restarted,
+            freeze_window_started_at=req.freeze_window_started_at,
+            freeze_window_ended_at=req.freeze_window_ended_at,
+            event_timestamp=req.event_timestamp,
+            reason=req.reason,
             detail=req.detail or {},
             stage=req.stage,
         )
