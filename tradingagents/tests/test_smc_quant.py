@@ -3585,3 +3585,30 @@ def test_apply_risk_pipeline_keeps_normal_risk_when_below_threshold():
     assert out["defensive_mode"] is False
     assert out["ready"][0]["sizing"]["effective_risk_pct"] == 0.01
     assert out["ready"][0]["sizing"]["defensive_mode_applied"] is False
+
+
+def test_chart_layers_emits_c13_crypto_overlay_when_overlay_provided():
+    """§15 spec C13: liquidation / order-flow overlay rendered for crypto."""
+    funding = pd.Series([0.001])
+    result = build_smc_analysis(
+        _sample_ohlcv(), "BTCUSDT",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+        crypto_inputs={"funding_rate": funding},
+    )
+    layers = result["visualization"]["chart_layers"]
+    assert "C13_crypto_overlay" in layers
+    overlay = layers["C13_crypto_overlay"]
+    assert overlay["kind"] == "derivatives_overlay"
+    # Subplots from §15.2 C13
+    for key in ("open_interest", "funding", "cvd", "coinbase_premium",
+                "spot_perp", "cme_gap", "factors"):
+        assert key in overlay
+
+
+def test_chart_layers_omits_c13_crypto_overlay_for_non_crypto():
+    """No crypto_inputs → overlay stays absent (UI shouldn't render an empty panel)."""
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    assert "C13_crypto_overlay" not in result["visualization"]["chart_layers"]

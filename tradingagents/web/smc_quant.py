@@ -5060,6 +5060,7 @@ def build_chart_layers(
     inverse_fvgs: Optional[list[dict]] = None,
     balanced_price_ranges: Optional[list[dict]] = None,
     volume_imbalances: Optional[list[dict]] = None,
+    crypto_overlay: Optional[dict] = None,
 ) -> dict:
     """§6.1 / Appendix A chart-layer annotations (C1–C12).
 
@@ -5299,6 +5300,28 @@ def build_chart_layers(
             for ev in (smt_events or [])
         ],
     }
+    # §15 / Appendix A spec-aligned C13 — Liquidation / Order Flow Overlay
+    # for crypto. Distinct from the existing C13_backtest_replay panel
+    # (project-specific reuse); UIs can render whichever matches the asset.
+    if crypto_overlay and crypto_overlay.get("status") == "ok":
+        layers["C13_crypto_overlay"] = {
+            "kind": "derivatives_overlay",
+            "liquidation_clusters": [
+                {"type": c.get("type"), "level": c.get("level"),
+                 "size": c.get("size"), "swept": c.get("swept"),
+                 "swept_index": c.get("swept_index")}
+                for c in (crypto_overlay.get("liquidation_clusters") or [])
+            ],
+            "open_interest": crypto_overlay.get("oi"),
+            "funding": crypto_overlay.get("funding"),
+            "cvd": crypto_overlay.get("cvd"),
+            "cvd_slope": crypto_overlay.get("cvd_slope"),
+            "coinbase_premium": crypto_overlay.get("coinbase_premium"),
+            "btc_dominance": crypto_overlay.get("btc_dominance"),
+            "spot_perp": crypto_overlay.get("spot_perp"),
+            "cme_gap": crypto_overlay.get("cme_gap"),
+            "factors": crypto_overlay.get("factors"),
+        }
     return layers
 
 
@@ -6390,6 +6413,7 @@ def build_smc_analysis(
                         inverse_fvgs=inverse_fvgs,
                         balanced_price_ranges=balanced_price_ranges,
                         volume_imbalances=volume_imbalances,
+                        crypto_overlay=crypto_overlay,
                     ),
                     pd_array_matrix,
                 ),
