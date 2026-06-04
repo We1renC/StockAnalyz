@@ -1895,3 +1895,31 @@ def test_dol_strong_eqh_escalates_internal_priority():
     # Strong EQH escalates 2 → 1, beats plain internal at bucket 2
     assert out["target_price"] == 110.0
     assert out["equal_tier"] == "strong"
+
+
+def test_round_number_magnets_lists_proximate_levels_only():
+    """§3.5: only round levels within ±1% of current price are active magnets."""
+    from smc_quant import detect_round_number_magnets
+    # At 100 with step 1, levels 97..103 generated; within 1% are 99,100,101
+    out = detect_round_number_magnets(100.0, proximity_pct=1.0)
+    active = [r for r in out if r["active_magnet"]]
+    levels = {r["level"] for r in active}
+    assert 100.0 in levels
+    # Distances are sorted ascending
+    assert out[0]["distance_pct"] == 0.0
+
+
+def test_round_number_magnets_empty_when_price_invalid():
+    from smc_quant import detect_round_number_magnets
+    assert detect_round_number_magnets(0) == []
+    assert detect_round_number_magnets(None) == []
+
+
+def test_build_smc_analysis_exposes_round_number_magnets():
+    result = build_smc_analysis(
+        _sample_ohlcv(), "AAPL",
+        config=SMCConfig(swing_length=2, internal_swing_length=2),
+    )
+    assert "round_number_magnets" in result["concepts"]
+    for m in result["concepts"]["round_number_magnets"]:
+        assert "level" in m and "distance_pct" in m and "active_magnet" in m

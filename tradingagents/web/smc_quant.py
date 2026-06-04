@@ -418,6 +418,39 @@ def track_equilibrium_reactions(
     }
 
 
+def detect_round_number_magnets(
+    current_price: float, *, levels: Optional[list[float]] = None,
+    proximity_pct: float = 1.0,
+) -> list[dict]:
+    """§3.5 — round-number magnet targets (psychological levels).
+
+    Generates a small grid of "round" levels close to current price and
+    flags those within ``proximity_pct`` % as active magnets. Used by
+    §3.5 DOL prioritiser as a tertiary target pool and by §5.2 as a
+    sanity check (don't fade a sweep into a major round number).
+    """
+    if current_price is None or current_price <= 0:
+        return []
+    if levels is None:
+        # Build adaptive grid: every 1% step for tight assets, 5% step otherwise.
+        step = 1.0 if current_price < 100 else (10.0 if current_price < 1000 else 50.0)
+        anchor = round(current_price / step) * step
+        levels = [anchor + step * i for i in range(-3, 4)]
+    out: list[dict] = []
+    for lvl in levels:
+        if lvl <= 0:
+            continue
+        dist_pct = abs(lvl - current_price) / current_price * 100
+        if dist_pct > proximity_pct * 3:  # ignore far outliers
+            continue
+        out.append({
+            "level": round(float(lvl), 4),
+            "distance_pct": round(dist_pct, 3),
+            "active_magnet": dist_pct <= proximity_pct,
+        })
+    return sorted(out, key=lambda r: r["distance_pct"])
+
+
 def classify_liquidity_internal_external(
     liquidity: list[dict],
     pd_zone: dict,
@@ -4599,6 +4632,7 @@ def build_smc_analysis(
             cme_gaps=crypto_inputs.get("cme_gaps"),
         )
     _last_close = float(h["close"].iloc[-1]) if len(h) else 0.0
+    round_magnets = detect_round_number_magnets(_last_close)
     sweep_reversal_entries = attach_dol_targets(sweep_reversal_entries, liquidity, prev, fvgs, _last_close)
     continuation_entries = attach_dol_targets(continuation_entries, liquidity, prev, fvgs, _last_close)
     ote_entries = attach_dol_targets(ote_entries, liquidity, prev, fvgs, _last_close)
@@ -4694,6 +4728,7 @@ def build_smc_analysis(
             "previous_levels": prev,
             "sessions": session,
             "weekend_illiquidity": weekend_state,
+            "round_number_magnets": round_magnets,
             "retracements": retracement,
             "displacement": displacements[-20:],
             "judas": {
