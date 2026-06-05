@@ -614,6 +614,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
       <button data-tab="domain-research" class="tab-btn tab-item">領域研究</button>
       <button data-tab="daytrade" class="tab-btn tab-item">當沖監控</button>
       <button data-tab="smc-analysis" class="tab-btn tab-item">SMC 分析</button>
+      <button data-tab="crypto-desk" class="tab-btn tab-item">加密半自動</button>
     </div>
     <div id="nav-market-info" class="flex items-center gap-3 flex-wrap ml-auto text-xs text-slate-400 pr-2">
       <button onclick="openBatchAnalyze()" class="btn-ai text-xs px-2.5 py-1 shrink-0" style="border-radius: 6px; padding: 4px 8px; font-size: 11px;" title="AI 智能點位調整">
@@ -1151,6 +1152,74 @@ body { background: var(--bg-base); color: var(--text-primary); }
   </div>
 
   <!-- SMC Quantitative Analysis Tab -->
+  <!-- ─────────────── Crypto Half-Auto Desk ─────────────── -->
+  <div id="tab-crypto-desk" class="tab-content hidden">
+    <div class="mb-4 glass-card-sm p-4 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3 flex-wrap">
+        <span class="text-xs text-slate-400">交易對:</span>
+        <select id="cdesk-symbol" class="input-field text-sm font-semibold" style="width:140px; padding:6px 12px; background:#1e293b; color:#fff; border-radius:6px; border:1px solid #475569;">
+          <option value="BTC-USDT">BTC-USDT</option>
+          <option value="ETH-USDT">ETH-USDT</option>
+          <option value="SOL-USDT">SOL-USDT</option>
+        </select>
+        <span class="text-xs text-slate-400 ml-2">時間框架:</span>
+        <select id="cdesk-interval" class="input-field text-sm" style="width:90px; padding:6px 8px; background:#1e293b; color:#fff; border-radius:6px; border:1px solid #475569;">
+          <option value="15m">15m</option>
+          <option value="1h" selected>1h</option>
+          <option value="4h">4h</option>
+        </select>
+        <span class="text-xs text-slate-400 ml-2">最小匯流分:</span>
+        <input id="cdesk-min-score" type="number" value="8" min="1" max="20" class="input-field text-sm" style="width:60px; padding:6px; background:#1e293b; color:#fff; border-radius:6px; border:1px solid #475569;">
+        <span class="text-xs text-slate-400 ml-2">最大 notional ($):</span>
+        <input id="cdesk-max-notional" type="number" value="2000" min="100" step="100" class="input-field text-sm" style="width:90px; padding:6px; background:#1e293b; color:#fff; border-radius:6px; border:1px solid #475569;">
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="cdesk-scan-btn" onclick="cdeskScan()" class="btn-ai text-xs px-3 py-1.5" style="border-radius:6px;">掃描提案</button>
+        <button id="cdesk-refresh-btn" onclick="cdeskRefreshState()" class="text-xs px-3 py-1.5" style="border-radius:6px; background:#334155; color:#fff;">刷新狀態</button>
+      </div>
+    </div>
+
+    <!-- Top row: account state + scan proposal -->
+    <div class="grid grid-cols-12 gap-4 mb-4">
+      <div class="col-span-7 glass-card-sm p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-semibold text-slate-200">SMC 入場提案 (dry-run)</h3>
+          <span id="cdesk-scan-time" class="text-xs text-slate-500"></span>
+        </div>
+        <div id="cdesk-proposal" class="text-xs text-slate-400">點「掃描提案」開始…</div>
+        <div id="cdesk-execute-bar" class="hidden mt-3 pt-3 border-t border-slate-700 flex items-center justify-between gap-2">
+          <span class="text-xs text-amber-400">⚠ 人為確認後才送單到模擬撮合</span>
+          <button id="cdesk-execute-btn" onclick="cdeskExecute()" class="text-xs px-4 py-2" style="border-radius:6px; background:#dc2626; color:#fff; font-weight:600;">確認下單 → 模擬市場</button>
+        </div>
+      </div>
+      <div class="col-span-5 glass-card-sm p-4">
+        <h3 class="text-sm font-semibold text-slate-200 mb-3">帳戶與持倉</h3>
+        <div id="cdesk-state" class="text-xs text-slate-400">載入中…</div>
+      </div>
+    </div>
+
+    <!-- Mid: open orders + recent fills -->
+    <div class="grid grid-cols-12 gap-4 mb-4">
+      <div class="col-span-6 glass-card-sm p-4">
+        <h3 class="text-sm font-semibold text-slate-200 mb-3">未成交委託</h3>
+        <div id="cdesk-orders" class="text-xs text-slate-400">—</div>
+      </div>
+      <div class="col-span-6 glass-card-sm p-4">
+        <h3 class="text-sm font-semibold text-slate-200 mb-3">近期成交</h3>
+        <div id="cdesk-fills" class="text-xs text-slate-400">—</div>
+      </div>
+    </div>
+
+    <!-- Bottom: paper acceptance verdicts -->
+    <div class="glass-card-sm p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-semibold text-slate-200">紙上交易驗收 (paper-acceptance, 21 gate)</h3>
+        <button onclick="cdeskRefreshAcceptance()" class="text-xs px-2 py-1" style="border-radius:4px; background:#334155; color:#fff;">刷新</button>
+      </div>
+      <div id="cdesk-acceptance" class="text-xs text-slate-400">—</div>
+    </div>
+  </div>
+
   <div id="tab-smc-analysis" class="tab-content hidden">
     <!-- Top control bar -->
     <div class="mb-4 glass-card-sm p-4 flex flex-wrap items-center justify-between gap-3">
@@ -2285,6 +2354,10 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     $('tab-' + tabName).classList.remove('hidden');
     if (tabName === 'backtest' && !$('backtest-tbody').innerHTML.trim()) {
       loadBacktest();
+    }
+    if (tabName === 'crypto-desk') {
+      cdeskRefreshState();
+      cdeskRefreshAcceptance();
     }
     if (tabName === 'portfolio') {
       if (_twTrendChart && $('tw-portfolio-trend-chart')) {
@@ -9326,6 +9399,178 @@ if (savedInterval !== null) {
   $('auto-refresh').value = savedInterval;
 }
 setupAutoRefresh();
+
+// ─────────────── Crypto half-auto desk ───────────────
+let _cdeskLastScan = null;
+
+async function cdeskScan() {
+  const symbol = $('cdesk-symbol').value;
+  const interval = $('cdesk-interval').value;
+  const minScore = parseInt($('cdesk-min-score').value || 8);
+  const maxNotional = parseFloat($('cdesk-max-notional').value || 2000);
+  const el = $('cdesk-proposal');
+  el.innerHTML = '<span class="text-amber-400">⏳ 掃描中…</span>';
+  $('cdesk-execute-bar').classList.add('hidden');
+  try {
+    const url = `/api/smc-crypto/scan?symbol=${encodeURIComponent(symbol)}&interval=${interval}&min_confluence_score=${minScore}&max_notional_usdt=${maxNotional}&risk_pct=0.05`;
+    const r = await fetch(url);
+    const data = await r.json();
+    _cdeskLastScan = data;
+    const d = data.decision;
+    $('cdesk-scan-time') && ($('cdesk-scan-time').textContent = data.generated_at || '');
+    if (!d || !d.entry) {
+      const reason = d ? d.action : 'no_decision';
+      el.innerHTML = `<div class="text-slate-400">無合格提案<br><span class="text-xs">原因: <code>${reason}</code> · bias: <code>${d?.bias || '—'}</code></span></div>`;
+      return;
+    }
+    const e = d.entry, dr = d.dry_run;
+    const dirIcon = e.direction === 1 ? '↑ LONG' : '↓ SHORT';
+    const dirColor = e.direction === 1 ? '#10b981' : '#ef4444';
+    const score = (e.confluence || {}).score || '—';
+    const thr = (e.confluence || {}).threshold || '—';
+    const dol = e.dol_target || {};
+    el.innerHTML = `
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <div class="mb-2"><span class="text-slate-500">模型</span> <span class="font-semibold text-slate-100">${e.model}</span> · <span style="color:${dirColor};font-weight:600">${dirIcon}</span></div>
+          <div class="mb-2"><span class="text-slate-500">bias</span> <span class="text-slate-200">${d.bias || '—'}</span></div>
+          <div class="mb-2"><span class="text-slate-500">匯流</span> <span class="text-slate-200">${score}/${thr}</span></div>
+          <div class="mb-2"><span class="text-slate-500">RR</span> <span class="text-slate-200">${e.rr || '—'}</span></div>
+          <div class="mb-2"><span class="text-slate-500">DOL</span> <span class="text-slate-200">${dol.target_kind || '—'} @ ${dol.target_price || '—'}</span></div>
+        </div>
+        <div>
+          <div class="mb-2"><span class="text-slate-500">entry</span> <span class="text-slate-100">$${e.entry}</span></div>
+          <div class="mb-2"><span class="text-slate-500">stop</span> <span class="text-slate-100">$${e.stop}</span></div>
+          <div class="mb-2"><span class="text-slate-500">target</span> <span class="text-slate-100">$${e.target}</span></div>
+          ${dr ? `
+            <div class="mt-3 pt-3 border-t border-slate-700 text-xs text-slate-400">
+              <div class="font-semibold text-slate-300 mb-1">paper_execution 模擬</div>
+              <div>state: <code class="text-amber-300">${dr.state}</code></div>
+              <div>avg: $${dr.avg_price} · qty: ${dr.filled_qty}</div>
+              <div>fee: $${dr.fee} · slip_bps: ${dr.slippage_bps}</div>
+            </div>` : ''}
+        </div>
+      </div>
+    `;
+    $('cdesk-execute-bar').classList.remove('hidden');
+  } catch (err) {
+    el.innerHTML = `<div class="text-red-400">掃描失敗: ${err.message}</div>`;
+  }
+}
+
+async function cdeskExecute() {
+  if (!_cdeskLastScan || !_cdeskLastScan.decision || !_cdeskLastScan.decision.entry) {
+    alert('沒有可執行的提案，請先掃描');
+    return;
+  }
+  if (!confirm('確認送單到模擬撮合？此操作會佔用模擬帳戶資金。')) return;
+  const btn = $('cdesk-execute-btn'); btn.disabled = true; btn.textContent = '送單中…';
+  try {
+    const payload = {
+      symbol: $('cdesk-symbol').value,
+      interval: $('cdesk-interval').value,
+      min_confluence_score: parseInt($('cdesk-min-score').value || 8),
+      max_notional_usdt: parseFloat($('cdesk-max-notional').value || 2000),
+      risk_pct: 0.05,
+    };
+    const r = await fetch('/api/smc-crypto/execute', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const out = await r.json();
+    const dec = (out.decisions || [])[0];
+    const acc = out.acceptance || {};
+    const verdictColor = acc.conclusion === 'passed' ? '#10b981'
+      : acc.conclusion === 'conditionally_passed' ? '#f59e0b' : '#ef4444';
+    let html = '<div class="p-3 rounded" style="background:rgba(15,23,42,0.5);">';
+    if (dec) {
+      html += `<div class="mb-2 font-semibold">action: <code class="text-amber-300">${dec.action}</code></div>`;
+      if (dec.live_order && dec.live_order.status >= 200 && dec.live_order.status < 300) {
+        const op = dec.live_order.payload || {};
+        html += `<div class="text-emerald-400">★ 已送單: ${op.id} · ${op.side?.toUpperCase()} ${op.quantity}@${op.price}</div>`;
+      } else if (dec.live_order) {
+        const err = ((dec.live_order.payload || {}).detail || {}).error || {};
+        html += `<div class="text-red-400">送單失敗: ${err.code} - ${err.message}</div>`;
+      }
+    }
+    html += `<div class="mt-2 pt-2 border-t border-slate-700">
+      <div>驗收結論: <span style="color:${verdictColor};font-weight:600">${acc.conclusion_label || acc.conclusion}</span></div>
+      <div class="text-xs text-slate-500">gates pass=${acc.passed} fail=${acc.failed} · blocking=${(acc.blocking_issues || []).length}</div>
+    </div></div>`;
+    $('cdesk-proposal').innerHTML = html;
+    cdeskRefreshState();
+    cdeskRefreshAcceptance();
+  } catch (err) {
+    alert('送單失敗: ' + err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '確認下單 → 模擬市場';
+  }
+}
+
+async function cdeskRefreshState() {
+  const symbol = $('cdesk-symbol') ? $('cdesk-symbol').value : null;
+  try {
+    const r = await fetch(`/api/smc-crypto/state${symbol ? '?symbol='+symbol : ''}`);
+    const data = await r.json();
+    // Balances
+    let bh = '';
+    for (const b of (data.balances || [])) {
+      const total = parseFloat(b.total || b.available || 0);
+      if (total > 0.0001) {
+        bh += `<div class="flex justify-between"><span class="font-semibold">${b.asset}</span><span>avail: <code>${b.available}</code> · locked: <code>${b.locked}</code></span></div>`;
+      }
+    }
+    $('cdesk-state').innerHTML = bh || '<span class="text-slate-500">無持倉</span>';
+    // Orders
+    const oo = data.open_orders || [];
+    if (oo.length) {
+      let oh = '<table class="w-full text-xs"><thead><tr class="text-slate-500"><th class="text-left">id</th><th class="text-left">side</th><th class="text-right">qty</th><th class="text-right">price</th><th>status</th></tr></thead><tbody>';
+      for (const o of oo.slice(0, 10)) {
+        oh += `<tr><td class="text-xs"><code>${(o.id || '').substring(0,16)}</code></td><td>${o.side}</td><td class="text-right">${o.quantity}</td><td class="text-right">${o.price}</td><td>${o.status}</td></tr>`;
+      }
+      oh += '</tbody></table>';
+      $('cdesk-orders').innerHTML = oh;
+    } else {
+      $('cdesk-orders').innerHTML = '<span class="text-slate-500">無未成交委託</span>';
+    }
+    // Fills
+    const fl = data.recent_fills || [];
+    if (fl.length) {
+      let fh = '<table class="w-full text-xs"><thead><tr class="text-slate-500"><th class="text-left">id</th><th class="text-left">side</th><th class="text-right">qty</th><th class="text-right">price</th><th>at</th></tr></thead><tbody>';
+      for (const f of fl.slice(0, 10)) {
+        fh += `<tr><td class="text-xs"><code>${(f.id || '').substring(0,12)}</code></td><td>${f.side || ''}</td><td class="text-right">${f.quantity || ''}</td><td class="text-right">${f.price || ''}</td><td>${(f.executed_at || '').substring(11, 19)}</td></tr>`;
+      }
+      fh += '</tbody></table>';
+      $('cdesk-fills').innerHTML = fh;
+    } else {
+      $('cdesk-fills').innerHTML = '<span class="text-slate-500">無近期成交</span>';
+    }
+  } catch (err) {
+    $('cdesk-state').innerHTML = `<span class="text-red-400">載入失敗: ${err.message}</span>`;
+  }
+}
+
+async function cdeskRefreshAcceptance() {
+  try {
+    const r = await fetch('/api/smc-crypto/acceptance?limit=10');
+    const data = await r.json();
+    const reps = data.reports || [];
+    if (!reps.length) {
+      $('cdesk-acceptance').innerHTML = '<span class="text-slate-500">無驗收紀錄 — 執行交易後會自動產生</span>';
+      return;
+    }
+    let h = '<table class="w-full text-xs"><thead><tr class="text-slate-500"><th class="text-left">run</th><th>symbol</th><th>conclusion</th><th class="text-right">gates</th><th class="text-right">blocking</th><th>at</th></tr></thead><tbody>';
+    for (const r of reps) {
+      const c = r.conclusion;
+      const color = c === 'passed' ? '#10b981' : c === 'conditionally_passed' ? '#f59e0b' : '#ef4444';
+      h += `<tr><td><code>${(r.run_key || '').substring(0, 24)}</code></td><td>${r.symbol || ''}</td><td><span style="color:${color};font-weight:600">${c}</span></td><td class="text-right">${r.gate_count}</td><td class="text-right">${r.blocking_issue_count}</td><td>${(r.created_at || '').substring(0, 16)}</td></tr>`;
+    }
+    h += '</tbody></table>';
+    $('cdesk-acceptance').innerHTML = h;
+  } catch (err) {
+    $('cdesk-acceptance').innerHTML = `<span class="text-red-400">載入失敗: ${err.message}</span>`;
+  }
+}
 </script>
 </body>
 </html>

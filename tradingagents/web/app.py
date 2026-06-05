@@ -3934,6 +3934,152 @@ def _build_smc_learning_health_payload(conn, symbol: Optional[str] = None, decay
     )
 
 
+# ─────────────── SMC × crypto-api half-auto trading desk ───────────────
+
+def _crypto_api_client():
+    """Build an in-process CryptoApiClient wrapping the local FastAPI app."""
+    from fastapi.testclient import TestClient
+    from smc_paper_runner import CryptoApiClient
+    return CryptoApiClient(TestClient(app))
+
+
+@app.get("/api/smc-crypto/scan")
+def api_smc_crypto_scan(
+    symbol: str = "BTC-USDT",
+    interval: str = "15m",
+    bars: int = 500,
+    min_confluence_score: int = 8,
+    min_rr: float = 1.5,
+    risk_pct: float = 0.02,
+    max_notional_usdt: float = 5000.0,
+):
+    """Run SMC engine + dry-run paper_execution. NO live order.
+
+    UI calls this to display a proposed entry + simulated fill so the
+    human can decide whether to confirm-and-execute.
+    """
+    try:
+        from smc_unified_system import UnifiedTradingSession, UnifiedSessionConfig
+        api = _crypto_api_client()
+        cfg = UnifiedSessionConfig(
+            symbols=[symbol], interval=interval, bars=bars,
+            min_confluence_score=min_confluence_score, min_rr=min_rr,
+            risk_pct=risk_pct, max_notional_usdt=max_notional_usdt,
+        )
+        session = UnifiedTradingSession(api, cfg)
+        try:
+            decisions = session.propose_signals()
+            decisions = session.dry_run_signals(decisions)
+            return {
+                "symbol": symbol, "interval": interval, "bars": bars,
+                "decision": _smc_crypto_serialise(decisions[0]) if decisions else None,
+                "generated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        finally:
+            session.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"scan failed: {e}")
+
+
+@app.post("/api/smc-crypto/execute")
+def api_smc_crypto_execute(payload: dict):
+    """Human-confirmed live order placement + acceptance audit.
+
+    Expects the same payload shape returned by /scan. Re-runs the
+    pipeline (so the entry is recomputed against current market) and
+    posts an order through the crypto-api. Returns acceptance verdict.
+    """
+    try:
+        from smc_unified_system import UnifiedTradingSession, UnifiedSessionConfig
+        symbol = payload.get("symbol", "BTC-USDT")
+        api = _crypto_api_client()
+        cfg = UnifiedSessionConfig(
+            symbols=[symbol],
+            interval=payload.get("interval", "15m"),
+            bars=int(payload.get("bars", 500)),
+            min_confluence_score=int(payload.get("min_confluence_score", 8)),
+            min_rr=float(payload.get("min_rr", 1.5)),
+            risk_pct=float(payload.get("risk_pct", 0.02)),
+            max_notional_usdt=float(payload.get("max_notional_usdt", 5000.0)),
+            strategy_id=payload.get("strategy_id", "smc.v2.ui"),
+        )
+        session = UnifiedTradingSession(api, cfg)
+        try:
+            out = session.run(place_live_orders=True)
+            return out
+        finally:
+            session.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"execute failed: {e}")
+
+
+@app.get("/api/smc-crypto/state")
+def api_smc_crypto_state(symbol: Optional[str] = None):
+    """Snapshot of crypto account state: balances + open orders + recent fills."""
+    try:
+        api = _crypto_api_client()
+        b = api.balances()
+        oo = api.open_orders(symbol)
+        fills = api._request("GET", "/fills", params={"symbol": symbol} if symbol else None)
+        def _extract(payload, *keys):
+            if not isinstance(payload, dict):
+                return payload or []
+            d = payload.get("data") if isinstance(payload.get("data"), (dict, list)) else None
+            if isinstance(d, dict):
+                for k in keys:
+                    if k in d: return d.get(k) or []
+            if isinstance(d, list): return d
+            for k in keys:
+                if k in payload: return payload.get(k) or []
+            return []
+        return {
+            "balances": _extract(b.get("payload"), "balances"),
+            "open_orders": _extract(oo.get("payload"), "orders"),
+            "recent_fills": _extract(fills.get("payload"), "fills")[:20],
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"state fetch failed: {e}")
+
+
+@app.get("/api/smc-crypto/acceptance")
+def api_smc_crypto_acceptance(symbol: Optional[str] = None, limit: int = 20):
+    """Recent paper-acceptance runs for the crypto desk."""
+    try:
+        from paper_acceptance_store import load_acceptance_reports
+        conn = get_db()
+        try:
+            reports = load_acceptance_reports(conn, symbol=symbol, limit=limit)
+            return {
+                "count": len(reports),
+                "reports": [
+                    {
+                        "run_key": r.get("run_key"),
+                        "symbol": r.get("symbol"),
+                        "conclusion": r.get("conclusion"),
+                        "gate_count": r.get("gate_count"),
+                        "blocking_issue_count": r.get("blocking_issue_count"),
+                        "metrics": r.get("metrics"),
+                        "created_at": r.get("created_at"),
+                    }
+                    for r in reports
+                ],
+            }
+        finally:
+            conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"acceptance fetch failed: {e}")
+
+
+def _smc_crypto_serialise(decision) -> dict:
+    """Trim a SymbolDecision dataclass for the UI."""
+    from dataclasses import asdict
+    d = asdict(decision)
+    entry = d.get("entry") or {}
+    if "_raw" in entry: entry.pop("_raw", None)
+    return d
+
+
 @app.get("/api/smc-learning/health")
 def api_smc_learning_health(symbol: Optional[str] = None, decay_window: int = 20):
     conn = get_db()
