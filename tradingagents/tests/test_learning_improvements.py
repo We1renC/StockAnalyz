@@ -191,6 +191,65 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_mae_mfe_calibration_builds_per_model_table():
+    """P2-12: ≥8 winners per (model, dir) → table emits stop/target multipliers."""
+    from learning.mae_mfe_calibration import build_model_calibration_table
+    records = []
+    # 10 sweep_reversal LONG winners, MAE around 0.5-0.8R, MFE around 1.5-3R
+    for i in range(10):
+        records.append({
+            "model": "sweep_reversal", "direction": 1,
+            "outcome": "target", "r_multiple": 2.0,
+            "mae": -(0.5 + 0.05 * i), "mfe": 1.5 + 0.2 * i,
+        })
+    table = build_model_calibration_table(records, min_winners=8)
+    assert ("sweep_reversal", 1) in table
+    info = table[("sweep_reversal", 1)]
+    assert info["n_winners"] >= 8
+    assert info["stop_R"] >= 1.0   # never tightens below structural floor
+    assert info["target_R"] >= 1.5
+    assert info["target_R"] <= info["p90_mfe_R"]
+
+
+def test_mae_mfe_calibration_skips_under_min_winners():
+    from learning.mae_mfe_calibration import build_model_calibration_table
+    records = [{
+        "model": "unicorn", "direction": -1, "outcome": "target",
+        "r_multiple": 2.0, "mae": -0.4, "mfe": 2.5,
+    }] * 5
+    table = build_model_calibration_table(records, min_winners=8)
+    assert ("unicorn", -1) not in table   # 5 < 8 → skipped
+
+
+def test_apply_calibration_widens_stop_and_takes_at_p50_mfe():
+    """Apply rewrites entry.stop / entry.target / entry.rr."""
+    from learning.mae_mfe_calibration import apply_calibration_to_entry
+    entry = {"model": "sweep_reversal", "direction": 1,
+              "entry": 100.0, "stop": 99.0, "target": 102.0}
+    cal = {("sweep_reversal", 1): {
+        "stop_R": 1.5, "target_R": 3.0, "n_winners": 12,
+        "p75_mae_R": 1.5, "p50_mfe_R": 3.0, "p90_mfe_R": 4.0,
+    }}
+    apply_calibration_to_entry(entry, cal)
+    # risk = 1; new stop = 100 - 1.5*1 = 98.5; new target = 100 + 3*1 = 103
+    assert entry["stop"] == 98.5
+    assert entry["target"] == 103.0
+    # RR recalc against new wider stop
+    assert entry["rr"] == 2.0
+    assert entry["calibration_applied"]["source"] == "per_model_mae_mfe"
+    assert entry["original_stop"] == 99.0
+
+
+def test_apply_calibration_no_op_when_table_missing():
+    """No data for this (model, dir) → entry untouched."""
+    from learning.mae_mfe_calibration import apply_calibration_to_entry
+    entry = {"model": "ote_retracement", "direction": 1,
+              "entry": 100.0, "stop": 99.0, "target": 102.0}
+    apply_calibration_to_entry(entry, {})
+    assert entry["stop"] == 99.0   # unchanged
+    assert entry["target"] == 102.0
+
+
 def test_edge_decay_helper_detects_recent_negative_expectancy():
     """P1-8: when recent 20 trades go from +R to flat, helper raises is_decaying."""
     from smc_training_loop import _detect_recent_edge_decay

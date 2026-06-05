@@ -263,8 +263,41 @@ class SmcPaperRunner:
             # ``confluence_below_threshold`` check doesn't reject again.
             picked = dict(e)
             picked["triggered"] = True
+            # P2-12 audit fix: rewrite stop/target from per-(model, direction)
+            # MAE/MFE calibration if we have enough history. The original
+            # 5%-buffer-and-2R-fallback values become the fallback when
+            # calibration data is missing.
+            self._apply_mae_mfe_calibration(picked)
             return picked
         return None
+
+    def _apply_mae_mfe_calibration(self, entry: dict) -> None:
+        """P2-12: replace fixed stop/target with per-model MAE/MFE percentiles.
+
+        Loaded lazily + cached on the runner. Cache TTL is one
+        ``run_once`` call so each tick can pick up fresh ledger.
+        """
+        try:
+            from learning.mae_mfe_calibration import (
+                build_model_calibration_table, apply_calibration_to_entry,
+            )
+            from smc_quant import load_trade_records
+            if not hasattr(self, "_mae_mfe_cal_cache"):
+                ledger_path = getattr(self.config, "journal_path",
+                                       "tmp/smc_paper_journal.jsonl")
+                # ledger lives next to journal with `_trades.jsonl` suffix
+                trade_ledger = ledger_path.replace(".jsonl", "_trades.jsonl")
+                records = load_trade_records(trade_ledger)
+                # Combine with the training ledger if it exists
+                try:
+                    records += load_trade_records("tmp/smc_training_ledger.jsonl")
+                except Exception:
+                    pass
+                self._mae_mfe_cal_cache = build_model_calibration_table(records)
+            if self._mae_mfe_cal_cache:
+                apply_calibration_to_entry(entry, self._mae_mfe_cal_cache)
+        except Exception:
+            entry.setdefault("calibration_applied", None)
 
     # --- order placement -----------------------------------------------
 

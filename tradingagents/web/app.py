@@ -4144,6 +4144,31 @@ def api_smc_crypto_profile(symbol: str = "BTC-USDT"):
         raise HTTPException(status_code=500, detail=f"profile failed: {e}")
 
 
+@app.get("/api/smc-crypto/mae-mfe-calibration")
+def api_smc_crypto_mae_mfe_calibration(symbol: Optional[str] = None):
+    """Audit fix P2-12: per-(model, direction) stop/target reverse-engineered
+    from winner MAE/MFE percentiles.
+
+    Returns table the runner uses to rewrite SMC's fixed 5%/2R defaults.
+    """
+    try:
+        from learning.mae_mfe_calibration import (
+            build_model_calibration_table, calibration_summary,
+        )
+        from smc_quant import load_trade_records
+        records = load_trade_records("tmp/smc_training_ledger.jsonl")
+        if symbol:
+            records = [r for r in records if r.get("symbol") == symbol]
+        table = build_model_calibration_table(records)
+        return {
+            "n_records": len(records),
+            "model_count": len(table),
+            "table": calibration_summary(table),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"mae-mfe calibration failed: {e}")
+
+
 @app.get("/api/smc-crypto/score-calibration")
 def api_smc_crypto_score_calibration(symbol: Optional[str] = None):
     """Audit fix P2-11: empirical score → win-rate from the ledger.
