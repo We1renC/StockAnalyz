@@ -106,6 +106,27 @@ def test_policy_snapshot_blocks_when_regime_coverage_is_thin():
     assert any(row["key"] == "regime_coverage" for row in payload["promotion_ladder"]["blocker_deltas"])
 
 
+def test_policy_snapshot_exposes_threshold_source_and_snapshot_context():
+    ctx = _context()
+    ctx["metrics"]["threshold_profile_active"] = True
+    ctx["metrics"]["threshold_profile_approved"] = True
+    ctx["metrics"]["threshold_profile_version_tag"] = "thr-v2"
+    ctx["metrics"]["threshold_profile_name"] = "q2-calibration"
+    ctx["metrics"]["threshold_profile_approved_by"] = "qa"
+    ctx["metrics"]["threshold_profile_source_summary"] = {"window": "2026Q2"}
+    ctx["deviation_snapshots"] = [{
+        "baseline_source": "paper",
+        "comparison_source": "live",
+        "deviation_score": 0.2,
+        "detail": {"origin": "live-rollout"},
+    }]
+    payload = build_acceptance_policy_snapshot(ctx, review={"review_status": "reviewing"})
+    checks = {row["key"]: row for row in payload["promotion_ladder"]["threshold_checks"]}
+    assert checks["average_slippage"]["source"]["version_tag"] == "thr-v2"
+    assert checks["average_slippage"]["source"]["profile_name"] == "q2-calibration"
+    assert checks["paper_live_deviation"]["source"]["snapshot"]["detail"]["origin"] == "live-rollout"
+
+
 def test_policy_snapshot_blocks_when_threshold_profile_is_unapproved():
     ctx = _context()
     ctx["metrics"]["threshold_profile_active"] = True

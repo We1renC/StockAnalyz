@@ -661,6 +661,9 @@ def test_threshold_profiles_feed_policy_metrics_and_workspace():
     assert context["metrics"]["threshold_profile_active"] is True
     assert context["metrics"]["threshold_profile_approved"] is True
     assert context["metrics"]["threshold_profile_version_tag"] == "thr-v2"
+    assert context["metrics"]["threshold_profile_name"] == "baseline-calibration"
+    assert context["metrics"]["threshold_profile_approved_by"] == "qa"
+    assert context["metrics"]["threshold_profile_source_summary"]["source"] == "paper-live"
     assert workspace["threshold_summary"]["active_version_tag"] == "thr-v2"
     assert workspace["threshold_profiles"][0]["approved_by"] == "qa"
 

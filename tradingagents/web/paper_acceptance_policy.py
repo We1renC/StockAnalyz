@@ -88,6 +88,21 @@ def _build_promotion_ladder(
     current = _infer_current_stage(metrics, capital_stages)
     current_index = next((idx for idx, row in enumerate(PROMOTION_STAGES) if row["stage_name"] == current["stage_name"]), 0)
     next_stage = dict(PROMOTION_STAGES[min(current_index + 1, len(PROMOTION_STAGES) - 1)])
+    threshold_source = {
+        "kind": "threshold_profile" if metrics.get("threshold_profile_active") else "default",
+        "version_tag": metrics.get("threshold_profile_version_tag") or "",
+        "profile_name": metrics.get("threshold_profile_name") or "",
+        "approved_by": metrics.get("threshold_profile_approved_by") or "",
+        "source_summary": metrics.get("threshold_profile_source_summary") or {},
+    }
+    latest_live_deviation = next(
+        (row for row in deviation_snapshots if row.get("baseline_source") == "paper" and row.get("comparison_source") == "live"),
+        None,
+    )
+    latest_backtest_deviation = next(
+        (row for row in deviation_snapshots if row.get("baseline_source") == "backtest" and row.get("comparison_source") == "paper"),
+        None,
+    )
     trade_count = int(metrics.get("trade_count") or 0)
     testing_days = int(metrics.get("testing_days") or 0)
     fill_rate = metrics.get("fill_rate")
@@ -106,6 +121,7 @@ def _build_promotion_ladder(
             "delta": max(0, thresholds["min_trade_count"] - trade_count),
             "pass": trade_count >= thresholds["min_trade_count"],
             "unit": "trades",
+            "source": {"kind": "paper_journal", "metric": "trade_count"},
         },
         {
             "key": "testing_days",
@@ -115,6 +131,7 @@ def _build_promotion_ladder(
             "delta": max(0, thresholds["min_testing_days"] - testing_days),
             "pass": testing_days >= thresholds["min_testing_days"],
             "unit": "days",
+            "source": {"kind": "paper_journal", "metric": "testing_days"},
         },
         {
             "key": "fill_rate",
@@ -124,6 +141,7 @@ def _build_promotion_ladder(
             "delta": round(max(0.0, float(thresholds["min_fill_rate"]) - float(fill_rate or 0)), 4) if fill_rate is not None else None,
             "pass": fill_rate is not None and float(fill_rate) >= thresholds["min_fill_rate"],
             "unit": "ratio",
+            "source": {"kind": "runtime_metrics", "metric": "fill_rate", **threshold_source},
         },
         {
             "key": "average_slippage",
@@ -133,6 +151,7 @@ def _build_promotion_ladder(
             "delta": round(max(0.0, float(avg_slippage or 0) - float(thresholds["max_average_slippage_bps"])), 4) if avg_slippage is not None else None,
             "pass": avg_slippage is not None and float(avg_slippage) <= thresholds["max_average_slippage_bps"],
             "unit": "bps",
+            "source": {"kind": "runtime_metrics", "metric": "average_slippage", **threshold_source},
         },
         {
             "key": "api_error_rate",
@@ -142,6 +161,7 @@ def _build_promotion_ladder(
             "delta": round(max(0.0, float(api_error_rate or 0) - float(thresholds["max_api_error_rate"])), 4) if api_error_rate is not None else None,
             "pass": api_error_rate is not None and float(api_error_rate) <= thresholds["max_api_error_rate"],
             "unit": "ratio",
+            "source": {"kind": "runtime_metrics", "metric": "api_error_rate", **threshold_source},
         },
         {
             "key": "regime_coverage",
@@ -151,6 +171,7 @@ def _build_promotion_ladder(
             "delta": round(max(0.0, float(thresholds["min_regime_coverage_score"]) - float(regime_coverage_score or 0)), 4) if regime_coverage_score is not None else None,
             "pass": regime_coverage_score is not None and float(regime_coverage_score) >= thresholds["min_regime_coverage_score"],
             "unit": "score",
+            "source": {"kind": "regime_coverage_matrix", "metric": "regime_coverage_score", **threshold_source},
         },
         {
             "key": "shadow_parity",
@@ -160,6 +181,7 @@ def _build_promotion_ladder(
             "delta": round(max(0.0, 0.8 - float(shadow_score or 0)), 4) if shadow_score is not None else None,
             "pass": shared_architecture and shadow_score is not None and float(shadow_score) >= 0.8,
             "unit": "score",
+            "source": {"kind": "shadow_parity_trace", "metric": "shadow_parity_score"},
         },
         {
             "key": "paper_live_deviation",
@@ -169,6 +191,12 @@ def _build_promotion_ladder(
             "delta": round(max(0.0, float(live_deviation or 0) - float(thresholds["max_paper_live_deviation"])), 4) if live_deviation is not None else None,
             "pass": paper_live_ready,
             "unit": "ratio",
+            "source": {
+                "kind": "deviation_snapshot",
+                "metric": "paper_live_max_deviation_ratio",
+                "snapshot": latest_live_deviation or latest_backtest_deviation or {},
+                **threshold_source,
+            },
         },
     ]
 

@@ -2322,6 +2322,10 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "threshold_profile_active": bool(threshold_summary.get("count")),
         "threshold_profile_approved": threshold_summary.get("active_status") == "approved",
         "threshold_profile_version_tag": threshold_summary.get("active_version_tag"),
+        "threshold_profile_name": threshold_summary.get("latest_profile_name"),
+        "threshold_profile_strategy_type": threshold_summary.get("latest_strategy_type"),
+        "threshold_profile_approved_by": threshold_summary.get("approved_by"),
+        "threshold_profile_source_summary": (threshold_summary.get("latest") or {}).get("source_summary") or {},
     }
     metrics.update({key: value for key, value in telemetry.get("metrics", {}).items() if value is not None})
     metrics.update({key: value for key, value in overrides["metrics"].items() if value is not None})
