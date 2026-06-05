@@ -1418,131 +1418,236 @@ def build_acceptance_report(context: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def render_acceptance_markdown(report: Mapping[str, Any]) -> str:
-    """Render the report in the §22 final acceptance report shape."""
+    """Render the report as a reviewer-facing Chinese acceptance memo."""
 
     strategy = report.get("strategy") or {}
     metrics = report.get("metrics") or {}
     summary = report.get("summary") or {}
+    sections = list(report.get("sections") or [])
     gates = list(report.get("gates") or [])
     blocking = list(report.get("blocking_issues") or [])
     prohibitions = list(report.get("prohibitions") or [])
 
-    def metric(key: str) -> Any:
-        value = metrics.get(key)
-        return "—" if value is None else value
-
-    def strat(key: str) -> Any:
+    def strat(key: str) -> str:
         value = strategy.get(key)
-        return "—" if value is None or value == "" else value
+        if value in (None, ""):
+            return "—"
+        return str(value)
 
+    def fmt_num(value: Any, digits: int = 2) -> str:
+        if value is None:
+            return "—"
+        try:
+            return f"{float(value):.{digits}f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def fmt_pct(value: Any, digits: int = 1) -> str:
+        if value is None:
+            return "—"
+        try:
+            return f"{float(value) * 100:.{digits}f}%"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def fmt_bool(value: Any) -> str:
+        if value is True:
+            return "是"
+        if value is False:
+            return "否"
+        return "—"
+
+    def metric_line(label: str, value: str) -> str:
+        return f"- {label}：{value}"
+
+    def top_issue_sections() -> list[str]:
+        rows = [
+            row for row in sections
+            if row.get("blocking_issue_count") or row.get("failed") or row.get("unavailable") or row.get("partial")
+        ]
+        rows.sort(
+            key=lambda row: (
+                int(row.get("blocking_issue_count") or 0),
+                int(row.get("failed") or 0) + int(row.get("unavailable") or 0),
+                int(row.get("partial") or 0),
+            ),
+            reverse=True,
+        )
+        return [
+            f"§{row.get('section')} 缺口 {int(row.get('failed') or 0) + int(row.get('unavailable') or 0)} / 部分覆蓋 {row.get('partial') or 0}"
+            for row in rows[:4]
+        ]
+
+    conclusion = str(summary.get("conclusion") or "failed_repeat_paper")
+    final_sentence = {
+        "passed": "通過，可進入小規模實盤，但仍應沿用現有監控與門檻治理。",
+        "conditionally_passed": "有條件通過，需先清掉剩餘治理或證據缺口，再進下一階段。",
+        "failed_repeat_paper": "未通過，應先修補阻擋項並重跑前測，不宜升級實盤。",
+        "strategy_invalidated": "策略失效，現階段不建議繼續沿用原策略假設。",
+    }.get(conclusion, "尚未形成可升級結論。")
+
+    executive_lines = [
+        metric_line("驗收結論", summary.get("conclusion_label", conclusion_label(conclusion))),
+        metric_line("建議動作", {
+            "passed": "small_live",
+            "conditionally_passed": "conditional_follow_up",
+            "failed_repeat_paper": "repair_and_repeat_paper",
+            "strategy_invalidated": "invalidate_strategy",
+        }.get(conclusion, "continue_paper")),
+        metric_line("交易樣本", f"{metrics.get('trade_count') or 0} 筆 / {metrics.get('testing_days') or 0} 天"),
+        metric_line("阻擋項", str(summary.get("blocking_issue_count") or 0)),
+    ]
+    if metrics.get("expectancy_after_costs") is not None:
+        executive_lines.append(metric_line("成本後期望值", f"{fmt_num(metrics.get('expectancy_after_costs'), 2)}R"))
+    if metrics.get("shadow_parity_score") is not None:
+        executive_lines.append(metric_line("Shadow parity", fmt_num(metrics.get("shadow_parity_score"), 2)))
+    if metrics.get("venue_profile_version_tag"):
+        executive_lines.append(metric_line("Venue profile", strat("exchange") + f" / {metrics.get('venue_profile_version_tag')}"))
+
+    performance_sentences = [
+        f"- 本輪前測在 {metrics.get('testing_days') or 0} 天內累積 {metrics.get('trade_count') or 0} 筆交易，"
+        f"總報酬 {fmt_pct(metrics.get('total_return'))}，淨利 {fmt_num(metrics.get('net_profit'))}，"
+        f"最大回撤 {fmt_pct(metrics.get('max_drawdown'))}。"
+    ]
+    performance_sentences.append(
+        f"- 勝率 {fmt_pct(metrics.get('win_rate'))}，盈虧比 {fmt_num(metrics.get('win_loss_ratio'))}，"
+        f"profit factor {fmt_num(metrics.get('profit_factor'))}，成本後期望值 {fmt_num(metrics.get('expectancy_after_costs'), 2)}R。"
+    )
+    performance_sentences.append(
+        f"- 平均持有時間 {metrics.get('average_holding_time') or '—'}，最大連續虧損 {metrics.get('max_consecutive_losses') or '—'} 次。"
+    )
+
+    quality_sentences = [
+        f"- 平均滑價 {fmt_num(metrics.get('average_slippage'), 4)}，最大滑價 {fmt_num(metrics.get('maximum_slippage'), 4)}，"
+        f"填單率 {fmt_pct(metrics.get('fill_rate'))}，拒單率 {fmt_pct(metrics.get('rejection_ratio'))}。",
+        f"- 平均 API 延遲 {fmt_num(metrics.get('average_api_latency'), 1)} ms，P95 / P99 為 "
+        f"{fmt_num(metrics.get('latency_p95'), 1)} / {fmt_num(metrics.get('latency_p99'), 1)} ms。",
+    ]
+
+    behavior_lines = [
+        metric_line("Paper / Live 偏移分數", fmt_num(metrics.get("paper_live_max_deviation_ratio"), 2)),
+        metric_line("回測對齊分數", fmt_num(metrics.get("behavior_alignment_score"), 2)),
+        metric_line("偏移說明", str(metrics.get("deviation_explanation") or "—")),
+    ]
+
+    ops_lines = [
+        metric_line("連續運行天數", f"{metrics.get('runtime_days') or 0} 天"),
+        metric_line("API 錯誤數", str(metrics.get("api_error_count") or 0)),
+        metric_line("WebSocket 中斷數", str(metrics.get("websocket_disconnect_count") or 0)),
+        metric_line("對帳異常數", str(metrics.get("reconciliation_abnormality_count") or 0)),
+        metric_line("重啟次數", str(metrics.get("program_restart_count") or 0)),
+        metric_line("告警數", str(metrics.get("alert_count") or 0)),
+        metric_line("重大錯誤摘要", str(metrics.get("major_error_description") or "—")),
+    ]
+    if metrics.get("threshold_profile_version_tag") or metrics.get("threshold_profile_name"):
+        ops_lines.append(
+            metric_line(
+                "Threshold profile",
+                f"{metrics.get('threshold_profile_name') or 'default'} / {metrics.get('threshold_profile_version_tag') or '—'}",
+            )
+        )
+    if metrics.get("venue_profile_version_tag") or metrics.get("venue_profile_name"):
+        ops_lines.append(
+            metric_line(
+                "Venue / Broker",
+                f"{metrics.get('venue_profile_name') or strat('exchange')} / {metrics.get('venue_profile_broker_name') or '—'}",
+            )
+        )
+    if metrics.get("freeze_violation_count") is not None:
+        ops_lines.append(metric_line("Freeze 違規數", str(metrics.get("freeze_violation_count") or 0)))
+
+    risk_lines = [
+        metric_line("Kill switch 已測", fmt_bool(metrics.get("kill_switch_tested"))),
+        metric_line(
+            "單筆 / 日內虧損限額觸發",
+            f"{fmt_bool(metrics.get('per_trade_loss_limit_triggered'))} / {fmt_bool(metrics.get('daily_loss_limit_triggered'))}",
+        ),
+        metric_line("回撤上限觸發", fmt_bool(metrics.get("drawdown_limit_triggered"))),
+        metric_line("部位上限觸發", fmt_bool(metrics.get("position_limit_triggered"))),
+        metric_line("停機流程正常", fmt_bool(metrics.get("shutdown_process_ok"))),
+    ]
+
+    security_lines = [
+        metric_line("最小權限", fmt_bool(metrics.get("api_key_permissions_minimized"))),
+        metric_line("白名單", fmt_bool(metrics.get("ip_whitelist"))),
+        metric_line("停用提領", "是" if metrics.get("withdrawal_permission_enabled") is False else "否" if metrics.get("withdrawal_permission_enabled") is True else "—"),
+        metric_line("測試 / 實盤金鑰分離", fmt_bool(metrics.get("test_live_keys_separated"))),
+        metric_line("Log 避免敏感資訊", fmt_bool(metrics.get("logs_avoid_secrets"))),
+        metric_line("撤銷流程", fmt_bool(metrics.get("revocation_process"))),
+    ]
+
+    blocking_lines = [
+        f"- §{item['section']} {item.get('title_zh') or item['title']}：{item['reason']}"
+        for item in blocking
+    ] or ["- 目前無阻擋項。"]
+    prohibition_lines = [
+        f"- {item['flag']}：{item['description']}"
+        for item in prohibitions
+    ] or ["- 目前未命中禁止旗標。"]
     gate_lines = [
-        f"- §{gate['section']} {gate['title']}: {gate['status']} — {gate.get('reason') or gate.get('passing_standard')}"
+        f"- §{gate['section']} {gate.get('title_zh') or gate['title']}：{gate['status']}；{gate.get('reason') or gate.get('passing_standard')}"
         for gate in gates
     ]
-    blocking_lines = [
-        f"- §{item['section']} {item['title']}: {item['reason']}"
-        for item in blocking
-    ] or ["- None"]
-    prohibition_lines = [
-        f"- {item['flag']}: {item['description']}"
-        for item in prohibitions
-    ] or ["- None"]
+    section_issue_lines = [f"- {item}" for item in top_issue_sections()] or ["- 目前沒有集中缺口章節。"]
 
     return "\n".join([
-        "# Paper Trading Acceptance Report",
+        "# 前測驗收報告",
         "",
-        "## 22.1 Basic Information",
-        f"- Strategy name: {strat('name')}",
-        f"- Strategy version: {strat('strategy_version')}",
-        f"- Parameter version: {strat('parameter_version')}",
-        f"- Risk control version: {strat('risk_control_version')}",
-        f"- Execution model version: {strat('execution_model_version')}",
-        f"- Testing period: {strat('testing_period')}",
-        f"- Exchange: {strat('exchange')}",
-        f"- Trading pair: {strat('symbol')}",
-        f"- Initial capital: {strat('initial_capital')}",
-        f"- Order type: {strat('order_type')}",
-        f"- Fee setting: {strat('fee_setting')}",
-        f"- Slippage setting: {strat('slippage_setting')}",
-        f"- Data source: {strat('data_source')}",
-        f"- Whether shadow trading was used: {strat('shadow_trading_used')}",
-        f"- Whether parameter changes were allowed during testing: {strat('parameter_changes_allowed')}",
+        "## 22.0 Reviewer 摘要",
+        *executive_lines,
+        f"- 判讀：{final_sentence}",
         "",
-        "## 22.2 Performance Summary",
-        f"- Total return: {metric('total_return')}",
-        f"- Net profit: {metric('net_profit')}",
-        f"- Gross profit: {metric('gross_profit')}",
-        f"- Total transaction fees: {metric('total_fees')}",
-        f"- Total slippage: {metric('total_slippage')}",
-        f"- Maximum drawdown: {metric('max_drawdown')}",
-        f"- Win rate: {metric('win_rate')}",
-        f"- Win-loss ratio: {metric('win_loss_ratio')}",
-        f"- Profit factor: {metric('profit_factor')}",
-        f"- Sharpe ratio: {metric('sharpe_ratio')}",
-        f"- Number of trades: {metric('trade_count')}",
-        f"- Average holding time: {metric('average_holding_time')}",
-        f"- Maximum consecutive losses: {metric('max_consecutive_losses')}",
+        "## 22.1 基本資訊",
+        metric_line("策略名稱", strat("name")),
+        metric_line("策略版本", strat("strategy_version")),
+        metric_line("參數版本", strat("parameter_version")),
+        metric_line("風控版本", strat("risk_control_version")),
+        metric_line("執行版本", strat("execution_model_version")),
+        metric_line("測試期間", strat("testing_period")),
+        metric_line("交易場所", strat("exchange")),
+        metric_line("交易標的", strat("symbol")),
+        metric_line("初始資金", strat("initial_capital")),
+        metric_line("下單型態", strat("order_type")),
+        metric_line("費用設定", strat("fee_setting")),
+        metric_line("滑價設定", strat("slippage_setting")),
+        metric_line("資料來源", strat("data_source")),
+        metric_line("是否使用 shadow trading", strat("shadow_trading_used")),
+        metric_line("測試期間是否允許調參", strat("parameter_changes_allowed")),
         "",
-        "## 22.3 Trade Quality",
-        f"- Average slippage: {metric('average_slippage')}",
-        f"- Maximum slippage: {metric('maximum_slippage')}",
-        f"- Average execution latency: {metric('average_execution_latency')}",
-        f"- Maximum execution latency: {metric('maximum_execution_latency')}",
-        f"- Fill rate: {metric('fill_rate')}",
-        f"- Partial fill ratio: {metric('partial_fill_ratio')}",
-        f"- Cancellation ratio: {metric('cancellation_ratio')}",
-        f"- Rejection ratio: {metric('rejection_ratio')}",
-        f"- Order timeout count: {metric('order_timeout_count')}",
-        f"- Missed fill count: {metric('missed_fill_count')}",
+        "## 22.2 績效摘要",
+        *performance_sentences,
         "",
-        "## 22.4 Strategy Behavior Deviation",
-        f"- Trade frequency matched expectations: {metric('trade_frequency_matches')}",
-        f"- Win rate matched expectations: {metric('win_rate_matches')}",
-        f"- Win-loss ratio matched expectations: {metric('win_loss_ratio_matches')}",
-        f"- Average holding time matched expectations: {metric('holding_time_matches')}",
-        f"- Maximum drawdown matched expectations: {metric('drawdown_matches')}",
-        f"- Slippage higher than expected: {metric('slippage_higher_than_expected')}",
-        f"- Fill rate lower than expected: {metric('fill_rate_lower_than_expected')}",
-        f"- Abnormal trading behavior occurred: {metric('abnormal_trading_behavior')}",
-        f"- Explanation of deviations: {metric('deviation_explanation')}",
+        "## 22.3 交易品質",
+        *quality_sentences,
         "",
-        "## 22.5 System Stability",
-        f"- Continuous system running time: {metric('runtime_days')} days",
-        f"- Number of WebSocket disconnections: {metric('websocket_disconnect_count')}",
-        f"- Number of API errors: {metric('api_error_count')}",
-        f"- Number of reconciliation abnormalities: {metric('reconciliation_abnormality_count')}",
-        f"- Number of program restarts: {metric('program_restart_count')}",
-        f"- Number of alerts: {metric('alert_count')}",
-        f"- Description of major errors: {metric('major_error_description')}",
+        "## 22.4 行為偏移與一致性",
+        *behavior_lines,
         "",
-        "## 22.6 Risk Control Trigger Records",
-        f"- Per-trade loss limit triggered: {metric('per_trade_loss_limit_triggered')}",
-        f"- Daily loss limit triggered: {metric('daily_loss_limit_triggered')}",
-        f"- Maximum drawdown limit triggered: {metric('drawdown_limit_triggered')}",
-        f"- Position limit triggered: {metric('position_limit_triggered')}",
-        f"- Slippage limit triggered: {metric('slippage_limit_triggered')}",
-        f"- Kill switch tested: {metric('kill_switch_tested')}",
-        f"- Shutdown process worked correctly: {metric('shutdown_process_ok')}",
+        "## 22.5 系統穩定與治理",
+        *ops_lines,
         "",
-        "## 22.7 Security Check",
-        f"- API key permissions minimized: {metric('api_key_permissions_minimized')}",
-        f"- IP whitelist enabled: {metric('ip_whitelist')}",
-        f"- Withdrawal permission disabled: {not bool(metric('withdrawal_permission_enabled')) if metric('withdrawal_permission_enabled') != '—' else '—'}",
-        f"- Test and live environments separated: {metric('test_live_keys_separated')}",
-        f"- Logs avoided sensitive information: {metric('logs_avoid_secrets')}",
-        f"- API key revocation process exists: {metric('revocation_process')}",
+        "## 22.6 風控觸發紀錄",
+        *risk_lines,
         "",
-        "## 22.8 Abnormal Event Records",
-        "\n".join(blocking_lines),
+        "## 22.7 安全檢查",
+        *security_lines,
+        "",
+        "## 22.8 異常事件與阻擋項",
+        *blocking_lines,
+        "",
+        "## 缺口集中章節",
+        *section_issue_lines,
         "",
         "## Gate Checklist",
-        "\n".join(gate_lines),
+        *gate_lines,
         "",
-        "## Section 21 Prohibition Hits",
-        "\n".join(prohibition_lines),
+        "## Section 21 禁止旗標",
+        *prohibition_lines,
         "",
         "## 22.9 Final Conclusion",
-        f"**{summary.get('conclusion_label', conclusion_label(str(summary.get('conclusion', 'failed_repeat_paper'))))}**",
+        f"**{summary.get('conclusion_label', conclusion_label(conclusion))}**",
+        "",
+        final_sentence,
     ])
 
 

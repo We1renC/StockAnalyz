@@ -69,6 +69,9 @@
 12. threshold profiles、promotion decisions、production checklist 已接入 acceptance workspace 與 promotion-check。
 13. virtual account snapshots、stability sessions、dashboard snapshot 已納入 observed evidence。
 14. promotion-check 已有 allow / conditional / deny 的 end-to-end 測試矩陣。
+15. venue-specific profile 已落地到 SQLite / context / API，可把 broker / exchange 成本、精度、rate limit 與 reject taxonomy 納入 acceptance evidence。
+16. acceptance dashboard 已抽成獨立 operations panel，集中呈現 runtime、promotion 與 venue / cost taxonomy 摘要。
+17. reviewer-facing markdown report 已改為中文驗收稿，可直接閱讀結論、缺口集中章節與阻擋項。
 
 ### 目前剩餘的非阻擋精修
 
@@ -83,9 +86,9 @@
 
 目前已沒有阻止「完整覆蓋標準文件」的主缺口。剩下的是可持續優化項：
 
-- 部分 markdown narrative 仍可再做更長篇、面向 reviewer 的敘事化整理。
-- 某些 observed evidence 目前以通用 contract 表示，未必已針對所有 broker / exchange 做 venue-specific 細化。
-- dashboard / monitoring 雖已具備 acceptance 契約與 API，但仍可再延伸到獨立即時視圖。
+- markdown 報告已可直接給 reviewer，但若未來要出更正式的審查文件，仍可再補更長篇的敘事版。
+- venue-specific profile 已支援主要規則欄位，但若要貼近實際券商，仍可繼續下鑽到更細的 venue adapter。
+- dashboard / monitoring 已能獨立閱讀 acceptance 狀態，但若要營運化，仍可再做更強的即時輪詢與多標的總覽。
 
 ## 完成度標記
 
@@ -496,8 +499,8 @@
 
 本次規劃中的關鍵工作包已全部落地。後續若再往前走，優先順序會改成：
 
-1. 針對特定 broker / exchange 補 venue-specific adapter 與 cost taxonomy
-2. 將 acceptance dashboard 擴成更獨立的即時監控視圖
+1. 針對特定 broker / exchange 下鑽更細的 adapter 行為與 reject taxonomy
+2. 將 acceptance dashboard 擴成多標的即時監控視圖
 3. 針對實盤 rollout 累積更多長週期 observed evidence，持續校準 threshold profiles
 
 也就是說，這條分支現在已經是完整 acceptance framework；後續工作以營運精修而非標準覆蓋補洞為主。

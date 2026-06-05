@@ -86,9 +86,10 @@ def test_complete_acceptance_context_passes_and_renders_report():
     assert report["summary"]["unavailable"] == 0
 
     markdown = render_acceptance_markdown(report)
-    assert "## 22.1 Basic Information" in markdown
+    assert "# 前測驗收報告" in markdown
+    assert "## 22.0 Reviewer 摘要" in markdown
     assert "## 22.9 Final Conclusion" in markdown
-    assert "Passed. The strategy may enter small-scale live trading." in markdown
+    assert "通過，可進入小規模實盤" in markdown
 
 
 def test_missing_costs_slippage_and_kill_switch_are_blockers():
