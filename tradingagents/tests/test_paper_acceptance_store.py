@@ -23,6 +23,7 @@ from paper_acceptance_store import (
     load_reconciliation_runs,
     load_runtime_metrics,
     load_threshold_profiles,
+    load_venue_profiles,
     load_stability_sessions,
     load_shadow_parity_traces,
     load_virtual_account_snapshots,
@@ -34,6 +35,7 @@ from paper_acceptance_store import (
     record_governance_event,
     record_promotion_decision,
     record_threshold_profile,
+    record_venue_profile,
     record_shadow_parity_trace,
     record_order_audit,
     record_reconciliation_run,
@@ -45,6 +47,7 @@ from paper_acceptance_store import (
     summarize_promotion_decisions,
     summarize_shadow_parity_traces,
     summarize_threshold_profiles,
+    summarize_venue_profiles,
     record_virtual_account_snapshot,
     upsert_acceptance_review,
     upsert_acceptance_check,
@@ -251,6 +254,48 @@ def test_workspace_overrides_and_manual_checks_are_reflected_in_workspace():
         if row["key"] == "entry_conditions"
     )
     assert check_after_clear["source"] != "manual"
+
+
+def test_venue_profiles_are_reflected_in_context_and_workspace():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+
+    row = record_venue_profile(
+        conn,
+        symbol="ABAT",
+        venue_name="NASDAQ",
+        broker_name="IBKR",
+        market_type="equity",
+        status="approved",
+        maker_fee_bps=1.5,
+        taker_fee_bps=3.2,
+        min_notional=1.0,
+        tick_size=0.01,
+        lot_size=1,
+        quantity_precision=0,
+        price_precision=2,
+        rate_limit_per_minute=120,
+        rate_limit_burst=20,
+        reject_taxonomy={"precision": "reject", "insufficient_buying_power": "reject"},
+        source_summary={"source": "broker spec"},
+        approved_by="qa",
+        version_tag="venue-v1",
+    )
+
+    rows = load_venue_profiles(conn, "ABAT")
+    summary = summarize_venue_profiles(conn, "ABAT")
+    context = build_smc_acceptance_context(conn, symbol="ABAT")
+    workspace = build_acceptance_workspace(conn, symbol="ABAT")
+
+    assert row["venue_name"] == "NASDAQ"
+    assert rows[0]["broker_name"] == "IBKR"
+    assert summary["precision_rules_enforced"] is True
+    assert context["strategy"]["exchange"] == "NASDAQ"
+    assert context["metrics"]["venue_profile_version_tag"] == "venue-v1"
+    assert context["evidence"]["virtual_account"]["checks"]["precision_rules_enforced"] is True
+    assert context["evidence"]["fees_and_costs"]["checks"]["pair_fee_differences_considered"] is True
+    assert workspace["venue_summary"]["broker_name"] == "IBKR"
+    assert workspace["venue_profiles"][0]["reject_taxonomy"]["precision"] == "reject"
 
 
 def test_telemetry_and_order_audit_are_aggregated_into_acceptance_context():

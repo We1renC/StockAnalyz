@@ -61,6 +61,7 @@ from paper_acceptance_store import (
     load_shadow_parity_traces,
     load_stability_sessions,
     load_threshold_profiles,
+    load_venue_profiles,
     load_virtual_account_snapshots,
     record_alert_delivery,
     record_acceptance_change,
@@ -70,6 +71,7 @@ from paper_acceptance_store import (
     record_governance_event,
     record_promotion_decision,
     record_threshold_profile,
+    record_venue_profile,
     record_shadow_parity_trace,
     record_stability_session,
     record_order_audit,
@@ -82,6 +84,7 @@ from paper_acceptance_store import (
     summarize_promotion_decisions,
     summarize_shadow_parity_traces,
     summarize_threshold_profiles,
+    summarize_venue_profiles,
     upsert_acceptance_review,
     upsert_acceptance_check,
     upsert_acceptance_context_overrides,
@@ -5029,6 +5032,30 @@ class PaperAcceptancePromotionDecisionCreate(BaseModel):
     stage: str = "paper"
 
 
+class PaperAcceptanceVenueProfileCreate(BaseModel):
+    symbol: str
+    venue_name: str
+    broker_name: str = ""
+    market_type: str = "spot"
+    status: str = "draft"
+    maker_fee_bps: Optional[float] = None
+    taker_fee_bps: Optional[float] = None
+    transaction_tax_bps: Optional[float] = None
+    min_notional: Optional[float] = None
+    tick_size: Optional[float] = None
+    lot_size: Optional[float] = None
+    quantity_precision: Optional[int] = None
+    price_precision: Optional[int] = None
+    rate_limit_per_minute: Optional[int] = None
+    rate_limit_burst: Optional[int] = None
+    reject_taxonomy: Optional[dict] = None
+    source_summary: Optional[dict] = None
+    approved_by: str = ""
+    version_tag: str = ""
+    note: str = ""
+    stage: str = "paper"
+
+
 def _json_dumps_compact(value, fallback):
     if value is None:
         value = fallback
@@ -5874,6 +5901,20 @@ def api_get_paper_acceptance_threshold_profiles(symbol: str, stage: str = "paper
         conn.close()
 
 
+@app.get("/api/paper-acceptance/venue-profiles")
+def api_get_paper_acceptance_venue_profiles(symbol: str, stage: str = "paper", limit: int = 50):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        key = symbol.strip().upper()
+        rows = load_venue_profiles(conn, key, stage=stage, limit=limit)
+        summary = summarize_venue_profiles(conn, key, stage=stage, limit=limit)
+        return sanitize_float_values({"rows": rows, "summary": summary, "count": len(rows)})
+    finally:
+        conn.close()
+
+
 @app.get("/api/paper-acceptance/promotion-decisions")
 def api_get_paper_acceptance_promotion_decisions(symbol: str, stage: str = "paper", limit: int = 50):
     if not symbol.strip():
@@ -5901,6 +5942,43 @@ def api_record_paper_acceptance_threshold_profile(req: PaperAcceptanceThresholdP
             profile_name=req.profile_name,
             status=req.status,
             thresholds=req.thresholds or {},
+            source_summary=req.source_summary or {},
+            approved_by=req.approved_by,
+            version_tag=req.version_tag,
+            note=req.note,
+            stage=req.stage,
+        )
+        return sanitize_float_values({"ok": True, "row": row})
+    finally:
+        conn.close()
+
+
+@app.post("/api/paper-acceptance/venue-profiles")
+def api_record_paper_acceptance_venue_profile(req: PaperAcceptanceVenueProfileCreate):
+    if not req.symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    if not req.venue_name.strip():
+        raise HTTPException(400, "venue_name is required")
+    conn = get_db()
+    try:
+        row = record_venue_profile(
+            conn,
+            symbol=req.symbol.strip().upper(),
+            venue_name=req.venue_name.strip(),
+            broker_name=req.broker_name,
+            market_type=req.market_type,
+            status=req.status,
+            maker_fee_bps=req.maker_fee_bps,
+            taker_fee_bps=req.taker_fee_bps,
+            transaction_tax_bps=req.transaction_tax_bps,
+            min_notional=req.min_notional,
+            tick_size=req.tick_size,
+            lot_size=req.lot_size,
+            quantity_precision=req.quantity_precision,
+            price_precision=req.price_precision,
+            rate_limit_per_minute=req.rate_limit_per_minute,
+            rate_limit_burst=req.rate_limit_burst,
+            reject_taxonomy=req.reject_taxonomy or {},
             source_summary=req.source_summary or {},
             approved_by=req.approved_by,
             version_tag=req.version_tag,

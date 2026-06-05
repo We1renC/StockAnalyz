@@ -19,6 +19,7 @@ from app import (
     PaperAcceptanceScenarioRunRequest,
     PaperAcceptanceShadowParityCreate,
     PaperAcceptanceThresholdProfileCreate,
+    PaperAcceptanceVenueProfileCreate,
     PaperAcceptanceStabilitySessionCreate,
     PaperAcceptanceWorkspaceUpdate,
     PaperAcceptanceVirtualAccountSnapshotCreate,
@@ -310,6 +311,46 @@ def test_api_capital_stage_and_deviation_snapshot_round_trip(tmp_path):
         assert deviations["count"] >= 1
         assert any(row["stage_name"] == "stage3_25_50" for row in workspace["capital_stages"])
         assert any(row["detail"]["origin"] == "manual" for row in workspace["deviation_snapshots"])
+    finally:
+        app.DB = original
+
+
+def test_api_venue_profiles_round_trip(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        payload = app.api_record_paper_acceptance_venue_profile(
+            PaperAcceptanceVenueProfileCreate(
+                symbol="ABAT",
+                venue_name="NASDAQ",
+                broker_name="IBKR",
+                market_type="equity",
+                status="approved",
+                maker_fee_bps=1.5,
+                taker_fee_bps=3.2,
+                transaction_tax_bps=0.0,
+                min_notional=1.0,
+                tick_size=0.01,
+                lot_size=1,
+                quantity_precision=0,
+                price_precision=2,
+                rate_limit_per_minute=120,
+                rate_limit_burst=20,
+                reject_taxonomy={"precision": "reject"},
+                source_summary={"source": "broker spec"},
+                approved_by="qa",
+                version_tag="venue-v1",
+            )
+        )
+
+        rows = app.api_get_paper_acceptance_venue_profiles(symbol="ABAT")
+        workspace = app.api_get_paper_acceptance_workspace(symbol="ABAT")
+
+        assert payload["ok"] is True
+        assert rows["count"] == 1
+        assert rows["summary"]["venue_name"] == "NASDAQ"
+        assert rows["summary"]["precision_rules_enforced"] is True
+        assert workspace["venue_summary"]["active_version_tag"] == "venue-v1"
+        assert workspace["venue_profiles"][0]["broker_name"] == "IBKR"
     finally:
         app.DB = original
 

@@ -345,6 +345,38 @@ def ensure_paper_acceptance_schema(conn) -> None:
            ON paper_acceptance_promotion_decisions(symbol, stage, created_at DESC, id DESC)"""
     )
     conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_venue_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            venue_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            venue_name TEXT NOT NULL DEFAULT '',
+            broker_name TEXT NOT NULL DEFAULT '',
+            market_type TEXT NOT NULL DEFAULT 'spot',
+            status TEXT NOT NULL DEFAULT 'draft',
+            maker_fee_bps REAL,
+            taker_fee_bps REAL,
+            transaction_tax_bps REAL,
+            min_notional REAL,
+            tick_size REAL,
+            lot_size REAL,
+            quantity_precision INTEGER,
+            price_precision INTEGER,
+            rate_limit_per_minute INTEGER,
+            rate_limit_burst INTEGER,
+            reject_taxonomy_payload TEXT NOT NULL DEFAULT '{}',
+            source_summary TEXT NOT NULL DEFAULT '{}',
+            approved_by TEXT NOT NULL DEFAULT '',
+            version_tag TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_venue_symbol_created
+           ON paper_acceptance_venue_profiles(symbol, stage, created_at DESC, id DESC)"""
+    )
+    conn.execute(
         """CREATE TABLE IF NOT EXISTS paper_acceptance_capital_stages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             stage_key TEXT NOT NULL UNIQUE,
@@ -919,6 +951,176 @@ def summarize_promotion_decisions(conn, symbol: str | None, stage: str = "paper"
         "latest_target_stage_name": (latest or {}).get("target_stage_name") or "",
         "latest_review_status": (latest or {}).get("review_status") or "",
         "decision_counts": decision_counts,
+    }
+
+
+def record_venue_profile(
+    conn,
+    *,
+    symbol: str,
+    venue_name: str,
+    broker_name: str = "",
+    market_type: str = "spot",
+    status: str = "draft",
+    maker_fee_bps: float | None = None,
+    taker_fee_bps: float | None = None,
+    transaction_tax_bps: float | None = None,
+    min_notional: float | None = None,
+    tick_size: float | None = None,
+    lot_size: float | None = None,
+    quantity_precision: int | None = None,
+    price_precision: int | None = None,
+    rate_limit_per_minute: int | None = None,
+    rate_limit_burst: int | None = None,
+    reject_taxonomy: dict | None = None,
+    source_summary: dict | None = None,
+    approved_by: str = "",
+    version_tag: str = "",
+    note: str = "",
+    stage: str = "paper",
+) -> dict:
+    """Persist one venue/broker execution profile for venue-specific acceptance checks."""
+
+    ensure_paper_acceptance_schema(conn)
+    payload = {
+        "venue_key": f"paper-venue-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "venue_name": venue_name or "",
+        "broker_name": broker_name or "",
+        "market_type": market_type or "spot",
+        "status": (status or "draft").strip().lower(),
+        "maker_fee_bps": _safe_float(maker_fee_bps),
+        "taker_fee_bps": _safe_float(taker_fee_bps),
+        "transaction_tax_bps": _safe_float(transaction_tax_bps),
+        "min_notional": _safe_float(min_notional),
+        "tick_size": _safe_float(tick_size),
+        "lot_size": _safe_float(lot_size),
+        "quantity_precision": int(quantity_precision) if quantity_precision is not None else None,
+        "price_precision": int(price_precision) if price_precision is not None else None,
+        "rate_limit_per_minute": int(rate_limit_per_minute) if rate_limit_per_minute is not None else None,
+        "rate_limit_burst": int(rate_limit_burst) if rate_limit_burst is not None else None,
+        "reject_taxonomy": reject_taxonomy or {},
+        "source_summary": source_summary or {},
+        "approved_by": approved_by or "",
+        "version_tag": version_tag or "",
+        "note": note or "",
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_venue_profiles
+           (venue_key, symbol, stage, venue_name, broker_name, market_type, status,
+            maker_fee_bps, taker_fee_bps, transaction_tax_bps, min_notional, tick_size,
+            lot_size, quantity_precision, price_precision, rate_limit_per_minute,
+            rate_limit_burst, reject_taxonomy_payload, source_summary, approved_by,
+            version_tag, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["venue_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["venue_name"],
+            payload["broker_name"],
+            payload["market_type"],
+            payload["status"],
+            payload["maker_fee_bps"],
+            payload["taker_fee_bps"],
+            payload["transaction_tax_bps"],
+            payload["min_notional"],
+            payload["tick_size"],
+            payload["lot_size"],
+            payload["quantity_precision"],
+            payload["price_precision"],
+            payload["rate_limit_per_minute"],
+            payload["rate_limit_burst"],
+            _json_dumps(payload["reject_taxonomy"]),
+            _json_dumps(payload["source_summary"]),
+            payload["approved_by"],
+            payload["version_tag"],
+            payload["note"],
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=payload["symbol"],
+        stage=payload["stage"],
+        change_type="venue_profile_recorded",
+        target_type="venue_profile",
+        target_key=payload["version_tag"] or payload["venue_name"],
+        detail={
+            "venue_name": payload["venue_name"],
+            "broker_name": payload["broker_name"],
+            "status": payload["status"],
+            "market_type": payload["market_type"],
+        },
+    )
+    return payload
+
+
+def load_venue_profiles(conn, symbol: str | None, stage: str = "paper", limit: int = 20) -> list[dict]:
+    """Load persisted venue/broker execution profiles."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_venue_profiles
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 200))),
+    ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        data = dict(row)
+        data["reject_taxonomy"] = _json_loads(data.get("reject_taxonomy_payload"), {})
+        data["source_summary"] = _json_loads(data.get("source_summary"), {})
+        out.append(data)
+    return out
+
+
+def summarize_venue_profiles(conn, symbol: str | None, stage: str = "paper", limit: int = 20) -> dict:
+    """Summarize latest active venue rules for acceptance evidence and UI."""
+
+    rows = load_venue_profiles(conn, symbol, stage=stage, limit=limit)
+    latest = rows[0] if rows else None
+    approved = [row for row in rows if row.get("status") == "approved"]
+    latest_reject_taxonomy = (latest or {}).get("reject_taxonomy") or {}
+    reject_category_count = sum(1 for value in latest_reject_taxonomy.values() if value)
+    return {
+        "profiles": rows,
+        "count": len(rows),
+        "approved_count": len(approved),
+        "latest": latest or {},
+        "latest_status": (latest or {}).get("status") or "missing",
+        "active_version_tag": (latest or {}).get("version_tag") or "",
+        "venue_name": (latest or {}).get("venue_name") or "",
+        "broker_name": (latest or {}).get("broker_name") or "",
+        "market_type": (latest or {}).get("market_type") or "",
+        "maker_fee_bps": _safe_float((latest or {}).get("maker_fee_bps")),
+        "taker_fee_bps": _safe_float((latest or {}).get("taker_fee_bps")),
+        "transaction_tax_bps": _safe_float((latest or {}).get("transaction_tax_bps")),
+        "min_notional": _safe_float((latest or {}).get("min_notional")),
+        "tick_size": _safe_float((latest or {}).get("tick_size")),
+        "lot_size": _safe_float((latest or {}).get("lot_size")),
+        "quantity_precision": (latest or {}).get("quantity_precision"),
+        "price_precision": (latest or {}).get("price_precision"),
+        "rate_limit_per_minute": (latest or {}).get("rate_limit_per_minute"),
+        "rate_limit_burst": (latest or {}).get("rate_limit_burst"),
+        "approved_by": (latest or {}).get("approved_by") or "",
+        "source_summary": (latest or {}).get("source_summary") or {},
+        "reject_taxonomy": latest_reject_taxonomy,
+        "reject_category_count": reject_category_count,
+        "pair_fee_differences_considered": any(
+            _safe_float((latest or {}).get(key)) is not None
+            for key in ("maker_fee_bps", "taker_fee_bps", "transaction_tax_bps")
+        ),
+        "precision_rules_enforced": (
+            (latest or {}).get("quantity_precision") is not None
+            and (latest or {}).get("price_precision") is not None
+        ),
+        "minimum_notional_enforced": _safe_float((latest or {}).get("min_notional")) is not None,
+        "api_rate_limit_rules_defined": (latest or {}).get("rate_limit_per_minute") is not None,
     }
 
 
@@ -2206,6 +2408,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
     shadow_rows = load_shadow_parity_traces(conn, key, stage="paper", limit=50)
     governance_summary = summarize_governance_events(conn, key, stage="paper", limit=200)
     threshold_summary = summarize_threshold_profiles(conn, key, stage="paper", limit=20)
+    venue_summary = summarize_venue_profiles(conn, key, stage="paper", limit=20)
     telemetry = summarize_acceptance_telemetry(conn, symbol=key, stage="paper")
     live_telemetry = summarize_acceptance_telemetry(conn, symbol=key, stage="live")
     scenarios = summarize_scenario_evidence(conn, symbol=key, stage="paper")
@@ -2217,6 +2420,12 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
     strategy_payload.setdefault("stage", "paper")
     strategy_payload.setdefault("symbol", key)
     strategy_payload.setdefault("exchange", "paper-sim")
+    if venue_summary.get("venue_name"):
+        strategy_payload["exchange"] = venue_summary["venue_name"]
+    if venue_summary.get("broker_name"):
+        strategy_payload.setdefault("broker", venue_summary["broker_name"])
+    if venue_summary.get("market_type"):
+        strategy_payload.setdefault("market_type", venue_summary["market_type"])
     strategy_payload.setdefault("execution_model_version", "shared_execution_runtime_v1")
     if int(shadow_parity.get("trace_count") or 0) > 0:
         strategy_payload.setdefault("shadow_trading_used", True)
@@ -2330,6 +2539,24 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "threshold_profile_strategy_type": threshold_summary.get("latest_strategy_type"),
         "threshold_profile_approved_by": threshold_summary.get("approved_by"),
         "threshold_profile_source_summary": (threshold_summary.get("latest") or {}).get("source_summary") or {},
+        "venue_profile_active": bool(venue_summary.get("count")),
+        "venue_profile_approved": venue_summary.get("latest_status") == "approved",
+        "venue_profile_version_tag": venue_summary.get("active_version_tag"),
+        "venue_profile_market_type": venue_summary.get("market_type"),
+        "venue_profile_name": venue_summary.get("venue_name"),
+        "venue_profile_broker_name": venue_summary.get("broker_name"),
+        "venue_profile_maker_fee_bps": venue_summary.get("maker_fee_bps"),
+        "venue_profile_taker_fee_bps": venue_summary.get("taker_fee_bps"),
+        "venue_profile_transaction_tax_bps": venue_summary.get("transaction_tax_bps"),
+        "venue_profile_min_notional": venue_summary.get("min_notional"),
+        "venue_profile_tick_size": venue_summary.get("tick_size"),
+        "venue_profile_lot_size": venue_summary.get("lot_size"),
+        "venue_profile_quantity_precision": venue_summary.get("quantity_precision"),
+        "venue_profile_price_precision": venue_summary.get("price_precision"),
+        "venue_profile_rate_limit_per_minute": venue_summary.get("rate_limit_per_minute"),
+        "venue_profile_rate_limit_burst": venue_summary.get("rate_limit_burst"),
+        "venue_profile_reject_category_count": venue_summary.get("reject_category_count"),
+        "venue_profile_source_summary": venue_summary.get("source_summary") or {},
     }
     metrics.update({key: value for key, value in telemetry.get("metrics", {}).items() if value is not None})
     metrics.update({key: value for key, value in overrides["metrics"].items() if value is not None})
@@ -2379,6 +2606,15 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
     for gate_id, checks in (telemetry.get("evidence") or {}).items():
         for check_key, value in (checks or {}).items():
             _merge_check(evidence, gate_id, check_key, value, source="observed")
+    if venue_summary.get("pair_fee_differences_considered"):
+        _merge_check(evidence, "fees_and_costs", "pair_fee_differences_considered", True, source="observed")
+    if venue_summary.get("minimum_notional_enforced"):
+        _merge_check(evidence, "virtual_account", "minimum_notional_enforced", True, source="observed")
+    if venue_summary.get("precision_rules_enforced"):
+        _merge_check(evidence, "virtual_account", "precision_rules_enforced", True, source="observed")
+    if venue_summary.get("api_rate_limit_rules_defined"):
+        for check_key in ("global_request_weight_management", "order_count_management", "central_control_for_shared_api"):
+            _merge_check(evidence, "api_rate_limits", check_key, True, source="observed")
     for gate_id, checks in (scenarios.get("evidence") or {}).items():
         for check_key, value in (checks or {}).items():
             _merge_check(evidence, gate_id, check_key, value, source="observed")
@@ -2427,6 +2663,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "shadow_parity_traces": shadow_rows,
         "governance_summary": governance_summary,
         "threshold_summary": threshold_summary,
+        "venue_summary": venue_summary,
     }
 
 
@@ -2954,6 +3191,7 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
     changes = load_acceptance_change_log(conn, key, stage=stage, limit=80)
     governance_rows = load_governance_events(conn, key, stage=stage, limit=50)
     threshold_profiles = load_threshold_profiles(conn, key, stage=stage, limit=20)
+    venue_profiles = load_venue_profiles(conn, key, stage=stage, limit=20)
     promotion_decisions = load_promotion_decisions(conn, key, stage=stage, limit=20)
     promotion_summary = summarize_promotion_decisions(conn, key, stage=stage, limit=20)
     coverage = _build_coverage_summary(catalog)
@@ -3011,6 +3249,8 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         "governance_events": governance_rows,
         "threshold_summary": context.get("threshold_summary") or {},
         "threshold_profiles": threshold_profiles,
+        "venue_summary": context.get("venue_summary") or {},
+        "venue_profiles": venue_profiles,
         "promotion_decisions": promotion_decisions,
         "promotion_summary": promotion_summary,
         "production_checklist": production_checklist,
@@ -3036,6 +3276,7 @@ __all__ = [
     "load_deviation_snapshots",
     "load_promotion_decisions",
     "load_threshold_profiles",
+    "load_venue_profiles",
     "load_shadow_parity_traces",
     "load_reconciliation_runs",
     "load_runtime_metrics",
@@ -3051,6 +3292,7 @@ __all__ = [
     "record_governance_event",
     "record_promotion_decision",
     "record_threshold_profile",
+    "record_venue_profile",
     "record_shadow_parity_trace",
     "record_order_audit",
     "record_reconciliation_run",
@@ -3061,6 +3303,7 @@ __all__ = [
     "summarize_threshold_profiles",
     "summarize_governance_events",
     "summarize_promotion_decisions",
+    "summarize_venue_profiles",
     "summarize_shadow_parity_traces",
     "run_acceptance_scenario",
     "upsert_acceptance_review",
