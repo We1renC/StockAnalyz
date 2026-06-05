@@ -338,6 +338,7 @@ class TrainingResult:
     gate_results: dict = field(default_factory=dict)
     probe_plan: dict = field(default_factory=dict)
     adaptive_patch_key: Optional[str] = None
+    strategy_patch_key: Optional[str] = None
     notes: list[str] = field(default_factory=list)
 
 
@@ -505,6 +506,7 @@ def train_from_ledger(
     db_path: Optional[str] = None,
     symbol: str = "ALL",
     model_version: str = ADAPTIVE_MODEL_VERSION,
+    apply_strategy_patch: bool = True,
 ) -> TrainingResult:
     """Run the §18.5 closed-loop calibration over the ledger; if OOS
     passes, persist suggested weights back to ``config/strategy.yaml``
@@ -607,6 +609,7 @@ def train_from_ledger(
     }
     probe_plan: dict = {}
     adaptive_patch_key: Optional[str] = None
+    strategy_patch_key: Optional[str] = None
     current_threshold = float(
         (config_snapshot.get("data") or {}).get("confluence", {}).get(
             "threshold",
@@ -770,24 +773,39 @@ def train_from_ledger(
                         reason="closed_loop_calibration_adopted",
                         strategy_yaml_path=strategy_yaml_path,
                     )
-                    apply_atomic_config_patch(
-                        adaptive_conn,
-                        patch_key=patch_row["patch_key"],
-                        strategy_yaml_path=strategy_yaml_path,
-                        expected_hash=config_snapshot["hash"],
-                    )
-                    record_adaptive_audit_event(
-                        adaptive_conn,
-                        symbol=symbol,
-                        event_type="config_patch_applied",
-                        state_before={"mode": "DRY_RUN", "config_hash": config_snapshot["hash"]},
-                        state_after={"mode": "READY", "config_hash": patch_row["after_hash"]},
-                        detail={
-                            "patch_key": patch_row["patch_key"],
-                            "changed_weights": changed,
-                            "model_version": model_version,
-                        },
-                    )
+                    strategy_patch_key = patch_row["patch_key"]
+                    if apply_strategy_patch:
+                        apply_atomic_config_patch(
+                            adaptive_conn,
+                            patch_key=patch_row["patch_key"],
+                            strategy_yaml_path=strategy_yaml_path,
+                            expected_hash=config_snapshot["hash"],
+                        )
+                        record_adaptive_audit_event(
+                            adaptive_conn,
+                            symbol=symbol,
+                            event_type="config_patch_applied",
+                            state_before={"mode": "DRY_RUN", "config_hash": config_snapshot["hash"]},
+                            state_after={"mode": "READY", "config_hash": patch_row["after_hash"]},
+                            detail={
+                                "patch_key": patch_row["patch_key"],
+                                "changed_weights": changed,
+                                "model_version": model_version,
+                            },
+                        )
+                    else:
+                        record_adaptive_audit_event(
+                            adaptive_conn,
+                            symbol=symbol,
+                            event_type="config_patch_staged",
+                            state_before={"mode": "READY", "config_hash": config_snapshot["hash"]},
+                            state_after={"mode": "READY", "config_hash": patch_row["after_hash"]},
+                            detail={
+                                "patch_key": patch_row["patch_key"],
+                                "changed_weights": changed,
+                                "model_version": model_version,
+                            },
+                        )
                     adaptive_conn.commit()
                 else:
                     yaml_path = Path(strategy_yaml_path)
@@ -800,23 +818,27 @@ def train_from_ledger(
                         with open(yaml_path, "r", encoding="utf-8") as fh:
                             existing = yaml.safe_load(fh) or {}
                     existing.setdefault("confluence", {})["weights"] = weights_after
-                    fd, tmp_name = tempfile.mkstemp(
-                        prefix="strategy.",
-                        suffix=".yaml",
-                        dir=str(yaml_path.parent),
-                    )
-                    try:
-                        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                            yaml.safe_dump(existing, fh, allow_unicode=True, sort_keys=False)
-                            fh.flush()
-                            os.fsync(fh.fileno())
-                        os.replace(tmp_name, yaml_path)
-                    finally:
-                        if os.path.exists(tmp_name):
-                            os.unlink(tmp_name)
-                apply_strategy_yaml_overrides()
-                yaml_written = True
-                notes.append(f"strategy.yaml updated; {len(changed)} weight(s) changed")
+                    if apply_strategy_patch:
+                        fd, tmp_name = tempfile.mkstemp(
+                            prefix="strategy.",
+                            suffix=".yaml",
+                            dir=str(yaml_path.parent),
+                        )
+                        try:
+                            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                                yaml.safe_dump(existing, fh, allow_unicode=True, sort_keys=False)
+                                fh.flush()
+                                os.fsync(fh.fileno())
+                            os.replace(tmp_name, yaml_path)
+                        finally:
+                            if os.path.exists(tmp_name):
+                                os.unlink(tmp_name)
+                if apply_strategy_patch:
+                    apply_strategy_yaml_overrides()
+                    yaml_written = True
+                    notes.append(f"strategy.yaml updated; {len(changed)} weight(s) changed")
+                else:
+                    notes.append(f"strategy patch staged; {len(changed)} weight(s) pending apply")
             except Exception as exc:
                 notes.append(f"yaml write failed: {exc}")
                 if adaptive_conn is not None:
@@ -870,6 +892,7 @@ def train_from_ledger(
         gate_results=adaptive_metrics["gate_results"],
         probe_plan=probe_plan,
         adaptive_patch_key=adaptive_patch_key,
+        strategy_patch_key=strategy_patch_key,
         notes=notes,
     )
 
