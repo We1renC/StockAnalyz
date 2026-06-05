@@ -191,6 +191,36 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_edge_decay_helper_detects_recent_negative_expectancy():
+    """P1-8: when recent 20 trades go from +R to flat, helper raises is_decaying."""
+    from smc_training_loop import _detect_recent_edge_decay
+    from datetime import datetime, timedelta
+    base = datetime(2026, 1, 1)
+    # 30 historical winners (+1.5R) then 25 recent losses (-1R)
+    records = []
+    for i in range(30):
+        records.append({
+            "entry_time": (base + timedelta(hours=i)).isoformat(),
+            "r_multiple": 1.5, "outcome": "target",
+        })
+    for i in range(30, 55):
+        records.append({
+            "entry_time": (base + timedelta(hours=i)).isoformat(),
+            "r_multiple": -1.0, "outcome": "stop",
+        })
+    diag = _detect_recent_edge_decay(records, window_size=20)
+    assert diag.get("is_decaying") is True
+    assert diag.get("recent_expectancy", 0) <= 0
+
+
+def test_edge_decay_helper_safe_when_no_resolved_records():
+    """No resolved trades (all pending) → return False, not crash."""
+    from smc_training_loop import _detect_recent_edge_decay
+    diag = _detect_recent_edge_decay([{"outcome": "pending"} for _ in range(10)])
+    assert diag.get("is_decaying") is False
+    assert "insufficient" in (diag.get("warning_message") or "")
+
+
 def test_min_score_for_target_returns_lowest_qualifying_bucket():
     from learning.score_calibration import calibrate_score_to_winrate
     records = (

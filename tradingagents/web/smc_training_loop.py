@@ -120,6 +120,45 @@ _FM_OOS_MIN_TEST = 4              # each test fold must have ≥4 rows
 _FM_OOS_ACC_MARGIN = 0.02         # FM must beat LR by ≥2pp OOS to be adopted
 
 
+def _detect_recent_edge_decay(records: list[dict], window_size: int = 20) -> dict:
+    """P1-8 — wrap learning.decay_monitor for in-process use.
+
+    Returns the decay diagnostics dict so the caller can decide
+    whether to demote state. Mirrors the original signature but
+    consumes the §18.2 ledger record schema (with optional
+    ``r_multiple`` / ``outcome`` fields).
+    """
+    if not records:
+        return {"is_decaying": False, "warning_message": "no_records"}
+    try:
+        from learning.decay_monitor import detect_edge_decay
+        rows = []
+        for r in records:
+            outcome = r.get("outcome")
+            rm = r.get("r_multiple")
+            if outcome in (None, "pending") or rm is None:
+                continue
+            try:
+                rm = float(rm)
+            except (TypeError, ValueError):
+                continue
+            rows.append({
+                "entry_time": r.get("entry_time") or "",
+                "r_multiple": rm,
+                "win": 1 if rm > 0 else 0,
+            })
+        if len(rows) < window_size:
+            return {
+                "is_decaying": False,
+                "warning_message": f"insufficient_resolved_trades ({len(rows)}<{window_size})",
+                "resolved_count": len(rows),
+            }
+        df = pd.DataFrame(rows)
+        return detect_edge_decay(df, window_size=window_size)
+    except Exception as exc:
+        return {"is_decaying": False, "warning_message": f"decay_check_failed:{exc}"}
+
+
 def _purged_walk_forward_fm_vs_lr(
     records: list[dict],
     *,
@@ -789,6 +828,21 @@ def train_from_ledger(
         and fm_oos["verdict"] == "fm_beats_lr_oos"
         and adaptive_state["mode"] == "READY"
     )
+
+    # P1-8 audit fix: if recent performance has decayed against historical
+    # baseline, demote READY → VALIDATING_PROBE before continuing. This is
+    # the missing "stop trading when edge dies" guardrail.
+    decay_block = _detect_recent_edge_decay(records)
+    if decay_block.get("is_decaying") and adaptive_state["mode"] == "READY":
+        adaptive_state["mode"] = "VALIDATING_PROBE"
+        adaptive_state["edge_decay_triggered"] = True
+        adaptive_state["edge_decay_reason"] = decay_block.get("warning_message")
+        adaptive_state["risk_multiplier"] = min(
+            float(adaptive_state.get("risk_multiplier") or 1.0), 0.1
+        )
+    else:
+        adaptive_state["edge_decay_triggered"] = False
+    adaptive_state["edge_decay_diagnostics"] = decay_block
 
     if adaptive_state["mode"] == "VALIDATING_PROBE" and adaptive_conn is not None:
         stop_distance_pcts = []
