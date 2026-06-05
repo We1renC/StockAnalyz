@@ -4203,6 +4203,125 @@ def api_smc_crypto_learning_audit(symbol: Optional[str] = None):
         raise HTTPException(status_code=500, detail=f"audit failed: {e}")
 
 
+@app.get("/api/smc-crypto/system-inventory")
+def api_smc_crypto_system_inventory():
+    """Sub-system × Obsidian-coverage audit (live scan of source files)."""
+    try:
+        from smc_system_inventory import build_inventory
+        return build_inventory()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"inventory failed: {e}")
+
+
+@app.post("/api/smc-crypto/obsidian-sync")
+def api_smc_crypto_obsidian_sync(payload: Optional[dict] = None):
+    """Export every SMC × crypto-api × acceptance artifact to Obsidian Vault.
+
+    Triggers 6 writers in one shot:
+      • system-inventory       → SMC/系統盤點.md
+      • acceptance verdicts    → SMC/Acceptance/<run_key>.md
+      • learning report        → SMC/Learning/<ts>.md
+      • crypto desk snapshot   → SMC/Crypto/持倉快照.md
+      • training cycle         → SMC/Training/<ts>.md (if run requested)
+      • unified session        → SMC/Sessions/<ts>.md (if run requested)
+    """
+    vault = _get_vault()
+    if not vault:
+        raise HTTPException(400, "obsidian_vault_path 未設定或路徑不存在")
+    payload = payload or {}
+    written: dict[str, int] = {}
+    try:
+        # 1) system inventory
+        from smc_system_inventory import build_inventory, render_inventory_markdown
+        inv = build_inventory()
+        md = render_inventory_markdown(inv)
+        _obsidian_write_system_inventory(vault, inv, md)
+        written["system_inventory"] = 1
+
+        # 2) acceptance verdicts (last N)
+        from paper_acceptance_store import load_acceptance_reports
+        conn = get_db()
+        try:
+            reports = load_acceptance_reports(conn,
+                                                symbol=payload.get("symbol"),
+                                                limit=int(payload.get("acceptance_limit", 20)))
+            for r in reports:
+                _obsidian_write_acceptance_run(vault, r)
+            written["acceptance_runs"] = len(reports)
+        finally:
+            conn.close()
+
+        # 3) learning report (orchestrator)
+        from smc_learning_orchestrator import build_learning_report
+        from dataclasses import asdict
+        lr = build_learning_report(
+            ledger_path="tmp/smc_training_ledger.jsonl",
+            db_path=_portfolio_db_path(),
+            symbol=payload.get("symbol"),
+        )
+        _obsidian_write_learning_report(vault, asdict(lr))
+        written["learning_reports"] = 1
+
+        # 4) crypto desk snapshot
+        api = _crypto_api_client()
+        b = api.balances()
+        oo = api.open_orders(payload.get("symbol"))
+        fills = api._request("GET", "/fills",
+                              params={"symbol": payload.get("symbol")} if payload.get("symbol") else None)
+        def _extract(p, *keys):
+            if isinstance(p, dict):
+                d = p.get("data")
+                if isinstance(d, dict):
+                    for k in keys:
+                        if k in d: return d.get(k) or []
+                if isinstance(d, list): return d
+                for k in keys:
+                    if k in p: return p.get(k) or []
+            return p or []
+        snapshot = {
+            "balances": _extract(b.get("payload"), "balances"),
+            "open_orders": _extract(oo.get("payload"), "orders"),
+            "recent_fills": _extract(fills.get("payload"), "fills")[:20],
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        _obsidian_write_crypto_desk_snapshot(vault, snapshot)
+        written["crypto_desk_snapshot"] = 1
+
+        # 5) (optional) training cycle if requested
+        if payload.get("include_training"):
+            from smc_training_loop import run_training_cycle
+            symbols = payload.get("symbols") or ["BTC-USDT"]
+            tcycle = run_training_cycle(api, symbols, db_path=_portfolio_db_path(),
+                                          interval=payload.get("interval", "1h"),
+                                          bars=int(payload.get("bars", 500)))
+            _obsidian_write_training_cycle(vault, tcycle)
+            written["training_cycles"] = 1
+
+        # 6) (optional) unified session
+        if payload.get("include_session"):
+            from smc_unified_system import UnifiedTradingSession, UnifiedSessionConfig
+            sym = payload.get("symbol", "BTC-USDT")
+            cfg = UnifiedSessionConfig(
+                symbols=[sym], paper_db_path=_portfolio_db_path(),
+            )
+            sess = UnifiedTradingSession(api, cfg)
+            try:
+                ses_result = sess.run(place_live_orders=False)
+                _obsidian_write_unified_session(vault, ses_result)
+                written["unified_sessions"] = 1
+            finally:
+                sess.close()
+
+        return {
+            "success": True,
+            "vault_path": str(vault),
+            "written": written,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"obsidian sync failed: {e}")
+
+
 @app.get("/api/smc-crypto/acceptance-evidence")
 def api_smc_crypto_acceptance_evidence(symbol: Optional[str] = None):
     """Show paper-acceptance evidence accumulated by the training/auto
@@ -9477,6 +9596,275 @@ def _obsidian_smc_journal_note_path(vault: Path, entry: dict) -> Path:
     symbol = _safe_obsidian_name(entry.get("symbol", "UNKNOWN"))
     key = _safe_obsidian_name(entry.get("journal_key", "journal"))
     return _obsidian_smc_journal_root(vault) / symbol / f"{key}.md"
+
+
+def _obsidian_write_system_inventory(vault: Path, report: dict, markdown: str) -> None:
+    """Write the SMC sub-system integration audit to ``SMC/系統盤點.md``."""
+    out_dir = vault / "SMC"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "系統盤點.md").write_text(markdown, encoding="utf-8")
+    # also drop the raw JSON next to it for diffing
+    (out_dir / "系統盤點.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+
+
+def _obsidian_write_acceptance_run(vault: Path, run: dict) -> None:
+    """Write one paper-acceptance verdict to ``SMC/Acceptance/<run_key>.md``."""
+    out_dir = vault / "SMC" / "Acceptance"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    run_key = run.get("run_key") or run.get("id") or "unknown"
+    conclusion = run.get("conclusion") or "—"
+    color = {"passed": "🟢", "conditionally_passed": "🟡",
+              "failed_repeat_paper": "🔴", "strategy_invalidated": "⚫"}.get(conclusion, "⚪")
+    metrics_json = json.dumps(run.get("metrics") or {}, ensure_ascii=False, indent=2)
+    md = run.get("markdown_report") or ""
+    content = f"""---
+type: paper-acceptance
+run_key: {_fmt(run_key)}
+symbol: {_fmt(run.get('symbol'))}
+stage: {_fmt(run.get('stage'))}
+conclusion: {_fmt(conclusion)}
+gate_count: {_fmt(run.get('gate_count'))}
+blocking_issue_count: {_fmt(run.get('blocking_issue_count'))}
+created_at: {_fmt(run.get('created_at'))}
+tags: [paper-acceptance, smc, verdict]
+---
+
+# 驗收紀錄 {color} {conclusion}
+
+- run_key: `{run_key}`
+- symbol: **{run.get('symbol') or '—'}**
+- gates: {run.get('gate_count') or 0}
+- blocking issues: {run.get('blocking_issue_count') or 0}
+- created_at: {run.get('created_at') or '—'}
+
+## 指標
+
+```json
+{metrics_json}
+```
+
+## 驗收報告 (markdown)
+
+{md if md else '（無）'}
+"""
+    safe_key = _safe_obsidian_name(str(run_key))
+    (out_dir / f"{safe_key}.md").write_text(content, encoding="utf-8")
+
+
+def _obsidian_write_learning_report(vault: Path, report: dict) -> None:
+    """Write the latest learning report to ``SMC/Learning/<timestamp>.md``."""
+    out_dir = vault / "SMC" / "Learning"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = report.get("generated_at", "now").replace(":", "-").replace("+", "_")
+    promo = report.get("promotion_decision") or {}
+    indicator = report.get("learning_indicator", "?")
+    indicator_icon = {"active":"🟢","stagnant":"🟡","degrading":"🔴","insufficient_data":"⚪"}.get(indicator, "⚪")
+    l1 = report.get("layer_1_statistics") or {}
+    expectancy = (l1.get("expectancy") or {}).get("expected_R") if isinstance(l1, dict) else None
+    sharpe = (l1.get("sharpe") or {}).get("sharpe") if isinstance(l1, dict) else None
+    dsr = (l1.get("deflated_sharpe") or {}).get("deflated") if isinstance(l1, dict) else None
+    content = f"""---
+type: smc-learning-report
+generated_at: {_fmt(report.get('generated_at'))}
+symbol: {_fmt(report.get('symbol'))}
+sample_size: {_fmt(report.get('sample_size'))}
+learning_indicator: {_fmt(indicator)}
+can_promote: {_fmt(promo.get('can_promote'))}
+tags: [smc, learning, audit]
+---
+
+# 學習能力報告 {indicator_icon} {indicator}
+
+- 樣本: **{report.get('sample_size')}** 筆
+- 符號: {report.get('symbol') or 'ALL'}
+- 可升級: {"✅" if promo.get('can_promote') else "❌"}
+
+## Layer 1 統計
+
+- E[R]: `{expectancy}`
+- Sharpe: `{sharpe}`
+- Deflated SR: `{dsr}`
+- 月度 stability: `{(l1.get('monthly_stability') or {}).get('status', '—')}`
+
+## Promotion 驗證閘
+
+| 閘 | 通過 |
+|---|:-:|
+| walk_forward | {"✅" if promo.get('criteria',{}).get('walk_forward') else "❌"} |
+| PBO < 0.5 | {"✅" if promo.get('criteria',{}).get('pbo_ok') else "❌"} |
+| edge_decay_ok | {"✅" if promo.get('criteria',{}).get('edge_decay_ok') else "❌"} |
+| deflated_sharpe_ok | {"✅" if promo.get('criteria',{}).get('deflated_sharpe_ok') else "❌"} |
+| closed_loop_adopt | {"✅" if promo.get('criteria',{}).get('closed_loop_adopt') else "❌"} |
+
+## 阻擋原因
+
+{chr(10).join('- ' + r for r in (promo.get('reasons') or [])) or '（無）'}
+
+## 原始報告 (JSON)
+
+```json
+{json.dumps(report, ensure_ascii=False, indent=2, default=str)[:6000]}
+```
+"""
+    (out_dir / f"{ts}.md").write_text(content, encoding="utf-8")
+
+
+def _obsidian_write_crypto_desk_snapshot(vault: Path, snapshot: dict) -> None:
+    """Latest crypto-desk state (balances + open orders + recent fills)."""
+    out_dir = vault / "SMC" / "Crypto"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    bals = snapshot.get("balances") or []
+    orders = snapshot.get("open_orders") or []
+    fills = snapshot.get("recent_fills") or []
+    bal_lines = "\n".join(
+        f"| {b.get('asset','?')} | {b.get('available','—')} | {b.get('locked','—')} |"
+        for b in bals if isinstance(b, dict)
+    ) or "| — | — | — |"
+    ord_lines = "\n".join(
+        f"| `{(o.get('id','')[:18])}` | {o.get('symbol','—')} | {o.get('side','—')} | {o.get('quantity','—')} | {o.get('price','—')} | {o.get('status','—')} |"
+        for o in orders[:20] if isinstance(o, dict)
+    ) or "| — | — | — | — | — | — |"
+    fill_lines = "\n".join(
+        f"| `{(f.get('id','')[:18])}` | {f.get('symbol','—')} | {f.get('side','—')} | {f.get('quantity','—')} | {f.get('price','—')} |"
+        for f in fills[:20] if isinstance(f, dict)
+    ) or "| — | — | — | — | — |"
+    content = f"""---
+type: crypto-desk-snapshot
+generated_at: {_fmt(snapshot.get('generated_at'))}
+tags: [crypto, desk, smc]
+---
+
+# 加密交易桌快照
+
+- generated_at: {snapshot.get('generated_at')}
+
+## 餘額
+
+| 資產 | 可用 | 鎖定 |
+|---|---|---|
+{bal_lines}
+
+## 未成交委託
+
+| order_id | 商品 | 方向 | 數量 | 價格 | 狀態 |
+|---|---|---|---|---|---|
+{ord_lines}
+
+## 近期成交
+
+| fill_id | 商品 | 方向 | 數量 | 價格 |
+|---|---|---|---|---|
+{fill_lines}
+"""
+    (out_dir / "持倉快照.md").write_text(content, encoding="utf-8")
+
+
+def _obsidian_write_training_cycle(vault: Path, training: dict) -> None:
+    """Persist one training cycle result for diffing weights over time."""
+    out_dir = vault / "SMC" / "Training"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = training.get("started_at", "now").replace(":", "-").replace("+", "_")
+    t = training.get("training") or {}
+    bts = training.get("backtests") or []
+    audit = training.get("audit") or {}
+    bt_lines = "\n".join(
+        f"| {b.get('symbol','—')} | {b.get('bars_seen',0)} | {b.get('trades_settled',0)} | "
+        f"{b.get('expected_R','—'):>+.2f} | {b.get('win_rate','—')} |"
+        if isinstance(b.get('expected_R'), (int, float)) else
+        f"| {b.get('symbol','—')} | {b.get('bars_seen',0)} | {b.get('trades_settled',0)} | "
+        f"{b.get('expected_R','—')} | {b.get('win_rate','—')} |"
+        for b in bts
+    ) or "| — | 0 | 0 | — | — |"
+    content = f"""---
+type: smc-training-cycle
+started_at: {_fmt(training.get('started_at'))}
+elapsed_seconds: {_fmt(training.get('elapsed_seconds'))}
+symbols: {_fmt(training.get('symbols'))}
+adopted: {_fmt(t.get('adopted'))}
+yaml_updated: {_fmt(t.get('strategy_yaml_updated'))}
+sample_size: {_fmt(t.get('sample_size'))}
+tags: [smc, training, calibration]
+---
+
+# 訓練週期
+
+- started_at: {training.get('started_at')}
+- elapsed: `{training.get('elapsed_seconds')}s`
+- symbols: {training.get('symbols')}
+
+## 回測摘要
+
+| 符號 | bars | trades | E[R] | win |
+|---|---:|---:|---:|---:|
+{bt_lines}
+
+## 校準結果
+
+- sample_size: `{t.get('sample_size')}`
+- adopted: {"✅" if t.get('adopted') else "❌"}
+- yaml_updated: {"✅" if t.get('strategy_yaml_updated') else "❌"}
+- verdict: `{(t.get('verdict') or {}).get('reason')}`
+- weights_changed: {t.get('weights_changed') or '（無）'}
+
+## 學習稽核
+
+- indicator: `{audit.get('learning_indicator')}`
+- ledger_size: `{audit.get('ledger_size')}`
+- Δ E[R]: `{audit.get('delta_expected_R')}`
+"""
+    (out_dir / f"{ts}.md").write_text(content, encoding="utf-8")
+
+
+def _obsidian_write_unified_session(vault: Path, session_result: dict) -> None:
+    """Persist one UnifiedTradingSession.run() snapshot."""
+    out_dir = vault / "SMC" / "Sessions"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = session_result.get("started_at", "now").replace(":", "-").replace("+", "_")
+    acc = session_result.get("acceptance") or {}
+    decisions = session_result.get("decisions") or []
+    dec_lines = []
+    for d in decisions:
+        sym = d.get("symbol", "—")
+        act = d.get("action", "—")
+        entry = d.get("entry") or {}
+        live = d.get("live_order") or {}
+        live_id = ((live.get("payload") or {}).get("id")) if isinstance(live, dict) else None
+        dec_lines.append(
+            f"| {sym} | {act} | {entry.get('model','—')} | "
+            f"{entry.get('direction','—')} | "
+            f"{(entry.get('confluence') or {}).get('score','—')} | "
+            f"{entry.get('rr','—')} | {live_id or '—'} |"
+        )
+    content = f"""---
+type: smc-unified-session
+started_at: {_fmt(session_result.get('started_at'))}
+elapsed_seconds: {_fmt(session_result.get('elapsed_seconds'))}
+conclusion: {_fmt(acc.get('conclusion'))}
+run_id: {_fmt(acc.get('run_id'))}
+tags: [smc, session, unified]
+---
+
+# 統一 4-phase session
+
+- run_id: `{acc.get('run_id')}`
+- started_at: {session_result.get('started_at')}
+- conclusion: **{acc.get('conclusion_label') or acc.get('conclusion')}**
+- passed: {acc.get('passed')} · failed: {acc.get('failed')}
+
+## 決策
+
+| 符號 | action | model | dir | score | rr | live_id |
+|---|---|---|:-:|---:|---:|---|
+{chr(10).join(dec_lines) if dec_lines else '| — | — | — | — | — | — | — |'}
+
+## blocking_issues
+
+{chr(10).join('- **'+(b.get('title_zh') or b.get('title') or '?')+'**: '+(b.get('reason') or '') for b in (acc.get('blocking_issues') or [])[:10]) or '（無）'}
+"""
+    (out_dir / f"{ts}.md").write_text(content, encoding="utf-8")
 
 
 def _obsidian_write_smc_journal(vault: Path, entry: dict) -> None:
