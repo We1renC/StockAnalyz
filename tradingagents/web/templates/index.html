@@ -3616,6 +3616,7 @@ function renderPaperAcceptanceObserved(workspace) {
     `rejection ${metrics.rejection_ratio != null ? `${(Number(metrics.rejection_ratio) * 100).toFixed(1)}%` : '—'}`,
     `regime ${(metrics.regime_coverage_score != null ? Number(metrics.regime_coverage_score).toFixed(2) : '—')} / combo ${metrics.regime_combo_count ?? '—'}`,
     `vol ${metrics.volatility_bucket_count ?? '—'} / liq ${metrics.liquidity_bucket_count ?? '—'} / session ${metrics.session_bucket_count ?? '—'}`,
+    `deriv ${metrics.derivatives_cost_count ?? 0} / funding ${metrics.funding_fee_total ?? '—'} / lev ${metrics.leverage_max ?? '—'}`,
     `reconciliation ${reconciliationRuns.length} 筆`,
     `order audit ${orderAudit.length} 筆`,
     `runtime metric ${runtimeMetrics.length} 筆`,

@@ -165,3 +165,45 @@ def test_summarize_acceptance_telemetry_tracks_regime_coverage_matrix():
     assert payload["evidence"]["sample_size_period"]["enough_market_conditions"] is True
     assert payload["evidence"]["sample_size_period"]["vol_expansion_contraction"] is True
     assert payload["regime_coverage"]["condition_combo_counts"]["high_vol:thin_liquidity"] == 1
+
+
+def test_summarize_acceptance_telemetry_tracks_derivatives_cost_evidence():
+    conn = _conn()
+    ensure_paper_acceptance_metrics_schema(conn)
+
+    record_runtime_metric(conn, symbol="BTC-PERP", metric_name="liquidation_stress_tested", value=1)
+    record_order_audit(
+        conn,
+        symbol="BTC-PERP",
+        side="buy",
+        order_type="market",
+        state="filled",
+        requested_qty=1,
+        filled_qty=1,
+        signal_price=100.0,
+        avg_price=100.4,
+        notional=100.4,
+        fee=0.04,
+        slippage_bps=40.0,
+        execution_latency_ms=60,
+        detail={
+            "funding_rate": 0.0004,
+            "funding_fee": 0.12,
+            "leverage": 5,
+            "margin_used_ratio": 0.34,
+            "liquidation_price": 82.5,
+            "liquidation_buffer_bps": 1750,
+            "mark_price": 100.3,
+            "equity_after_funding": 10050.0,
+        },
+    )
+
+    payload = summarize_acceptance_telemetry(conn, symbol="BTC-PERP")
+
+    assert payload["metrics"]["derivatives_cost_count"] == 1
+    assert payload["metrics"]["funding_fee_total"] == 0.12
+    assert payload["metrics"]["leverage_max"] == 5.0
+    gate = payload["evidence"]["derivatives_costs"]
+    assert gate["funding_rates_included"] is True
+    assert gate["liquidation_price_calculated"] is True
+    assert gate["liquidation_stress_tested"] is True

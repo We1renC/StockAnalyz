@@ -129,3 +129,27 @@ def test_section_21_prohibitions_block_live_trading():
         "duplicate_orders",
         "api_permissions_excessive",
     }
+
+
+def test_derivatives_cost_gate_requires_funding_margin_and_liquidation_controls():
+    ctx = _passing_context()
+    ctx["strategy"]["instrument_type"] = "perpetual"
+    ctx["evidence"]["derivatives_costs"] = {
+        "checks": {
+            "funding_rates_included": True,
+            "leverage_included": True,
+            "margin_usage_included": True,
+            "liquidation_price_calculated": True,
+            "funding_reflected_in_equity": True,
+            "liquidation_stress_tested": True,
+        }
+    }
+
+    report = build_acceptance_report(ctx)
+    gate = next(item for item in report["gates"] if item["id"] == "derivatives_costs")
+    assert gate["status"] == "pass"
+
+    ctx["evidence"]["derivatives_costs"]["checks"]["liquidation_stress_tested"] = False
+    failed = build_acceptance_report(ctx)
+    gate_failed = next(item for item in failed["gates"] if item["id"] == "derivatives_costs")
+    assert gate_failed["status"] == "fail"

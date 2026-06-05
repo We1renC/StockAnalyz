@@ -749,6 +749,28 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
     expected_edge_bps = [float(detail["expected_edge_bps"]) for detail in detail_rows if _safe_float(detail.get("expected_edge_bps")) is not None]
     liquidity_regimes = {str(detail.get("liquidity_regime") or "").strip() for detail in detail_rows if detail.get("liquidity_regime")}
     maker_taker_flags = {str(detail.get("maker_taker") or "").strip() for detail in detail_rows if detail.get("maker_taker")}
+    funding_rates = [float(detail["funding_rate"]) for detail in detail_rows if _safe_float(detail.get("funding_rate")) is not None]
+    funding_fees = [float(detail["funding_fee"]) for detail in detail_rows if _safe_float(detail.get("funding_fee")) is not None]
+    leverage_values = [float(detail["leverage"]) for detail in detail_rows if _safe_float(detail.get("leverage")) is not None]
+    margin_usage_values = [float(detail["margin_used_ratio"]) for detail in detail_rows if _safe_float(detail.get("margin_used_ratio")) is not None]
+    liquidation_prices = [float(detail["liquidation_price"]) for detail in detail_rows if _safe_float(detail.get("liquidation_price")) is not None]
+    liquidation_buffers = [float(detail["liquidation_buffer_bps"]) for detail in detail_rows if _safe_float(detail.get("liquidation_buffer_bps")) is not None]
+    mark_prices = [float(detail["mark_price"]) for detail in detail_rows if _safe_float(detail.get("mark_price")) is not None]
+    derivatives_rows = [
+        detail for detail in detail_rows
+        if any(
+            key in detail
+            for key in (
+                "funding_rate",
+                "funding_fee",
+                "leverage",
+                "margin_used_ratio",
+                "liquidation_price",
+                "liquidation_buffer_bps",
+                "mark_price",
+            )
+        )
+    ]
     regime_coverage = _regime_coverage(order_rows)
     limit_waiting_times: list[float] = []
     for row in limit_orders:
@@ -832,6 +854,14 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
         "max_recent_volume_ratio": round(max(recent_volume_ratios), 4) if recent_volume_ratios else None,
         "min_book_depth_ratio": round(min(book_depth_ratios), 4) if book_depth_ratios else None,
         "expected_edge_after_cost_bps": round(mean(expected_edge_bps), 4) if expected_edge_bps else None,
+        "funding_rate_mean": round(mean(funding_rates), 6) if funding_rates else None,
+        "funding_fee_total": round(sum(funding_fees), 6) if funding_fees else None,
+        "leverage_max": round(max(leverage_values), 4) if leverage_values else None,
+        "margin_usage_max": round(max(margin_usage_values), 4) if margin_usage_values else None,
+        "liquidation_price_count": len(liquidation_prices),
+        "liquidation_buffer_min_bps": round(min(liquidation_buffers), 4) if liquidation_buffers else None,
+        "mark_price_trace_count": len(mark_prices),
+        "derivatives_cost_count": len(derivatives_rows),
         "missed_fill_price_movement": round(mean(
             abs(float(row.get("detail", {}).get("post_order_price_move_bps") or 0))
             for row in order_rows
@@ -895,6 +925,16 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
             "fee_recorded_per_trade": metrics["fees_included"],
             "gross_and_net_profit_reported": metrics["total_fees"] is not None,
         }
+        if derivatives_rows:
+            evidence["derivatives_costs"] = {
+                "funding_rates_included": bool(funding_rates) or bool(funding_fees),
+                "leverage_included": bool(leverage_values),
+                "margin_usage_included": bool(margin_usage_values),
+                "liquidation_price_calculated": bool(liquidation_prices),
+                "funding_reflected_in_equity": bool(funding_fees) or any(detail.get("equity_after_funding") is not None for detail in derivatives_rows),
+                "liquidation_stress_tested": any(bool(detail.get("liquidation_stress_tested")) for detail in derivatives_rows)
+                or any(row.get("metric_name") == "liquidation_stress_tested" for row in runtime_rows),
+            }
         evidence["order_lifecycle"] = {
             "unique_order_id": all(row.get("order_key") for row in order_rows),
             "client_order_id": any(row.get("client_order_id") for row in order_rows),

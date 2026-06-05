@@ -1118,6 +1118,11 @@ def _derived_status(definition: AcceptanceGateDefinition, context: Mapping[str, 
         status = "pass" if all(metrics.get(key) is not None for key in quality_keys) else _status_from_checks(checks, definition.evidence_keys)
         return {"status": status, "reason": "前測驗收必須能提供成交品質相關指標。"}
 
+    if definition.gate_id == "derivatives_costs":
+        complete = all(checks.get(key) is True for key in definition.evidence_keys)
+        status = "pass" if complete else "fail"
+        return {"status": status, "reason": "衍生品前測必須完整納入 funding、槓桿、保證金與清算壓力。"}
+
     if definition.gate_id == "sample_size_period":
         strategy_type = (strategy.get("strategy_type") or "swing").lower()
         req = SAMPLE_REQUIREMENTS.get(strategy_type, SAMPLE_REQUIREMENTS["swing"])
