@@ -100,7 +100,14 @@ from learning.dsr_threshold import (
     required_sharpe_for_dsr,
     update_confluence_threshold_by_dsr,
 )
+from learning.feature_denoising import marchenko_pastur_eigen_clip
+from learning.fm_challenger import fit_factorization_machine_classifier
 from learning.probe_controller import plan_probe_order
+from learning.uniqueness_weighted_lr import (
+    build_feature_matrix,
+    build_trade_sample_weights,
+    fit_uniqueness_weighted_lr,
+)
 
 # Merged-but-previously-unused acceptance primitives
 from paper_acceptance_store import ensure_paper_acceptance_schema, load_acceptance_reports
@@ -425,6 +432,54 @@ def _adaptive_metrics_from_records(records: list[dict], calib: dict) -> dict:
         fatal_reasons=fatal_reasons,
     )
     validation = validation_entropy_sizing(gate_results, n_eff=n_eff)
+    feature_diagnostics = {
+        "trained": False,
+        "reason": "insufficient_samples",
+    }
+    model_baseline = {
+        "trained": False,
+        "reason": "insufficient_samples",
+        "proposal": {},
+        "diagnostics": {"sample_size": len(records)},
+    }
+    fm_challenger = {
+        "trained": False,
+        "reason": "insufficient_samples",
+        "top_interactions": [],
+        "diagnostics": {"sample_size": len(records), "n_eff": round(float(n_eff), 4)},
+    }
+    if len(records) >= 8:
+        feature_block = build_feature_matrix(records)
+        X = feature_block["X"]
+        y = feature_block["y"]
+        sample_weights = build_trade_sample_weights(
+            y,
+            uniqueness.to_numpy() if len(uniqueness) else np.ones(len(y), dtype=float),
+        )
+        try:
+            feature_diagnostics = marchenko_pastur_eigen_clip(X)
+        except Exception as exc:
+            feature_diagnostics = {"trained": False, "reason": f"denoising_failed:{exc}"}
+        model_baseline = fit_uniqueness_weighted_lr(
+            X,
+            y,
+            sample_weights,
+            feature_cols=feature_block["feature_cols"],
+        )
+        model_baseline["trained"] = True
+        model_baseline["sample_weight_summary"] = {
+            "min": round(float(np.min(sample_weights)), 6),
+            "max": round(float(np.max(sample_weights)), 6),
+            "mean": round(float(np.mean(sample_weights)), 6),
+            "n_eff": round(float(effective_sample_size(sample_weights)), 4),
+        }
+        fm_challenger = fit_factorization_machine_classifier(
+            X,
+            y,
+            sample_weights,
+            n_eff=n_eff,
+            feature_cols=feature_block["feature_cols"],
+        )
     return {
         "n_eff": round(float(n_eff), 4),
         "uniqueness_mean": round(uniqueness_mean, 4),
@@ -436,6 +491,9 @@ def _adaptive_metrics_from_records(records: list[dict], calib: dict) -> dict:
         "dsr": dsr,
         "sharpe": sr,
         "edge_decay": decay,
+        "feature_denoising": feature_diagnostics,
+        "weighted_lr": model_baseline,
+        "fm_challenger": fm_challenger,
     }
 
 
@@ -570,6 +628,14 @@ def train_from_ledger(
     adaptive_state["current_dsr_probability"] = round(dsr_prob, 4)
     adaptive_state["required_sr_for_dsr"] = round(required_sr, 4)
     adaptive_state["dynamic_confluence_threshold"] = round(dynamic_threshold, 4)
+    weighted_lr_diag = adaptive_metrics["weighted_lr"].get("diagnostics") or {}
+    fm_diag = adaptive_metrics["fm_challenger"].get("diagnostics") or {}
+    weighted_lr_acc = float(weighted_lr_diag.get("accuracy") or 0.0)
+    fm_acc = float(fm_diag.get("accuracy") or 0.0)
+    fm_trained = bool(adaptive_metrics["fm_challenger"].get("trained"))
+    adopt_challenger = bool(
+        fm_trained and fm_acc >= weighted_lr_acc + 0.02 and adaptive_state["mode"] == "READY"
+    )
 
     if adaptive_state["mode"] == "VALIDATING_PROBE" and adaptive_conn is not None:
         stop_distance_pcts = []
@@ -615,9 +681,9 @@ def train_from_ledger(
             "confluence_min_score": adaptive_state["dynamic_confluence_threshold"],
         },
         "model": {
-            "active_model": "closed_loop_calibration",
-            "challenger_model": "purged_uniqueness_lr",
-            "adopt_challenger": False,
+            "active_model": "uniqueness_weighted_lr",
+            "challenger_model": "factorization_machine" if fm_trained else "purged_uniqueness_lr",
+            "adopt_challenger": adopt_challenger,
         },
         "diagnostics": {
             "required_sr_for_dsr": adaptive_state["required_sr_for_dsr"],
@@ -626,6 +692,12 @@ def train_from_ledger(
             "pbo": adaptive_state["pbo"],
             "walk_forward_pass_ratio": adaptive_metrics["walk_forward_pass_ratio"],
             "purged_fold_count": len(adaptive_metrics["purged_folds"]),
+            "mp_lambda_plus": adaptive_metrics["feature_denoising"].get("lambda_plus"),
+            "weighted_lr_accuracy": weighted_lr_diag.get("accuracy"),
+            "weighted_lr_log_loss": weighted_lr_diag.get("log_loss"),
+            "fm_accuracy": fm_diag.get("accuracy"),
+            "fm_log_loss": fm_diag.get("log_loss"),
+            "fm_trained": fm_trained,
         },
     }
 
@@ -657,6 +729,8 @@ def train_from_ledger(
                 "patch_key": adaptive_patch_key,
                 "gate_results": adaptive_metrics["gate_results"],
                 "probe_plan": probe_plan,
+                "weighted_lr": weighted_lr_diag,
+                "fm_challenger": fm_diag,
             },
         )
         if abs(dynamic_threshold - current_threshold) > 1e-9:

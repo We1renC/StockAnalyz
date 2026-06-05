@@ -196,6 +196,9 @@ def test_train_from_ledger_records_patch_and_audit_rows(tmp_path):
     assert any(row["event_type"] == "adaptive_state_computed" for row in audit_rows)
     runtime_patch = json.loads(patch_row["patch_payload"])
     assert runtime_patch["strategy"]["confluence_min_score"] >= 8.0
+    assert runtime_patch["model"]["active_model"] == "uniqueness_weighted_lr"
+    assert "weighted_lr_accuracy" in runtime_patch["diagnostics"]
+    assert "mp_lambda_plus" in runtime_patch["diagnostics"]
     assert updated_yaml["data"]["confluence"]["weights"]["htf_bias_aligned"] == 2
 
 
@@ -233,6 +236,9 @@ def test_train_from_ledger_applies_strategy_patch_when_adaptive_state_ready(tmp_
             "dsr": {"threshold_sharpe": 0.5, "p_value_proxy": 0.01, "passes": True},
             "sharpe": {"sharpe": 2.0},
             "edge_decay": {"status": "stable"},
+            "feature_denoising": {"lambda_plus": 1.8},
+            "weighted_lr": {"diagnostics": {"accuracy": 0.7, "log_loss": 0.4}},
+            "fm_challenger": {"trained": True, "diagnostics": {"accuracy": 0.75, "log_loss": 0.35}},
         }
 
     monkeypatch.setattr(smc_training_loop_module, "_adaptive_metrics_from_records", fake_adaptive_metrics)
