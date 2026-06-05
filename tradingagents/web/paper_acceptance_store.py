@@ -317,6 +317,30 @@ def ensure_paper_acceptance_schema(conn) -> None:
            ON paper_acceptance_threshold_profiles(symbol, stage, created_at DESC, id DESC)"""
     )
     conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_promotion_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            from_stage_name TEXT NOT NULL DEFAULT '',
+            target_stage_name TEXT NOT NULL DEFAULT '',
+            decision TEXT NOT NULL DEFAULT 'conditional',
+            approved_by TEXT NOT NULL DEFAULT '',
+            review_status TEXT NOT NULL DEFAULT '',
+            threshold_profile_version_tag TEXT NOT NULL DEFAULT '',
+            blocker_snapshot TEXT NOT NULL DEFAULT '[]',
+            threshold_snapshot TEXT NOT NULL DEFAULT '{}',
+            rationale TEXT NOT NULL DEFAULT '[]',
+            required_actions TEXT NOT NULL DEFAULT '[]',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_promotion_symbol_created
+           ON paper_acceptance_promotion_decisions(symbol, stage, created_at DESC, id DESC)"""
+    )
+    conn.execute(
         """CREATE TABLE IF NOT EXISTS paper_acceptance_capital_stages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             stage_key TEXT NOT NULL UNIQUE,
@@ -769,6 +793,128 @@ def summarize_threshold_profiles(conn, symbol: str | None, stage: str = "paper",
         "active_status": (latest or {}).get("status") or "missing",
         "active_version_tag": (latest or {}).get("version_tag") or "",
         "approved_by": (latest or {}).get("approved_by") or "",
+    }
+
+
+def record_promotion_decision(
+    conn,
+    *,
+    symbol: str,
+    from_stage_name: str = "",
+    target_stage_name: str = "",
+    decision: str = "conditional",
+    approved_by: str = "",
+    review_status: str = "",
+    threshold_profile_version_tag: str = "",
+    blocker_snapshot: list | None = None,
+    threshold_snapshot: dict | None = None,
+    rationale: list | None = None,
+    required_actions: list | None = None,
+    note: str = "",
+    stage: str = "paper",
+) -> dict:
+    """Persist one promotion decision snapshot for audit and rollout governance."""
+
+    ensure_paper_acceptance_schema(conn)
+    payload = {
+        "decision_key": f"paper-promotion-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "from_stage_name": from_stage_name or "",
+        "target_stage_name": target_stage_name or "",
+        "decision": (decision or "conditional").strip().lower(),
+        "approved_by": approved_by or "",
+        "review_status": review_status or "",
+        "threshold_profile_version_tag": threshold_profile_version_tag or "",
+        "blocker_snapshot": blocker_snapshot or [],
+        "threshold_snapshot": threshold_snapshot or {},
+        "rationale": rationale or [],
+        "required_actions": required_actions or [],
+        "note": note or "",
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_promotion_decisions
+           (decision_key, symbol, stage, from_stage_name, target_stage_name, decision, approved_by,
+            review_status, threshold_profile_version_tag, blocker_snapshot, threshold_snapshot,
+            rationale, required_actions, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["decision_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["from_stage_name"],
+            payload["target_stage_name"],
+            payload["decision"],
+            payload["approved_by"],
+            payload["review_status"],
+            payload["threshold_profile_version_tag"],
+            _json_dumps(payload["blocker_snapshot"]),
+            _json_dumps(payload["threshold_snapshot"]),
+            _json_dumps(payload["rationale"]),
+            _json_dumps(payload["required_actions"]),
+            payload["note"],
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=symbol,
+        stage=stage,
+        change_type="promotion_decision_recorded",
+        target_type="promotion_decision",
+        target_key=payload["decision_key"],
+        detail={
+            "decision": payload["decision"],
+            "from_stage_name": payload["from_stage_name"],
+            "target_stage_name": payload["target_stage_name"],
+            "review_status": payload["review_status"],
+            "threshold_profile_version_tag": payload["threshold_profile_version_tag"],
+        },
+    )
+    return payload
+
+
+def load_promotion_decisions(conn, symbol: str | None, stage: str = "paper", limit: int = 20) -> list[dict]:
+    """Load persisted promotion decisions."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_promotion_decisions
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 200))),
+    ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        data = dict(row)
+        data["blocker_snapshot"] = _json_loads(data.get("blocker_snapshot"), [])
+        data["threshold_snapshot"] = _json_loads(data.get("threshold_snapshot"), {})
+        data["rationale"] = _json_loads(data.get("rationale"), [])
+        data["required_actions"] = _json_loads(data.get("required_actions"), [])
+        out.append(data)
+    return out
+
+
+def summarize_promotion_decisions(conn, symbol: str | None, stage: str = "paper", limit: int = 20) -> dict:
+    """Summarize promotion decisions for workspace and closure use."""
+
+    rows = load_promotion_decisions(conn, symbol, stage=stage, limit=limit)
+    latest = rows[0] if rows else None
+    decision_counts: dict[str, int] = {}
+    for row in rows:
+        key = str(row.get("decision") or "unknown")
+        decision_counts[key] = decision_counts.get(key, 0) + 1
+    return {
+        "rows": rows,
+        "count": len(rows),
+        "latest": latest or {},
+        "latest_decision": (latest or {}).get("decision") or "missing",
+        "latest_target_stage_name": (latest or {}).get("target_stage_name") or "",
+        "latest_review_status": (latest or {}).get("review_status") or "",
+        "decision_counts": decision_counts,
     }
 
 
@@ -2501,6 +2647,7 @@ def _build_closure_summary(
     review: dict,
     events: list[dict],
     governance_summary: dict,
+    promotion_summary: dict,
 ) -> dict:
     summary = report.get("summary") or {}
     ladder = policy.get("promotion_ladder") or {}
@@ -2533,6 +2680,12 @@ def _build_closure_summary(
         required_actions.append(f"補齊 §{row.get('section')} {row.get('gate_name') or row.get('gate_id')}: {missing}")
     if governance_summary.get("restart_stats_completion_ratio", 1.0) < 1.0:
         required_actions.append("治理變更後尚未完整重跑統計。")
+    latest_promotion = promotion_summary.get("latest") or {}
+    if latest_promotion:
+        rationale.append(
+            f"最近一次升級決策為 {latest_promotion.get('decision') or 'unknown'}，"
+            f"目標階段 {latest_promotion.get('target_stage_name') or '未指定'}。"
+        )
     return {
         "conclusion": summary.get("conclusion") or "failed_repeat_paper",
         "review_status": review.get("review_status") or "pending",
@@ -2545,6 +2698,11 @@ def _build_closure_summary(
         "required_actions": required_actions[:6],
         "current_stage": ladder.get("current_stage") or {},
         "next_stage": ladder.get("next_stage") or {},
+        "promotion_decision_summary": {
+            "count": promotion_summary.get("count") or 0,
+            "latest_decision": promotion_summary.get("latest_decision") or "missing",
+            "latest_target_stage_name": promotion_summary.get("latest_target_stage_name") or "",
+        },
     }
 
 
@@ -2719,6 +2877,8 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
     changes = load_acceptance_change_log(conn, key, stage=stage, limit=80)
     governance_rows = load_governance_events(conn, key, stage=stage, limit=50)
     threshold_profiles = load_threshold_profiles(conn, key, stage=stage, limit=20)
+    promotion_decisions = load_promotion_decisions(conn, key, stage=stage, limit=20)
+    promotion_summary = summarize_promotion_decisions(conn, key, stage=stage, limit=20)
     coverage = _build_coverage_summary(catalog)
     closure_summary = _build_closure_summary(
         report,
@@ -2727,6 +2887,7 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         load_acceptance_review(conn, key, stage=stage),
         events,
         context.get("governance_summary") or {},
+        promotion_summary,
     )
     return {
         "symbol": key,
@@ -2761,6 +2922,8 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         "governance_events": governance_rows,
         "threshold_summary": context.get("threshold_summary") or {},
         "threshold_profiles": threshold_profiles,
+        "promotion_decisions": promotion_decisions,
+        "promotion_summary": promotion_summary,
     }
 
 
@@ -2781,6 +2944,7 @@ __all__ = [
     "load_order_audit_rows",
     "load_capital_stages",
     "load_deviation_snapshots",
+    "load_promotion_decisions",
     "load_threshold_profiles",
     "load_shadow_parity_traces",
     "load_reconciliation_runs",
@@ -2793,6 +2957,7 @@ __all__ = [
     "record_capital_stage",
     "record_deviation_snapshot",
     "record_governance_event",
+    "record_promotion_decision",
     "record_threshold_profile",
     "record_shadow_parity_trace",
     "record_order_audit",
@@ -2801,6 +2966,7 @@ __all__ = [
     "refresh_acceptance_reports_for_symbols",
     "summarize_threshold_profiles",
     "summarize_governance_events",
+    "summarize_promotion_decisions",
     "summarize_shadow_parity_traces",
     "run_acceptance_scenario",
     "upsert_acceptance_review",

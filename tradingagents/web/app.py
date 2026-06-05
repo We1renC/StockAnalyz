@@ -54,6 +54,7 @@ from paper_acceptance_store import (
     load_capital_stages,
     load_deviation_snapshots,
     load_order_audit_rows,
+    load_promotion_decisions,
     load_reconciliation_runs,
     load_runtime_metrics,
     load_scenario_runs,
@@ -65,6 +66,7 @@ from paper_acceptance_store import (
     record_capital_stage,
     record_deviation_snapshot,
     record_governance_event,
+    record_promotion_decision,
     record_threshold_profile,
     record_shadow_parity_trace,
     record_order_audit,
@@ -73,6 +75,7 @@ from paper_acceptance_store import (
     refresh_acceptance_reports_for_symbols,
     run_acceptance_scenario,
     summarize_governance_events,
+    summarize_promotion_decisions,
     summarize_shadow_parity_traces,
     summarize_threshold_profiles,
     upsert_acceptance_review,
@@ -4973,6 +4976,22 @@ class PaperAcceptanceThresholdProfileCreate(BaseModel):
     stage: str = "paper"
 
 
+class PaperAcceptancePromotionDecisionCreate(BaseModel):
+    symbol: str
+    decision: str = "conditional"
+    from_stage_name: str = ""
+    target_stage_name: str = ""
+    approved_by: str = ""
+    review_status: str = ""
+    threshold_profile_version_tag: str = ""
+    blocker_snapshot: Optional[list] = None
+    threshold_snapshot: Optional[dict] = None
+    rationale: Optional[list[str]] = None
+    required_actions: Optional[list[str]] = None
+    note: str = ""
+    stage: str = "paper"
+
+
 def _json_dumps_compact(value, fallback):
     if value is None:
         value = fallback
@@ -5590,6 +5609,7 @@ def api_get_paper_acceptance_promotion_check(symbol: str, stage: str = "paper"):
         payload = build_acceptance_workspace(conn, symbol=symbol.strip().upper(), stage=stage, limit_reports=5)
         policy = payload.get("policy") or {}
         blockers = list(policy.get("blockers") or [])
+        promotion_summary = payload.get("promotion_summary") or {}
         if policy.get("can_promote"):
             decision = "allow"
         elif blockers:
@@ -5600,8 +5620,10 @@ def api_get_paper_acceptance_promotion_check(symbol: str, stage: str = "paper"):
             "symbol": payload["symbol"],
             "stage": payload["stage"],
             "decision": decision,
+            "recorded_decision": promotion_summary.get("latest_decision") or "missing",
             "policy": policy,
             "review": payload.get("review") or {},
+            "promotion_summary": promotion_summary,
         })
     finally:
         conn.close()
@@ -5780,6 +5802,20 @@ def api_get_paper_acceptance_threshold_profiles(symbol: str, stage: str = "paper
         conn.close()
 
 
+@app.get("/api/paper-acceptance/promotion-decisions")
+def api_get_paper_acceptance_promotion_decisions(symbol: str, stage: str = "paper", limit: int = 50):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        key = symbol.strip().upper()
+        rows = load_promotion_decisions(conn, key, stage=stage, limit=limit)
+        summary = summarize_promotion_decisions(conn, key, stage=stage, limit=limit)
+        return sanitize_float_values({"rows": rows, "summary": summary, "count": len(rows)})
+    finally:
+        conn.close()
+
+
 @app.post("/api/paper-acceptance/threshold-profiles")
 def api_record_paper_acceptance_threshold_profile(req: PaperAcceptanceThresholdProfileCreate):
     if not req.symbol.strip():
@@ -5796,6 +5832,46 @@ def api_record_paper_acceptance_threshold_profile(req: PaperAcceptanceThresholdP
             source_summary=req.source_summary or {},
             approved_by=req.approved_by,
             version_tag=req.version_tag,
+            note=req.note,
+            stage=req.stage,
+        )
+        return sanitize_float_values({"ok": True, "row": row})
+    finally:
+        conn.close()
+
+
+@app.post("/api/paper-acceptance/promotion-decisions")
+def api_record_paper_acceptance_promotion_decision(req: PaperAcceptancePromotionDecisionCreate):
+    if not req.symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        key = req.symbol.strip().upper()
+        workspace = build_acceptance_workspace(conn, symbol=key, stage=req.stage, limit_reports=5)
+        closure = workspace.get("closure_summary") or {}
+        policy = workspace.get("policy") or {}
+        ladder = policy.get("promotion_ladder") or {}
+        row = record_promotion_decision(
+            conn,
+            symbol=key,
+            from_stage_name=req.from_stage_name or (ladder.get("current_stage") or {}).get("stage_name") or "",
+            target_stage_name=req.target_stage_name or (ladder.get("next_stage") or {}).get("stage_name") or "",
+            decision=req.decision,
+            approved_by=req.approved_by or workspace.get("review", {}).get("reviewer") or "",
+            review_status=req.review_status or workspace.get("review", {}).get("review_status") or "",
+            threshold_profile_version_tag=(
+                req.threshold_profile_version_tag
+                or (workspace.get("threshold_summary") or {}).get("active_version_tag")
+                or ""
+            ),
+            blocker_snapshot=req.blocker_snapshot if req.blocker_snapshot is not None else list(policy.get("blockers") or []),
+            threshold_snapshot=req.threshold_snapshot if req.threshold_snapshot is not None else dict(policy.get("thresholds") or {}),
+            rationale=req.rationale if req.rationale is not None else list(closure.get("rationale") or []),
+            required_actions=(
+                req.required_actions
+                if req.required_actions is not None
+                else list(closure.get("required_actions") or [])
+            ),
             note=req.note,
             stage=req.stage,
         )

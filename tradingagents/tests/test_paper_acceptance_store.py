@@ -19,6 +19,7 @@ from paper_acceptance_store import (
     load_capital_stages,
     load_deviation_snapshots,
     load_order_audit_rows,
+    load_promotion_decisions,
     load_reconciliation_runs,
     load_runtime_metrics,
     load_threshold_profiles,
@@ -29,6 +30,7 @@ from paper_acceptance_store import (
     record_capital_stage,
     record_deviation_snapshot,
     record_governance_event,
+    record_promotion_decision,
     record_threshold_profile,
     record_shadow_parity_trace,
     record_order_audit,
@@ -37,6 +39,7 @@ from paper_acceptance_store import (
     refresh_acceptance_reports_for_symbols,
     run_acceptance_scenario,
     summarize_governance_events,
+    summarize_promotion_decisions,
     summarize_shadow_parity_traces,
     summarize_threshold_profiles,
     upsert_acceptance_review,
@@ -660,6 +663,49 @@ def test_threshold_profiles_feed_policy_metrics_and_workspace():
     assert context["metrics"]["threshold_profile_version_tag"] == "thr-v2"
     assert workspace["threshold_summary"]["active_version_tag"] == "thr-v2"
     assert workspace["threshold_profiles"][0]["approved_by"] == "qa"
+
+
+def test_promotion_decisions_are_persisted_into_workspace_and_closure():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+    ensure_paper_acceptance_schema(conn)
+
+    record_threshold_profile(
+        conn,
+        symbol="ABAT",
+        strategy_type="intraday",
+        profile_name="q2-calibration",
+        status="approved",
+        thresholds={"min_trade_count": 60, "max_average_slippage_bps": 55.0},
+        approved_by="qa",
+        version_tag="thr-v2",
+    )
+    record_promotion_decision(
+        conn,
+        symbol="ABAT",
+        from_stage_name="stage1_1_5",
+        target_stage_name="stage2_10_20",
+        decision="conditional",
+        approved_by="qa",
+        review_status="reviewing",
+        threshold_profile_version_tag="thr-v2",
+        blocker_snapshot=["20 api_error_threshold_failed"],
+        threshold_snapshot={"min_trade_count": 60},
+        rationale=["樣本足夠，但 API error 尚需收斂。"],
+        required_actions=["降低 API error rate 至門檻內。"],
+        note="保留 shadow 觀察一週",
+    )
+
+    rows = load_promotion_decisions(conn, "ABAT")
+    summary = summarize_promotion_decisions(conn, "ABAT")
+    workspace = build_acceptance_workspace(conn, symbol="ABAT")
+
+    assert rows[0]["decision"] == "conditional"
+    assert rows[0]["blocker_snapshot"] == ["20 api_error_threshold_failed"]
+    assert summary["latest_decision"] == "conditional"
+    assert workspace["promotion_summary"]["latest_target_stage_name"] == "stage2_10_20"
+    assert workspace["promotion_decisions"][0]["threshold_profile_version_tag"] == "thr-v2"
+    assert workspace["closure_summary"]["promotion_decision_summary"]["latest_decision"] == "conditional"
 
 
 def test_workspace_auto_generates_stage_and_deviation_from_live_telemetry():

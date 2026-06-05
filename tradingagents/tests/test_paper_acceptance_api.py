@@ -14,6 +14,7 @@ from app import (
     PaperAcceptanceOrderAuditCreate,
     PaperAcceptanceReconciliationCreate,
     PaperAcceptanceReviewUpdate,
+    PaperAcceptancePromotionDecisionCreate,
     PaperAcceptanceRuntimeMetricCreate,
     PaperAcceptanceScenarioRunRequest,
     PaperAcceptanceShadowParityCreate,
@@ -419,6 +420,53 @@ def test_api_threshold_profile_round_trip(tmp_path):
         assert rows["summary"]["active_version_tag"] == "thr-2026q2"
         assert promotion["policy"]["thresholds"]["max_average_slippage_bps"] == 42.0
         assert workspace["threshold_profiles"][0]["profile_name"] == "q2-calibration"
+    finally:
+        app.DB = original
+
+
+def test_api_promotion_decision_round_trip(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        app.api_record_paper_acceptance_threshold_profile(
+            PaperAcceptanceThresholdProfileCreate(
+                symbol="ABAT",
+                strategy_type="intraday",
+                profile_name="q2-calibration",
+                status="approved",
+                thresholds={"min_trade_count": 64, "max_average_slippage_bps": 38.0},
+                approved_by="qa",
+                version_tag="thr-v2",
+            )
+        )
+        app.api_update_paper_acceptance_review(
+            PaperAcceptanceReviewUpdate(
+                symbol="ABAT",
+                reviewer="qa",
+                review_status="reviewing",
+                retest_required=False,
+                can_promote_to_live=False,
+                note="先保留在 shadow",
+            )
+        )
+
+        payload = app.api_record_paper_acceptance_promotion_decision(
+            PaperAcceptancePromotionDecisionCreate(
+                symbol="ABAT",
+                decision="conditional",
+                note="觀察一週後再決定是否升級",
+            )
+        )
+
+        rows = app.api_get_paper_acceptance_promotion_decisions(symbol="ABAT")
+        check = app.api_get_paper_acceptance_promotion_check(symbol="ABAT")
+        closure = app.api_get_paper_acceptance_closure(symbol="ABAT")
+
+        assert payload["ok"] is True
+        assert rows["count"] == 1
+        assert rows["summary"]["latest_decision"] == "conditional"
+        assert rows["rows"][0]["threshold_profile_version_tag"] == "thr-v2"
+        assert check["promotion_summary"]["latest_decision"] == "conditional"
+        assert closure["closure_summary"]["promotion_decision_summary"]["latest_decision"] == "conditional"
     finally:
         app.DB = original
 
