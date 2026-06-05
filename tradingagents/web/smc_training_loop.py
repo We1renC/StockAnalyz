@@ -95,6 +95,11 @@ from learning.adaptive_validation import (
     effective_sample_size,
     validation_entropy_sizing,
 )
+from learning.dsr_threshold import (
+    dsr_probability,
+    required_sharpe_for_dsr,
+    update_confluence_threshold_by_dsr,
+)
 from learning.probe_controller import plan_probe_order
 
 # Merged-but-previously-unused acceptance primitives
@@ -544,6 +549,27 @@ def train_from_ledger(
     }
     probe_plan: dict = {}
     adaptive_patch_key: Optional[str] = None
+    current_threshold = float(
+        (config_snapshot.get("data") or {}).get("confluence", {}).get(
+            "threshold",
+            CONFLUENCE_THRESHOLD_DEFAULT,
+        )
+    )
+    current_sr = float(adaptive_metrics["sharpe"].get("sharpe") or 0.0)
+    dsr_prob = dsr_probability(current_sr, 0.0, max(adaptive_metrics["n_eff"], 2.0))
+    required_sr = required_sharpe_for_dsr(0.95, 0.0, max(adaptive_metrics["n_eff"], 2.0))
+    dynamic_threshold = update_confluence_threshold_by_dsr(
+        current_threshold=current_threshold,
+        base_threshold=current_threshold,
+        max_threshold=current_threshold + 4.0,
+        current_sr=current_sr,
+        required_sr=required_sr,
+        k=1.25,
+        smoothing=0.25,
+    )
+    adaptive_state["current_dsr_probability"] = round(dsr_prob, 4)
+    adaptive_state["required_sr_for_dsr"] = round(required_sr, 4)
+    adaptive_state["dynamic_confluence_threshold"] = round(dynamic_threshold, 4)
 
     if adaptive_state["mode"] == "VALIDATING_PROBE" and adaptive_conn is not None:
         stop_distance_pcts = []
@@ -586,12 +612,7 @@ def train_from_ledger(
             "probe_notional_cap_usdt": float(probe_plan.get("notional_usdt") or 5.0),
         },
         "strategy": {
-            "confluence_min_score": float(
-                (config_snapshot.get("data") or {}).get("confluence", {}).get(
-                    "threshold",
-                    CONFLUENCE_THRESHOLD_DEFAULT,
-                )
-            ),
+            "confluence_min_score": adaptive_state["dynamic_confluence_threshold"],
         },
         "model": {
             "active_model": "closed_loop_calibration",
@@ -601,6 +622,7 @@ def train_from_ledger(
         "diagnostics": {
             "required_sr_for_dsr": adaptive_state["required_sr_for_dsr"],
             "current_sr": adaptive_state["current_sr"],
+            "current_dsr_probability": adaptive_state["current_dsr_probability"],
             "pbo": adaptive_state["pbo"],
             "walk_forward_pass_ratio": adaptive_metrics["walk_forward_pass_ratio"],
             "purged_fold_count": len(adaptive_metrics["purged_folds"]),
@@ -637,6 +659,20 @@ def train_from_ledger(
                 "probe_plan": probe_plan,
             },
         )
+        if abs(dynamic_threshold - current_threshold) > 1e-9:
+            record_adaptive_audit_event(
+                adaptive_conn,
+                symbol=symbol,
+                event_type="threshold_patch_computed",
+                severity="info",
+                state_before={"confluence_threshold": current_threshold},
+                state_after={"confluence_threshold": adaptive_state["dynamic_confluence_threshold"]},
+                detail={
+                    "current_sr": current_sr,
+                    "dsr_probability": adaptive_state["current_dsr_probability"],
+                    "required_sr": adaptive_state["required_sr_for_dsr"],
+                },
+            )
         adaptive_conn.commit()
 
     weights_after = dict(weights_before)

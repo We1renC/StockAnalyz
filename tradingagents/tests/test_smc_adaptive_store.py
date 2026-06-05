@@ -176,7 +176,7 @@ def test_train_from_ledger_records_patch_and_audit_rows(tmp_path):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     patch_row = conn.execute(
-        "SELECT patch_key, patch_type, applied FROM smc_adaptive_config_patches ORDER BY id DESC LIMIT 1"
+        "SELECT patch_key, patch_type, applied, patch_payload FROM smc_adaptive_config_patches ORDER BY id DESC LIMIT 1"
     ).fetchone()
     ledger_count = conn.execute(
         "SELECT COUNT(*) FROM smc_adaptive_trade_ledger"
@@ -194,6 +194,8 @@ def test_train_from_ledger_records_patch_and_audit_rows(tmp_path):
     assert ledger_count == 80
     assert result.adaptive_state["mode"] in {"VALIDATING_PROBE", "DRY_RUN"}
     assert any(row["event_type"] == "adaptive_state_computed" for row in audit_rows)
+    runtime_patch = json.loads(patch_row["patch_payload"])
+    assert runtime_patch["strategy"]["confluence_min_score"] >= 8.0
     assert updated_yaml["data"]["confluence"]["weights"]["htf_bias_aligned"] == 2
 
 
