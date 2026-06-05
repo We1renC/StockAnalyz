@@ -495,6 +495,17 @@ def load_adaptive_audit_logs(
     return [dict(row) if not isinstance(row, dict) else row for row in rows]
 
 
+# Patch types that ARE allowed to be merged into strategy.yaml. Anything else
+# (notably ``adaptive_runtime``) is rejected by ``apply_atomic_config_patch``
+# even if ``create_config_patch`` was called with apply=True. This is the
+# type-boundary that stops runtime state from polluting the strategy schema.
+APPLICABLE_PATCH_TYPES = frozenset({"strategy"})
+
+
+def _patch_is_applicable(patch_type: str) -> bool:
+    return (patch_type or "strategy") in APPLICABLE_PATCH_TYPES
+
+
 def create_config_patch(
     conn: sqlite3.Connection,
     *,
@@ -507,14 +518,30 @@ def create_config_patch(
 ) -> dict:
     ensure_adaptive_calibration_schema(conn)
     before = strategy_config_snapshot(strategy_yaml_path)
-    merged = _deep_merge(before["data"], patch or {})
-    try:
-        import yaml
+    # Only patch types that actually target strategy.yaml get an ``after_config``
+    # materialised against the current strategy file. Runtime patches (e.g.
+    # ``adaptive_runtime``) keep ``after_config`` identical to ``before_config``
+    # so even a buggy apply_atomic_config_patch cannot leak runtime fields.
+    is_applicable = _patch_is_applicable(patch_type)
+    if is_applicable:
+        merged = _deep_merge(before["data"], patch or {})
+        try:
+            import yaml
 
-        after_text = yaml.safe_dump(merged, allow_unicode=True, sort_keys=False)
-    except Exception:
+            after_text = yaml.safe_dump(merged, allow_unicode=True, sort_keys=False)
+        except Exception:
+            after_text = before["text"]
+    else:
+        # Runtime/diagnostic patch — never let it materialise as a yaml diff
         after_text = before["text"]
     after_hash = compute_config_hash(after_text)
+    if apply and not is_applicable:
+        # Refuse to ever apply a non-strategy patch — explicit error so callers
+        # cannot silently corrupt the strategy file.
+        raise ValueError(
+            f"patch_type={patch_type!r} is not applicable to strategy.yaml; "
+            f"only {sorted(APPLICABLE_PATCH_TYPES)} are allowed for apply=True"
+        )
     row = {
         "patch_key": str(uuid4()),
         "symbol": (symbol or "ALL").upper(),
@@ -525,10 +552,10 @@ def create_config_patch(
         "after_hash": after_hash,
         "before_config": before["text"],
         "after_config": after_text,
-        "applied": 1 if apply else 0,
+        "applied": 1 if (apply and is_applicable) else 0,
         "rolled_back": 0,
         "created_at": _now_iso(),
-        "applied_at": _now_iso() if apply else None,
+        "applied_at": _now_iso() if (apply and is_applicable) else None,
         "rolled_back_at": None,
     }
     conn.execute(
@@ -559,6 +586,13 @@ def apply_atomic_config_patch(
     if row is None:
         raise ValueError(f"unknown patch_key: {patch_key}")
     row = dict(row)
+    # Hard type boundary — runtime / diagnostic patches must NEVER reach
+    # strategy.yaml. This is the second line of defence after create_config_patch.
+    if not _patch_is_applicable(row.get("patch_type", "strategy")):
+        raise ValueError(
+            f"refusing to apply patch_key={patch_key}: "
+            f"patch_type={row.get('patch_type')!r} is not a strategy patch"
+        )
     current = strategy_config_snapshot(strategy_yaml_path)
     if expected_hash and current["hash"] != expected_hash:
         raise ValueError(

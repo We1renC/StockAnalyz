@@ -189,68 +189,85 @@ def build_gate_results(
     calibration_threshold: float = 0.0,
     fatal_reasons: Iterable[str] | None = None,
 ) -> dict[str, dict]:
+    """Evaluate the 5 validation gates.
+
+    Per the audit feedback: ``fatal_reasons`` is a *system-wide* signal
+    (e.g. data-integrity problems that affect every gate). It must NOT
+    be folded into each gate's per-gate ``fatal`` flag — that masks
+    which gate is genuinely failing. The new contract:
+
+      • Each gate's own ``fatal`` is reserved for true single-gate
+        catastrophes and stays ``False`` here; gate-level diagnostics
+        live in ``passed``/``severity``/``reason``.
+      • System-wide reasons are reported via the meta-key
+        ``__system_fatal__`` at the top level. Callers (UI / entropy
+        sizing) surface that as a banner / LOCKED state.
+    """
     reasons = [str(reason) for reason in (fatal_reasons or []) if reason]
-    fatal = bool(reasons)
+    reason_text = "; ".join(reasons)
+
+    wf_sev = severity_walk_forward(walk_forward_pass_ratio, walk_forward_threshold)
+    pbo_sev = severity_pbo(float(pbo), float(pbo_threshold))
+    dsr_sev = severity_dsr(float(dsr_probability), float(dsr_threshold))
+    decay_sev = severity_edge_decay(
+        float(recent_expectancy), float(historical_expectancy),
+        float(edge_decay_floor_ratio),
+    )
+    calib_sev = severity_calibration(
+        float(calibration_new_score), float(calibration_old_score),
+    )
+
+    wf_passed = walk_forward_pass_ratio >= walk_forward_threshold
+    pbo_passed = float(pbo) <= float(pbo_threshold)
+    dsr_passed = float(dsr_probability) >= float(dsr_threshold)
+    decay_passed = decay_sev == 0.0
+    calib_passed = float(calibration_new_score) > float(calibration_old_score)
+
     out = {
         "walk_forward": GateResult(
-            name="walk_forward",
-            passed=walk_forward_pass_ratio >= walk_forward_threshold,
+            name="walk_forward", passed=wf_passed,
             metric=float(walk_forward_pass_ratio),
             threshold=float(walk_forward_threshold),
-            severity=severity_walk_forward(walk_forward_pass_ratio, walk_forward_threshold),
-            fatal=fatal,
-            reason="; ".join(reasons),
+            severity=wf_sev, fatal=False,
+            reason="walk_forward_pass_ratio_below_threshold" if not wf_passed else "",
         ),
         "pbo": GateResult(
-            name="pbo",
-            passed=float(pbo) <= float(pbo_threshold),
-            metric=float(pbo),
-            threshold=float(pbo_threshold),
-            severity=severity_pbo(float(pbo), float(pbo_threshold)),
-            fatal=fatal,
-            reason="; ".join(reasons),
+            name="pbo", passed=pbo_passed,
+            metric=float(pbo), threshold=float(pbo_threshold),
+            severity=pbo_sev, fatal=False,
+            reason="pbo_above_threshold" if not pbo_passed else "",
         ),
         "dsr": GateResult(
-            name="dsr",
-            passed=float(dsr_probability) >= float(dsr_threshold),
-            metric=float(dsr_probability),
-            threshold=float(dsr_threshold),
-            severity=severity_dsr(float(dsr_probability), float(dsr_threshold)),
-            fatal=fatal,
-            reason="; ".join(reasons),
+            name="dsr", passed=dsr_passed,
+            metric=float(dsr_probability), threshold=float(dsr_threshold),
+            severity=dsr_sev, fatal=False,
+            reason="dsr_probability_below_threshold" if not dsr_passed else "",
         ),
         "edge_decay": GateResult(
-            name="edge_decay",
-            passed=severity_edge_decay(
-                float(recent_expectancy),
-                float(historical_expectancy),
-                float(edge_decay_floor_ratio),
-            )
-            == 0.0,
+            name="edge_decay", passed=decay_passed,
             metric=float(recent_expectancy),
             threshold=float(historical_expectancy) * float(edge_decay_floor_ratio),
-            severity=severity_edge_decay(
-                float(recent_expectancy),
-                float(historical_expectancy),
-                float(edge_decay_floor_ratio),
-            ),
-            fatal=fatal,
-            reason="; ".join(reasons),
+            severity=decay_sev, fatal=False,
+            reason="edge_decay_below_floor" if not decay_passed else "",
         ),
         "closed_loop_calibration": GateResult(
-            name="closed_loop_calibration",
-            passed=float(calibration_new_score) > float(calibration_old_score),
+            name="closed_loop_calibration", passed=calib_passed,
             metric=float(calibration_new_score),
             threshold=float(calibration_threshold),
-            severity=severity_calibration(
-                float(calibration_new_score),
-                float(calibration_old_score),
-            ),
-            fatal=fatal,
-            reason="; ".join(reasons),
+            severity=calib_sev, fatal=False,
+            reason="calibration_regression" if not calib_passed else "",
         ),
     }
-    return {key: value.to_dict() for key, value in out.items()}
+    result = {key: value.to_dict() for key, value in out.items()}
+    # System-wide signal — NOT folded into per-gate fatal. UI surfaces
+    # this as a banner; entropy sizing only LOCKs on this OR a per-gate
+    # fatal (which we now intentionally never set here).
+    result["__system_fatal__"] = {
+        "fatal": bool(reasons),
+        "reasons": reasons,
+        "reason_text": reason_text,
+    }
+    return result
 
 
 def validation_entropy_sizing(
@@ -261,20 +278,31 @@ def validation_entropy_sizing(
     max_probe_multiplier: float = 0.10,
     eps: float = 1e-12,
 ) -> dict:
-    if any(g.get("fatal", False) for g in gate_results.values()):
+    # ``build_gate_results`` now ships an additional ``__system_fatal__``
+    # key alongside the real gates. It's metadata, not a gate, so we must
+    # filter it out before iterating; otherwise entropy sizing thinks
+    # there's a phantom gate with no ``pass`` field and never reaches READY.
+    real_gates = {k: v for k, v in gate_results.items() if not k.startswith("__")}
+    system_fatal = gate_results.get("__system_fatal__") or {}
+
+    # A system-wide data-integrity fatal still locks the system, but it's
+    # surfaced explicitly via the meta block — not by silently flipping
+    # every gate's per-gate fatal flag (audit feedback fix).
+    if bool(system_fatal.get("fatal", False)) or any(g.get("fatal", False) for g in real_gates.values()):
         return {
             "state_hint": "LOCKED",
             "risk_multiplier": 0.0,
             "entropy": 1.0,
             "amplitude": 1.0,
+            "system_fatal_reasons": system_fatal.get("reasons", []),
         }
 
     severities = np.array(
-        [float(g.get("severity", 1.0)) for g in gate_results.values()],
+        [float(g.get("severity", 1.0)) for g in real_gates.values()],
         dtype=float,
     )
     severities = np.clip(severities, 0.0, 1.0)
-    all_pass = all(bool(g.get("pass", False)) for g in gate_results.values())
+    all_pass = all(bool(g.get("pass", False)) for g in real_gates.values())
 
     if all_pass and n_eff >= n_eff_ready_min:
         return {

@@ -109,6 +109,111 @@ from learning.uniqueness_weighted_lr import (
     fit_uniqueness_weighted_lr,
 )
 
+
+# ---------------------------------------------------------------------------
+# Purged Walk-Forward OOS comparator for FM vs LR challenger adoption
+# (smc_adaptive_calibration_development_plan §998-1004)
+# ---------------------------------------------------------------------------
+_FM_OOS_MIN_FOLDS = 3
+_FM_OOS_MIN_TRAIN = 16            # need ≥16 rows in each train fold for FM to be meaningful
+_FM_OOS_MIN_TEST = 4              # each test fold must have ≥4 rows
+_FM_OOS_ACC_MARGIN = 0.02         # FM must beat LR by ≥2pp OOS to be adopted
+
+
+def _purged_walk_forward_fm_vs_lr(
+    records: list[dict],
+    *,
+    n_folds: int = 4,
+    embargo: int = 1,
+) -> dict:
+    """Walk-forward, purged, fold-by-fold accuracy comparison.
+
+    For each fold, train both models on the train slice (with an embargo
+    gap before the test slice to prevent label leakage) and score
+    accuracy on the test slice. Adopt FM only when it beats LR on the
+    *mean OOS accuracy across all folds* by ≥``_FM_OOS_ACC_MARGIN``.
+
+    Returns a verdict + per-fold detail so the audit panel can show
+    "FM 0.62 vs LR 0.58 over 4 folds → adopt".
+    """
+    feature_block = build_feature_matrix(records)
+    X = feature_block.get("X")
+    y = feature_block.get("y")
+    feature_cols = feature_block.get("feature_cols", [])
+    if X is None or y is None:
+        return {"verdict": "no_feature_matrix", "fold_count": 0,
+                "fm_oos_accuracy": None, "lr_oos_accuracy": None}
+    n = len(y)
+    if n < _FM_OOS_MIN_TRAIN + _FM_OOS_MIN_TEST + embargo + n_folds:
+        return {
+            "verdict": "insufficient_samples_for_walk_forward",
+            "n": n, "min_required": _FM_OOS_MIN_TRAIN + _FM_OOS_MIN_TEST + embargo + n_folds,
+            "fold_count": 0, "fm_oos_accuracy": None, "lr_oos_accuracy": None,
+        }
+
+    fold_size = max(_FM_OOS_MIN_TEST, n // (n_folds + 1))
+    fold_records: list[dict] = []
+    fm_accs: list[float] = []
+    lr_accs: list[float] = []
+    for k in range(1, n_folds + 1):
+        test_start = k * fold_size
+        test_end = min(n, test_start + fold_size)
+        if test_end - test_start < _FM_OOS_MIN_TEST:
+            continue
+        train_end = max(0, test_start - embargo)
+        if train_end < _FM_OOS_MIN_TRAIN:
+            continue
+        X_train, y_train = X[:train_end], y[:train_end]
+        X_test, y_test = X[test_start:test_end], y[test_start:test_end]
+        try:
+            weights = build_trade_sample_weights(
+                y_train,
+                np.ones(len(y_train), dtype=float),  # uniqueness already inside records
+            )
+            lr_fit = fit_uniqueness_weighted_lr(
+                X_train, y_train, weights, feature_cols=feature_cols
+            )
+            fm_fit = fit_factorization_machine_classifier(
+                X_train, y_train, weights,
+                n_eff=float(len(y_train)), feature_cols=feature_cols,
+            )
+            lr_pred = lr_fit.get("predict_proba")
+            fm_pred = fm_fit.get("predict_proba")
+            if not (callable(lr_pred) and callable(fm_pred)):
+                continue
+            lr_acc = float(((lr_pred(X_test) >= 0.5).astype(int) == y_test).mean())
+            fm_acc = float(((fm_pred(X_test) >= 0.5).astype(int) == y_test).mean())
+            lr_accs.append(lr_acc); fm_accs.append(fm_acc)
+            fold_records.append({
+                "fold": k, "train_n": train_end, "test_n": test_end - test_start,
+                "lr_acc": round(lr_acc, 4), "fm_acc": round(fm_acc, 4),
+                "margin": round(fm_acc - lr_acc, 4),
+            })
+        except Exception as exc:
+            fold_records.append({"fold": k, "error": repr(exc)})
+            continue
+
+    if len(fm_accs) < _FM_OOS_MIN_FOLDS:
+        return {
+            "verdict": "insufficient_valid_folds",
+            "fold_count": len(fm_accs),
+            "min_folds_required": _FM_OOS_MIN_FOLDS,
+            "fm_oos_accuracy": None, "lr_oos_accuracy": None,
+            "folds": fold_records,
+        }
+    mean_fm = float(np.mean(fm_accs))
+    mean_lr = float(np.mean(lr_accs))
+    margin = mean_fm - mean_lr
+    return {
+        "verdict": "fm_beats_lr_oos" if margin >= _FM_OOS_ACC_MARGIN else "fm_not_better_oos",
+        "fm_oos_accuracy": round(mean_fm, 4),
+        "lr_oos_accuracy": round(mean_lr, 4),
+        "margin": round(margin, 4),
+        "margin_threshold": _FM_OOS_ACC_MARGIN,
+        "fold_count": len(fm_accs),
+        "folds": fold_records,
+    }
+
 # Merged-but-previously-unused acceptance primitives
 from paper_acceptance_store import ensure_paper_acceptance_schema, load_acceptance_reports
 from paper_acceptance_metrics import (
@@ -633,11 +738,22 @@ def train_from_ledger(
     adaptive_state["dynamic_confluence_threshold"] = round(dynamic_threshold, 4)
     weighted_lr_diag = adaptive_metrics["weighted_lr"].get("diagnostics") or {}
     fm_diag = adaptive_metrics["fm_challenger"].get("diagnostics") or {}
-    weighted_lr_acc = float(weighted_lr_diag.get("accuracy") or 0.0)
-    fm_acc = float(fm_diag.get("accuracy") or 0.0)
     fm_trained = bool(adaptive_metrics["fm_challenger"].get("trained"))
+    # Per smc_adaptive_calibration_development_plan §998-1004, the FM
+    # challenger may ONLY be adopted when it beats the LR baseline in a
+    # *purged* walk-forward OOS comparison — not on the same training set.
+    # We compute the OOS comparison here; if there isn't enough data for a
+    # valid split the challenger is NOT adopted (default-deny).
+    fm_oos = _purged_walk_forward_fm_vs_lr(records) if fm_trained else {
+        "verdict": "no_fm_to_compare",
+        "fm_oos_accuracy": None,
+        "lr_oos_accuracy": None,
+        "fold_count": 0,
+    }
     adopt_challenger = bool(
-        fm_trained and fm_acc >= weighted_lr_acc + 0.02 and adaptive_state["mode"] == "READY"
+        fm_trained
+        and fm_oos["verdict"] == "fm_beats_lr_oos"
+        and adaptive_state["mode"] == "READY"
     )
 
     if adaptive_state["mode"] == "VALIDATING_PROBE" and adaptive_conn is not None:
@@ -684,9 +800,17 @@ def train_from_ledger(
             "confluence_min_score": adaptive_state["dynamic_confluence_threshold"],
         },
         "model": {
+            # ``active_model`` reflects the *currently deployed* model. The
+            # adoption switch is gated by Purged Walk-Forward OOS; until
+            # ``adopt_challenger=True`` AND a separate switch ceremony runs,
+            # we stay on the LR baseline. The field is purely informational
+            # in this runtime patch (it never reaches strategy.yaml — see
+            # APPLICABLE_PATCH_TYPES).
             "active_model": "uniqueness_weighted_lr",
             "challenger_model": "factorization_machine" if fm_trained else "purged_uniqueness_lr",
             "adopt_challenger": adopt_challenger,
+            "adopt_challenger_basis": "purged_walk_forward_oos",
+            "challenger_oos": fm_oos,
         },
         "diagnostics": {
             "required_sr_for_dsr": adaptive_state["required_sr_for_dsr"],
@@ -696,11 +820,21 @@ def train_from_ledger(
             "walk_forward_pass_ratio": adaptive_metrics["walk_forward_pass_ratio"],
             "purged_fold_count": len(adaptive_metrics["purged_folds"]),
             "mp_lambda_plus": adaptive_metrics["feature_denoising"].get("lambda_plus"),
+            # Existing in-sample diagnostics — kept for backwards compat with
+            # downstream UI / tests that read these names.
             "weighted_lr_accuracy": weighted_lr_diag.get("accuracy"),
+            "weighted_lr_in_sample_accuracy": weighted_lr_diag.get("accuracy"),
             "weighted_lr_log_loss": weighted_lr_diag.get("log_loss"),
             "fm_accuracy": fm_diag.get("accuracy"),
+            "fm_in_sample_accuracy": fm_diag.get("accuracy"),
             "fm_log_loss": fm_diag.get("log_loss"),
             "fm_trained": fm_trained,
+            # New OOS-based comparison driving adopt_challenger (audit fix)
+            "fm_oos_accuracy": fm_oos.get("fm_oos_accuracy"),
+            "lr_oos_accuracy": fm_oos.get("lr_oos_accuracy"),
+            "fm_vs_lr_oos_margin": fm_oos.get("margin"),
+            "fm_oos_fold_count": fm_oos.get("fold_count"),
+            "fm_oos_verdict": fm_oos.get("verdict"),
         },
     }
 
