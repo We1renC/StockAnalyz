@@ -191,6 +191,26 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_adaptive_cooldown_doubles_after_loss_streak():
+    """P2-16: 3 連敗 → cooldown ×2"""
+    from smc_auto_workflow import _adaptive_cooldown_multiplier
+    assert _adaptive_cooldown_multiplier(["loss", "loss", "loss"]) == 2.0
+    assert _adaptive_cooldown_multiplier(["loss", "loss", "loss", "win"]) == 2.0  # only first 3 count
+
+
+def test_adaptive_cooldown_halves_after_win_streak():
+    """P2-16: 3 連勝 → cooldown ×0.5"""
+    from smc_auto_workflow import _adaptive_cooldown_multiplier
+    assert _adaptive_cooldown_multiplier(["win", "win", "win"]) == 0.5
+
+
+def test_adaptive_cooldown_mixed_returns_baseline():
+    from smc_auto_workflow import _adaptive_cooldown_multiplier
+    assert _adaptive_cooldown_multiplier(["win", "loss", "win"]) == 1.0
+    assert _adaptive_cooldown_multiplier(["loss"]) == 1.0   # too few
+    assert _adaptive_cooldown_multiplier([]) == 1.0
+
+
 def test_exploration_blocked_outside_ready_state():
     """ε-greedy must NEVER fire in LEARNING / VALIDATING / PAUSED."""
     from learning.exploration import decide_exploration

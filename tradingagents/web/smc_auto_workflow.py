@@ -174,13 +174,79 @@ class _CooldownRegistry:
         cls._store.clear()
 
 
+def _adaptive_cooldown_multiplier(
+    last_outcomes: list[str],
+    *,
+    streak_size: int = 3,
+    loss_streak_multiplier: float = 2.0,
+    win_streak_multiplier: float = 0.5,
+) -> float:
+    """P2-16 — adapt cooldown to recent outcome streak.
+
+    Rules:
+      • Last ``streak_size`` resolved trades all LOSSES → cooldown ×2
+        (back off, give the market time to change regime)
+      • Last ``streak_size`` resolved trades all WINS → cooldown ×0.5
+        (we're in sync, ride momentum but don't go full no-cooldown)
+      • Mixed → ×1.0
+
+    ``last_outcomes`` is the most-recent-first list of "win"/"loss"
+    strings. Pending trades should be filtered out by the caller.
+    """
+    if len(last_outcomes) < streak_size:
+        return 1.0
+    last_n = last_outcomes[:streak_size]
+    if all(o == "loss" for o in last_n):
+        return float(loss_streak_multiplier)
+    if all(o == "win" for o in last_n):
+        return float(win_streak_multiplier)
+    return 1.0
+
+
+def _recent_outcomes_for_cooldown(db_path: str, symbol: str, n: int = 5) -> list[str]:
+    """Read the last N resolved outcomes for a symbol from training ledger.
+
+    Returns most-recent-first. ``outcome="pending"`` is filtered out.
+    Returns ``["win","loss","win"]``-style list.
+    """
+    try:
+        from smc_quant import load_trade_records
+        all_recs = load_trade_records("tmp/smc_training_ledger.jsonl")
+    except Exception:
+        return []
+    filtered = []
+    for r in all_recs:
+        if r.get("symbol") != symbol:
+            continue
+        outcome = r.get("outcome")
+        if outcome in (None, "pending"):
+            continue
+        rm = r.get("r_multiple")
+        try:
+            won = (outcome == "target") or (rm is not None and float(rm) > 0)
+        except (TypeError, ValueError):
+            won = False
+        filtered.append({
+            "ts": r.get("entry_time") or r.get("resolved_at") or "",
+            "outcome": "win" if won else "loss",
+        })
+    filtered.sort(key=lambda x: x["ts"], reverse=True)
+    return [x["outcome"] for x in filtered[:n]]
+
+
 def cooldown_remaining(symbol: str, db_path: str, profile: SmcAutoProfile) -> Optional[int]:
-    """Seconds remaining on the per-symbol cooldown, or None if free to fire."""
+    """Seconds remaining on the per-symbol cooldown, or None if free to fire.
+
+    P2-16: applies adaptive multiplier based on recent outcome streak.
+    """
     last = _CooldownRegistry.last_fire(symbol, db_path)
     if not last:
         return None
+    recent = _recent_outcomes_for_cooldown(db_path, symbol)
+    multiplier = _adaptive_cooldown_multiplier(recent)
     elapsed = (datetime.now(timezone.utc) - last).total_seconds()
-    remaining = profile.cooldown_minutes * 60 - elapsed
+    effective_cooldown_s = profile.cooldown_minutes * 60 * multiplier
+    remaining = effective_cooldown_s - elapsed
     return int(remaining) if remaining > 0 else None
 
 
