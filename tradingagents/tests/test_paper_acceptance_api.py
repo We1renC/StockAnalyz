@@ -466,7 +466,9 @@ def test_api_promotion_decision_round_trip(tmp_path):
         assert rows["summary"]["latest_decision"] == "conditional"
         assert rows["rows"][0]["threshold_profile_version_tag"] == "thr-v2"
         assert check["promotion_summary"]["latest_decision"] == "conditional"
+        assert isinstance(check["production_checklist"], list)
         assert closure["closure_summary"]["promotion_decision_summary"]["latest_decision"] == "conditional"
+        assert isinstance(closure["production_checklist"], list)
     finally:
         app.DB = original
 

@@ -5583,6 +5583,7 @@ def api_get_paper_acceptance_closure(symbol: str, stage: str = "paper"):
             "closure_summary": payload.get("closure_summary") or {},
             "policy": payload.get("policy") or {},
             "review": payload.get("review") or {},
+            "production_checklist": payload.get("production_checklist") or [],
         })
     finally:
         conn.close()
@@ -5624,6 +5625,7 @@ def api_get_paper_acceptance_promotion_check(symbol: str, stage: str = "paper"):
             "policy": policy,
             "review": payload.get("review") or {},
             "promotion_summary": promotion_summary,
+            "production_checklist": payload.get("production_checklist") or [],
         })
     finally:
         conn.close()

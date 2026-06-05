@@ -2644,6 +2644,71 @@ def _build_coverage_summary(catalog: list[dict]) -> dict:
     }
 
 
+def _build_production_checklist(
+    report: dict,
+    policy: dict,
+    coverage: dict,
+    review: dict,
+    governance_summary: dict,
+    threshold_summary: dict,
+    promotion_summary: dict,
+) -> list[dict]:
+    blockers = list(policy.get("blockers") or [])
+    summary = report.get("summary") or {}
+    review_status = str(review.get("review_status") or "pending")
+    threshold_profile_approved = threshold_summary.get("active_status") == "approved"
+    latest_decision = promotion_summary.get("latest_decision") or "missing"
+    return [
+        {
+            "key": "blocking_issues_cleared",
+            "label": "阻擋條件清空",
+            "status": "pass" if not blockers and not summary.get("blocking_issue_count") else "fail",
+            "detail": "沒有 blockers 與 prohibition flags 才能進入 live promotion。",
+        },
+        {
+            "key": "shared_runtime_validated",
+            "label": "共享 runtime 驗證",
+            "status": "pass" if policy.get("shared_architecture_ready") else "fail",
+            "detail": "paper / shadow / live-dry-run 必須走同一個 execution contract。",
+        },
+        {
+            "key": "observed_evidence_coverage",
+            "label": "Observed 證據覆蓋",
+            "status": "pass" if float(coverage.get("covered_ratio") or 0) >= 0.85 else "partial",
+            "detail": f"目前 covered ratio {coverage.get('covered_ratio') or 0:.2f}。",
+        },
+        {
+            "key": "thresholds_calibrated",
+            "label": "門檻已校準",
+            "status": "pass" if threshold_profile_approved else "partial",
+            "detail": "定量門檻應來自已核准的 threshold profile，而不是僅靠預設值。",
+        },
+        {
+            "key": "review_signed_off",
+            "label": "審閱已簽核",
+            "status": "pass" if review_status == "approved" and not review.get("retest_required") else "fail",
+            "detail": f"目前 review status = {review_status}。",
+        },
+        {
+            "key": "promotion_governance_recorded",
+            "label": "升級治理留痕",
+            "status": "pass" if promotion_summary.get("count") else "partial",
+            "detail": f"最近一筆 recorded decision = {latest_decision}。",
+        },
+        {
+            "key": "freeze_and_restart_clean",
+            "label": "Freeze / restart 乾淨",
+            "status": (
+                "pass"
+                if int(governance_summary.get("freeze_violation_count") or 0) == 0
+                and float(governance_summary.get("restart_stats_completion_ratio") or 1.0) >= 1.0
+                else "fail"
+            ),
+            "detail": "freeze window 不應違規，治理變更後需完成 restart stats。",
+        },
+    ]
+
+
 def _build_closure_summary(
     report: dict,
     policy: dict,
@@ -2652,6 +2717,7 @@ def _build_closure_summary(
     events: list[dict],
     governance_summary: dict,
     promotion_summary: dict,
+    production_checklist: list[dict],
 ) -> dict:
     summary = report.get("summary") or {}
     ladder = policy.get("promotion_ladder") or {}
@@ -2690,6 +2756,7 @@ def _build_closure_summary(
             f"最近一次升級決策為 {latest_promotion.get('decision') or 'unknown'}，"
             f"目標階段 {latest_promotion.get('target_stage_name') or '未指定'}。"
         )
+    checklist_pass_count = sum(1 for row in production_checklist if row.get("status") == "pass")
     return {
         "conclusion": summary.get("conclusion") or "failed_repeat_paper",
         "review_status": review.get("review_status") or "pending",
@@ -2707,6 +2774,8 @@ def _build_closure_summary(
             "latest_decision": promotion_summary.get("latest_decision") or "missing",
             "latest_target_stage_name": promotion_summary.get("latest_target_stage_name") or "",
         },
+        "production_checklist_pass_count": checklist_pass_count,
+        "production_checklist_total": len(production_checklist),
     }
 
 
@@ -2884,6 +2953,15 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
     promotion_decisions = load_promotion_decisions(conn, key, stage=stage, limit=20)
     promotion_summary = summarize_promotion_decisions(conn, key, stage=stage, limit=20)
     coverage = _build_coverage_summary(catalog)
+    production_checklist = _build_production_checklist(
+        report,
+        context.get("policy") or {},
+        coverage,
+        load_acceptance_review(conn, key, stage=stage),
+        context.get("governance_summary") or {},
+        context.get("threshold_summary") or {},
+        promotion_summary,
+    )
     closure_summary = _build_closure_summary(
         report,
         context.get("policy") or {},
@@ -2892,6 +2970,7 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         events,
         context.get("governance_summary") or {},
         promotion_summary,
+        production_checklist,
     )
     return {
         "symbol": key,
@@ -2928,6 +3007,7 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         "threshold_profiles": threshold_profiles,
         "promotion_decisions": promotion_decisions,
         "promotion_summary": promotion_summary,
+        "production_checklist": production_checklist,
     }
 
 

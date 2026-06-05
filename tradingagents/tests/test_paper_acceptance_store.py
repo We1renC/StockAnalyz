@@ -709,6 +709,9 @@ def test_promotion_decisions_are_persisted_into_workspace_and_closure():
     assert workspace["promotion_summary"]["latest_target_stage_name"] == "stage2_10_20"
     assert workspace["promotion_decisions"][0]["threshold_profile_version_tag"] == "thr-v2"
     assert workspace["closure_summary"]["promotion_decision_summary"]["latest_decision"] == "conditional"
+    checklist = {row["key"]: row for row in workspace["production_checklist"]}
+    assert checklist["promotion_governance_recorded"]["status"] == "pass"
+    assert workspace["closure_summary"]["production_checklist_total"] == len(workspace["production_checklist"])
 
 
 def test_workspace_auto_generates_stage_and_deviation_from_live_telemetry():
