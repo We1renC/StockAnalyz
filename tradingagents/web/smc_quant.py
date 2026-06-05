@@ -6596,13 +6596,34 @@ def annotate_mae_mfe(df: pd.DataFrame, trades: list[dict]) -> list[dict]:
     return out
 
 
-def persist_trade_records(records: list[dict], path: str) -> int:
+def _trade_dedup_key(rec: dict) -> str:
+    """Deterministic uniqueness key for a trade_record.
+
+    Audit fix P0-1: prevents the same backtest entry being counted as a
+    "new" sample on every training tick. We key on the immutable identity
+    triple (symbol, model, entry_time_or_entry_index, entry_price) so two
+    runs over the same OHLCV produce one row, not many.
+    """
+    tid = rec.get("trade_id")
+    if tid:
+        return str(tid)
+    return "|".join([
+        str(rec.get("symbol") or ""),
+        str(rec.get("model") or ""),
+        str(rec.get("entry_time") or rec.get("entry_index") or ""),
+        str(rec.get("entry_price") or rec.get("entry") or ""),
+    ])
+
+
+def persist_trade_records(records: list[dict], path: str, *, dedup: bool = True) -> int:
     """Append-write trade records as JSONL (one row per line).
 
+    ``dedup=True`` (default) skips records whose key (per ``_trade_dedup_key``)
+    already exists on disk — this is the P0-1 audit fix. Pass dedup=False to
+    preserve the historical "append everything" behaviour.
+
     Parquet is the §18.2 preferred format but we keep the default to
-    JSONL to avoid a hard dependency on pyarrow in this engine; callers
-    that want parquet can pass ``path.endswith('.parquet')`` and we'll
-    use pandas to_parquet if pyarrow is importable.
+    JSONL to avoid a hard dependency on pyarrow.
     """
     import json, os
     if not records:
@@ -6610,6 +6631,32 @@ def persist_trade_records(records: list[dict], path: str) -> int:
     parent = os.path.dirname(path)
     if parent and not os.path.exists(parent):
         os.makedirs(parent, exist_ok=True)
+
+    if dedup:
+        existing_keys: set[str] = set()
+        if path.endswith(".parquet"):
+            try:
+                import pyarrow  # noqa: F401
+                if os.path.exists(path):
+                    for row in pd.read_parquet(path).to_dict(orient="records"):
+                        existing_keys.add(_trade_dedup_key(row))
+            except Exception:
+                pass
+        else:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            existing_keys.add(_trade_dedup_key(json.loads(line)))
+                        except Exception:
+                            continue
+        records = [r for r in records if _trade_dedup_key(r) not in existing_keys]
+        if not records:
+            return 0
+
     if path.endswith(".parquet"):
         try:
             import pyarrow  # noqa: F401
@@ -6619,7 +6666,6 @@ def persist_trade_records(records: list[dict], path: str) -> int:
             pd.DataFrame(existing + list(records)).to_parquet(path, index=False)
             return len(records)
         except Exception:
-            # Fall back to JSONL with adjusted extension so the user knows.
             path = path[:-len(".parquet")] + ".jsonl"
     with open(path, "a", encoding="utf-8") as fh:
         for r in records:

@@ -360,6 +360,22 @@ class SmcPaperRunner:
         entry = self._pick_best_entry(analysis)
         if entry is None:
             result.action = "skipped:no_qualified_entry"
+            # P2-15 audit fix: record the BEST candidate (even if below threshold)
+            # as a missed_signal so we can later attribute opportunity cost.
+            try:
+                em = (analysis.get("concepts") or {}).get("entry_models") or {}
+                best = None
+                best_score = -1
+                for key in ("sweep_reversal", "ob_fvg_continuation", "ote_retracement",
+                            "unicorn", "silver_bullet", "power_of_three"):
+                    for e in (em.get(key) or []):
+                        s = (e.get("confluence") or {}).get("score", 0) or 0
+                        if s > best_score:
+                            best_score = s; best = e
+                if best is not None:
+                    self._log_missed_signal(best, result.bias, reason="below_threshold")
+            except Exception:
+                pass
             self._journal(result)
             return result
         result.entry = {
@@ -415,6 +431,8 @@ class SmcPaperRunner:
             result.action = f"error:{err}"
 
         # Stamp a §18.2 trade record (entry-only — outcome filled in later via reconciliation)
+        order_resp_payload = (resp.get("payload") or {}) if isinstance(resp, dict) else {}
+        order_id = order_resp_payload.get("id") if isinstance(order_resp_payload, dict) else None
         result.trade_record = build_trade_record(
             entry,
             trade_outcome={"outcome": "pending", "r_multiple": 0.0, "entry_index": -1},
@@ -422,11 +440,57 @@ class SmcPaperRunner:
             market="crypto",
             timeframe=cfg.interval,
             entry_time=ts,
+            # P0-2: identity fields so reconcile_paper_trades can match later
+            trade_id=f"{cfg.symbol}:{client_order_id}",
         )
+        # Attach broker identifiers + planning prices for reconciliation
+        result.trade_record["broker_order_id"] = order_id
+        result.trade_record["client_order_id"] = client_order_id
+        result.trade_record["plan_stop"] = float(entry.get("stop") or 0)
+        result.trade_record["plan_target"] = float(entry.get("target") or 0)
+        result.trade_record["plan_entry"] = float(entry.get("entry") or 0)
         self._journal(result)
         return result
 
     # --- journal --------------------------------------------------------
+
+    def _log_missed_signal(self, entry: dict, bias: Optional[str], *, reason: str) -> None:
+        """P2-15: record signals that the runner saw but did NOT execute.
+
+        Output goes to ``missed_signals_<symbol>.jsonl`` next to the journal.
+        A later cron job can compare entry/stop/target against actual price
+        movement N bars later to quantify opportunity cost — the missing
+        feedback signal that explains "守紀律拒單" outcomes.
+        """
+        try:
+            cfg_path = Path(self.config.journal_path)
+            base = cfg_path.parent / f"missed_signals_{self.config.symbol.replace('/', '-')}.jsonl"
+            base.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "logged_at": datetime.now().isoformat(timespec="seconds"),
+                "symbol": self.config.symbol,
+                "interval": self.config.interval,
+                "bias": bias,
+                "reason": reason,
+                "model": entry.get("model"),
+                "direction": entry.get("direction"),
+                "score": (entry.get("confluence") or {}).get("score"),
+                "threshold": (entry.get("confluence") or {}).get("threshold"),
+                "min_score_runner": self.config.min_confluence_score,
+                "rr": entry.get("rr"),
+                "entry": entry.get("entry"),
+                "stop": entry.get("stop"),
+                "target": entry.get("target"),
+                "dol_target": entry.get("dol_target"),
+                "outcome_at_5_bars": None,    # filled by reconcile_missed_signals later
+                "outcome_at_20_bars": None,
+                "max_favorable_R": None,
+                "max_adverse_R": None,
+            }
+            with open(base, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, default=str, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
 
     def _journal(self, result: PaperRunResult) -> None:
         path = Path(self.config.journal_path)

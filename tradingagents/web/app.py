@@ -1981,6 +1981,19 @@ def insert_alerts(c, symbol: str, name: str, ind: dict, market: dict, position=N
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # P0-3 audit fix: load learned weights from config/strategy.yaml at
+    # startup so the in-memory CONFLUENCE_WEIGHTS_DEFAULT reflects the
+    # latest calibration. Without this, every server restart silently
+    # discards what train_from_ledger persisted last cycle.
+    try:
+        from smc_quant import apply_strategy_yaml_overrides
+        applied = apply_strategy_yaml_overrides()
+        print(f"[startup] applied strategy.yaml overrides: "
+              f"{len(applied.get('confluence_weights', {}))} weights, "
+              f"threshold={applied.get('confluence_threshold')}")
+    except Exception as exc:
+        print(f"[startup] apply_strategy_yaml_overrides failed: {exc}")
+
     task = asyncio.create_task(monitor_loop())
     # Start crypto matching engine background task
     try:
@@ -4129,6 +4142,74 @@ def api_smc_crypto_profile(symbol: str = "BTC-USDT"):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"profile failed: {e}")
+
+
+@app.get("/api/smc-crypto/score-calibration")
+def api_smc_crypto_score_calibration(symbol: Optional[str] = None):
+    """Audit fix P2-11: empirical score → win-rate from the ledger.
+
+    Returns the calibrated mapping + min_score recommendations for
+    common target win-rates (50/55/60/65%).
+    """
+    try:
+        from learning.score_calibration import calibration_diagnostics
+        from smc_quant import load_trade_records
+        records = load_trade_records("tmp/smc_training_ledger.jsonl")
+        if symbol:
+            records = [r for r in records if r.get("symbol") == symbol]
+        return calibration_diagnostics(records)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"calibration failed: {e}")
+
+
+@app.get("/api/smc-crypto/missed-signals")
+def api_smc_crypto_missed_signals(symbol: str = "BTC-USDT", limit: int = 50):
+    """Audit fix P2-15: opportunity-cost signals (qualified candidates that
+    fell below the live threshold but were never executed)."""
+    try:
+        from pathlib import Path
+        import json as _json
+        p = Path("tmp") / f"missed_signals_{symbol.replace('/', '-')}.jsonl"
+        if not p.exists():
+            return {"symbol": symbol, "count": 0, "signals": []}
+        rows: list[dict] = []
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(_json.loads(line))
+            except Exception:
+                continue
+        rows.reverse()
+        return {"symbol": symbol, "count": len(rows), "signals": rows[: int(limit)]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"missed-signals failed: {e}")
+
+
+@app.post("/api/smc-crypto/reconcile")
+def api_smc_crypto_reconcile(payload: Optional[dict] = None):
+    """Audit fix P0-2: poll /v1/fills and resolve pending paper trades.
+
+    Walks the paper ledger, for each ``outcome="pending"`` row matches the
+    corresponding fills + current ticker and patches outcome → target /
+    stop / flat with a real r_multiple. Without this, live paper signals
+    never reach the learning loop.
+    """
+    try:
+        from smc_paper_reconciler import reconcile_paper_trades
+        from dataclasses import asdict
+        api = _crypto_api_client()
+        payload = payload or {}
+        symbols = payload.get("symbols")
+        stale_minutes = int(payload.get("stale_minutes", 720))
+        ledger = payload.get("ledger_path") or "tmp/smc_paper_journal_trades.jsonl"
+        res = reconcile_paper_trades(
+            api, ledger, symbols=symbols, stale_minutes=stale_minutes,
+        )
+        return asdict(res)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"reconcile failed: {e}")
 
 
 @app.get("/api/smc-crypto/training-history")

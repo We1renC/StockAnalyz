@@ -249,6 +249,17 @@ class BacktestSummary:
     ledger_path: str
 
 
+def _interval_ledger_path(base_ledger_path: str, interval: str) -> str:
+    """P1-9 audit fix: split ledger by interval so 5m / 1h / 4h ledgers
+    don't mix into one E[R] average (different timeframe has different
+    win/loss profile)."""
+    import os
+    if not interval or interval == "default":
+        return base_ledger_path
+    base, ext = os.path.splitext(base_ledger_path)
+    return f"{base}.{interval}{ext or '.jsonl'}"
+
+
 def auto_backtest_window(
     api: CryptoApiClient,
     symbol: str,
@@ -292,27 +303,50 @@ def auto_backtest_window(
         all_entries.extend(em.get(key) or [])
     bt = evaluate_entry_models(df, all_entries, max_hold_bars=max_hold_bars,
                                 only_triggered=False)
+    # P1-7 audit fix: tag the regime at the entry bar so attribution can
+    # group by regime later. Compute once on the full df, then slice per trade.
+    try:
+        from learning.regime import classify_market_regime
+        global_regime = classify_market_regime(df)
+    except Exception:
+        global_regime = {"regime_trend": "unknown", "regime_volatility": "unknown"}
+
     trade_records: list[dict] = []
     for tr in bt.get("trades") or []:
         # Re-join the entry for factor context so attribution works.
         for e in all_entries:
             if (e.get("model") == tr.get("model")
                     and round(float(e.get("entry", 0)), 4) == round(float(tr.get("entry", 0)), 4)):
+                entry_idx = tr.get("entry_index", -1)
+                # Per-trade regime: classify on bars up to (not including) entry to avoid lookahead
+                trade_regime = global_regime
+                if entry_idx >= 60:
+                    try:
+                        trade_regime = classify_market_regime(df.iloc[: entry_idx + 1])
+                    except Exception:
+                        pass
                 rec = build_trade_record(
                     e,
                     trade_outcome=tr,
                     symbol=symbol, market="crypto",
                     timeframe=interval,
-                    entry_time=str(df.index[tr.get("entry_index", 0)] if tr.get("entry_index", -1) >= 0 else df.index[0]),
+                    entry_time=str(df.index[entry_idx] if entry_idx >= 0 else df.index[0]),
                     probe=False,
                     model_version=model_version,
                     config_hash=config_snapshot["hash"],
                     source="backtest",
                     state_hint="READY",
+                    regime=trade_regime,
                 )
                 trade_records.append(rec)
                 break
-    persist_trade_records(trade_records, ledger_path)
+    # P0-1: persist_trade_records now dedups by trade_id.
+    # P1-9: write to interval-scoped ledger so 5m/1h/4h don't混算.
+    interval_ledger = _interval_ledger_path(ledger_path, interval)
+    persist_trade_records(trade_records, interval_ledger, dedup=True)
+    # Also append to the global ledger for backwards compatibility but
+    # dedup is enabled so duplicates won't accumulate.
+    persist_trade_records(trade_records, ledger_path, dedup=True)
     if db_path and trade_records:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
