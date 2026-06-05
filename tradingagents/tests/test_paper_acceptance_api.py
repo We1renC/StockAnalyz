@@ -561,3 +561,134 @@ def test_api_closure_summary_round_trip(tmp_path):
         assert "review" in payload
     finally:
         app.DB = original
+
+
+def test_api_promotion_check_decision_matrix(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        base_metrics = {
+            "trade_count": 60,
+            "testing_days": 25,
+            "api_error_rate": 0.01,
+            "average_slippage": 50.0,
+            "fill_rate": 0.9,
+            "rejection_ratio": 0.02,
+            "max_drawdown": -0.08,
+            "parameters_frozen": True,
+            "parameter_change_count": 0,
+            "kill_switch_tested": True,
+            "fees_included": True,
+            "reconciliation_implemented": True,
+            "total_fees": 10,
+            "total_slippage": 20,
+            "average_api_latency": 120,
+            "average_holding_minutes": 45,
+            "capital_stage_count": 1,
+            "trade_day_span": 25,
+            "traded_day_count": 12,
+            "idle_day_count": 4,
+            "session_bucket_count": 3,
+            "volatility_bucket_count": 3,
+            "liquidity_bucket_count": 2,
+            "regime_combo_count": 4,
+            "high_vol_trade_count": 8,
+            "low_vol_trade_count": 7,
+            "thin_liquidity_trade_count": 5,
+            "regime_coverage_score": 0.88,
+            "shadow_trace_count": 2,
+            "shadow_parity_score": 0.92,
+            "shadow_market_data_shared_ratio": 1.0,
+            "shadow_signal_process_shared_ratio": 1.0,
+            "shadow_risk_module_shared_ratio": 1.0,
+            "shadow_order_generation_shared_ratio": 1.0,
+            "shadow_logging_alerting_shared_ratio": 1.0,
+            "shadow_no_exchange_submission_ratio": 1.0,
+            "shadow_order_book_snapshot_ratio": 1.0,
+            "shadow_likely_execution_price_ratio": 1.0,
+            "shadow_post_order_price_behavior_ratio": 1.0,
+            "hardcoded_api_keys": False,
+            "withdrawal_permission_enabled": False,
+            "test_live_keys_separated": True,
+            "logs_avoid_secrets": True,
+            "revocation_process": True,
+        }
+        base_strategy = {
+            "name": "ABAT Acceptance",
+            "strategy_type": "intraday",
+            "shared_live_architecture": True,
+            "shadow_trading_used": True,
+            "strategy_version": "v1",
+            "parameter_version": "p1",
+        }
+
+        with patch("paper_acceptance_store.run_security_scan", return_value={
+            "no_hardcoded_keys": True,
+            "test_live_separation": True,
+            "revocation_process": True,
+            "scanned_files": 12,
+            "hardcoded_secret_count": 0,
+        }):
+            for symbol in ("ALLOW", "CONDITIONAL", "DENY"):
+                app.api_update_paper_acceptance_workspace(
+                    PaperAcceptanceWorkspaceUpdate(
+                        symbol=symbol,
+                        strategy=base_strategy,
+                        metrics=base_metrics,
+                        prohibitions={},
+                    )
+                )
+                app.api_record_paper_acceptance_threshold_profile(
+                    PaperAcceptanceThresholdProfileCreate(
+                        symbol=symbol,
+                        strategy_type="intraday",
+                        profile_name="q2-calibration",
+                        status="approved",
+                        thresholds={"min_trade_count": 50, "max_average_slippage_bps": 80.0},
+                        approved_by="qa",
+                        version_tag="thr-v2",
+                    )
+                )
+
+            app.api_update_paper_acceptance_review(
+                PaperAcceptanceReviewUpdate(
+                    symbol="ALLOW",
+                    reviewer="qa",
+                    review_status="approved",
+                    retest_required=False,
+                    can_promote_to_live=True,
+                )
+            )
+            app.api_update_paper_acceptance_review(
+                PaperAcceptanceReviewUpdate(
+                    symbol="CONDITIONAL",
+                    reviewer="qa",
+                    review_status="reviewing",
+                    retest_required=False,
+                    can_promote_to_live=False,
+                )
+            )
+            app.api_update_paper_acceptance_workspace(
+                PaperAcceptanceWorkspaceUpdate(
+                    symbol="DENY",
+                    metrics={**base_metrics, "fill_rate": 0.2},
+                )
+            )
+            app.api_update_paper_acceptance_review(
+                PaperAcceptanceReviewUpdate(
+                    symbol="DENY",
+                    reviewer="qa",
+                    review_status="approved",
+                    retest_required=False,
+                    can_promote_to_live=True,
+                )
+            )
+
+            allow = app.api_get_paper_acceptance_promotion_check(symbol="ALLOW")
+            conditional = app.api_get_paper_acceptance_promotion_check(symbol="CONDITIONAL")
+            deny = app.api_get_paper_acceptance_promotion_check(symbol="DENY")
+
+        assert allow["decision"] == "allow"
+        assert conditional["decision"] == "conditional"
+        assert deny["decision"] == "deny"
+    finally:
+        app.DB = original
