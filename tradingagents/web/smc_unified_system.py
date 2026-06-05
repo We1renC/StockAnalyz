@@ -329,6 +329,29 @@ class UnifiedTradingSession:
         except Exception as exc:
             run_id = None
             packet["persist_error"] = repr(exc)
+
+        # Drive the merged paper-acceptance telemetry primitives so the
+        # gates have real evidence to evaluate (otherwise everything
+        # fails for lack of data).
+        evidence_counts = {}
+        try:
+            from smc_training_loop import ingest_acceptance_evidence
+            evidence_counts = {}
+            session_snapshot = {
+                "acceptance": {
+                    "metrics": packet["report"].get("metrics") or {},
+                    "blocking_issues": packet["report"].get("blocking_issues") or [],
+                },
+                "decisions": [asdict(d) for d in decisions],
+            }
+            for sym in self.config.symbols:
+                evidence_counts[sym] = ingest_acceptance_evidence(
+                    self.conn, session_snapshot,
+                    symbol=sym, stage=self.config.stage,
+                )
+        except Exception as exc:
+            evidence_counts = {"error": repr(exc)}
+
         return {
             "elapsed_seconds": round(time.time() - t0, 3),
             "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -347,6 +370,7 @@ class UnifiedTradingSession:
                 "failed": packet["report"]["summary"]["failed"],
                 "blocking_issues": packet["report"]["blocking_issues"],
                 "metrics": packet["report"]["metrics"],
+                "evidence_ingested": evidence_counts,
             },
         }
 

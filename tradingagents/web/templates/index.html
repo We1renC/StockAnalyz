@@ -1204,6 +1204,18 @@ body { background: var(--bg-base); color: var(--text-primary); }
     <input type="hidden" id="cdesk-min-score" value="auto">
     <input type="hidden" id="cdesk-max-notional" value="auto">
 
+    <!-- ② Self-training panel — auto backtest + closed-loop calibration -->
+    <div class="glass-card-sm p-4 mb-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-semibold text-slate-200">策略自我訓練 (backtest → calibrate → 學習稽核)</h3>
+        <div class="flex items-center gap-2">
+          <button onclick="cdeskAudit()" class="text-xs px-3 py-1.5" style="border-radius:6px; background:#334155; color:#fff;">學習稽核</button>
+          <button id="cdesk-train-btn" onclick="cdeskTrain()" class="text-xs px-3 py-1.5 font-semibold" style="border-radius:6px; background:#7c3aed; color:#fff;">🧠 訓練週期</button>
+        </div>
+      </div>
+      <div id="cdesk-training" class="text-xs text-slate-400">點「訓練週期」對所選交易對自動回測 + 校準。「學習稽核」純讀，回答「模型是否在學習？」</div>
+    </div>
+
     <!-- Mid: open orders + recent fills -->
     <div class="grid grid-cols-12 gap-4 mb-4">
       <div class="col-span-6 glass-card-sm p-4">
@@ -10443,6 +10455,87 @@ async function cdeskRefreshState() {
     }
   } catch (err) {
     $('cdesk-state').innerHTML = `<span class="text-red-400">載入失敗: ${err.message}</span>`;
+  }
+}
+
+async function cdeskTrain() {
+  const symbol = $('cdesk-symbol').value;
+  if (!confirm(`對 ${symbol} 跑訓練週期？\n系統將：拉 200 根真實 K → 全量入場模型回測 → 寫 §18.2 ledger → §10.6/§18.4/§18.5 校準 → §10.4 12 個 scenario evidence ingest → 學習能力稽核`)) return;
+  const btn = $('cdesk-train-btn'); btn.disabled = true; btn.textContent = '⏳ 訓練中…';
+  const el = $('cdesk-training');
+  el.innerHTML = '<span class="text-amber-400">⏳ 跑回測 + 校準 + scenario ingest…</span>';
+  try {
+    const r = await fetch('/api/smc-crypto/train', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({symbols: [symbol], interval: 'auto', bars: 500}),
+    });
+    if (!r.ok) {
+      el.innerHTML = `<span class="text-red-400">訓練失敗 ${r.status}</span>`;
+      return;
+    }
+    const d = await r.json();
+    const t = d.training, au = d.audit;
+    const indicatorColor = {active:'#10b981', stagnant:'#f59e0b', degrading:'#ef4444', insufficient_data:'#94a3b8'}[au.learning_indicator] || '#94a3b8';
+    let html = `<div class="grid grid-cols-3 gap-3">
+      <div class="p-3 rounded" style="background:rgba(30,41,59,0.4);">
+        <div class="text-slate-500">回測</div>`;
+    for (const bt of d.backtests) {
+      html += `<div class="mt-1">${bt.symbol}: <code class="text-slate-200">${bt.trades_settled} trades · E[R]=${bt.expected_R.toFixed(2)} · win=${(bt.win_rate*100).toFixed(0)}%</code></div>`;
+    }
+    html += `</div>
+      <div class="p-3 rounded" style="background:rgba(30,41,59,0.4);">
+        <div class="text-slate-500">校準</div>
+        <div class="mt-1">樣本: <code>${t.sample_size}</code></div>
+        <div>採納: ${t.adopted ? '<span class="text-emerald-400">✓</span>' : '<span class="text-amber-400">✗</span>'}</div>
+        <div>yaml 寫回: ${t.strategy_yaml_updated ? '<span class="text-emerald-400">✓</span>' : '✗'}</div>
+        <div class="text-xs text-slate-500">${t.verdict?.reason || ''}</div>
+        ${t.weights_changed.length ? '<div class="mt-1 text-emerald-300">變動權重: ' + t.weights_changed.join(', ') + '</div>' : ''}
+      </div>
+      <div class="p-3 rounded" style="background:rgba(30,41,59,0.4);">
+        <div class="text-slate-500">學習稽核</div>
+        <div class="mt-1">指標: <span style="color:${indicatorColor};font-weight:600">${au.learning_indicator}</span></div>
+        <div>ledger: <code>${au.ledger_size}</code> 筆</div>
+        <div>Δ E[R]: <code>${au.delta_expected_R >= 0 ? '+' : ''}${au.delta_expected_R.toFixed(3)}R</code></div>
+        <div class="text-xs text-slate-500">drift: ${Object.keys(au.weight_drift).length} weight(s)</div>
+      </div>
+    </div>
+    <div class="mt-3 text-xs text-slate-500">${(au.notes || []).join(' · ')}</div>`;
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<span class="text-red-400">訓練失敗: ${e.message}</span>`;
+  } finally {
+    btn.disabled = false; btn.textContent = '🧠 訓練週期';
+  }
+}
+
+async function cdeskAudit() {
+  const symbol = $('cdesk-symbol').value;
+  const el = $('cdesk-training');
+  el.innerHTML = '<span class="text-amber-400">⏳ 稽核…</span>';
+  try {
+    const r = await fetch(`/api/smc-crypto/learning-audit?symbol=${encodeURIComponent(symbol)}`);
+    const au = await r.json();
+    const ic = {active:'#10b981', stagnant:'#f59e0b', degrading:'#ef4444', insufficient_data:'#94a3b8'}[au.learning_indicator] || '#94a3b8';
+    let html = `<div class="p-3 rounded" style="background:rgba(30,41,59,0.5);">
+      <div class="text-sm mb-2">模型學習能力指標: <span style="color:${ic};font-weight:700;font-size:16px">${au.learning_indicator}</span></div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <div><span class="text-slate-500">ledger size:</span> <code>${au.ledger_size}</code></div>
+          <div><span class="text-slate-500">E[R] before:</span> <code>${au.expected_R_before.toFixed(3)}R</code></div>
+          <div><span class="text-slate-500">E[R] after:</span> <code>${au.expected_R_after.toFixed(3)}R</code></div>
+          <div><span class="text-slate-500">Δ E[R]:</span> <code>${au.delta_expected_R >= 0 ? '+' : ''}${au.delta_expected_R.toFixed(3)}R</code></div>
+        </div>
+        <div>
+          <div><span class="text-slate-500">月度 stability:</span> ${au.monthly_stability?.status || '—'}</div>
+          <div><span class="text-slate-500">decay months:</span> ${(au.monthly_stability?.decay_months || []).join(',') || '無'}</div>
+          <div><span class="text-slate-500">weight drift:</span> ${Object.keys(au.weight_drift).length} 個因子</div>
+        </div>
+      </div>
+      <div class="mt-2 text-xs text-slate-500">${(au.notes || []).join(' · ')}</div>
+    </div>`;
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<span class="text-red-400">稽核失敗: ${e.message}</span>`;
   }
 }
 

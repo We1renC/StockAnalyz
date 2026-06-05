@@ -4129,6 +4129,57 @@ def api_smc_crypto_profile(symbol: str = "BTC-USDT"):
         raise HTTPException(status_code=500, detail=f"profile failed: {e}")
 
 
+@app.post("/api/smc-crypto/train")
+def api_smc_crypto_train(payload: dict):
+    """Auto-backtest + closed-loop calibration + scenario evidence ingest.
+
+    Runs the full §10 + §18 + paper-acceptance training cycle on the
+    chosen symbols. If `verdict.adopt=True`, ``config/strategy.yaml``
+    confluence weights are rewritten and re-applied to the live module.
+    """
+    try:
+        from smc_training_loop import run_training_cycle
+        symbols = (payload or {}).get("symbols") or [(payload or {}).get("symbol") or "BTC-USDT"]
+        interval = (payload or {}).get("interval") or "1h"
+        bars = int((payload or {}).get("bars") or 500)
+        api = _crypto_api_client()
+        return run_training_cycle(api, symbols, db_path=_portfolio_db_path(),
+                                    interval=interval, bars=bars,
+                                    ledger_path="tmp/smc_training_ledger.jsonl")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"train failed: {e}")
+
+
+@app.get("/api/smc-crypto/learning-audit")
+def api_smc_crypto_learning_audit(symbol: Optional[str] = None):
+    """Quantitative answer to '策略模型有沒有學習功能?'."""
+    try:
+        from smc_training_loop import audit_learning_capability
+        from dataclasses import asdict
+        audit = audit_learning_capability(symbol=symbol)
+        return asdict(audit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"audit failed: {e}")
+
+
+@app.get("/api/smc-crypto/acceptance-evidence")
+def api_smc_crypto_acceptance_evidence(symbol: Optional[str] = None):
+    """Show paper-acceptance evidence accumulated by the training/auto
+    loops (uses the merged-but-previously-idle telemetry tables)."""
+    try:
+        from paper_acceptance_metrics import summarize_acceptance_telemetry
+        from paper_acceptance_scenarios import summarize_scenario_evidence
+        conn = get_db()
+        try:
+            telemetry = summarize_acceptance_telemetry(conn, symbol=symbol)
+            scenarios = summarize_scenario_evidence(conn, symbol=symbol)
+            return {"telemetry": telemetry, "scenarios": scenarios}
+        finally:
+            conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"evidence fetch failed: {e}")
+
+
 @app.get("/api/smc-crypto/state")
 def api_smc_crypto_state(symbol: Optional[str] = None):
     """Snapshot of crypto account state: balances + open orders + recent fills."""
