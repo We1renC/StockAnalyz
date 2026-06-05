@@ -39,9 +39,12 @@ def test_run_acceptance_scenario_persists_traceable_run():
 def test_position_limit_and_kill_switch_scenarios_reflect_control_outcome():
     conn = _conn()
 
-    run_acceptance_scenario(conn, symbol="ABAT", scenario_id="position_limit_reject")
-    run_acceptance_scenario(conn, symbol="ABAT", scenario_id="kill_switch_blocks_orders")
+    position = run_acceptance_scenario(conn, symbol="ABAT", scenario_id="position_limit_reject")
+    kill = run_acceptance_scenario(conn, symbol="ABAT", scenario_id="kill_switch_blocks_orders")
     evidence = summarize_scenario_evidence(conn, symbol="ABAT")
 
     assert evidence["evidence"]["position_risk"]["limit_rejection_tested"] is True
     assert evidence["evidence"]["kill_switch"]["new_orders_blocked_after_shutdown"] is True
+    assert position["detail"]["contract_version"] == "shared_execution_runtime_v1"
+    assert position["detail"]["runtime_stage"] == "shadow"
+    assert kill["detail"]["runtime_stage"] == "live_dry_run"

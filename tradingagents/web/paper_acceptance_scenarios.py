@@ -8,10 +8,14 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from paper_execution import (
+    ExecutionMarketSnapshot,
+    LiveDryRunExecutionAdapter,
     PaperAccountState,
     PaperOrderIntent,
     PaperRiskLimits,
+    ShadowExecutionAdapter,
     check_order_risk,
+    execute_runtime_order,
     handle_unknown_order_state,
 )
 
@@ -305,39 +309,45 @@ def run_acceptance_scenario(conn, *, symbol: str, scenario_id: str, stage: str =
         actual = outcome["reason"]
         detail = outcome
     elif scenario_id == "position_limit_reject":
-        outcome = check_order_risk(
+        runtime = execute_runtime_order(
             PaperOrderIntent(symbol=_symbol_key(symbol), side="buy", quantity=100, order_type="market"),
-            PaperAccountState(cash={"USD": 10_000}),
-            PaperRiskLimits(max_order_notional=500, max_position_notional_per_symbol=700, max_open_orders=2, max_directional_exposure=800),
-            current_price=10,
+            account=PaperAccountState(cash={"USD": 10_000}),
+            limits=PaperRiskLimits(max_order_notional=500, max_position_notional_per_symbol=700, max_open_orders=2, max_directional_exposure=800),
+            snapshot=ExecutionMarketSnapshot(current_price=10, order_book={"asks": [{"price": 10, "size": 1000}]}),
+            adapter=ShadowExecutionAdapter(),
             open_order_count=2,
             directional_exposure=750,
         )
+        outcome = runtime["risk"]
         status = "pass" if not outcome["approved"] else "fail"
         actual = outcome["reason"]
-        detail = outcome
+        detail = runtime
     elif scenario_id == "loss_limit_shutdown":
-        outcome = check_order_risk(
+        runtime = execute_runtime_order(
             PaperOrderIntent(symbol=_symbol_key(symbol), side="buy", quantity=10, order_type="market"),
-            PaperAccountState(cash={"USD": 10_000}),
-            PaperRiskLimits(kill_switch_active=True),
-            current_price=10,
+            account=PaperAccountState(cash={"USD": 10_000}),
+            limits=PaperRiskLimits(kill_switch_active=True),
+            snapshot=ExecutionMarketSnapshot(current_price=10, order_book={"asks": [{"price": 10, "size": 1000}]}),
+            adapter=ShadowExecutionAdapter(),
         )
+        outcome = runtime["risk"]
         suspend = not outcome["approved"]
         status = "pass" if suspend and outcome["reason"] == "kill_switch_active" else "fail"
         actual = outcome["reason"]
-        detail = outcome
+        detail = runtime
     elif scenario_id == "kill_switch_blocks_orders":
-        outcome = check_order_risk(
+        runtime = execute_runtime_order(
             PaperOrderIntent(symbol=_symbol_key(symbol), side="buy", quantity=1, order_type="market"),
-            PaperAccountState(cash={"USD": 1_000}),
-            PaperRiskLimits(kill_switch_active=True),
-            current_price=10,
+            account=PaperAccountState(cash={"USD": 1_000}),
+            limits=PaperRiskLimits(kill_switch_active=True),
+            snapshot=ExecutionMarketSnapshot(current_price=10, order_book={"asks": [{"price": 10, "size": 1000}]}),
+            adapter=LiveDryRunExecutionAdapter(),
         )
+        outcome = runtime["risk"]
         suspend = not outcome["approved"]
         status = "pass" if outcome["reason"] == "kill_switch_active" else "fail"
         actual = outcome["reason"]
-        detail = outcome
+        detail = runtime
     else:
         suspend = scenario.gate_id in {"network_abnormality", "program_abnormality", "loss_risk", "kill_switch"}
         reconcile = scenario.gate_id in {"network_abnormality", "unknown_order_state"}

@@ -1935,6 +1935,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
     strategy_payload.setdefault("stage", "paper")
     strategy_payload.setdefault("symbol", key)
     strategy_payload.setdefault("exchange", "paper-sim")
+    strategy_payload.setdefault("execution_model_version", "shared_execution_runtime_v1")
     if int(shadow_parity.get("trace_count") or 0) > 0:
         strategy_payload.setdefault("shadow_trading_used", True)
     if shadow_parity.get("shared_module_ratio") is not None:
