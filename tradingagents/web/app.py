@@ -4070,6 +4070,65 @@ def api_smc_crypto_execute(payload: dict):
         raise HTTPException(status_code=500, detail=f"execute failed: {e}")
 
 
+def _portfolio_db_path() -> str:
+    import os
+    base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "portfolio.db")
+
+
+@app.post("/api/smc-crypto/auto-run")
+def api_smc_crypto_auto_run(payload: dict):
+    """One-button auto workflow — user supplies ONLY ``symbol``.
+
+    Everything else (interval / confluence / risk / sizing / cooldown) is
+    derived from a per-symbol asset-tier profile; pre-flight consults the
+    paper-acceptance history to decide dry-run vs live.
+    """
+    try:
+        from smc_auto_workflow import run_symbol
+        from dataclasses import asdict
+        symbol = (payload or {}).get("symbol") or "BTC-USDT"
+        force_live = bool((payload or {}).get("force_live"))
+        ignore_cooldown = bool((payload or {}).get("ignore_cooldown"))
+        api = _crypto_api_client()
+        result = run_symbol(
+            api, symbol,
+            db_path=_portfolio_db_path(),
+            force_live=force_live, ignore_cooldown=ignore_cooldown,
+            journal_dir="tmp/smc_auto",
+        )
+        return asdict(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"auto-run failed: {e}")
+
+
+@app.get("/api/smc-crypto/profile")
+def api_smc_crypto_profile(symbol: str = "BTC-USDT"):
+    """Inspect what auto-workflow WOULD do for a symbol (no side effects)."""
+    try:
+        from smc_auto_workflow import profile_for_symbol, preflight, cooldown_remaining
+        from dataclasses import asdict
+        import sqlite3
+        profile = profile_for_symbol(symbol)
+        conn = sqlite3.connect(_portfolio_db_path())
+        conn.row_factory = sqlite3.Row
+        try:
+            v = preflight(conn, symbol)
+        finally:
+            conn.close()
+        return {
+            "symbol": symbol,
+            "profile": asdict(profile),
+            "preflight": {
+                "allowed_live": v.allowed_live, "reason": v.reason,
+                "last_conclusion": v.last_conclusion, "last_run_at": v.last_run_at,
+            },
+            "cooldown_seconds_remaining": cooldown_remaining(symbol, _portfolio_db_path(), profile),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"profile failed: {e}")
+
+
 @app.get("/api/smc-crypto/state")
 def api_smc_crypto_state(symbol: Optional[str] = None):
     """Snapshot of crypto account state: balances + open orders + recent fills."""
