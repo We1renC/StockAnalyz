@@ -252,7 +252,7 @@ def seed_crypto_data(conn: sqlite3.Connection):
         """, (bal[0], bal[1], bal[2], bal[3], bal[4], "2026-06-04T10:00:00Z"))
 
     # 4. Seed default risk limits for acct_123
-    allowed_syms = json.dumps(["BTC-USDT", "ETH-USDT", "SOL-USDT"])
+    allowed_syms = json.dumps(["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT"])
     c.execute("""
     INSERT OR IGNORE INTO crypto_risk_limits
     (account_id, max_single_order_notional, max_daily_notional, max_open_orders, max_price_deviation_percent, max_asset_exposure, allowed_symbols, blocked_symbols, updated_at)
