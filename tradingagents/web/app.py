@@ -4150,6 +4150,47 @@ def api_smc_crypto_train(payload: dict):
         raise HTTPException(status_code=500, detail=f"train failed: {e}")
 
 
+@app.get("/api/smc-crypto/learning-report")
+def api_smc_crypto_learning_report(symbol: Optional[str] = None):
+    """Comprehensive learning report — invokes every learning primitive
+    (7 layers, 24 functions) and returns one structured dict.
+
+    Layer 1 stats / Layer 2 attribution / Layer 3 calibration /
+    Layer 4 validation / Layer 5 ML / Layer 6 proposal /
+    Layer 7 acceptance evidence + adaptive ATR.
+    """
+    try:
+        from smc_learning_orchestrator import build_learning_report
+        from dataclasses import asdict
+        report = build_learning_report(
+            ledger_path="tmp/smc_training_ledger.jsonl",
+            db_path=_portfolio_db_path(),
+            symbol=symbol,
+        )
+        return asdict(report)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"learning report failed: {e}")
+
+
+@app.post("/api/smc-crypto/learning-apply")
+def api_smc_crypto_learning_apply(payload: dict):
+    """Persist proposed weights to config/strategy.yaml IFF validation passes."""
+    try:
+        from smc_learning_orchestrator import build_learning_report, apply_proposed_changes
+        symbol = (payload or {}).get("symbol")
+        report = build_learning_report(
+            ledger_path="tmp/smc_training_ledger.jsonl",
+            db_path=_portfolio_db_path(),
+            symbol=symbol,
+        )
+        result = apply_proposed_changes(report)
+        return {"applied": result.get("applied"),
+                 "promotion_decision": report.promotion_decision,
+                 "result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"apply failed: {e}")
+
+
 @app.get("/api/smc-crypto/learning-audit")
 def api_smc_crypto_learning_audit(symbol: Optional[str] = None):
     """Quantitative answer to '策略模型有沒有學習功能?'."""
