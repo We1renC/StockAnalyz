@@ -218,9 +218,29 @@ class UnifiedTradingSession:
                 signal_source=dec.entry.get("model", "smc"),
                 client_order_id=f"smc-dry-{uuid.uuid4().hex[:8]}",
             )
-            result = simulate_market_order(intent, order_book, fee_rate=0.001)
+            # P2-13 audit fix: use empirical slippage from past fills instead
+            # of the fixed 0.05% impact baked into simulate_market_order's
+            # default. ``_slippage_sampler`` is built once per session and
+            # falls back to 5 bps when there isn't enough fill history.
+            slip_bps = self._slippage_sampler_for(dec.symbol)(dec.symbol, side)
+            result = simulate_market_order(
+                intent, order_book, fee_rate=0.001,
+                liquidity_impact_bps=slip_bps,
+            )
+            if isinstance(result, dict):
+                result["empirical_slippage_bps_used"] = slip_bps
             dec.dry_run = result
         return decisions
+
+    def _slippage_sampler_for(self, symbol: str):
+        """Build a per-session slippage sampler from real fills (P2-13)."""
+        if not hasattr(self, "_slippage_sampler_cache"):
+            try:
+                from learning.slippage_model import build_runtime_sampler
+                self._slippage_sampler_cache = build_runtime_sampler(self.api)
+            except Exception:
+                self._slippage_sampler_cache = lambda _s, _side: 5.0
+        return self._slippage_sampler_cache
 
     # --- Phase 3: live POST to crypto-api -------------------------------
 

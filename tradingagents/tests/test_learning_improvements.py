@@ -191,6 +191,61 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_slippage_distribution_computes_per_symbol_side_percentiles():
+    """P2-13: fills with known offset → percentile bucket correctly."""
+    from learning.slippage_model import estimate_slippage_distribution
+
+    submitted = {"ord1": 100.0, "ord2": 100.0, "ord3": 100.0,
+                  "ord4": 100.0, "ord5": 100.0, "ord6": 100.0,
+                  "ord7": 100.0, "ord8": 100.0}
+    # Buy fills filled at 100.05 → +5 bps slip (worse than submitted)
+    fills = [
+        {"order_id": f"ord{i}", "symbol": "BTC-USDT",
+         "side": "buy", "price": "100.05"}
+        for i in range(1, 9)
+    ]
+    dist = estimate_slippage_distribution(fills, submitted)
+    assert ("BTC-USDT", "buy") in dist
+    b = dist[("BTC-USDT", "buy")]
+    assert b["n"] == 8
+    assert abs(b["p50_bps"] - 5.0) < 0.5
+    assert abs(b["mean_bps"] - 5.0) < 0.5
+
+
+def test_slippage_sampler_falls_back_when_no_data():
+    """No fills for (symbol, side) → return default_bps."""
+    from learning.slippage_model import build_slippage_sampler
+    s = build_slippage_sampler({}, default_bps=7.5)
+    assert s("BTC-USDT", "buy") == 7.5
+    assert s("ETH-USDT", "sell") == 7.5
+
+
+def test_slippage_sampler_uses_p75_when_sufficient_history():
+    """≥8 fills → sampler returns P75 (pessimistic), not default."""
+    from learning.slippage_model import build_slippage_sampler
+    dist = {("BTC-USDT", "buy"): {
+        "n": 20, "p50_bps": 4.0, "p75_bps": 8.5,
+        "p90_bps": 12.0, "max_bps": 20.0, "mean_bps": 5.5,
+    }}
+    s = build_slippage_sampler(dist, default_bps=5.0, min_samples_for_real=8)
+    assert s("BTC-USDT", "buy") == 8.5
+    # Different symbol → fallback
+    assert s("ETH-USDT", "buy") == 5.0
+
+
+def test_slippage_signs_buy_vs_sell_correctly():
+    """Buy filled above submitted = +slip; sell filled below = +slip too."""
+    from learning.slippage_model import estimate_slippage_distribution
+    submitted = {"ord_buy": 100.0, "ord_sell": 100.0}
+    fills = [
+        {"order_id": "ord_buy", "symbol": "X", "side": "buy", "price": "100.10"},   # +10 bps
+        {"order_id": "ord_sell", "symbol": "X", "side": "sell", "price": "99.90"},  # +10 bps
+    ]
+    dist = estimate_slippage_distribution(fills, submitted)
+    assert abs(dist[("X", "buy")]["p50_bps"] - 10.0) < 0.1
+    assert abs(dist[("X", "sell")]["p50_bps"] - 10.0) < 0.1
+
+
 def test_mae_mfe_calibration_builds_per_model_table():
     """P2-12: ≥8 winners per (model, dir) → table emits stop/target multipliers."""
     from learning.mae_mfe_calibration import build_model_calibration_table

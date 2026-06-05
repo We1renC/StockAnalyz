@@ -4144,6 +4144,32 @@ def api_smc_crypto_profile(symbol: str = "BTC-USDT"):
         raise HTTPException(status_code=500, detail=f"profile failed: {e}")
 
 
+@app.get("/api/smc-crypto/slippage-distribution")
+def api_smc_crypto_slippage_distribution():
+    """Audit fix P2-13: empirical slippage distribution per (symbol, side).
+
+    Returns p50/p75/p90/max bps from real /v1/fills joined with submitted
+    order prices. Replaces the hard-coded 0.05% slippage baseline.
+    """
+    try:
+        from learning.slippage_model import (
+            fetch_fills_and_orders, estimate_slippage_distribution,
+        )
+        api = _crypto_api_client()
+        fills, subs = fetch_fills_and_orders(api)
+        dist = estimate_slippage_distribution(fills, subs)
+        return {
+            "n_fills": len(fills),
+            "n_orders_with_price": len(subs),
+            "buckets": [
+                {"symbol": k[0], "side": k[1], **v}
+                for k, v in sorted(dist.items())
+            ],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"slippage failed: {e}")
+
+
 @app.get("/api/smc-crypto/mae-mfe-calibration")
 def api_smc_crypto_mae_mfe_calibration(symbol: Optional[str] = None):
     """Audit fix P2-12: per-(model, direction) stop/target reverse-engineered
