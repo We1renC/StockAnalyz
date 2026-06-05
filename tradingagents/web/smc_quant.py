@@ -6491,6 +6491,11 @@ def build_trade_record(
     exit_time: Optional[str] = None,
     crypto_factors: Optional[dict] = None,
     regime: Optional[dict] = None,
+    probe: bool = False,
+    model_version: str = "",
+    config_hash: str = "",
+    source: str = "backtest",
+    state_hint: str = "",
 ) -> dict:
     """§18.2 — normalize an entry + outcome into the canonical trade record.
 
@@ -6509,9 +6514,10 @@ def build_trade_record(
         "market": market or infer_market(symbol),
         "timeframe": timeframe,
         "direction": int(entry.get("direction", 0)),
+        "side": "long" if int(entry.get("direction", 0)) >= 0 else "short",
         "model": entry.get("model"),
         "entry_time": entry_time or entry.get("time"),
-        "exit_time": exit_time,
+        "exit_time": exit_time or trade_outcome.get("exit_time"),
         # Features X (§18.2)
         "confluence_score": conf.get("score"),
         "confluence_triggered": bool(entry.get("triggered")),
@@ -6520,14 +6526,27 @@ def build_trade_record(
         "regime": dict(regime or {}),
         "dol_kind": dol.get("target_kind"),
         "dol_distance": dol.get("distance"),
+        "probe": bool(probe),
+        "model_version": model_version,
+        "config_hash": config_hash,
+        "source": source,
+        "state_hint": state_hint,
         # Execution levels
         "entry_price": float(entry.get("entry", 0)),
+        "exit_price": _safe_float(trade_outcome.get("exit_price"))
+        if _safe_float(trade_outcome.get("exit_price")) is not None
+        else _safe_float(trade_outcome.get("exit")),
+        "stop_price": float(entry.get("stop", 0)),
+        "target_price": float(entry.get("target", 0)),
         "stop": float(entry.get("stop", 0)),
         "target": float(entry.get("target", 0)),
         "rr_planned": float(entry.get("rr", 0)),
         # Outcome Y (§18.2)
         "outcome": trade_outcome.get("outcome"),
+        "pnl_usdt": _safe_float(trade_outcome.get("pnl")) or 0.0,
         "r_multiple": float(trade_outcome.get("r_multiple", 0)),
+        "pnl_R": float(trade_outcome.get("r_multiple", 0)),
+        "label": 1 if float(trade_outcome.get("r_multiple", 0)) > 0 else 0,
         "bars_held": trade_outcome.get("bars_held"),
         "mae": trade_outcome.get("mae"),
         "mfe": trade_outcome.get("mfe"),

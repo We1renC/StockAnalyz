@@ -44,7 +44,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sqlite3
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -69,6 +71,17 @@ from smc_quant import (
 )
 from smc_paper_runner import CryptoApiClient
 from smc_auto_workflow import profile_for_symbol
+from learning.adaptive_store import (
+    ADAPTIVE_MODEL_VERSION,
+    apply_atomic_config_patch,
+    create_config_patch,
+    ensure_adaptive_calibration_schema,
+    get_kill_switch_state,
+    record_adaptive_audit_event,
+    set_kill_switch_state,
+    strategy_config_snapshot,
+    upsert_trade_ledger_records,
+)
 
 # Merged-but-previously-unused acceptance primitives
 from paper_acceptance_store import ensure_paper_acceptance_schema, load_acceptance_reports
@@ -113,6 +126,8 @@ def auto_backtest_window(
     bars: int = 500,
     ledger_path: str = "tmp/smc_training_ledger.jsonl",
     max_hold_bars: int = 20,
+    db_path: Optional[str] = None,
+    model_version: str = ADAPTIVE_MODEL_VERSION,
 ) -> BacktestSummary:
     """Pull klines, run SMC engine in one shot, evaluate every triggered entry,
     persist outcomes into the §18.2 trade ledger.
@@ -138,6 +153,7 @@ def auto_backtest_window(
                          internal_swing_length=profile.internal_swing_length),
         account_equity=100_000.0,
     )
+    config_snapshot = strategy_config_snapshot()
     em = (analysis.get("concepts") or {}).get("entry_models") or {}
     all_entries: list[dict] = []
     for key in ("sweep_reversal", "ob_fvg_continuation", "ote_retracement",
@@ -157,10 +173,42 @@ def auto_backtest_window(
                     symbol=symbol, market="crypto",
                     timeframe=interval,
                     entry_time=str(df.index[tr.get("entry_index", 0)] if tr.get("entry_index", -1) >= 0 else df.index[0]),
+                    probe=False,
+                    model_version=model_version,
+                    config_hash=config_snapshot["hash"],
+                    source="backtest",
+                    state_hint="READY",
                 )
                 trade_records.append(rec)
                 break
     persist_trade_records(trade_records, ledger_path)
+    if db_path and trade_records:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            ensure_adaptive_calibration_schema(conn)
+            upsert_trade_ledger_records(
+                conn,
+                trade_records,
+                config_hash=config_snapshot["hash"],
+                model_version=model_version,
+                source="backtest",
+            )
+            record_adaptive_audit_event(
+                conn,
+                symbol=symbol,
+                event_type="ledger_synced",
+                state_after={"mode": "READY", "source": "auto_backtest_window"},
+                detail={
+                    "rows_written": len(trade_records),
+                    "ledger_path": ledger_path,
+                    "config_hash": config_snapshot["hash"],
+                    "model_version": model_version,
+                },
+            )
+            conn.commit()
+        finally:
+            conn.close()
     metrics = bt.get("metrics") or {}
     return BacktestSummary(
         symbol=symbol, bars_seen=len(df),
@@ -268,6 +316,9 @@ def train_from_ledger(
     strategy_yaml_path: str = "config/strategy.yaml",
     *,
     base_weights: Optional[dict[str, int]] = None,
+    db_path: Optional[str] = None,
+    symbol: str = "ALL",
+    model_version: str = ADAPTIVE_MODEL_VERSION,
 ) -> TrainingResult:
     """Run the §18.5 closed-loop calibration over the ledger; if OOS
     passes, persist suggested weights back to ``config/strategy.yaml``
@@ -277,6 +328,7 @@ def train_from_ledger(
     t0 = time.time()
     notes: list[str] = []
     weights_before = dict(CONFLUENCE_WEIGHTS_DEFAULT)
+    config_snapshot = strategy_config_snapshot(strategy_yaml_path)
 
     records: list[dict] = []
     p = Path(ledger_path)
@@ -287,6 +339,22 @@ def train_from_ledger(
             except Exception:
                 continue
     if not records:
+        if db_path:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                ensure_adaptive_calibration_schema(conn)
+                record_adaptive_audit_event(
+                    conn,
+                    symbol=symbol,
+                    event_type="calibration_skipped",
+                    severity="warning",
+                    state_after={"mode": "DRY_RUN"},
+                    detail={"reason": "no_records", "ledger_path": ledger_path},
+                )
+                conn.commit()
+            finally:
+                conn.close()
         return TrainingResult(
             started_at=started_at,
             elapsed_seconds=round(time.time() - t0, 3),
@@ -297,6 +365,44 @@ def train_from_ledger(
             adopted=False, strategy_yaml_updated=False,
             notes=["ledger empty — run auto_backtest_window first"],
         )
+
+    adaptive_conn: Optional[sqlite3.Connection] = None
+    if db_path:
+        adaptive_conn = sqlite3.connect(db_path)
+        adaptive_conn.row_factory = sqlite3.Row
+        ensure_adaptive_calibration_schema(adaptive_conn)
+        upsert_trade_ledger_records(
+            adaptive_conn,
+            records,
+            config_hash=config_snapshot["hash"],
+            model_version=model_version,
+            source="training_ledger",
+        )
+        kill_state = get_kill_switch_state(adaptive_conn)
+        if kill_state.get("state") == "LOCKED":
+            record_adaptive_audit_event(
+                adaptive_conn,
+                symbol=symbol,
+                event_type="calibration_blocked",
+                severity="critical",
+                state_before=kill_state,
+                state_after=kill_state,
+                detail={"reason": "kill_switch_locked"},
+            )
+            adaptive_conn.commit()
+            adaptive_conn.close()
+            return TrainingResult(
+                started_at=started_at,
+                elapsed_seconds=round(time.time() - t0, 3),
+                sample_size=len(records),
+                verdict={"adopt": False, "reason": "kill_switch_locked"},
+                weights_before=weights_before,
+                weights_after=weights_before,
+                weights_changed=[],
+                adopted=False,
+                strategy_yaml_updated=False,
+                notes=["adaptive kill switch locked — calibration write blocked"],
+            )
 
     calib = run_closed_loop_calibration(records, base_weights=base_weights)
     verdict = calib.get("verdict") or {}
@@ -313,26 +419,103 @@ def train_from_ledger(
             if weights_before.get(k) != v:
                 changed.append(k)
                 weights_after[k] = v
-        # write back to yaml
-        try:
-            yaml_path = Path(strategy_yaml_path)
-            if not yaml_path.is_absolute():
-                yaml_path = Path(__file__).parent.parent / strategy_yaml_path
-            import yaml  # type: ignore
-            existing = {}
-            if yaml_path.exists():
-                with open(yaml_path, "r", encoding="utf-8") as fh:
-                    existing = yaml.safe_load(fh) or {}
-            existing.setdefault("confluence", {})["weights"] = weights_after
-            with open(yaml_path, "w", encoding="utf-8") as fh:
-                yaml.safe_dump(existing, fh, allow_unicode=True, sort_keys=False)
-            apply_strategy_yaml_overrides()
-            yaml_written = True
-            notes.append(f"strategy.yaml updated; {len(changed)} weight(s) changed")
-        except Exception as exc:
-            notes.append(f"yaml write failed: {exc}")
+        if changed:
+            try:
+                patch = {"confluence": {"weights": weights_after}}
+                if adaptive_conn is not None:
+                    patch_row = create_config_patch(
+                        adaptive_conn,
+                        patch=patch,
+                        symbol=symbol,
+                        reason="closed_loop_calibration_adopted",
+                        strategy_yaml_path=strategy_yaml_path,
+                    )
+                    apply_atomic_config_patch(
+                        adaptive_conn,
+                        patch_key=patch_row["patch_key"],
+                        strategy_yaml_path=strategy_yaml_path,
+                        expected_hash=config_snapshot["hash"],
+                    )
+                    record_adaptive_audit_event(
+                        adaptive_conn,
+                        symbol=symbol,
+                        event_type="config_patch_applied",
+                        state_before={"mode": "DRY_RUN", "config_hash": config_snapshot["hash"]},
+                        state_after={"mode": "READY", "config_hash": patch_row["after_hash"]},
+                        detail={
+                            "patch_key": patch_row["patch_key"],
+                            "changed_weights": changed,
+                            "model_version": model_version,
+                        },
+                    )
+                    adaptive_conn.commit()
+                else:
+                    yaml_path = Path(strategy_yaml_path)
+                    if not yaml_path.is_absolute():
+                        yaml_path = Path(__file__).parent.parent / strategy_yaml_path
+                    import yaml  # type: ignore
+
+                    existing = {}
+                    if yaml_path.exists():
+                        with open(yaml_path, "r", encoding="utf-8") as fh:
+                            existing = yaml.safe_load(fh) or {}
+                    existing.setdefault("confluence", {})["weights"] = weights_after
+                    fd, tmp_name = tempfile.mkstemp(
+                        prefix="strategy.",
+                        suffix=".yaml",
+                        dir=str(yaml_path.parent),
+                    )
+                    try:
+                        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                            yaml.safe_dump(existing, fh, allow_unicode=True, sort_keys=False)
+                            fh.flush()
+                            os.fsync(fh.fileno())
+                        os.replace(tmp_name, yaml_path)
+                    finally:
+                        if os.path.exists(tmp_name):
+                            os.unlink(tmp_name)
+                apply_strategy_yaml_overrides()
+                yaml_written = True
+                notes.append(f"strategy.yaml updated; {len(changed)} weight(s) changed")
+            except Exception as exc:
+                notes.append(f"yaml write failed: {exc}")
+                if adaptive_conn is not None:
+                    set_kill_switch_state(
+                        adaptive_conn,
+                        state="LOCKED",
+                        reason="config_patch_failed",
+                        detail={"error": repr(exc)},
+                    )
+                    record_adaptive_audit_event(
+                        adaptive_conn,
+                        symbol=symbol,
+                        event_type="config_patch_failed",
+                        severity="critical",
+                        state_before={"mode": "DRY_RUN"},
+                        state_after={"mode": "LOCKED"},
+                        detail={"error": repr(exc)},
+                    )
+                    adaptive_conn.commit()
     else:
         notes.append(f"calibration not adopted: {verdict.get('reason')}")
+        if adaptive_conn is not None:
+            record_adaptive_audit_event(
+                adaptive_conn,
+                symbol=symbol,
+                event_type="calibration_rejected",
+                severity="info",
+                state_before={"mode": "DRY_RUN"},
+                state_after={"mode": "DRY_RUN"},
+                detail={
+                    "reason": verdict.get("reason"),
+                    "sample_size": len(records),
+                    "model_version": model_version,
+                },
+            )
+            adaptive_conn.commit()
+
+    if adaptive_conn is not None:
+        adaptive_conn.close()
 
     return TrainingResult(
         started_at=started_at,
@@ -495,9 +678,9 @@ def run_training_cycle(
     try:
         for sym in symbols:
             bs = auto_backtest_window(api, sym, interval=interval, bars=bars,
-                                       ledger_path=ledger_path)
+                                       ledger_path=ledger_path, db_path=db_path)
             backtest_summaries.append(asdict(bs))
-        training = train_from_ledger(ledger_path=ledger_path)
+        training = train_from_ledger(ledger_path=ledger_path, db_path=db_path)
         audit = audit_learning_capability(ledger_path=ledger_path)
         scenarios = {sym: run_scenarios_for_symbol(conn, sym) for sym in symbols}
         return {

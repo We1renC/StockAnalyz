@@ -37,6 +37,7 @@ from technical_matrix import build_technical_matrix
 from smc_quant import SMCConfig, build_smc_analysis
 from smc_backtest import SMCBacktestConfig, run_smc_event_backtest
 from smc_store import persist_backtest_run, summarize_backtest_report
+from learning.adaptive_store import ensure_adaptive_calibration_schema
 from paper_acceptance import build_acceptance_report, render_acceptance_markdown
 from paper_acceptance_store import (
     build_acceptance_workspace,
@@ -384,6 +385,7 @@ def init_db():
     """)
     conn.commit()
     ensure_paper_acceptance_schema(conn)
+    ensure_adaptive_calibration_schema(conn)
 
     # Migration: positions target columns
     c = conn.cursor()
