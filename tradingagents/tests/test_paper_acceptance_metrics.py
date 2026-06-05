@@ -8,6 +8,8 @@ from paper_acceptance_metrics import (
     record_order_audit,
     record_reconciliation_run,
     record_runtime_metric,
+    record_stability_session,
+    record_virtual_account_snapshot,
     summarize_acceptance_telemetry,
 )
 
@@ -207,3 +209,59 @@ def test_summarize_acceptance_telemetry_tracks_derivatives_cost_evidence():
     assert gate["funding_rates_included"] is True
     assert gate["liquidation_price_calculated"] is True
     assert gate["liquidation_stress_tested"] is True
+
+
+def test_summarize_acceptance_telemetry_tracks_virtual_account_and_stability_sessions():
+    conn = _conn()
+    ensure_paper_acceptance_metrics_schema(conn)
+
+    record_virtual_account_snapshot(
+        conn,
+        symbol="ABAT",
+        account_currency="USD",
+        equity=10500.0,
+        available_balance=8200.0,
+        frozen_balance=300.0,
+        margin_used=1200.0,
+        unrealized_pnl=180.0,
+        realized_pnl=320.0,
+        open_position_count=3,
+        open_order_count=2,
+        detail={"minimum_notional_enforced": True},
+    )
+    record_stability_session(
+        conn,
+        symbol="ABAT",
+        session_name="weekly-soak",
+        started_at="2026-05-01T00:00:00Z",
+        ended_at="2026-05-08T00:00:00Z",
+        runtime_hours=168,
+        restart_count=0,
+        reconnect_count=2,
+        max_memory_pct=62.0,
+        max_cpu_pct=44.0,
+        max_api_latency_ms=220.0,
+        result="pass",
+        detail={"restart_state_recovery": True},
+    )
+    record_order_audit(
+        conn,
+        symbol="ABAT",
+        side="buy",
+        order_type="limit",
+        state="rejected",
+        requested_qty=2,
+        filled_qty=0,
+        signal_price=10.0,
+        reject_reason="insufficient_balance",
+    )
+
+    payload = summarize_acceptance_telemetry(conn, symbol="ABAT")
+
+    assert payload["metrics"]["virtual_account_snapshot_count"] == 1
+    assert payload["metrics"]["latest_equity"] == 10500.0
+    assert payload["metrics"]["soak_runtime_hours_max"] == 168.0
+    assert payload["evidence"]["virtual_account"]["realized_unrealized_pnl"] is True
+    assert payload["evidence"]["virtual_account"]["insufficient_balance_rejection"] is True
+    assert payload["evidence"]["system_stability"]["seven_day_runtime"] is True
+    assert payload["evidence"]["monitoring_dashboard"]["available_balance"] is True

@@ -59,7 +59,9 @@ from paper_acceptance_store import (
     load_runtime_metrics,
     load_scenario_runs,
     load_shadow_parity_traces,
+    load_stability_sessions,
     load_threshold_profiles,
+    load_virtual_account_snapshots,
     record_alert_delivery,
     record_acceptance_change,
     record_acceptance_event,
@@ -69,9 +71,11 @@ from paper_acceptance_store import (
     record_promotion_decision,
     record_threshold_profile,
     record_shadow_parity_trace,
+    record_stability_session,
     record_order_audit,
     record_reconciliation_run,
     record_runtime_metric,
+    record_virtual_account_snapshot,
     refresh_acceptance_reports_for_symbols,
     run_acceptance_scenario,
     summarize_governance_events,
@@ -4871,6 +4875,39 @@ class PaperAcceptanceAlertDeliveryCreate(BaseModel):
     created_at: Optional[str] = None
 
 
+class PaperAcceptanceVirtualAccountSnapshotCreate(BaseModel):
+    symbol: str
+    account_currency: str = "USD"
+    equity: Optional[float] = None
+    available_balance: Optional[float] = None
+    frozen_balance: Optional[float] = None
+    margin_used: Optional[float] = None
+    unrealized_pnl: Optional[float] = None
+    realized_pnl: Optional[float] = None
+    open_position_count: int = 0
+    open_order_count: int = 0
+    detail: Optional[dict] = None
+    stage: str = "paper"
+    created_at: Optional[str] = None
+
+
+class PaperAcceptanceStabilitySessionCreate(BaseModel):
+    symbol: str
+    session_name: str = ""
+    started_at: Optional[str] = None
+    ended_at: Optional[str] = None
+    runtime_hours: Optional[float] = None
+    restart_count: int = 0
+    reconnect_count: int = 0
+    max_memory_pct: Optional[float] = None
+    max_cpu_pct: Optional[float] = None
+    max_api_latency_ms: Optional[float] = None
+    result: str = "pass"
+    detail: Optional[dict] = None
+    stage: str = "paper"
+    created_at: Optional[str] = None
+
+
 class PaperAcceptanceScenarioRunRequest(BaseModel):
     symbol: str
     scenario_id: str
@@ -5647,6 +5684,39 @@ def api_get_paper_acceptance_security_scan(symbol: str, stage: str = "paper"):
         conn.close()
 
 
+@app.get("/api/paper-acceptance/dashboard")
+def api_get_paper_acceptance_dashboard(symbol: str, stage: str = "paper"):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        payload = build_acceptance_workspace(conn, symbol=symbol.strip().upper(), stage=stage, limit_reports=5)
+        report = payload.get("report") or {}
+        summary = report.get("summary") or {}
+        return sanitize_float_values({
+            "symbol": payload["symbol"],
+            "stage": payload["stage"],
+            "overview": {
+                "conclusion": summary.get("conclusion"),
+                "blocking_issue_count": summary.get("blocking_issue_count"),
+                "recommendation": (payload.get("policy") or {}).get("recommendation"),
+                "review_status": (payload.get("review") or {}).get("review_status"),
+            },
+            "monitoring_dashboard": ((payload.get("policy") or {}).get("evidence") or {}).get("monitoring_dashboard") or {},
+            "virtual_account": {
+                "snapshots": payload.get("virtual_account_snapshots") or [],
+                "latest": (payload.get("virtual_account_snapshots") or [{}])[0] if payload.get("virtual_account_snapshots") else {},
+            },
+            "stability": {
+                "sessions": payload.get("stability_sessions") or [],
+                "latest": (payload.get("stability_sessions") or [{}])[0] if payload.get("stability_sessions") else {},
+            },
+            "production_checklist": payload.get("production_checklist") or [],
+        })
+    finally:
+        conn.close()
+
+
 @app.get("/api/paper-acceptance/capital-stages")
 def api_get_paper_acceptance_capital_stages(symbol: str, stage: str = "paper", limit: int = 50):
     if not symbol.strip():
@@ -6154,6 +6224,85 @@ def api_get_paper_acceptance_alert_deliveries(symbol: str, stage: str = "paper",
     try:
         rows = load_alert_deliveries(conn, symbol=symbol.strip().upper(), stage=stage, limit=limit)
         return sanitize_float_values({"rows": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+@app.get("/api/paper-acceptance/virtual-account-snapshots")
+def api_get_paper_acceptance_virtual_account_snapshots(symbol: str, stage: str = "paper", limit: int = 100):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        rows = load_virtual_account_snapshots(conn, symbol=symbol.strip().upper(), stage=stage, limit=limit)
+        return sanitize_float_values({"rows": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+@app.post("/api/paper-acceptance/virtual-account-snapshots")
+def api_record_paper_acceptance_virtual_account_snapshot(req: PaperAcceptanceVirtualAccountSnapshotCreate):
+    if not req.symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        row = record_virtual_account_snapshot(
+            conn,
+            symbol=req.symbol.strip().upper(),
+            account_currency=req.account_currency,
+            equity=req.equity,
+            available_balance=req.available_balance,
+            frozen_balance=req.frozen_balance,
+            margin_used=req.margin_used,
+            unrealized_pnl=req.unrealized_pnl,
+            realized_pnl=req.realized_pnl,
+            open_position_count=req.open_position_count,
+            open_order_count=req.open_order_count,
+            detail=req.detail or {},
+            stage=req.stage,
+            created_at=req.created_at,
+        )
+        return sanitize_float_values({"ok": True, "row": row})
+    finally:
+        conn.close()
+
+
+@app.get("/api/paper-acceptance/stability-sessions")
+def api_get_paper_acceptance_stability_sessions(symbol: str, stage: str = "paper", limit: int = 100):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        rows = load_stability_sessions(conn, symbol=symbol.strip().upper(), stage=stage, limit=limit)
+        return sanitize_float_values({"rows": rows, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+@app.post("/api/paper-acceptance/stability-sessions")
+def api_record_paper_acceptance_stability_session(req: PaperAcceptanceStabilitySessionCreate):
+    if not req.symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        row = record_stability_session(
+            conn,
+            symbol=req.symbol.strip().upper(),
+            session_name=req.session_name,
+            started_at=req.started_at,
+            ended_at=req.ended_at,
+            runtime_hours=req.runtime_hours,
+            restart_count=req.restart_count,
+            reconnect_count=req.reconnect_count,
+            max_memory_pct=req.max_memory_pct,
+            max_cpu_pct=req.max_cpu_pct,
+            max_api_latency_ms=req.max_api_latency_ms,
+            result=req.result,
+            detail=req.detail or {},
+            stage=req.stage,
+            created_at=req.created_at,
+        )
+        return sanitize_float_values({"ok": True, "row": row})
     finally:
         conn.close()
 

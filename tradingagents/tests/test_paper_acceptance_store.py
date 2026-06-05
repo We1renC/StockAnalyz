@@ -23,7 +23,9 @@ from paper_acceptance_store import (
     load_reconciliation_runs,
     load_runtime_metrics,
     load_threshold_profiles,
+    load_stability_sessions,
     load_shadow_parity_traces,
+    load_virtual_account_snapshots,
     persist_acceptance_report,
     record_alert_delivery,
     record_acceptance_event,
@@ -36,12 +38,14 @@ from paper_acceptance_store import (
     record_order_audit,
     record_reconciliation_run,
     record_runtime_metric,
+    record_stability_session,
     refresh_acceptance_reports_for_symbols,
     run_acceptance_scenario,
     summarize_governance_events,
     summarize_promotion_decisions,
     summarize_shadow_parity_traces,
     summarize_threshold_profiles,
+    record_virtual_account_snapshot,
     upsert_acceptance_review,
     upsert_acceptance_check,
     upsert_acceptance_context_overrides,
@@ -772,6 +776,57 @@ def test_workspace_auto_generates_stage_and_deviation_from_live_telemetry():
     assert live_deviation["fill_rate_delta"] == 0.0
     assert live_deviation["slippage_delta_bps"] == 6.0
     assert live_deviation["detail"]["live_average_slippage"] == 18.0
+
+
+def test_workspace_includes_virtual_account_and_stability_operational_evidence():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+    ensure_paper_acceptance_schema(conn)
+
+    record_virtual_account_snapshot(
+        conn,
+        symbol="ABAT",
+        account_currency="USD",
+        equity=10120.0,
+        available_balance=8400.0,
+        frozen_balance=250.0,
+        margin_used=900.0,
+        unrealized_pnl=120.0,
+        realized_pnl=80.0,
+        open_position_count=2,
+        open_order_count=1,
+        detail={"minimum_notional_enforced": True},
+    )
+    record_stability_session(
+        conn,
+        symbol="ABAT",
+        session_name="weekly-soak",
+        started_at="2026-05-01T00:00:00Z",
+        ended_at="2026-05-08T00:00:00Z",
+        runtime_hours=168,
+        restart_count=0,
+        reconnect_count=1,
+        max_memory_pct=58.0,
+        max_cpu_pct=42.0,
+        max_api_latency_ms=180.0,
+        result="pass",
+        detail={"restart_state_recovery": True},
+    )
+
+    workspace = build_acceptance_workspace(conn, symbol="ABAT")
+
+    assert load_virtual_account_snapshots(conn, symbol="ABAT")
+    assert load_stability_sessions(conn, symbol="ABAT")
+    assert workspace["virtual_account_snapshots"][0]["equity"] == 10120.0
+    assert workspace["stability_sessions"][0]["runtime_hours"] == 168.0
+    dashboard_section = next(item for item in workspace["catalog"] if item["section"] == "11.1")
+    dashboard_gate = dashboard_section["gates"][0]
+    dashboard_check = next(row for row in dashboard_gate["checks"] if row["key"] == "available_balance")
+    stability_section = next(item for item in workspace["catalog"] if item["section"] == "8.3")
+    stability_gate = stability_section["gates"][0]
+    stability_check = next(row for row in stability_gate["checks"] if row["key"] == "seven_day_runtime")
+    assert dashboard_check["value"] is True
+    assert stability_check["value"] is True
 
 
 def test_refresh_acceptance_reports_for_symbols_skips_recent_and_empty():

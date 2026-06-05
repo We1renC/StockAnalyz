@@ -19,7 +19,9 @@ from app import (
     PaperAcceptanceScenarioRunRequest,
     PaperAcceptanceShadowParityCreate,
     PaperAcceptanceThresholdProfileCreate,
+    PaperAcceptanceStabilitySessionCreate,
     PaperAcceptanceWorkspaceUpdate,
+    PaperAcceptanceVirtualAccountSnapshotCreate,
     SMCJournalCreate,
 )
 
@@ -209,6 +211,58 @@ def test_api_runtime_metrics_reconciliation_order_audit_and_alert_delivery(tmp_p
         assert workspace["report"]["metrics"]["fees_included"] is True
         assert workspace["report"]["metrics"]["reconciliation_implemented"] is True
         assert len(workspace["runtime_metrics"]) >= 2
+    finally:
+        app.DB = original
+
+
+def test_api_virtual_account_stability_and_dashboard_round_trip(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        virtual_payload = app.api_record_paper_acceptance_virtual_account_snapshot(
+            PaperAcceptanceVirtualAccountSnapshotCreate(
+                symbol="ABAT",
+                account_currency="USD",
+                equity=10240.0,
+                available_balance=8600.0,
+                frozen_balance=220.0,
+                margin_used=800.0,
+                unrealized_pnl=140.0,
+                realized_pnl=60.0,
+                open_position_count=2,
+                open_order_count=1,
+                detail={"minimum_notional_enforced": True},
+            )
+        )
+        stability_payload = app.api_record_paper_acceptance_stability_session(
+            PaperAcceptanceStabilitySessionCreate(
+                symbol="ABAT",
+                session_name="weekly-soak",
+                started_at="2026-05-01T00:00:00Z",
+                ended_at="2026-05-08T00:00:00Z",
+                runtime_hours=168,
+                restart_count=0,
+                reconnect_count=1,
+                max_memory_pct=55.0,
+                max_cpu_pct=40.0,
+                max_api_latency_ms=200.0,
+                result="pass",
+                detail={"restart_state_recovery": True},
+            )
+        )
+
+        virtual_rows = app.api_get_paper_acceptance_virtual_account_snapshots(symbol="ABAT")
+        stability_rows = app.api_get_paper_acceptance_stability_sessions(symbol="ABAT")
+        dashboard = app.api_get_paper_acceptance_dashboard(symbol="ABAT")
+        workspace = app.api_get_paper_acceptance_workspace(symbol="ABAT")
+
+        assert virtual_payload["ok"] is True
+        assert stability_payload["ok"] is True
+        assert virtual_rows["count"] == 1
+        assert stability_rows["count"] == 1
+        assert dashboard["virtual_account"]["latest"]["equity"] == 10240.0
+        assert dashboard["stability"]["latest"]["runtime_hours"] == 168.0
+        assert workspace["virtual_account_snapshots"][0]["available_balance"] == 8600.0
+        assert workspace["stability_sessions"][0]["session_name"] == "weekly-soak"
     finally:
         app.DB = original
 

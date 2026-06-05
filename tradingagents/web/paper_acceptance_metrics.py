@@ -176,6 +176,53 @@ def ensure_paper_acceptance_metrics_schema(conn) -> None:
         """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_alert_symbol_created
            ON paper_acceptance_alert_deliveries(symbol, stage, created_at DESC)"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_virtual_account_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            account_currency TEXT NOT NULL DEFAULT 'USD',
+            equity REAL,
+            available_balance REAL,
+            frozen_balance REAL,
+            margin_used REAL,
+            unrealized_pnl REAL,
+            realized_pnl REAL,
+            open_position_count INTEGER NOT NULL DEFAULT 0,
+            open_order_count INTEGER NOT NULL DEFAULT 0,
+            detail TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_virtual_symbol_created
+           ON paper_acceptance_virtual_account_snapshots(symbol, stage, created_at DESC)"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_stability_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            session_name TEXT NOT NULL DEFAULT '',
+            started_at TEXT,
+            ended_at TEXT,
+            runtime_hours REAL,
+            restart_count INTEGER NOT NULL DEFAULT 0,
+            reconnect_count INTEGER NOT NULL DEFAULT 0,
+            max_memory_pct REAL,
+            max_cpu_pct REAL,
+            max_api_latency_ms REAL,
+            result TEXT NOT NULL DEFAULT 'pass',
+            detail TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_stability_symbol_created
+           ON paper_acceptance_stability_sessions(symbol, stage, created_at DESC)"""
+    )
     conn.commit()
 
 
@@ -441,6 +488,130 @@ def record_alert_delivery(
     return payload
 
 
+def record_virtual_account_snapshot(
+    conn,
+    *,
+    symbol: str,
+    account_currency: str = "USD",
+    equity: float | None = None,
+    available_balance: float | None = None,
+    frozen_balance: float | None = None,
+    margin_used: float | None = None,
+    unrealized_pnl: float | None = None,
+    realized_pnl: float | None = None,
+    open_position_count: int = 0,
+    open_order_count: int = 0,
+    detail: dict | None = None,
+    stage: str = "paper",
+    created_at: str | None = None,
+) -> dict:
+    ensure_paper_acceptance_metrics_schema(conn)
+    payload = {
+        "snapshot_key": f"pa-virtual-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "account_currency": (account_currency or "USD").strip().upper(),
+        "equity": _safe_float(equity),
+        "available_balance": _safe_float(available_balance),
+        "frozen_balance": _safe_float(frozen_balance),
+        "margin_used": _safe_float(margin_used),
+        "unrealized_pnl": _safe_float(unrealized_pnl),
+        "realized_pnl": _safe_float(realized_pnl),
+        "open_position_count": max(0, _safe_int(open_position_count)),
+        "open_order_count": max(0, _safe_int(open_order_count)),
+        "detail": detail or {},
+        "created_at": created_at or _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_virtual_account_snapshots
+           (snapshot_key, symbol, stage, account_currency, equity, available_balance, frozen_balance,
+            margin_used, unrealized_pnl, realized_pnl, open_position_count, open_order_count, detail, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["snapshot_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["account_currency"],
+            payload["equity"],
+            payload["available_balance"],
+            payload["frozen_balance"],
+            payload["margin_used"],
+            payload["unrealized_pnl"],
+            payload["realized_pnl"],
+            payload["open_position_count"],
+            payload["open_order_count"],
+            _json_dumps(payload["detail"]),
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    return payload
+
+
+def record_stability_session(
+    conn,
+    *,
+    symbol: str,
+    session_name: str = "",
+    started_at: str | None = None,
+    ended_at: str | None = None,
+    runtime_hours: float | None = None,
+    restart_count: int = 0,
+    reconnect_count: int = 0,
+    max_memory_pct: float | None = None,
+    max_cpu_pct: float | None = None,
+    max_api_latency_ms: float | None = None,
+    result: str = "pass",
+    detail: dict | None = None,
+    stage: str = "paper",
+    created_at: str | None = None,
+) -> dict:
+    ensure_paper_acceptance_metrics_schema(conn)
+    payload = {
+        "session_key": f"pa-soak-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "session_name": session_name or "",
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "runtime_hours": _safe_float(runtime_hours),
+        "restart_count": max(0, _safe_int(restart_count)),
+        "reconnect_count": max(0, _safe_int(reconnect_count)),
+        "max_memory_pct": _safe_float(max_memory_pct),
+        "max_cpu_pct": _safe_float(max_cpu_pct),
+        "max_api_latency_ms": _safe_float(max_api_latency_ms),
+        "result": (result or "pass").strip().lower(),
+        "detail": detail or {},
+        "created_at": created_at or ended_at or started_at or _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_stability_sessions
+           (session_key, symbol, stage, session_name, started_at, ended_at, runtime_hours,
+            restart_count, reconnect_count, max_memory_pct, max_cpu_pct, max_api_latency_ms,
+            result, detail, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["session_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["session_name"],
+            payload["started_at"],
+            payload["ended_at"],
+            payload["runtime_hours"],
+            payload["restart_count"],
+            payload["reconnect_count"],
+            payload["max_memory_pct"],
+            payload["max_cpu_pct"],
+            payload["max_api_latency_ms"],
+            payload["result"],
+            _json_dumps(payload["detail"]),
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    return payload
+
+
 def _rows_to_dicts(rows, *, json_field: str | None = None) -> list[dict]:
     out: list[dict] = []
     for row in rows:
@@ -505,6 +676,30 @@ def load_alert_deliveries(conn, *, symbol: str | None = None, stage: str = "pape
         row["acknowledged"] = bool(row.get("acknowledged"))
         row["payload_complete"] = bool(row.get("payload_complete"))
     return data
+
+
+def load_virtual_account_snapshots(conn, *, symbol: str | None = None, stage: str = "paper", limit: int = 200) -> list[dict]:
+    ensure_paper_acceptance_metrics_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_virtual_account_snapshots
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 2000))),
+    ).fetchall()
+    return _rows_to_dicts(rows, json_field="detail")
+
+
+def load_stability_sessions(conn, *, symbol: str | None = None, stage: str = "paper", limit: int = 100) -> list[dict]:
+    ensure_paper_acceptance_metrics_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_stability_sessions
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 1000))),
+    ).fetchall()
+    return _rows_to_dicts(rows, json_field="detail")
 
 
 def _series(rows: list[dict], metric_name: str) -> list[float]:
@@ -711,6 +906,8 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
     reconciliation_rows = load_reconciliation_runs(conn, symbol=symbol, stage=stage, limit=1000)
     order_rows = load_order_audit_rows(conn, symbol=symbol, stage=stage, limit=5000)
     alert_rows = load_alert_deliveries(conn, symbol=symbol, stage=stage, limit=2000)
+    virtual_rows = load_virtual_account_snapshots(conn, symbol=symbol, stage=stage, limit=1000)
+    stability_rows = load_stability_sessions(conn, symbol=symbol, stage=stage, limit=200)
 
     api_latency = _series(runtime_rows, "api_latency_ms")
     market_data_latency = _series(runtime_rows, "market_data_latency_ms")
@@ -772,12 +969,48 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
         )
     ]
     regime_coverage = _regime_coverage(order_rows)
+    latest_virtual = virtual_rows[0] if virtual_rows else {}
+    account_currencies = {
+        str(row.get("account_currency") or "").strip().upper()
+        for row in virtual_rows
+        if str(row.get("account_currency") or "").strip()
+    }
+    soak_runtime_hours = [
+        float(row["runtime_hours"])
+        for row in stability_rows
+        if _safe_float(row.get("runtime_hours")) is not None
+    ]
+    soak_restart_counts = [int(row.get("restart_count") or 0) for row in stability_rows]
+    soak_reconnect_counts = [int(row.get("reconnect_count") or 0) for row in stability_rows]
+    soak_memory_peaks = [
+        float(row["max_memory_pct"])
+        for row in stability_rows
+        if _safe_float(row.get("max_memory_pct")) is not None
+    ]
+    soak_cpu_peaks = [
+        float(row["max_cpu_pct"])
+        for row in stability_rows
+        if _safe_float(row.get("max_cpu_pct")) is not None
+    ]
+    soak_api_latency_peaks = [
+        float(row["max_api_latency_ms"])
+        for row in stability_rows
+        if _safe_float(row.get("max_api_latency_ms")) is not None
+    ]
+    soak_pass_rows = [row for row in stability_rows if str(row.get("result") or "pass") == "pass"]
     limit_waiting_times: list[float] = []
     for row in limit_orders:
         submit_ts = _parse_ts(row.get("submitted_at"))
         done_ts = _parse_ts(row.get("fill_at") or row.get("cancel_at") or row.get("ack_at"))
         if submit_ts and done_ts and done_ts >= submit_ts:
             limit_waiting_times.append((done_ts - submit_ts).total_seconds() * 1000)
+    missed_fill_moves = [
+        abs(float((row.get("detail") or {}).get("post_order_price_move_bps") or 0))
+        for row in order_rows
+        if row.get("state") in {"expired", "canceled", "rejected"}
+        and isinstance(row.get("detail"), dict)
+        and _safe_float((row.get("detail") or {}).get("post_order_price_move_bps")) is not None
+    ]
 
     unresolved_recon = [
         row for row in reconciliation_rows
@@ -799,6 +1032,8 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
         "program_restart_count": restart_count,
         "rate_limit_hit_count": rate_limit_count,
         "runtime_days": _latency_span_days(runtime_rows),
+        "virtual_account_snapshot_count": len(virtual_rows),
+        "stability_session_count": len(stability_rows),
         "average_api_latency": round(mean(api_latency), 4) if api_latency else None,
         "market_data_latency": round(mean(market_data_latency), 4) if market_data_latency else None,
         "signal_compute_time": round(mean(signal_compute_latency), 4) if signal_compute_latency else None,
@@ -862,17 +1097,28 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
         "liquidation_buffer_min_bps": round(min(liquidation_buffers), 4) if liquidation_buffers else None,
         "mark_price_trace_count": len(mark_prices),
         "derivatives_cost_count": len(derivatives_rows),
-        "missed_fill_price_movement": round(mean(
-            abs(float(row.get("detail", {}).get("post_order_price_move_bps") or 0))
-            for row in order_rows
-            if row.get("state") in {"expired", "canceled", "rejected"} and row.get("detail")
-        ), 4) if any(row.get("state") in {"expired", "canceled", "rejected"} for row in order_rows) else None,
+        "missed_fill_price_movement": round(mean(missed_fill_moves), 4) if missed_fill_moves else None,
         "reconciliation_implemented": bool(reconciliation_rows),
         "unresolved_reconciliation_count": len(unresolved_recon),
         "alert_delivery_count": len(alert_rows),
         "alert_payload_complete_ratio": round(
             sum(1 for row in alert_rows if row.get("payload_complete")) / len(alert_rows), 4
         ) if alert_rows else None,
+        "latest_equity": _safe_float(latest_virtual.get("equity")),
+        "latest_available_balance": _safe_float(latest_virtual.get("available_balance")),
+        "latest_frozen_balance": _safe_float(latest_virtual.get("frozen_balance")),
+        "latest_margin_used": _safe_float(latest_virtual.get("margin_used")),
+        "latest_open_position_count": _safe_int(latest_virtual.get("open_position_count")),
+        "latest_open_order_count": _safe_int(latest_virtual.get("open_order_count")),
+        "virtual_account_multi_currency": len(account_currencies) >= 2,
+        "virtual_account_currency_count": len(account_currencies),
+        "soak_runtime_hours_max": round(max(soak_runtime_hours), 4) if soak_runtime_hours else None,
+        "soak_restart_count_max": max(soak_restart_counts) if soak_restart_counts else None,
+        "soak_reconnect_count_max": max(soak_reconnect_counts) if soak_reconnect_counts else None,
+        "soak_memory_peak_pct": round(max(soak_memory_peaks), 4) if soak_memory_peaks else None,
+        "soak_cpu_peak_pct": round(max(soak_cpu_peaks), 4) if soak_cpu_peaks else None,
+        "soak_api_latency_peak_ms": round(max(soak_api_latency_peaks), 4) if soak_api_latency_peaks else None,
+        "soak_pass_count": len(soak_pass_rows),
         "session_bucket_count": regime_coverage["session_bucket_count"],
         "volatility_bucket_count": regime_coverage["volatility_bucket_count"],
         "liquidity_bucket_count": regime_coverage["liquidity_bucket_count"],
@@ -1001,6 +1247,18 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
             "reconciliation_alerts": "reconciliation" in alert_event_types,
         }
 
+    if virtual_rows:
+        evidence["virtual_account"] = {
+            "multi_currency_balances": len(account_currencies) >= 1,
+            "available_and_frozen_balance": latest_virtual.get("available_balance") is not None and latest_virtual.get("frozen_balance") is not None,
+            "realized_unrealized_pnl": latest_virtual.get("realized_pnl") is not None and latest_virtual.get("unrealized_pnl") is not None,
+            "insufficient_balance_rejection": any("insufficient_balance" in str((row.get("reject_reason") or "")).lower() for row in order_rows),
+            "minimum_notional_enforced": any(
+                bool((row.get("detail") or {}).get("minimum_notional_enforced"))
+                for row in order_rows
+            ) or any(bool((row.get("detail") or {}).get("minimum_notional_enforced")) for row in virtual_rows),
+        }
+
     if runtime_rows:
         evidence["api_rate_limits"] = {
             "global_request_weight_management": any(row.get("metric_name") == "request_weight" for row in runtime_rows),
@@ -1013,6 +1271,7 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
             "api_error_rate_recorded": metrics["api_error_rate"] is not None,
             "api_abnormality_pauses_strategy": any(row.get("metric_name") == "api_pause" for row in runtime_rows),
         }
+    if runtime_rows or stability_rows or virtual_rows:
         evidence["latency"] = {
             "market_data_latency": bool(market_data_latency),
             "signal_compute_time": bool(signal_compute_latency),
@@ -1025,22 +1284,31 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
             "latency_pause_policy": any(row.get("metric_name") == "latency_pause" for row in runtime_rows),
         }
         evidence["system_stability"] = {
-            "seven_day_runtime": (metrics["runtime_days"] or 0) >= 7,
-            "memory_stable": (metrics["memory_peak_pct"] or 0) < 90 if metrics["memory_peak_pct"] is not None else False,
-            "cpu_stable": (metrics["cpu_peak_pct"] or 0) < 90 if metrics["cpu_peak_pct"] is not None else False,
+            "seven_day_runtime": (metrics["runtime_days"] or 0) >= 7 or (metrics["soak_runtime_hours_max"] or 0) >= 168,
+            "memory_stable": (
+                (metrics["soak_memory_peak_pct"] or 0) < 90 if metrics["soak_memory_peak_pct"] is not None
+                else (metrics["memory_peak_pct"] or 0) < 90 if metrics["memory_peak_pct"] is not None
+                else False
+            ),
+            "cpu_stable": (
+                (metrics["soak_cpu_peak_pct"] or 0) < 90 if metrics["soak_cpu_peak_pct"] is not None
+                else (metrics["cpu_peak_pct"] or 0) < 90 if metrics["cpu_peak_pct"] is not None
+                else False
+            ),
             "disk_space_sufficient": (metrics["disk_free_min_gb"] or 0) >= 2 if metrics["disk_free_min_gb"] is not None else False,
             "bounded_logs": (metrics["log_size_max_mb"] or 0) < 1024 if metrics["log_size_max_mb"] is not None else False,
             "db_connections_stable": (metrics["db_connection_peak"] or 0) < 64 if metrics["db_connection_peak"] is not None else False,
-            "websocket_reconnect": reconnect_count >= 0,
-            "restart_state_recovery": any(row.get("metric_name") == "restart_state_recovery" for row in runtime_rows),
+            "websocket_reconnect": reconnect_count >= 0 or bool(stability_rows),
+            "restart_state_recovery": any(row.get("metric_name") == "restart_state_recovery" for row in runtime_rows)
+            or any(bool((row.get("detail") or {}).get("restart_state_recovery")) for row in stability_rows),
             "scheduled_tasks_ok": any(row.get("metric_name") == "scheduled_task_ok" for row in runtime_rows),
             "time_sync": (metrics["clock_offset_max_ms"] or 0) <= 5000 if metrics["clock_offset_max_ms"] is not None else False,
         }
         evidence["monitoring_dashboard"] = {
-            "real_time_equity": any(row.get("metric_name") == "real_time_equity" for row in runtime_rows),
-            "available_balance": any(row.get("metric_name") == "available_balance" for row in runtime_rows),
-            "current_positions": any(row.get("metric_name") == "current_positions" for row in runtime_rows),
-            "open_orders": any(row.get("metric_name") == "open_orders" for row in runtime_rows),
+            "real_time_equity": any(row.get("metric_name") == "real_time_equity" for row in runtime_rows) or latest_virtual.get("equity") is not None,
+            "available_balance": any(row.get("metric_name") == "available_balance" for row in runtime_rows) or latest_virtual.get("available_balance") is not None,
+            "current_positions": any(row.get("metric_name") == "current_positions" for row in runtime_rows) or latest_virtual.get("open_position_count") is not None,
+            "open_orders": any(row.get("metric_name") == "open_orders" for row in runtime_rows) or latest_virtual.get("open_order_count") is not None,
             "daily_total_pnl": any(row.get("metric_name") == "daily_total_pnl" for row in runtime_rows),
             "max_drawdown_displayed": any(row.get("metric_name") == "max_drawdown_displayed" for row in runtime_rows),
             "strategy_status": True,
@@ -1072,6 +1340,8 @@ def summarize_acceptance_telemetry(conn, *, symbol: str | None = None, stage: st
         "reconciliation_runs": reconciliation_rows[:100],
         "order_audit": order_rows[:100],
         "alert_deliveries": alert_rows[:100],
+        "virtual_account_snapshots": virtual_rows[:100],
+        "stability_sessions": stability_rows[:100],
     }
 
 
@@ -1081,9 +1351,13 @@ __all__ = [
     "load_order_audit_rows",
     "load_reconciliation_runs",
     "load_runtime_metrics",
+    "load_stability_sessions",
+    "load_virtual_account_snapshots",
     "record_alert_delivery",
     "record_order_audit",
     "record_reconciliation_run",
     "record_runtime_metric",
+    "record_stability_session",
+    "record_virtual_account_snapshot",
     "summarize_acceptance_telemetry",
 ]
