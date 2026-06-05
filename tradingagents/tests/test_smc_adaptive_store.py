@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import yaml
@@ -14,6 +15,7 @@ from learning.adaptive_store import (
     strategy_config_snapshot,
     upsert_trade_ledger_records,
 )
+import smc_training_loop as smc_training_loop_module
 from smc_training_loop import train_from_ledger
 
 
@@ -46,12 +48,14 @@ def _write_strategy_yaml(path: Path) -> None:
 
 
 def _sample_record(i: int, *, factor_on: bool, r_multiple: float) -> dict:
+    entry_dt = datetime(2026, 6, 1, 0, 0, 0) + timedelta(hours=i * 6)
+    exit_dt = entry_dt + timedelta(hours=4)
     return {
         "trade_id": f"btc-{i}",
         "symbol": "BTC-USDT",
         "side": "long",
-        "entry_time": f"2026-06-{(i % 9) + 1:02d}T00:00:00",
-        "exit_time": f"2026-06-{(i % 9) + 1:02d}T04:00:00",
+        "entry_time": entry_dt.isoformat(),
+        "exit_time": exit_dt.isoformat(),
         "entry_price": 100.0 + i,
         "exit_price": 101.0 + i,
         "stop_price": 98.0 + i,
@@ -153,9 +157,9 @@ def test_train_from_ledger_records_patch_and_audit_rows(tmp_path):
     _write_strategy_yaml(strategy_yaml)
 
     records = []
-    for i in range(6):
+    for i in range(40):
         records.append(_sample_record(i, factor_on=True, r_multiple=2.0))
-    for i in range(6, 12):
+    for i in range(40, 80):
         records.append(_sample_record(i, factor_on=False, r_multiple=0.5))
     ledger_path.write_text(
         "\n".join(json.dumps(row, ensure_ascii=False) for row in records) + "\n",
@@ -172,7 +176,7 @@ def test_train_from_ledger_records_patch_and_audit_rows(tmp_path):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     patch_row = conn.execute(
-        "SELECT patch_key, applied FROM smc_adaptive_config_patches ORDER BY id DESC LIMIT 1"
+        "SELECT patch_key, patch_type, applied FROM smc_adaptive_config_patches ORDER BY id DESC LIMIT 1"
     ).fetchone()
     ledger_count = conn.execute(
         "SELECT COUNT(*) FROM smc_adaptive_trade_ledger"
@@ -182,11 +186,78 @@ def test_train_from_ledger_records_patch_and_audit_rows(tmp_path):
 
     updated_yaml = strategy_config_snapshot(str(strategy_yaml))
 
+    assert result.adopted is False
+    assert result.strategy_yaml_updated is False
+    assert patch_row is not None
+    assert patch_row["patch_type"] == "adaptive_runtime"
+    assert patch_row["applied"] == 0
+    assert ledger_count == 80
+    assert result.adaptive_state["mode"] in {"VALIDATING_PROBE", "DRY_RUN"}
+    assert any(row["event_type"] == "adaptive_state_computed" for row in audit_rows)
+    assert updated_yaml["data"]["confluence"]["weights"]["htf_bias_aligned"] == 2
+
+
+def test_train_from_ledger_applies_strategy_patch_when_adaptive_state_ready(tmp_path, monkeypatch):
+    ledger_path = tmp_path / "ledger.jsonl"
+    strategy_yaml = tmp_path / "strategy.yaml"
+    db_path = tmp_path / "adaptive.db"
+    _write_strategy_yaml(strategy_yaml)
+
+    records = []
+    for i in range(6):
+        records.append(_sample_record(i, factor_on=True, r_multiple=2.0))
+    for i in range(6, 12):
+        records.append(_sample_record(i, factor_on=False, r_multiple=0.5))
+    ledger_path.write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in records) + "\n",
+        encoding="utf-8",
+    )
+
+    def fake_adaptive_metrics(records, calib):
+        return {
+            "n_eff": 80.0,
+            "uniqueness_mean": 1.0,
+            "purged_folds": [],
+            "walk_forward_pass_ratio": 1.0,
+            "gate_results": {
+                "walk_forward": {"pass": True, "severity": 0.0, "fatal": False},
+                "pbo": {"pass": True, "severity": 0.0, "fatal": False},
+                "dsr": {"pass": True, "severity": 0.0, "fatal": False},
+                "edge_decay": {"pass": True, "severity": 0.0, "fatal": False},
+                "closed_loop_calibration": {"pass": True, "severity": 0.0, "fatal": False},
+            },
+            "validation": {"state_hint": "READY", "risk_multiplier": 1.0, "entropy": 0.0, "amplitude": 0.0},
+            "pbo": {"pbo": 0.1},
+            "dsr": {"threshold_sharpe": 0.5, "p_value_proxy": 0.01, "passes": True},
+            "sharpe": {"sharpe": 2.0},
+            "edge_decay": {"status": "stable"},
+        }
+
+    monkeypatch.setattr(smc_training_loop_module, "_adaptive_metrics_from_records", fake_adaptive_metrics)
+
+    result = train_from_ledger(
+        ledger_path=str(ledger_path),
+        strategy_yaml_path=str(strategy_yaml),
+        db_path=str(db_path),
+        symbol="BTC-USDT",
+    )
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    strategy_patch = conn.execute(
+        """SELECT patch_type, applied
+             FROM smc_adaptive_config_patches
+            WHERE patch_type='strategy'
+         ORDER BY id DESC LIMIT 1"""
+    ).fetchone()
+    audit_rows = load_adaptive_audit_logs(conn, symbol="BTC-USDT", limit=10)
+    conn.close()
+    updated_yaml = strategy_config_snapshot(str(strategy_yaml))
+
     assert result.adopted is True
     assert result.strategy_yaml_updated is True
-    assert patch_row is not None
-    assert patch_row["applied"] == 1
-    assert ledger_count == 12
+    assert strategy_patch is not None
+    assert strategy_patch["applied"] == 1
     assert any(row["event_type"] == "config_patch_applied" for row in audit_rows)
     assert updated_yaml["data"]["confluence"]["weights"]["htf_bias_aligned"] > 2
 

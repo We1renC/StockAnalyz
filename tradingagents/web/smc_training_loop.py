@@ -54,20 +54,26 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
+import numpy as np
 import pandas as pd
 
 from smc_quant import (
     SMCConfig,
     CONFLUENCE_WEIGHTS_DEFAULT,
+    CONFLUENCE_THRESHOLD_DEFAULT,
     apply_strategy_yaml_overrides,
     build_smc_analysis,
     build_trade_record,
     compute_expectancy,
+    deflated_sharpe_ratio,
+    estimate_pbo,
+    edge_decay_check,
     evaluate_entry_models,
     monthly_edge_stability,
     normalize_ohlcv,
     persist_trade_records,
     run_closed_loop_calibration,
+    sharpe_ratio,
 )
 from smc_paper_runner import CryptoApiClient
 from smc_auto_workflow import profile_for_symbol
@@ -82,6 +88,14 @@ from learning.adaptive_store import (
     strategy_config_snapshot,
     upsert_trade_ledger_records,
 )
+from learning.adaptive_validation import (
+    PurgedWalkForwardSplit,
+    build_gate_results,
+    compute_sample_uniqueness,
+    effective_sample_size,
+    validation_entropy_sizing,
+)
+from learning.probe_controller import plan_probe_order
 
 # Merged-but-previously-unused acceptance primitives
 from paper_acceptance_store import ensure_paper_acceptance_schema, load_acceptance_reports
@@ -308,7 +322,116 @@ class TrainingResult:
     weights_changed: list[str]
     adopted: bool
     strategy_yaml_updated: bool
+    adaptive_state: dict = field(default_factory=dict)
+    gate_results: dict = field(default_factory=dict)
+    probe_plan: dict = field(default_factory=dict)
+    adaptive_patch_key: Optional[str] = None
     notes: list[str] = field(default_factory=list)
+
+
+def _adaptive_metrics_from_records(records: list[dict], calib: dict) -> dict:
+    frame = pd.DataFrame(records)
+    fatal_reasons: list[str] = []
+    if frame.empty or "entry_time" not in frame or "exit_time" not in frame:
+        fatal_reasons.append("missing_entry_exit_time")
+        return {
+            "n_eff": 0.0,
+            "uniqueness_mean": 0.0,
+            "purged_folds": [],
+            "gate_results": build_gate_results(
+                walk_forward_pass_ratio=0.0,
+                pbo=1.0,
+                dsr_probability=0.0,
+                recent_expectancy=-1.0,
+                historical_expectancy=1.0,
+                calibration_new_score=0.0,
+                calibration_old_score=1.0,
+                fatal_reasons=fatal_reasons,
+            ),
+            "validation": {"state_hint": "LOCKED", "risk_multiplier": 0.0, "entropy": 1.0, "amplitude": 1.0},
+            "pbo": {"pbo": None},
+            "dsr": {"deflated": 0.0, "p_value_proxy": 1.0, "threshold_sharpe": None, "passes": False},
+            "sharpe": {"sharpe": 0.0},
+        }
+
+    timestamps = pd.to_datetime(
+        pd.concat(
+            [frame["entry_time"], frame["exit_time"]],
+            ignore_index=True,
+        ),
+        errors="coerce",
+        utc=True,
+    ).dropna()
+    bar_index = pd.DatetimeIndex(sorted(timestamps.unique()))
+    if len(bar_index) == 0:
+        fatal_reasons.append("empty_bar_index")
+        uniqueness = pd.Series(dtype=float)
+        n_eff = 0.0
+        uniqueness_mean = 0.0
+    else:
+        uniqueness = compute_sample_uniqueness(frame, bar_index, entry_col="entry_time", exit_col="exit_time")
+        n_eff = effective_sample_size(uniqueness.to_numpy())
+        uniqueness_mean = float(uniqueness.mean()) if len(uniqueness) else 0.0
+
+    purged_splitter = PurgedWalkForwardSplit(n_splits=4, embargo_bars=1)
+    purged_folds = list(purged_splitter.split_with_meta(frame, min_train_samples=5))
+
+    wf = (calib.get("oos_validation") or {}).get("folds") or []
+    wf_pass_ratio = (
+        sum(1 for fold in wf if fold.get("edge_preserved")) / len(wf)
+        if wf
+        else 0.0
+    )
+    in_sample_r = [float(fold.get("in_sample_expected_R") or 0.0) for fold in wf]
+    oos_r = [float(fold.get("oos_expected_R") or 0.0) for fold in wf]
+    pbo = estimate_pbo(in_sample_r, oos_r) if in_sample_r and oos_r else {"pbo": None, "note": "insufficient_walk_forward_folds"}
+    pbo_value = float(pbo.get("pbo")) if pbo.get("pbo") is not None else 1.0
+
+    r_values = [float(r.get("r_multiple") or r.get("pnl_R") or 0.0) for r in records]
+    sr = sharpe_ratio(r_values, annualize=252)
+    dsr = deflated_sharpe_ratio(
+        sr.get("sharpe", 0.0),
+        n_trials=max(5, len(wf) or 1),
+        sample_size=max(2, int(round(n_eff)) or len(r_values) or 2),
+    )
+    dsr_probability = max(0.0, 1.0 - float(dsr.get("p_value_proxy") or 1.0))
+
+    if len(records) >= 6:
+        split = max(1, int(len(records) * 0.66))
+        historical = records[:split]
+        recent = records[split:]
+    else:
+        historical = records
+        recent = records
+    historical_expectancy = float(compute_expectancy(historical).get("expected_R") or 0.0)
+    recent_expectancy = float(compute_expectancy(recent).get("expected_R") or 0.0)
+    decay = edge_decay_check(historical, recent, min_live_samples=min(10, max(1, len(recent))))
+    calibration_new = float(np.mean(oos_r)) if oos_r else 0.0
+    calibration_old = float(np.mean(in_sample_r)) if in_sample_r else max(calibration_new, 1e-6)
+
+    gate_results = build_gate_results(
+        walk_forward_pass_ratio=wf_pass_ratio,
+        pbo=pbo_value,
+        dsr_probability=dsr_probability,
+        recent_expectancy=recent_expectancy,
+        historical_expectancy=historical_expectancy,
+        calibration_new_score=calibration_new,
+        calibration_old_score=calibration_old,
+        fatal_reasons=fatal_reasons,
+    )
+    validation = validation_entropy_sizing(gate_results, n_eff=n_eff)
+    return {
+        "n_eff": round(float(n_eff), 4),
+        "uniqueness_mean": round(uniqueness_mean, 4),
+        "purged_folds": purged_folds,
+        "walk_forward_pass_ratio": round(float(wf_pass_ratio), 4),
+        "gate_results": gate_results,
+        "validation": validation,
+        "pbo": pbo,
+        "dsr": dsr,
+        "sharpe": sr,
+        "edge_decay": decay,
+    }
 
 
 def train_from_ledger(
@@ -405,9 +528,116 @@ def train_from_ledger(
             )
 
     calib = run_closed_loop_calibration(records, base_weights=base_weights)
+    adaptive_metrics = _adaptive_metrics_from_records(records, calib)
     verdict = calib.get("verdict") or {}
     proposed = (calib.get("proposed_calibration") or {}).get("weights") or {}
-    adopted = bool(verdict.get("adopt"))
+    adaptive_state = {
+        "mode": adaptive_metrics["validation"].get("state_hint", "DRY_RUN"),
+        "n_eff": adaptive_metrics["n_eff"],
+        "validation_entropy": round(float(adaptive_metrics["validation"].get("entropy", 1.0)), 4),
+        "validation_amplitude": round(float(adaptive_metrics["validation"].get("amplitude", 1.0)), 4),
+        "risk_multiplier": round(float(adaptive_metrics["validation"].get("risk_multiplier", 0.0)), 4),
+        "uniqueness_mean": adaptive_metrics["uniqueness_mean"],
+        "current_sr": adaptive_metrics["sharpe"].get("sharpe"),
+        "required_sr_for_dsr": adaptive_metrics["dsr"].get("threshold_sharpe"),
+        "pbo": adaptive_metrics["pbo"].get("pbo"),
+    }
+    probe_plan: dict = {}
+    adaptive_patch_key: Optional[str] = None
+
+    if adaptive_state["mode"] == "VALIDATING_PROBE" and adaptive_conn is not None:
+        stop_distance_pcts = []
+        for record in records:
+            entry_price = float(record.get("entry_price") or 0.0)
+            stop_price = float(record.get("stop_price") or record.get("stop") or 0.0)
+            if entry_price > 0 and stop_price > 0:
+                stop_distance_pcts.append(abs(entry_price - stop_price) / entry_price)
+        stop_distance_pct = float(np.median(stop_distance_pcts)) if stop_distance_pcts else 0.02
+        base_risk_pct = float(
+            (config_snapshot.get("data") or {}).get("risk", {}).get("risk_pct", 0.01)
+            or 0.01
+        )
+        probe_plan = plan_probe_order(
+            adaptive_conn,
+            symbol=symbol,
+            risk_multiplier=float(adaptive_state["risk_multiplier"]),
+            account_equity=100_000.0,
+            base_risk_pct=base_risk_pct,
+            stop_distance_pct=stop_distance_pct,
+        )
+        if not probe_plan.get("allow_order"):
+            adaptive_state["mode"] = probe_plan.get("state_hint", "DRY_RUN")
+            adaptive_state["risk_multiplier"] = 0.0
+
+    adopted = bool(verdict.get("adopt")) and adaptive_state["mode"] == "READY"
+    if bool(verdict.get("adopt")) and not adopted:
+        verdict = {**verdict, "adopt": False, "reason": "adaptive_state_not_ready"}
+
+    runtime_patch = {
+        "state": {
+            "mode": adaptive_state["mode"],
+            "adopt_weights": adopted,
+            "n_eff": adaptive_state["n_eff"],
+            "validation_entropy": adaptive_state["validation_entropy"],
+            "validation_amplitude": adaptive_state["validation_amplitude"],
+        },
+        "risk": {
+            "risk_multiplier": adaptive_state["risk_multiplier"],
+            "probe_notional_cap_usdt": float(probe_plan.get("notional_usdt") or 5.0),
+        },
+        "strategy": {
+            "confluence_min_score": float(
+                (config_snapshot.get("data") or {}).get("confluence", {}).get(
+                    "threshold",
+                    CONFLUENCE_THRESHOLD_DEFAULT,
+                )
+            ),
+        },
+        "model": {
+            "active_model": "closed_loop_calibration",
+            "challenger_model": "purged_uniqueness_lr",
+            "adopt_challenger": False,
+        },
+        "diagnostics": {
+            "required_sr_for_dsr": adaptive_state["required_sr_for_dsr"],
+            "current_sr": adaptive_state["current_sr"],
+            "pbo": adaptive_state["pbo"],
+            "walk_forward_pass_ratio": adaptive_metrics["walk_forward_pass_ratio"],
+            "purged_fold_count": len(adaptive_metrics["purged_folds"]),
+        },
+    }
+
+    if adaptive_conn is not None:
+        patch_row = create_config_patch(
+            adaptive_conn,
+            patch=runtime_patch,
+            symbol=symbol,
+            reason="adaptive_validation_state_tick",
+            strategy_yaml_path=strategy_yaml_path,
+            patch_type="adaptive_runtime",
+            apply=False,
+        )
+        adaptive_patch_key = patch_row["patch_key"]
+        if adaptive_state["mode"] == "LOCKED":
+            set_kill_switch_state(
+                adaptive_conn,
+                state="LOCKED",
+                reason="adaptive_validation_locked",
+                detail={"gate_results": adaptive_metrics["gate_results"]},
+            )
+        record_adaptive_audit_event(
+            adaptive_conn,
+            symbol=symbol,
+            event_type="adaptive_state_computed",
+            severity="critical" if adaptive_state["mode"] == "LOCKED" else "info",
+            state_after=adaptive_state,
+            detail={
+                "patch_key": adaptive_patch_key,
+                "gate_results": adaptive_metrics["gate_results"],
+                "probe_plan": probe_plan,
+            },
+        )
+        adaptive_conn.commit()
 
     weights_after = dict(weights_before)
     changed: list[str] = []
@@ -510,6 +740,7 @@ def train_from_ledger(
                     "reason": verdict.get("reason"),
                     "sample_size": len(records),
                     "model_version": model_version,
+                    "adaptive_mode": adaptive_state["mode"],
                 },
             )
             adaptive_conn.commit()
@@ -525,6 +756,10 @@ def train_from_ledger(
         weights_before=weights_before, weights_after=weights_after,
         weights_changed=changed,
         adopted=adopted, strategy_yaml_updated=yaml_written,
+        adaptive_state=adaptive_state,
+        gate_results=adaptive_metrics["gate_results"],
+        probe_plan=probe_plan,
+        adaptive_patch_key=adaptive_patch_key,
         notes=notes,
     )
 
