@@ -1537,6 +1537,10 @@ body { background: var(--bg-base); color: var(--text-primary); }
           <div id="smc-paper-acceptance-governance" class="text-xs text-slate-500 mt-3">尚未載入</div>
         </div>
         <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
+          <div class="text-xs font-semibold text-slate-300 mb-2">Final Closure</div>
+          <div id="smc-paper-acceptance-closure" class="text-xs text-slate-500">載入中...</div>
+        </div>
+        <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
           <div class="text-xs font-semibold text-slate-300 mb-2">實盤升級阻擋項</div>
           <div id="smc-paper-acceptance-blockers" class="text-xs text-slate-500">載入中...</div>
         </div>
@@ -3329,6 +3333,7 @@ function paperAcceptanceFormatJson(value) {
 function renderPaperAcceptanceLoading(message = '載入前測驗收...') {
   const overview = $('smc-paper-acceptance-overview');
   const blockers = $('smc-paper-acceptance-blockers');
+  const closure = $('smc-paper-acceptance-closure');
   const reports = $('smc-paper-acceptance-reports');
   const sections = $('smc-paper-acceptance-sections');
   const catalog = $('smc-paper-acceptance-catalog');
@@ -3349,6 +3354,7 @@ function renderPaperAcceptanceLoading(message = '載入前測驗收...') {
     overview.innerHTML = `<div class="rounded-lg border border-slate-800/70 bg-slate-950/40 p-3 text-center text-slate-500 text-xs col-span-full">${escHtml(message)}</div>`;
   }
   if (coverage) coverage.innerHTML = escHtml(message);
+  if (closure) closure.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
   if (blockers) blockers.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
   if (reports) reports.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
   if (sections) sections.innerHTML = `<div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 text-xs text-slate-500 md:col-span-2 xl:col-span-3">${escHtml(message)}</div>`;
@@ -3372,6 +3378,7 @@ function renderPaperAcceptanceEmpty(symbol) {
   _smcPaperAcceptanceSection = '';
   const overview = $('smc-paper-acceptance-overview');
   const blockers = $('smc-paper-acceptance-blockers');
+  const closure = $('smc-paper-acceptance-closure');
   const reportsEl = $('smc-paper-acceptance-reports');
   const sections = $('smc-paper-acceptance-sections');
   const catalog = $('smc-paper-acceptance-catalog');
@@ -3399,6 +3406,7 @@ function renderPaperAcceptanceEmpty(symbol) {
     ].join('');
   }
   if (blockers) blockers.innerHTML = '<div class="text-slate-500">請先選擇標的；系統會依目前 journal、backtest、event 與 overrides 即時計算驗收狀態。</div>';
+  if (closure) closure.innerHTML = '<div class="text-slate-500">尚無 closure summary。</div>';
   if (reportsEl) reportsEl.innerHTML = '<div class="text-slate-500">尚無歷史報告。</div>';
   if (sections) sections.innerHTML = '<div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 text-xs text-slate-500 md:col-span-2 xl:col-span-3">請先選擇標的。</div>';
   if (catalog) catalog.innerHTML = '<div class="text-slate-500">選擇標的後即可瀏覽條款與證據工作區。</div>';
@@ -3658,6 +3666,26 @@ function renderPaperAcceptanceGovernance(workspace) {
   };
 }
 
+function renderPaperAcceptanceClosure(workspace) {
+  const closure = workspace?.closure_summary || {};
+  if (!closure || !closure.next_action) {
+    return '<div class="text-slate-500">尚無 closure summary。</div>';
+  }
+  const rationale = (closure.rationale || []).slice(0, 3).map(item => `<li>${escHtml(item)}</li>`).join('');
+  const actions = (closure.required_actions || []).slice(0, 4).map(item => `<li>${escHtml(item)}</li>`).join('');
+  return `
+    <div class="space-y-2">
+      <div class="flex items-center justify-between gap-2 flex-wrap">
+        <div class="text-slate-200 font-semibold">${escHtml(closure.next_action || 'continue_paper')}</div>
+        <div class="text-[11px] text-slate-500">${escHtml(closure.current_stage?.label || 'stage 未定')} -> ${escHtml(closure.next_stage?.label || 'next 未定')}</div>
+      </div>
+      <div class="text-[11px] text-slate-500">review ${escHtml(closure.review_status || 'pending')} · blockers ${escHtml(String(closure.blocking_issue_count || 0))} · missing ${escHtml(String(closure.missing_check_count || 0))} · freeze ${escHtml(String(closure.freeze_violation_count || 0))}</div>
+      ${rationale ? `<ul class="list-disc pl-4 text-[11px] text-slate-400 space-y-1">${rationale}</ul>` : ''}
+      ${actions ? `<ul class="list-disc pl-4 text-[11px] text-slate-500 space-y-1">${actions}</ul>` : ''}
+    </div>
+  `;
+}
+
 function renderPaperAcceptanceScenarios(workspace) {
   const runs = workspace?.scenario_runs || [];
   const catalog = workspace?.scenario_catalog || [];
@@ -3900,6 +3928,7 @@ function renderPaperAcceptanceWorkspace(workspace) {
   const governanceSummary = $('smc-paper-acceptance-governance-summary');
   const stages = $('smc-paper-acceptance-stages');
   const blockers = $('smc-paper-acceptance-blockers');
+  const closure = $('smc-paper-acceptance-closure');
   const reportsEl = $('smc-paper-acceptance-reports');
   const meta = $('smc-paper-acceptance-meta');
   const report = workspace?.report || {};
@@ -3925,6 +3954,7 @@ function renderPaperAcceptanceWorkspace(workspace) {
   if (governanceSummary) governanceSummary.textContent = governancePanel.summaryText;
   if (stages) stages.innerHTML = renderPaperAcceptanceStages(workspace);
   if (blockers) blockers.innerHTML = renderPaperAcceptanceBlockers(report.blocking_issues || []);
+  if (closure) closure.innerHTML = renderPaperAcceptanceClosure(workspace);
   if (reportsEl) reportsEl.innerHTML = renderPaperAcceptanceReportList(workspace?.reports || []);
   if ($('smc-paper-acceptance-scenarios')) $('smc-paper-acceptance-scenarios').innerHTML = renderPaperAcceptanceScenarios(workspace);
   if ($('smc-paper-acceptance-timeline')) $('smc-paper-acceptance-timeline').innerHTML = renderPaperAcceptanceTimeline(workspace?.timeline || []);
@@ -4239,6 +4269,7 @@ async function refreshPaperAcceptance(force = false) {
     const timeline = $('smc-paper-acceptance-timeline');
     const trend = $('smc-paper-acceptance-trend');
     const review = $('smc-paper-acceptance-review-summary');
+    const closure = $('smc-paper-acceptance-closure');
     const meta = $('smc-paper-acceptance-meta');
     const sectionMeta = $('smc-paper-acceptance-section-meta');
     const catalogMeta = $('smc-paper-acceptance-catalog-meta');
@@ -4253,6 +4284,7 @@ async function refreshPaperAcceptance(force = false) {
     if (governance) governance.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (governanceSummary) governanceSummary.textContent = '讀取失敗';
     if (stages) stages.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
+    if (closure) closure.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (scenarios) scenarios.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (scenarioMeta) scenarioMeta.textContent = '讀取失敗';
     if (timeline) timeline.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;

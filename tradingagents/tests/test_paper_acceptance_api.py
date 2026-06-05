@@ -389,3 +389,39 @@ def test_api_governance_event_round_trip(tmp_path):
         assert workspace["policy"]["evidence"]["research_discipline"]["strategy_parameters_frozen"] is False
     finally:
         app.DB = original
+
+
+def test_api_closure_summary_round_trip(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        with patch.object(app, "_get_vault", return_value=None):
+            app.api_add_smc_journal(
+                SMCJournalCreate(
+                    symbol="ABAT",
+                    environment="paper",
+                    status="closed",
+                    direction="long",
+                    entry_price=10,
+                    exit_price=11,
+                    stop_price=9.5,
+                    qty=5,
+                    model="sweep_reversal",
+                )
+            )
+        app.api_update_paper_acceptance_review(
+            PaperAcceptanceReviewUpdate(
+                symbol="ABAT",
+                reviewer="qa",
+                review_status="reviewing",
+                retest_required=True,
+                note="待補證據",
+            )
+        )
+
+        payload = app.api_get_paper_acceptance_closure(symbol="ABAT")
+
+        assert payload["closure_summary"]["next_action"] in {"repair_and_repeat_paper", "continue_shadow", "continue_paper", "allow_small_live"}
+        assert "policy" in payload
+        assert "review" in payload
+    finally:
+        app.DB = original

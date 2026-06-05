@@ -2224,7 +2224,7 @@ def refresh_acceptance_reports_for_symbols(
     }
 
 
-def _build_acceptance_timeline(events: list[dict], scenario_runs: list[dict], changes: list[dict]) -> list[dict]:
+def _build_acceptance_timeline(events: list[dict], scenario_runs: list[dict], changes: list[dict], governance_rows: list[dict]) -> list[dict]:
     timeline: list[dict] = []
     for row in events:
         timeline.append({
@@ -2256,6 +2256,19 @@ def _build_acceptance_timeline(events: list[dict], scenario_runs: list[dict], ch
             "status": row.get("target_type") or "",
             "detail": row.get("detail") or {},
             "created_at": row.get("created_at"),
+        })
+    for row in governance_rows:
+        timeline.append({
+            "kind": "governance",
+            "title": row.get("change_scope") or "governance",
+            "severity": "warning" if row.get("inside_freeze_window") else "info",
+            "status": row.get("change_class") or "",
+            "detail": {
+                "reason": row.get("reason"),
+                "approved_by": row.get("approved_by"),
+                "version_tag": row.get("version_tag"),
+            },
+            "created_at": row.get("event_timestamp") or row.get("created_at"),
         })
     timeline.sort(key=lambda item: item.get("created_at") or "", reverse=True)
     return timeline[:80]
@@ -2338,6 +2351,60 @@ def _build_coverage_summary(catalog: list[dict]) -> dict:
         "gates_with_missing": gates_with_missing,
         "sections": section_rows,
         "missing_details": missing_details[:20],
+    }
+
+
+def _build_closure_summary(
+    report: dict,
+    policy: dict,
+    coverage: dict,
+    review: dict,
+    events: list[dict],
+    governance_summary: dict,
+) -> dict:
+    summary = report.get("summary") or {}
+    ladder = policy.get("promotion_ladder") or {}
+    blockers = list(policy.get("blockers") or [])
+    blocking_issues = list(report.get("blocking_issues") or [])
+    missing_rows = list((coverage or {}).get("missing_details") or [])
+    if policy.get("can_promote"):
+        next_action = "allow_small_live"
+    elif blockers:
+        next_action = "repair_and_repeat_paper"
+    elif policy.get("recommendation") == "shadow":
+        next_action = "continue_shadow"
+    else:
+        next_action = "continue_paper"
+
+    rationale: list[str] = []
+    rationale.extend(str(item) for item in (ladder.get("rationale") or [])[:3])
+    if governance_summary.get("freeze_violation_count"):
+        rationale.append(f"研究治理仍有 {governance_summary['freeze_violation_count']} 筆 freeze window 違規。")
+    latest_event = next((row for row in events if row.get("severity") in {"critical", "error", "warning"}), None)
+    if latest_event:
+        reason = latest_event.get("detail", {}).get("reason") or latest_event.get("detail", {}).get("message") or latest_event.get("event_type")
+        rationale.append(f"最近異常事件：{reason}。")
+    required_actions: list[str] = []
+    for row in blocking_issues[:3]:
+        message = row.get("message") or row.get("issue") or row.get("id") or "blocking_issue"
+        required_actions.append(str(message))
+    for row in missing_rows[:3]:
+        missing = ", ".join((row.get("missing_checks") or [])[:2]) or "缺證據"
+        required_actions.append(f"補齊 §{row.get('section')} {row.get('gate_name') or row.get('gate_id')}: {missing}")
+    if governance_summary.get("restart_stats_completion_ratio", 1.0) < 1.0:
+        required_actions.append("治理變更後尚未完整重跑統計。")
+    return {
+        "conclusion": summary.get("conclusion") or "failed_repeat_paper",
+        "review_status": review.get("review_status") or "pending",
+        "recommendation": policy.get("recommendation") or "paper",
+        "next_action": next_action,
+        "blocking_issue_count": summary.get("blocking_issue_count") or len(blocking_issues),
+        "missing_check_count": coverage.get("missing_checks") or 0,
+        "freeze_violation_count": governance_summary.get("freeze_violation_count") or 0,
+        "rationale": rationale[:6],
+        "required_actions": required_actions[:6],
+        "current_stage": ladder.get("current_stage") or {},
+        "next_stage": ladder.get("next_stage") or {},
     }
 
 
@@ -2510,6 +2577,16 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
     scenario_runs = load_scenario_runs(conn, symbol=key, stage=stage, limit=40)
     reports = load_acceptance_reports(conn, symbol=key, limit=limit_reports)
     changes = load_acceptance_change_log(conn, key, stage=stage, limit=80)
+    governance_rows = load_governance_events(conn, key, stage=stage, limit=50)
+    coverage = _build_coverage_summary(catalog)
+    closure_summary = _build_closure_summary(
+        report,
+        context.get("policy") or {},
+        coverage,
+        load_acceptance_review(conn, key, stage=stage),
+        events,
+        context.get("governance_summary") or {},
+    )
     return {
         "symbol": key,
         "stage": stage,
@@ -2530,16 +2607,17 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         "scenario_runs": scenario_runs,
         "scenario_catalog": scenario_catalog(),
         "change_log": changes,
-        "timeline": _build_acceptance_timeline(events, scenario_runs, changes),
+        "timeline": _build_acceptance_timeline(events, scenario_runs, changes, governance_rows),
         "reports": reports,
         "section_trend": _build_section_trend(reports),
-        "coverage": _build_coverage_summary(catalog),
+        "coverage": coverage,
+        "closure_summary": closure_summary,
         "capital_stages": context.get("capital_stages") or [],
         "deviation_snapshots": context.get("deviation_snapshots") or [],
         "shadow_parity_summary": context.get("shadow_parity_summary") or {},
         "shadow_parity_traces": context.get("shadow_parity_traces") or [],
         "governance_summary": context.get("governance_summary") or {},
-        "governance_events": load_governance_events(conn, key, stage=stage, limit=50),
+        "governance_events": governance_rows,
     }
 
 

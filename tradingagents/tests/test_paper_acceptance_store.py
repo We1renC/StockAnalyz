@@ -426,6 +426,7 @@ def test_workspace_includes_review_timeline_and_trend():
     assert "recommendation" in workspace["policy"]
     assert "promotion_ladder" in workspace["policy"]
     assert "covered_ratio" in workspace["coverage"]
+    assert workspace["closure_summary"]["next_action"] in {"repair_and_repeat_paper", "continue_shadow", "continue_paper", "allow_small_live"}
     assert isinstance(workspace["coverage"]["sections"], list)
     assert isinstance(workspace["coverage"]["missing_details"], list)
     assert isinstance(workspace["capital_stages"], list)
