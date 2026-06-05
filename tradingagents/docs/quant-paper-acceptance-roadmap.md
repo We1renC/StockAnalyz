@@ -62,6 +62,10 @@
 5. capacity stage / deviation snapshot 已落地，並可由 paper/live telemetry 自動生成。
 6. refresh cycle 已可自動重算 acceptance report，避免 evidence 長期停在手動生成狀態。
 7. coverage summary 已細化到 section / gate / missing check 層級，可直接用來追缺口。
+8. shadow parity 已有獨立 evidence flow、summary、workspace panel 與 promotion ladder 連動。
+9. sample size 不再只看筆數，已納入 regime / liquidity / session coverage matrix。
+10. research discipline 已有 governance events、freeze window、restart-stats 與 override taxonomy。
+11. final closure summary 已能整合 report / policy / coverage / governance / event stitching。
 
 ### 目前仍偏弱或缺失
 
@@ -75,11 +79,9 @@
 現有系統弱在：
 
 - `2.2` shared architecture 仍停留在 acceptance 判定層，尚未真正把 live execution adapter 與 paper adapter 收斂到同一個 runtime contract。
-- `14` shadow trading 目前只有 gate / policy / workspace 支撐，還缺真實 shadow pipeline 與 parity trace。
-- `15` sample-size / testing-period 雖已可由 journal 推估，但缺跨 regime、跨 session、跨 market-cycle 的明確 coverage contract。
-- `16` research discipline 已有 change trail，但還缺更完整的 parameter freeze window 與 override audit taxonomy。
+- `14` shadow trading 雖已有 parity trace 與 workspace，但仍缺真正共用 execution adapter contract。
 - `18 / 19 / 20` 已有 capacity/deviation 基礎資料流，但 live capital stage 的自動晉級規則與 quantitative threshold calibration 仍偏保守 placeholder。
-- `22` 已能結構化輸出報告，但 `22.4 / 22.6 / 22.8 / 22.9` 還需要更完整的 event stitching 與 promotion rationale explainability。
+- `22` 已有 closure summary 與 rationale stitching，但 markdown 報告本體仍可再強化更細的 section-level narrative。
 
 ## 完成度標記
 
@@ -119,15 +121,15 @@
 | `12.1` performance | `done` | report metrics / workspace / tests | 目前足夠 |
 | `12.2` trade quality | `done` | slippage/fill/reject/latency metrics | 目前足夠 |
 | `13` behavior deviation | `partial` | backtest-paper / paper-live deviation snapshot | 缺更細的 attribution 與 threshold calibration |
-| `14` shadow trading | `partial` | gate/policy/workspace only | 缺真實 shadow runtime 與 parity evidence |
-| `15` sample size | `partial` | journal-based counts / policy | 缺 regime coverage matrix |
-| `16` research discipline | `partial` | review/change log/security/policy | 缺 freeze window / override class policy |
+| `14` shadow trading | `partial` | shadow parity trace、policy、workspace、promotion ladder | 缺真正 shared execution/runtime adapter |
+| `15` sample size | `done` | regime/liquidity/session coverage matrix + policy + tests | 可再補 strategy-specific market-cycle taxonomy |
+| `16` research discipline | `done` | governance events、freeze window、restart-stats、override taxonomy | 可再補多 reviewer workflow |
 | `17` API security | `done` | security scan + promotion gate + tests | 目前足夠 |
 | `18` capacity scaling | `partial` | capital stage snapshots + UI | 缺真正 capital promotion workflow |
 | `19` paper vs small-live | `partial` | deviation snapshots + policy | 缺 live rollout stage policy 與 explainability |
 | `20` quantitative thresholds | `partial` | policy / promotion check 已存在 | 門檻多為保守預設，需 strategy-specific calibration |
 | `21` prohibit live trading | `done` | prohibition flags + policy + API/tests | 目前足夠 |
-| `22` final report | `partial` | structured report + markdown + persisted runs | 缺更完整 rationale stitching |
+| `22` final report | `done` | structured report + markdown + persisted runs + closure summary | 可再補更長篇 narrative markdown 呈現 |
 | `23` final principles | `partial` | 整體 framework 大致對齊 | 需用 remaining gaps 收斂到 production-ready 標準 |
 
 ## 標準覆蓋矩陣
@@ -173,10 +175,8 @@
 
 1. `2.2 Shared architecture between paper and live`
 2. `14 Shadow Trading`
-3. `15 Sample Size and Testing Period`
-4. `16 Research Discipline`
-5. `17 API Security`
-6. `21 Conditions That Prohibit Live Trading`
+3. `17 API Security`
+4. `21 Conditions That Prohibit Live Trading`
 
 ## 開發原則
 
