@@ -4129,6 +4129,23 @@ def api_smc_crypto_profile(symbol: str = "BTC-USDT"):
         raise HTTPException(status_code=500, detail=f"profile failed: {e}")
 
 
+@app.get("/api/smc-crypto/training-history")
+def api_smc_crypto_training_history(symbol: Optional[str] = None, limit: int = 50):
+    """Per-tick learning history with deltas and outcomes."""
+    try:
+        from smc_training_history import load_training_history, summarize_training_history
+        conn = get_db()
+        try:
+            return {
+                "summary": summarize_training_history(conn, symbol=symbol),
+                "ticks": load_training_history(conn, symbol=symbol, limit=limit),
+            }
+        finally:
+            conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"history failed: {e}")
+
+
 @app.post("/api/smc-crypto/auto-learn-tick")
 def api_smc_crypto_auto_learn_tick(payload: dict):
     """One tick of the self-learning loop for a single symbol.
@@ -4199,7 +4216,9 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
                 state = "READY"
                 next_action = "等待合格信號"
 
-        return {
+        import time as _time
+        tick_started = _time.time()
+        tick_response = {
             "tick_time": datetime.now().isoformat(timespec="seconds"),
             "symbol": symbol,
             "state": state,
@@ -4222,6 +4241,36 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
             "live_order": live_order,
             "last_action": last_action,
         }
+
+        # Persist this tick + compute throttling interval for the UI
+        try:
+            from smc_training_history import record_tick
+            from dataclasses import asdict as _asdict
+            report_dict = _asdict(report)
+            conn_h = get_db()
+            try:
+                rec = record_tick(
+                    conn_h, symbol=symbol, state=state,
+                    tick_payload=tick_response,
+                    learning_report=report_dict,
+                    training_summary=tick_response.get("training_summary"),
+                    elapsed=_time.time() - tick_started,
+                )
+                tick_response["history"] = {
+                    "next_interval_seconds": rec.next_interval_seconds,
+                    "ledger_delta": rec.ledger_delta,
+                    "expected_R": rec.expected_R,
+                    "expected_R_delta": rec.expected_R_delta,
+                    "win_rate": rec.win_rate,
+                    "sharpe": rec.sharpe,
+                    "weights_changed": rec.weights_changed,
+                }
+            finally:
+                conn_h.close()
+        except Exception as exc:
+            tick_response["history"] = {"error": repr(exc)}
+
+        return tick_response
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"auto-learn-tick failed: {e}")
 

@@ -1248,6 +1248,61 @@ body { background: var(--bg-base); color: var(--text-primary); }
       </div>
     </div>
 
+    <!-- 學習歷史 + 績效 -->
+    <div class="glass-card-sm p-4 mb-3">
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-sm text-slate-200 font-semibold">學習歷史與績效</span>
+        <span class="text-xs text-slate-500" id="cdesk-history-summary">—</span>
+      </div>
+      <!-- 摘要區：四個關鍵 KPI 純色塊 -->
+      <div class="grid grid-cols-4 gap-3 mb-3">
+        <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #0ea5e9">
+          <div class="text-xs text-slate-500">總 tick 次數</div>
+          <div id="cdesk-kpi-ticks" class="text-xl font-mono text-slate-100 mt-1">0</div>
+          <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-ticks-sub">—</div>
+        </div>
+        <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #10b981">
+          <div class="text-xs text-slate-500">期望 E[R]</div>
+          <div id="cdesk-kpi-er" class="text-xl font-mono text-slate-100 mt-1">—</div>
+          <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-er-sub">—</div>
+        </div>
+        <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #f59e0b">
+          <div class="text-xs text-slate-500">勝率 / Sharpe</div>
+          <div id="cdesk-kpi-win" class="text-xl font-mono text-slate-100 mt-1">—</div>
+          <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-win-sub">—</div>
+        </div>
+        <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #a855f7">
+          <div class="text-xs text-slate-500">節流間隔</div>
+          <div id="cdesk-kpi-throttle" class="text-xl font-mono text-slate-100 mt-1">—</div>
+          <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-throttle-sub">—</div>
+        </div>
+      </div>
+      <!-- 每次 tick 的詳細表 -->
+      <div style="max-height:280px;overflow:auto">
+        <table class="w-full text-xs font-mono">
+          <thead style="position:sticky;top:0;background:#0f172a">
+            <tr class="text-slate-500" style="border-bottom:1px solid #334155">
+              <th class="text-left py-2 px-2">時間</th>
+              <th class="text-left py-2 px-2">狀態</th>
+              <th class="text-right py-2 px-2">ledger</th>
+              <th class="text-right py-2 px-2">Δ</th>
+              <th class="text-right py-2 px-2">驗證</th>
+              <th class="text-right py-2 px-2">E[R]</th>
+              <th class="text-right py-2 px-2">ΔE[R]</th>
+              <th class="text-right py-2 px-2">勝率</th>
+              <th class="text-left py-2 px-2">指標</th>
+              <th class="text-right py-2 px-2">權重</th>
+              <th class="text-right py-2 px-2">下單</th>
+              <th class="text-right py-2 px-2">下次</th>
+            </tr>
+          </thead>
+          <tbody id="cdesk-history-rows">
+            <tr><td colspan="12" class="py-3 text-center text-slate-500">尚無 tick 紀錄 — 開啟自動學習開始累積</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- 驗收紀錄 -->
     <div class="glass-card-sm p-4">
       <div class="flex items-center justify-between mb-3">
@@ -2557,6 +2612,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (tabName === 'crypto-desk') {
       cdeskRefreshState();
       cdeskRefreshAcceptance();
+      cdeskRefreshHistory();
       cdeskOnSymbolChange();
     }
     if (tabName === 'portfolio') {
@@ -10322,18 +10378,24 @@ async function cdeskAutoLearnTick(doTrain = true) {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({symbol, train: doTrain}),
     });
-    if (!r.ok) {
-      console.warn('tick failed', r.status);
-      return null;
-    }
+    if (!r.ok) { console.warn('tick failed', r.status); return null; }
     const data = await r.json();
     cdeskRenderState(data);
-    if (data.live_order) {
-      cdeskRefreshState();
+    if (data.live_order) cdeskRefreshState();
+    // Adaptive re-schedule: backend tells us next interval
+    if (_cdeskAutoLearnRunning) {
+      const nextSec = (data.history && data.history.next_interval_seconds) || 30;
+      if (_cdeskAutoLearnTimer) clearTimeout(_cdeskAutoLearnTimer);
+      _cdeskAutoLearnTimer = setTimeout(() => cdeskAutoLearnTick(true), nextSec * 1000);
     }
+    // Refresh history table after each tick
+    cdeskRefreshHistory();
     return data;
   } catch (e) {
     console.error('cdeskAutoLearnTick', e);
+    if (_cdeskAutoLearnRunning) {
+      _cdeskAutoLearnTimer = setTimeout(() => cdeskAutoLearnTick(true), 60000);
+    }
     return null;
   }
 }
@@ -10347,14 +10409,102 @@ function cdeskToggleAutoLearn() {
     knob.style.left = '23px';
     knob.style.background = '#fff';
     _cdeskAutoLearnRunning = true;
-    cdeskAutoLearnTick(true);  // immediate
-    _cdeskAutoLearnTimer = setInterval(() => cdeskAutoLearnTick(true), 30000);
+    cdeskAutoLearnTick(true);
   } else {
     slider.style.background = '#334155';
     knob.style.left = '3px';
     knob.style.background = '#94a3b8';
     _cdeskAutoLearnRunning = false;
-    if (_cdeskAutoLearnTimer) { clearInterval(_cdeskAutoLearnTimer); _cdeskAutoLearnTimer = null; }
+    if (_cdeskAutoLearnTimer) { clearTimeout(_cdeskAutoLearnTimer); _cdeskAutoLearnTimer = null; }
+  }
+}
+
+async function cdeskRefreshHistory() {
+  const symbol = $('cdesk-symbol').value;
+  try {
+    const r = await fetch(`/api/smc-crypto/training-history?symbol=${encodeURIComponent(symbol)}&limit=30`);
+    const data = await r.json();
+    const s = data.summary || {};
+    const ticks = data.ticks || [];
+
+    // KPI cards
+    $('cdesk-kpi-ticks').textContent = s.total_ticks || 0;
+    $('cdesk-kpi-ticks-sub').textContent =
+      `下單 ${s.total_orders || 0} · 樣本 +${s.total_new_samples || 0}`;
+    const er = s.avg_expected_R;
+    const erTxt = er === null || er === undefined ? '—' : (er >= 0 ? '+' : '') + Number(er).toFixed(3);
+    $('cdesk-kpi-er').textContent = erTxt;
+    $('cdesk-kpi-er').style.color = (er > 0) ? '#10b981' : (er < 0 ? '#ef4444' : '#cbd5e1');
+    const best = s.best_expected_R, worst = s.worst_expected_R;
+    $('cdesk-kpi-er-sub').textContent =
+      (best !== null && best !== undefined)
+        ? `最佳 ${Number(best).toFixed(2)} · 最差 ${Number(worst || 0).toFixed(2)}`
+        : '—';
+    const wr = s.avg_win_rate, shp = s.avg_sharpe;
+    $('cdesk-kpi-win').textContent =
+      (wr !== null && wr !== undefined) ? (wr * 100).toFixed(1) + '%' : '—';
+    $('cdesk-kpi-win-sub').textContent =
+      (shp !== null && shp !== undefined) ? 'Sharpe ' + Number(shp).toFixed(2) : '—';
+    const latest = s.latest || {};
+    const nextSec = latest.next_interval_seconds || 30;
+    let throttleLabel;
+    let throttleColor;
+    if (nextSec <= 30) { throttleLabel = nextSec + 's · 活躍'; throttleColor = '#10b981'; }
+    else if (nextSec <= 120) { throttleLabel = (nextSec/60).toFixed(0) + 'm · 平緩'; throttleColor = '#f59e0b'; }
+    else { throttleLabel = (nextSec/60).toFixed(0) + 'm · 飽和'; throttleColor = '#ef4444'; }
+    $('cdesk-kpi-throttle').textContent = throttleLabel;
+    $('cdesk-kpi-throttle').style.color = throttleColor;
+    $('cdesk-kpi-throttle-sub').textContent = '自適應節流';
+
+    const summarySpan = $('cdesk-history-summary');
+    if (s.first_tick && s.last_tick) {
+      summarySpan.textContent = `${s.first_tick.slice(11,19)} → ${s.last_tick.slice(11,19)} · ${JSON.stringify(s.state_distribution || {})}`;
+    }
+
+    // Tick table
+    const tbody = $('cdesk-history-rows');
+    if (!ticks.length) {
+      tbody.innerHTML = '<tr><td colspan="12" class="py-3 text-center text-slate-500">尚無 tick 紀錄</td></tr>';
+      return;
+    }
+    const fmt = (v, d=2) => (v === null || v === undefined) ? '—' : Number(v).toFixed(d);
+    const fmtDelta = (v) => {
+      if (v === null || v === undefined) return '—';
+      const n = Number(v);
+      const color = n > 0 ? '#10b981' : n < 0 ? '#ef4444' : '#94a3b8';
+      const sign = n > 0 ? '+' : '';
+      return `<span style="color:${color}">${sign}${n.toFixed(2)}</span>`;
+    };
+    const stateBg = {LEARNING:'#1e40af',VALIDATING:'#a16207',READY:'#047857',TRADING:'#16a34a',PAUSED:'#475569'};
+    const indCol = {active:'#10b981',stagnant:'#f59e0b',degrading:'#ef4444',insufficient_data:'#64748b'};
+    const html = ticks.map(t => {
+      const bg = stateBg[t.state] || '#475569';
+      const ind = t.learning_indicator || '—';
+      const indC = indCol[ind] || '#94a3b8';
+      const intervalLabel = t.next_interval_seconds <= 30 ? '30s'
+        : t.next_interval_seconds <= 120 ? (t.next_interval_seconds/60|0)+'m'
+        : (t.next_interval_seconds/60|0)+'m';
+      const orderCell = t.order_placed
+        ? `<span style="color:#10b981">${(t.order_id || '').slice(0,10)}</span>`
+        : '—';
+      return `<tr style="border-bottom:1px solid #1e293b">
+        <td class="py-1.5 px-2 text-slate-400">${(t.tick_time || '').slice(11,19)}</td>
+        <td class="py-1.5 px-2"><span class="px-1.5 py-0.5 text-xs" style="background:${bg};color:#fff;border-radius:2px">${t.state}</span></td>
+        <td class="py-1.5 px-2 text-right text-slate-300">${t.ledger_size}</td>
+        <td class="py-1.5 px-2 text-right">${t.ledger_delta > 0 ? '<span style="color:#10b981">+'+t.ledger_delta+'</span>' : (t.ledger_delta < 0 ? '<span style="color:#ef4444">'+t.ledger_delta+'</span>' : '0')}</td>
+        <td class="py-1.5 px-2 text-right text-slate-300">${t.validation_passed}/${t.validation_total}</td>
+        <td class="py-1.5 px-2 text-right text-slate-300">${fmt(t.expected_R, 2)}</td>
+        <td class="py-1.5 px-2 text-right">${fmtDelta(t.expected_R_delta)}</td>
+        <td class="py-1.5 px-2 text-right text-slate-300">${t.win_rate !== null ? (Number(t.win_rate)*100).toFixed(0)+'%' : '—'}</td>
+        <td class="py-1.5 px-2"><span style="color:${indC}">${ind}</span></td>
+        <td class="py-1.5 px-2 text-right text-slate-400">${t.weights_changed_count}</td>
+        <td class="py-1.5 px-2 text-right">${orderCell}</td>
+        <td class="py-1.5 px-2 text-right text-slate-500">${intervalLabel}</td>
+      </tr>`;
+    }).join('');
+    tbody.innerHTML = html;
+  } catch (e) {
+    console.error('cdeskRefreshHistory', e);
   }
 }
 
@@ -10362,6 +10512,7 @@ async function cdeskRefreshAll() {
   await Promise.all([
     cdeskRefreshState(),
     cdeskRefreshAcceptance(),
+    cdeskRefreshHistory(),
     cdeskOnSymbolChange(),
   ]);
 }
