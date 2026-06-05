@@ -1154,88 +1154,117 @@ body { background: var(--bg-base); color: var(--text-primary); }
   <!-- SMC Quantitative Analysis Tab -->
   <!-- ─────────────── Crypto Auto Desk (symbol-only) ─────────────── -->
   <div id="tab-crypto-desk" class="tab-content hidden">
-    <!-- 單一輸入：交易對；其餘策略 / 風控 / 倉位由系統自動決定 -->
-    <div class="mb-4 glass-card-sm p-5">
-      <div class="flex items-center justify-between gap-4 flex-wrap">
-        <div class="flex items-center gap-3">
-          <span class="text-sm text-slate-300">交易對:</span>
-          <select id="cdesk-symbol" onchange="cdeskOnSymbolChange()" class="input-field text-base font-semibold" style="width:160px; padding:8px 12px; background:#1e293b; color:#fff; border-radius:6px; border:1px solid #475569;">
-            <option value="BTC-USDT">BTC-USDT</option>
-            <option value="ETH-USDT">ETH-USDT</option>
-            <option value="SOL-USDT">SOL-USDT</option>
-            <option value="BNB-USDT">BNB-USDT</option>
-            <option value="XRP-USDT">XRP-USDT</option>
-          </select>
-          <span id="cdesk-tier-badge" class="text-xs px-2 py-1 rounded" style="background:#334155;color:#cbd5e1">tier: —</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <button id="cdesk-auto-btn" onclick="cdeskAutoRun()" class="btn-ai px-5 py-2 text-sm font-semibold" style="border-radius:6px;">⚡ 一鍵自動執行</button>
-          <button onclick="cdeskScan()" class="text-xs px-3 py-2" style="border-radius:6px; background:#334155; color:#fff;">僅掃描</button>
-          <button onclick="cdeskRefreshState()" class="text-xs px-3 py-2" style="border-radius:6px; background:#334155; color:#fff;">刷新狀態</button>
-        </div>
+    <!-- Header: 交易對 + 自動學習開關 + 動作按鈕 -->
+    <div class="mb-3 glass-card-sm p-4 flex items-center justify-between flex-wrap gap-3">
+      <div class="flex items-center gap-3">
+        <span class="text-sm text-slate-300">交易對</span>
+        <select id="cdesk-symbol" onchange="cdeskOnSymbolChange()" class="text-base font-semibold" style="width:150px; padding:7px 12px; background:#0f172a; color:#fff; border-radius:4px; border:1px solid #334155;">
+          <option value="BTC-USDT">BTC-USDT</option>
+          <option value="ETH-USDT">ETH-USDT</option>
+          <option value="SOL-USDT">SOL-USDT</option>
+          <option value="BNB-USDT">BNB-USDT</option>
+          <option value="XRP-USDT">XRP-USDT</option>
+        </select>
+        <span id="cdesk-tier-badge" class="text-xs px-2 py-1" style="background:#1e293b;color:#94a3b8;border-radius:3px;letter-spacing:0.05em">TIER —</span>
       </div>
-      <div id="cdesk-profile-summary" class="mt-3 pt-3 border-t border-slate-700 text-xs text-slate-400">
-        選擇交易對後系統自動帶出 interval / 匯流門檻 / 風險 / 倉位 — 你不用設定任何策略參數
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-slate-400 mr-2">自動學習</span>
+        <label class="relative inline-block" style="width:42px;height:22px">
+          <input type="checkbox" id="cdesk-autolearn-toggle" onchange="cdeskToggleAutoLearn()" style="opacity:0;width:0;height:0">
+          <span id="cdesk-autolearn-slider" style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#334155;border-radius:22px;transition:.2s">
+            <span style="position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:#94a3b8;border-radius:50%;transition:.2s" id="cdesk-autolearn-knob"></span>
+          </span>
+        </label>
+        <span class="text-xs text-slate-500 ml-3">|</span>
+        <button id="cdesk-auto-btn" onclick="cdeskAutoRun()" class="text-sm px-4 py-2 font-semibold" style="background:#0ea5e9;color:#fff;border-radius:4px">自動執行</button>
+        <button id="cdesk-force-btn" onclick="cdeskForceLive()" class="text-sm px-4 py-2 font-semibold" style="background:#b91c1c;color:#fff;border-radius:4px" title="降匯流門檻並強制 live — 測試演示">強制送單</button>
+        <button onclick="cdeskScan()" class="text-xs px-3 py-2" style="background:#334155;color:#fff;border-radius:4px">僅掃描</button>
+        <button onclick="cdeskRefreshAll()" class="text-xs px-3 py-2" style="background:#334155;color:#fff;border-radius:4px">刷新</button>
       </div>
     </div>
 
-    <!-- 自動工作流結果 -->
-    <div class="glass-card-sm p-4 mb-4">
+    <!-- 主視覺：系統狀態大區塊 -->
+    <div class="mb-3 glass-card-sm p-5">
+      <div class="flex items-stretch gap-5 flex-wrap">
+        <!-- 左：狀態色塊 + 下次動作 -->
+        <div style="min-width:240px">
+          <div class="text-xs text-slate-500 mb-2" style="letter-spacing:0.1em">系統狀態</div>
+          <div id="cdesk-state-block" class="px-5 py-4 mb-3 font-bold text-xl text-center" style="background:#334155;color:#cbd5e1;border-radius:4px;letter-spacing:0.05em">—</div>
+          <div class="text-xs text-slate-500">下一動作</div>
+          <div id="cdesk-next-action" class="text-sm text-slate-200 mt-1">—</div>
+          <div class="text-xs text-slate-500 mt-3">上次 tick</div>
+          <div id="cdesk-tick-time" class="text-xs text-slate-300 mt-1">—</div>
+        </div>
+        <!-- 中：進度三條 -->
+        <div class="flex-1" style="min-width:280px">
+          <div class="text-xs text-slate-500 mb-2" style="letter-spacing:0.1em">學習進度</div>
+          <!-- ledger -->
+          <div class="mb-3">
+            <div class="flex justify-between text-xs mb-1"><span class="text-slate-400">樣本累積</span><span id="cdesk-ledger-label" class="text-slate-300 font-mono">0/30</span></div>
+            <div style="height:8px;background:#1e293b;border-radius:2px;overflow:hidden"><div id="cdesk-ledger-bar" style="height:100%;background:#0ea5e9;width:0%;transition:.3s"></div></div>
+          </div>
+          <!-- validation -->
+          <div class="mb-3">
+            <div class="flex justify-between text-xs mb-1"><span class="text-slate-400">驗證閘 (5)</span><span id="cdesk-validation-label" class="text-slate-300 font-mono">0/5</span></div>
+            <div style="height:8px;background:#1e293b;border-radius:2px;overflow:hidden"><div id="cdesk-validation-bar" style="height:100%;background:#10b981;width:0%;transition:.3s"></div></div>
+            <div id="cdesk-validation-detail" class="text-xs text-slate-500 mt-1">—</div>
+          </div>
+          <!-- indicator -->
+          <div>
+            <div class="flex justify-between text-xs mb-1"><span class="text-slate-400">學習指標</span><span id="cdesk-indicator-label" class="text-slate-300 font-mono">—</span></div>
+            <div id="cdesk-indicator-block" class="text-xs px-2 py-1 inline-block" style="background:#1e293b;color:#94a3b8;border-radius:3px">—</div>
+          </div>
+        </div>
+        <!-- 右：profile 摘要 -->
+        <div style="min-width:200px">
+          <div class="text-xs text-slate-500 mb-2" style="letter-spacing:0.1em">策略參數 (自動)</div>
+          <div id="cdesk-profile-summary" class="text-xs space-y-1">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SMC 提案 -->
+    <div class="mb-3 glass-card-sm p-4">
       <div class="flex items-center justify-between mb-3">
-        <h3 class="text-sm font-semibold text-slate-200">自動工作流結果</h3>
-        <span id="cdesk-auto-time" class="text-xs text-slate-500"></span>
+        <span class="text-sm text-slate-200 font-semibold">當前 SMC 提案</span>
+        <span id="cdesk-proposal-time" class="text-xs text-slate-500">—</span>
       </div>
-      <div id="cdesk-auto-result" class="text-xs text-slate-400">尚未執行</div>
+      <div id="cdesk-proposal" class="text-sm">尚未掃描</div>
     </div>
 
-    <div class="grid grid-cols-12 gap-4 mb-4">
-      <div class="col-span-6 glass-card-sm p-4">
-        <h3 class="text-sm font-semibold text-slate-200 mb-3">帳戶與持倉</h3>
-        <div id="cdesk-state" class="text-xs text-slate-400">載入中…</div>
+    <!-- 帳戶 + 訂單 + 成交 -->
+    <div class="grid grid-cols-3 gap-3 mb-3">
+      <div class="glass-card-sm p-4">
+        <div class="text-sm text-slate-200 font-semibold mb-3">帳戶持倉</div>
+        <div id="cdesk-state" class="text-xs">—</div>
       </div>
-      <div class="col-span-6 glass-card-sm p-4">
-        <h3 class="text-sm font-semibold text-slate-200 mb-3">SMC 提案（dry-run 預演）</h3>
-        <div id="cdesk-proposal" class="text-xs text-slate-400">—</div>
+      <div class="glass-card-sm p-4">
+        <div class="text-sm text-slate-200 font-semibold mb-3">未成交委託</div>
+        <div id="cdesk-orders" class="text-xs">—</div>
+      </div>
+      <div class="glass-card-sm p-4">
+        <div class="text-sm text-slate-200 font-semibold mb-3">近期成交</div>
+        <div id="cdesk-fills" class="text-xs">—</div>
       </div>
     </div>
 
+    <!-- 驗收紀錄 -->
+    <div class="glass-card-sm p-4">
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-sm text-slate-200 font-semibold">驗收紀錄</span>
+        <span class="text-xs text-slate-500">paper-acceptance, 21 gate</span>
+      </div>
+      <div id="cdesk-acceptance" class="text-xs">—</div>
+    </div>
+
+    <!-- 自動執行結果 / hidden compat fields -->
+    <div id="cdesk-auto-result" class="hidden"></div>
+    <div id="cdesk-auto-time" class="hidden"></div>
+    <div id="cdesk-training" class="hidden"></div>
     <div id="cdesk-execute-bar" class="hidden"></div>
     <input type="hidden" id="cdesk-interval" value="auto">
     <input type="hidden" id="cdesk-min-score" value="auto">
     <input type="hidden" id="cdesk-max-notional" value="auto">
-
-    <!-- ② Self-training panel — auto backtest + closed-loop calibration -->
-    <div class="glass-card-sm p-4 mb-4">
-      <div class="flex items-center justify-between mb-3">
-        <h3 class="text-sm font-semibold text-slate-200">策略自我訓練 (backtest → calibrate → 學習稽核)</h3>
-        <div class="flex items-center gap-2">
-          <button onclick="cdeskAudit()" class="text-xs px-3 py-1.5" style="border-radius:6px; background:#334155; color:#fff;">學習稽核</button>
-          <button id="cdesk-train-btn" onclick="cdeskTrain()" class="text-xs px-3 py-1.5 font-semibold" style="border-radius:6px; background:#7c3aed; color:#fff;">🧠 訓練週期</button>
-        </div>
-      </div>
-      <div id="cdesk-training" class="text-xs text-slate-400">點「訓練週期」對所選交易對自動回測 + 校準。「學習稽核」純讀，回答「模型是否在學習？」</div>
-    </div>
-
-    <!-- Mid: open orders + recent fills -->
-    <div class="grid grid-cols-12 gap-4 mb-4">
-      <div class="col-span-6 glass-card-sm p-4">
-        <h3 class="text-sm font-semibold text-slate-200 mb-3">未成交委託</h3>
-        <div id="cdesk-orders" class="text-xs text-slate-400">—</div>
-      </div>
-      <div class="col-span-6 glass-card-sm p-4">
-        <h3 class="text-sm font-semibold text-slate-200 mb-3">近期成交</h3>
-        <div id="cdesk-fills" class="text-xs text-slate-400">—</div>
-      </div>
-    </div>
-
-    <!-- Bottom: paper acceptance verdicts -->
-    <div class="glass-card-sm p-4">
-      <div class="flex items-center justify-between mb-3">
-        <h3 class="text-sm font-semibold text-slate-200">紙上交易驗收 (paper-acceptance, 21 gate)</h3>
-        <button onclick="cdeskRefreshAcceptance()" class="text-xs px-2 py-1" style="border-radius:4px; background:#334155; color:#fff;">刷新</button>
-      </div>
-      <div id="cdesk-acceptance" class="text-xs text-slate-400">—</div>
-    </div>
   </div>
 
   <div id="tab-smc-analysis" class="tab-content hidden">
@@ -10210,9 +10239,50 @@ if (savedInterval !== null) {
 }
 setupAutoRefresh();
 
-// ─────────────── Crypto auto desk ───────────────
+// ─────────────── Crypto auto desk (v2 redesign) ───────────────
 let _cdeskLastScan = null;
-let _cdeskProfile = null;   // {profile, preflight, cooldown_seconds_remaining}
+let _cdeskProfile = null;
+let _cdeskAutoLearnTimer = null;
+let _cdeskAutoLearnRunning = false;
+
+const CDESK_STATE_STYLES = {
+  LEARNING:   { bg: '#1e40af', fg: '#dbeafe', label: 'LEARNING' },
+  VALIDATING: { bg: '#a16207', fg: '#fef3c7', label: 'VALIDATING' },
+  READY:      { bg: '#047857', fg: '#d1fae5', label: 'READY' },
+  TRADING:    { bg: '#16a34a', fg: '#dcfce7', label: 'TRADING' },
+  PAUSED:     { bg: '#475569', fg: '#cbd5e1', label: 'PAUSED' },
+};
+
+function cdeskRenderState(stateData) {
+  const cfg = CDESK_STATE_STYLES[stateData.state] || CDESK_STATE_STYLES.LEARNING;
+  const blk = $('cdesk-state-block');
+  blk.style.background = cfg.bg;
+  blk.style.color = cfg.fg;
+  blk.textContent = cfg.label;
+  $('cdesk-next-action').textContent = stateData.next_action || '—';
+  $('cdesk-tick-time').textContent = stateData.tick_time || '—';
+
+  const p = stateData.progress || {};
+  // ledger bar
+  const lpct = Math.min(100, ((p.ledger_size || 0) / (p.ledger_target || 30)) * 100);
+  $('cdesk-ledger-label').textContent = `${p.ledger_size || 0}/${p.ledger_target || 30}`;
+  $('cdesk-ledger-bar').style.width = lpct + '%';
+  // validation bar
+  const vpct = ((p.validation_passed || 0) / (p.validation_total || 5)) * 100;
+  $('cdesk-validation-label').textContent = `${p.validation_passed || 0}/${p.validation_total || 5}`;
+  $('cdesk-validation-bar').style.width = vpct + '%';
+  const crit = p.validation_criteria || {};
+  const failed = Object.entries(crit).filter(([_, v]) => !v).map(([k]) => k);
+  $('cdesk-validation-detail').textContent = failed.length ? '未通過: ' + failed.join(' · ') : '全部通過';
+  // indicator
+  const ind = p.learning_indicator || '—';
+  const indColor = {active:'#10b981', stagnant:'#f59e0b', degrading:'#ef4444', insufficient_data:'#64748b'}[ind] || '#64748b';
+  $('cdesk-indicator-label').textContent = ind;
+  const indBlk = $('cdesk-indicator-block');
+  indBlk.style.background = indColor;
+  indBlk.style.color = '#fff';
+  indBlk.textContent = ind;
+}
 
 async function cdeskOnSymbolChange() {
   const symbol = $('cdesk-symbol').value;
@@ -10226,88 +10296,173 @@ async function cdeskOnSymbolChange() {
     const p = data.profile || {};
     const pf = data.preflight || {};
     const tier = p.tier || '—';
-    badge.textContent = `tier: ${tier}`;
+    badge.textContent = `TIER ${tier.toUpperCase()}`;
     badge.style.background = tier === 'major' ? '#065f46' : tier === 'altcoin' ? '#854d0e' : '#7f1d1d';
-    const conclusionColor = {passed: '#10b981', conditionally_passed: '#f59e0b'}[pf.last_conclusion] || '#94a3b8';
+    badge.style.color = '#fff';
     summary.innerHTML = `
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <div><span class="text-slate-500">interval:</span> <code class="text-slate-200">${p.interval}</code> · <span class="text-slate-500">bars:</span> <code class="text-slate-200">${p.bars}</code></div>
-          <div><span class="text-slate-500">最小匯流分:</span> <code class="text-slate-200">${p.min_confluence_score}</code> · <span class="text-slate-500">min RR:</span> <code class="text-slate-200">${p.min_rr}</code></div>
-          <div><span class="text-slate-500">風險 %:</span> <code class="text-slate-200">${(p.risk_pct * 100).toFixed(1)}%</code> · <span class="text-slate-500">最大 notional:</span> <code class="text-slate-200">$${p.max_notional_usdt}</code></div>
-        </div>
-        <div>
-          <div><span class="text-slate-500">前次驗收:</span> <span style="color:${conclusionColor};font-weight:600">${pf.last_conclusion || '—'}</span></div>
-          <div><span class="text-slate-500">允許 live:</span> ${pf.allowed_live ? '<span class="text-emerald-400">✓ Yes</span>' : '<span class="text-rose-400">✗ No (dry-run only)</span>'}</div>
-          <div><span class="text-slate-500">原因:</span> <code class="text-amber-300">${pf.reason}</code></div>
-          ${data.cooldown_seconds_remaining ? `<div class="text-rose-300">cooldown: ${data.cooldown_seconds_remaining}s</div>` : ''}
-        </div>
-      </div>`;
+      <div><span class="text-slate-500">interval</span> <span class="text-slate-200 font-mono">${p.interval}</span></div>
+      <div><span class="text-slate-500">bars</span> <span class="text-slate-200 font-mono">${p.bars}</span></div>
+      <div><span class="text-slate-500">min score</span> <span class="text-slate-200 font-mono">${p.min_confluence_score}</span></div>
+      <div><span class="text-slate-500">min RR</span> <span class="text-slate-200 font-mono">${p.min_rr}</span></div>
+      <div><span class="text-slate-500">risk%</span> <span class="text-slate-200 font-mono">${(p.risk_pct * 100).toFixed(1)}%</span></div>
+      <div><span class="text-slate-500">max notional</span> <span class="text-slate-200 font-mono">$${p.max_notional_usdt}</span></div>
+      <div><span class="text-slate-500">cooldown</span> <span class="text-slate-200 font-mono">${p.cooldown_minutes}min</span></div>
+    `;
+    // Run an immediate tick (no training) to populate the status block
+    await cdeskAutoLearnTick(false);
   } catch (e) {
-    summary.innerHTML = `<span class="text-red-400">profile 查詢失敗: ${e.message}</span>`;
+    summary.innerHTML = `<span class="text-red-400">profile 失敗: ${e.message}</span>`;
   }
+}
+
+async function cdeskAutoLearnTick(doTrain = true) {
+  const symbol = $('cdesk-symbol').value;
+  try {
+    const r = await fetch('/api/smc-crypto/auto-learn-tick', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({symbol, train: doTrain}),
+    });
+    if (!r.ok) {
+      console.warn('tick failed', r.status);
+      return null;
+    }
+    const data = await r.json();
+    cdeskRenderState(data);
+    if (data.live_order) {
+      cdeskRefreshState();
+    }
+    return data;
+  } catch (e) {
+    console.error('cdeskAutoLearnTick', e);
+    return null;
+  }
+}
+
+function cdeskToggleAutoLearn() {
+  const on = $('cdesk-autolearn-toggle').checked;
+  const slider = $('cdesk-autolearn-slider');
+  const knob = $('cdesk-autolearn-knob');
+  if (on) {
+    slider.style.background = '#0ea5e9';
+    knob.style.left = '23px';
+    knob.style.background = '#fff';
+    _cdeskAutoLearnRunning = true;
+    cdeskAutoLearnTick(true);  // immediate
+    _cdeskAutoLearnTimer = setInterval(() => cdeskAutoLearnTick(true), 30000);
+  } else {
+    slider.style.background = '#334155';
+    knob.style.left = '3px';
+    knob.style.background = '#94a3b8';
+    _cdeskAutoLearnRunning = false;
+    if (_cdeskAutoLearnTimer) { clearInterval(_cdeskAutoLearnTimer); _cdeskAutoLearnTimer = null; }
+  }
+}
+
+async function cdeskRefreshAll() {
+  await Promise.all([
+    cdeskRefreshState(),
+    cdeskRefreshAcceptance(),
+    cdeskOnSymbolChange(),
+  ]);
 }
 
 async function cdeskAutoRun() {
   const symbol = $('cdesk-symbol').value;
-  if (!confirm(`對 ${symbol} 執行一鍵自動工作流？\n系統將自動：策略掃描 → dry-run → 風控檢查 → 是否送單由驗收歷史決定`)) return;
-  const btn = $('cdesk-auto-btn'); btn.disabled = true; btn.textContent = '⏳ 執行中…';
-  const el = $('cdesk-auto-result');
-  el.innerHTML = '<span class="text-amber-400">⏳ 工作流執行中（profile → preflight → propose → dry → live → acceptance）…</span>';
+  if (!confirm(`對 ${symbol} 執行自動工作流？\n系統會自動: 策略掃描 → dry-run → 風控 → 送單與否由驗收歷史決定`)) return;
+  const btn = $('cdesk-auto-btn'); btn.disabled = true; btn.textContent = '執行中…';
   try {
     const r = await fetch('/api/smc-crypto/auto-run', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({symbol}),
     });
     const data = await r.json();
-    $('cdesk-auto-time').textContent = data.started_at + ` (耗時 ${data.elapsed_seconds}s)`;
     const u = data.unified || {};
     const decs = u.decisions || [];
-    const acc = u.acceptance || {};
-    const accColor = acc.conclusion === 'passed' ? '#10b981' : acc.conclusion === 'conditionally_passed' ? '#f59e0b' : '#ef4444';
-    const actionColor = {executed: '#10b981', dry_run_only: '#f59e0b', cooldown: '#94a3b8', blocked: '#ef4444'}[data.workflow_action] || '#94a3b8';
-
-    let html = `<div class="mb-3 p-3 rounded" style="background:rgba(15,23,42,0.6);">
-      <div class="flex items-center justify-between mb-2">
-        <div><span class="text-slate-500">工作流動作:</span> <span style="color:${actionColor};font-weight:700;font-size:14px">${data.workflow_action}</span></div>
-        <div><span class="text-slate-500">驗收結論:</span> <span style="color:${accColor};font-weight:600">${acc.conclusion_label || acc.conclusion || '—'}</span></div>
-      </div>
-      <div class="text-xs text-slate-400">
-        <div>pre-flight: <code class="text-amber-300">${(data.preflight || {}).reason}</code></div>
-        ${data.cooldown_seconds_remaining ? `<div class="text-rose-300">cooldown 剩 ${data.cooldown_seconds_remaining}s</div>` : ''}
-        ${(data.notes || []).map(n => `<div class="text-slate-500">• ${n}</div>`).join('')}
-      </div>
-    </div>`;
-
-    for (const d of decs) {
-      html += `<div class="mt-2 p-3 rounded" style="background:rgba(30,41,59,0.4);">
-        <div class="font-semibold mb-1">${d.symbol}  action=<code class="text-amber-300">${d.action}</code>  bias=${d.bias || '—'}</div>`;
-      if (d.entry) {
-        const e = d.entry;
-        const dirIcon = e.direction === 1 ? '↑ LONG' : '↓ SHORT';
-        const dirColor = e.direction === 1 ? '#10b981' : '#ef4444';
-        html += `<div class="text-slate-400">SMC: ${e.model} <span style="color:${dirColor};font-weight:600">${dirIcon}</span> entry=$${e.entry} stop=$${e.stop} target=$${e.target} rr=${e.rr} score=${(e.confluence || {}).score}</div>`;
-      }
-      if (d.dry_run) {
-        html += `<div class="text-slate-400">dry-run: state=<code class="text-emerald-300">${d.dry_run.state}</code> avg=$${d.dry_run.avg_price} qty=${d.dry_run.filled_qty}</div>`;
-      }
-      if (d.live_order && d.live_order.status >= 200 && d.live_order.status < 300) {
-        const op = d.live_order.payload || {};
-        html += `<div class="text-emerald-400 font-semibold">★ 已送單: ${op.id} ${op.side?.toUpperCase()} ${op.quantity}@$${op.price}</div>`;
-      } else if (d.live_order) {
-        const err = ((d.live_order.payload || {}).detail || {}).error || {};
-        html += `<div class="text-red-400">live POST 失敗: ${err.code || d.live_order.status}</div>`;
-      }
-      html += '</div>';
-    }
-    el.innerHTML = html;
+    const dec = decs[0] || {};
+    cdeskRenderProposal(dec, data);
     cdeskRefreshState();
     cdeskRefreshAcceptance();
-    cdeskOnSymbolChange();   // refresh profile (cooldown updated)
+    cdeskOnSymbolChange();
   } catch (err) {
-    el.innerHTML = `<span class="text-red-400">auto-run 失敗: ${err.message}</span>`;
+    $('cdesk-proposal').innerHTML = `<span class="text-red-400">執行失敗: ${err.message}</span>`;
   } finally {
-    btn.disabled = false; btn.textContent = '⚡ 一鍵自動執行';
+    btn.disabled = false; btn.textContent = '自動執行';
+  }
+}
+
+function cdeskRenderProposal(dec, meta) {
+  const el = $('cdesk-proposal');
+  $('cdesk-proposal-time').textContent = (meta && meta.started_at) || new Date().toISOString().slice(0,19);
+  if (!dec || !dec.entry) {
+    const reason = dec ? (dec.action || '—') : 'no_decision';
+    const bias = dec ? (dec.bias || '—') : '—';
+    el.innerHTML = `<div class="text-slate-400">無合格 SMC 提案<div class="text-xs text-slate-500 mt-1">原因 <span class="font-mono text-amber-300">${reason}</span> · bias <span class="font-mono">${bias}</span></div></div>`;
+    return;
+  }
+  const e = dec.entry;
+  const dir = e.direction === 1 ? 'LONG' : 'SHORT';
+  const dirBg = e.direction === 1 ? '#065f46' : '#7f1d1d';
+  const score = (e.confluence || {}).score;
+  const threshold = (e.confluence || {}).threshold;
+  const meets = score >= threshold;
+  const dol = e.dol_target || {};
+  let live_html = '';
+  if (dec.live_order) {
+    const lo = dec.live_order;
+    if (lo.status >= 200 && lo.status < 300) {
+      const op = lo.payload || {};
+      live_html = `<div class="mt-3 p-2" style="background:#064e3b;color:#d1fae5;border-radius:3px"><div class="font-semibold text-sm">已送單: ${op.id}</div><div class="text-xs">${(op.side||'').toUpperCase()} ${op.quantity} @ ${op.price} · notional $${(parseFloat(op.quantity||0)*parseFloat(op.price||0)).toFixed(2)}</div></div>`;
+    } else {
+      const err = ((lo.payload || {}).detail || {}).error || {};
+      live_html = `<div class="mt-3 p-2" style="background:#7f1d1d;color:#fecaca;border-radius:3px"><div class="text-xs">送單失敗 ${lo.status}: ${err.code || ''}</div></div>`;
+    }
+  }
+  el.innerHTML = `
+    <div class="flex items-center gap-3 mb-3">
+      <span class="px-3 py-1 text-xs font-bold" style="background:${dirBg};color:#fff;border-radius:3px;letter-spacing:0.05em">${dir}</span>
+      <span class="font-mono text-slate-200">${e.model}</span>
+      <span class="text-xs text-slate-500">|</span>
+      <span class="text-sm">score <span class="font-mono ${meets ? 'text-emerald-400' : 'text-amber-400'}">${score}/${threshold}</span></span>
+      <span class="text-xs text-slate-500">|</span>
+      <span class="text-sm">RR <span class="font-mono text-slate-200">${e.rr}</span></span>
+      <span class="text-xs text-slate-500">|</span>
+      <span class="text-sm">DOL <span class="font-mono text-slate-200">${dol.target_kind || '—'} @ ${dol.target_price || '—'}</span></span>
+    </div>
+    <table class="w-full text-xs">
+      <tr><td class="text-slate-500 py-0.5" style="width:15%">entry</td><td class="font-mono text-slate-200">$${e.entry}</td>
+          <td class="text-slate-500" style="width:15%">stop</td><td class="font-mono text-slate-200">$${e.stop}</td>
+          <td class="text-slate-500" style="width:15%">target</td><td class="font-mono text-slate-200">$${e.target}</td></tr>
+    </table>
+    ${dec.dry_run ? `<div class="mt-2 text-xs text-slate-500">dry-run: state <span class="text-slate-200 font-mono">${dec.dry_run.state}</span> · avg $${dec.dry_run.avg_price} · qty ${dec.dry_run.filled_qty} · fee $${dec.dry_run.fee}</div>` : ''}
+    ${meets ? '' : '<div class="mt-2 text-xs text-amber-400">分數未達門檻 — 不會送單</div>'}
+    ${live_html}
+  `;
+}
+
+async function cdeskForceLive() {
+  const symbol = $('cdesk-symbol').value;
+  if (!confirm(`強制送單 (測試 / 演示用)\n\n對 ${symbol} 跳過驗收歷史檢查，把匯流門檻降到 5、單筆 notional 上限 $1000、interval=15m，直接送單到模擬撮合。\n\n注意：此按鈕繞過了 production 紀律閘 — 僅用於試跑系統流程。`)) return;
+  const btn = $('cdesk-force-btn'); btn.disabled = true; btn.textContent = '送單中…';
+  $('cdesk-proposal').innerHTML = '<span class="text-amber-400">強制 live 送單中 (min_score=5, notional=$1000)…</span>';
+  try {
+    const r = await fetch('/api/smc-crypto/execute', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        symbol, interval: '15m',
+        min_confluence_score: 5, min_rr: 1.5,
+        risk_pct: 0.05, max_notional_usdt: 1000,
+      }),
+    });
+    const data = await r.json();
+    const decs = data.decisions || [];
+    const dec = decs[0] || {};
+    cdeskRenderProposal(dec, data);
+    cdeskRefreshState();
+    cdeskRefreshAcceptance();
+  } catch (e) {
+    $('cdesk-proposal').innerHTML = `<span class="text-red-400">強制送單失敗: ${e.message}</span>`;
+  } finally {
+    btn.disabled = false; btn.textContent = '強制送單';
   }
 }
 
@@ -10317,50 +10472,15 @@ async function cdeskScan() {
   const minScore = (_cdeskProfile && _cdeskProfile.profile && _cdeskProfile.profile.min_confluence_score) || 8;
   const maxNotional = (_cdeskProfile && _cdeskProfile.profile && _cdeskProfile.profile.max_notional_usdt) || 2000;
   const el = $('cdesk-proposal');
-  el.innerHTML = '<span class="text-amber-400">⏳ 掃描中…</span>';
-  $('cdesk-execute-bar').classList.add('hidden');
+  el.innerHTML = '<span class="text-amber-400">掃描中…</span>';
   try {
     const url = `/api/smc-crypto/scan?symbol=${encodeURIComponent(symbol)}&interval=${interval}&min_confluence_score=${minScore}&max_notional_usdt=${maxNotional}&risk_pct=0.05`;
     const r = await fetch(url);
     const data = await r.json();
     _cdeskLastScan = data;
-    const d = data.decision;
-    $('cdesk-scan-time') && ($('cdesk-scan-time').textContent = data.generated_at || '');
-    if (!d || !d.entry) {
-      const reason = d ? d.action : 'no_decision';
-      el.innerHTML = `<div class="text-slate-400">無合格提案<br><span class="text-xs">原因: <code>${reason}</code> · bias: <code>${d?.bias || '—'}</code></span></div>`;
-      return;
-    }
-    const e = d.entry, dr = d.dry_run;
-    const dirIcon = e.direction === 1 ? '↑ LONG' : '↓ SHORT';
-    const dirColor = e.direction === 1 ? '#10b981' : '#ef4444';
-    const score = (e.confluence || {}).score || '—';
-    const thr = (e.confluence || {}).threshold || '—';
-    const dol = e.dol_target || {};
-    el.innerHTML = `
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <div class="mb-2"><span class="text-slate-500">模型</span> <span class="font-semibold text-slate-100">${e.model}</span> · <span style="color:${dirColor};font-weight:600">${dirIcon}</span></div>
-          <div class="mb-2"><span class="text-slate-500">bias</span> <span class="text-slate-200">${d.bias || '—'}</span></div>
-          <div class="mb-2"><span class="text-slate-500">匯流</span> <span class="text-slate-200">${score}/${thr}</span></div>
-          <div class="mb-2"><span class="text-slate-500">RR</span> <span class="text-slate-200">${e.rr || '—'}</span></div>
-          <div class="mb-2"><span class="text-slate-500">DOL</span> <span class="text-slate-200">${dol.target_kind || '—'} @ ${dol.target_price || '—'}</span></div>
-        </div>
-        <div>
-          <div class="mb-2"><span class="text-slate-500">entry</span> <span class="text-slate-100">$${e.entry}</span></div>
-          <div class="mb-2"><span class="text-slate-500">stop</span> <span class="text-slate-100">$${e.stop}</span></div>
-          <div class="mb-2"><span class="text-slate-500">target</span> <span class="text-slate-100">$${e.target}</span></div>
-          ${dr ? `
-            <div class="mt-3 pt-3 border-t border-slate-700 text-xs text-slate-400">
-              <div class="font-semibold text-slate-300 mb-1">paper_execution 模擬</div>
-              <div>state: <code class="text-amber-300">${dr.state}</code></div>
-              <div>avg: $${dr.avg_price} · qty: ${dr.filled_qty}</div>
-              <div>fee: $${dr.fee} · slip_bps: ${dr.slippage_bps}</div>
-            </div>` : ''}
-        </div>
-      </div>
-    `;
-    $('cdesk-execute-bar').classList.remove('hidden');
+    const d = data.decision || {};
+    d.bias = d.bias || '—';
+    cdeskRenderProposal(d, {started_at: data.generated_at});
   } catch (err) {
     el.innerHTML = `<div class="text-red-400">掃描失敗: ${err.message}</div>`;
   }

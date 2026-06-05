@@ -4129,6 +4129,103 @@ def api_smc_crypto_profile(symbol: str = "BTC-USDT"):
         raise HTTPException(status_code=500, detail=f"profile failed: {e}")
 
 
+@app.post("/api/smc-crypto/auto-learn-tick")
+def api_smc_crypto_auto_learn_tick(payload: dict):
+    """One tick of the self-learning loop for a single symbol.
+
+    Front-end calls this every 30-60 seconds (or on demand). Each tick:
+      1. Runs a short training cycle (backtest + scenarios + acceptance ingest)
+      2. Builds the 7-layer learning report
+      3. Determines system state:
+         - LEARNING       sample < 30, still collecting
+         - VALIDATING     sample OK but ≥1 validation gate fails
+         - READY          all 5 gates green, awaiting next live signal
+         - TRADING        just placed a live order this tick
+         - PAUSED         cooldown or kill-switch active
+      4. If READY and the auto workflow has a qualified entry → fires live
+      5. Returns a compact progress payload for the UI
+    """
+    try:
+        from smc_training_loop import run_training_cycle
+        from smc_learning_orchestrator import build_learning_report
+        from smc_auto_workflow import run_symbol, profile_for_symbol, cooldown_remaining
+        from dataclasses import asdict
+
+        symbol = (payload or {}).get("symbol") or "BTC-USDT"
+        do_train = bool((payload or {}).get("train", True))
+        api = _crypto_api_client()
+        db = _portfolio_db_path()
+        profile = profile_for_symbol(symbol)
+
+        train_out = None
+        if do_train:
+            train_out = run_training_cycle(api, [symbol], db_path=db,
+                                              interval=profile.interval,
+                                              bars=min(profile.bars, 300))
+
+        report = build_learning_report(ledger_path="tmp/smc_training_ledger.jsonl",
+                                          db_path=db, symbol=symbol)
+        crit = report.promotion_decision.get("criteria", {})
+        passed_gates = sum(1 for v in crit.values() if v)
+
+        last_action = None
+        live_order = None
+        cd = cooldown_remaining(symbol, db, profile)
+
+        if cd and cd > 0:
+            state = "PAUSED"
+            next_action = f"cooldown 剩 {cd}s"
+        elif not report.promotion_decision.get("can_promote"):
+            if report.sample_size < 30:
+                state = "LEARNING"
+                next_action = f"累積樣本中 {report.sample_size}/30"
+            else:
+                state = "VALIDATING"
+                next_action = f"通過 {passed_gates}/5 驗證閘"
+        else:
+            # All 5 gates green → run actual auto-workflow
+            wf = run_symbol(api, symbol, db_path=db, journal_dir="tmp/smc_auto")
+            wf_d = asdict(wf)
+            last_action = wf_d
+            unified = wf_d.get("unified") or {}
+            dec = (unified.get("decisions") or [{}])[0]
+            if dec.get("action") == "placed":
+                state = "TRADING"
+                next_action = "已送單"
+                lo = dec.get("live_order") or {}
+                if lo.get("status") in (200, 201):
+                    live_order = lo.get("payload")
+            else:
+                state = "READY"
+                next_action = "等待合格信號"
+
+        return {
+            "tick_time": datetime.now().isoformat(timespec="seconds"),
+            "symbol": symbol,
+            "state": state,
+            "next_action": next_action,
+            "progress": {
+                "ledger_size": report.sample_size,
+                "ledger_target": 30,
+                "validation_passed": passed_gates,
+                "validation_total": 5,
+                "validation_criteria": crit,
+                "validation_blockers": report.promotion_decision.get("reasons", []),
+                "learning_indicator": report.learning_indicator,
+                "can_promote": report.promotion_decision.get("can_promote"),
+            },
+            "training_summary": {
+                "trades_added": sum(bt.get("trades_settled", 0)
+                                      for bt in (train_out or {}).get("backtests", [])),
+                "elapsed": (train_out or {}).get("elapsed_seconds"),
+            } if train_out else None,
+            "live_order": live_order,
+            "last_action": last_action,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"auto-learn-tick failed: {e}")
+
+
 @app.post("/api/smc-crypto/train")
 def api_smc_crypto_train(payload: dict):
     """Auto-backtest + closed-loop calibration + scenario evidence ingest.
