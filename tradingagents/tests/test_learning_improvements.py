@@ -191,6 +191,89 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_exploration_blocked_outside_ready_state():
+    """ε-greedy must NEVER fire in LEARNING / VALIDATING / PAUSED."""
+    from learning.exploration import decide_exploration
+    candidates = [{"confluence": {"score": 7}, "rr": 2.0, "model": "x", "direction": 1}]
+    for bad in ("LEARNING", "VALIDATING_PROBE", "PAUSED", "LOCKED", "DRY_RUN"):
+        d = decide_exploration(
+            all_entries=candidates, min_confluence_score=8,
+            state=bad, symbol="BTC-USDT", boundary_sample_count=0,
+            rng_seed="force-trigger",   # would normally trigger but state blocks
+        )
+        assert d.is_exploration is False
+        assert "state_blocks_exploration" in d.reason
+
+
+def test_exploration_picks_boundary_band_candidate():
+    """Eligible band = [min-2, min). Only entries in band qualify."""
+    from learning.exploration import decide_exploration
+    candidates = [
+        {"confluence": {"score": 9}, "rr": 2.0, "model": "a", "direction": 1},   # above threshold, ignored
+        {"confluence": {"score": 5}, "rr": 2.0, "model": "b", "direction": 1},   # below band
+        {"confluence": {"score": 7}, "rr": 2.0, "model": "c", "direction": 1},   # IN BAND (min=8, band=[6,8))
+    ]
+    # rng_seed crafted to ensure ε triggers (deterministic_random < 0.05)
+    # We force ε=1.0 to guarantee trigger for the test
+    d = decide_exploration(
+        all_entries=candidates, min_confluence_score=8,
+        state="READY", symbol="BTC-USDT", boundary_sample_count=0,
+        base_epsilon=1.0,
+    )
+    assert d.is_exploration is True
+    assert d.chosen_entry["model"] == "c"
+    assert d.chosen_entry["is_exploration"] is True
+    assert d.chosen_entry["exploration_size_multiplier"] == 0.20
+    assert d.size_multiplier == 0.20
+
+
+def test_exploration_halves_epsilon_after_enough_samples():
+    """boundary_sample_count ≥ 20 → effective ε halves."""
+    from learning.exploration import decide_exploration
+    candidates = [{"confluence": {"score": 7}, "rr": 2.0, "model": "c", "direction": 1}]
+    d_few = decide_exploration(
+        all_entries=candidates, min_confluence_score=8,
+        state="READY", symbol="BTC-USDT", boundary_sample_count=5,
+        base_epsilon=0.05,
+    )
+    d_many = decide_exploration(
+        all_entries=candidates, min_confluence_score=8,
+        state="READY", symbol="BTC-USDT", boundary_sample_count=25,
+        base_epsilon=0.05,
+    )
+    assert d_few.epsilon_used == 0.05
+    assert d_many.epsilon_used == 0.025
+
+
+def test_exploration_no_op_when_no_boundary_candidate():
+    """ε triggers but no entry in band → return is_exploration=False."""
+    from learning.exploration import decide_exploration
+    candidates = [
+        {"confluence": {"score": 10}, "rr": 2.0, "model": "x", "direction": 1},
+        {"confluence": {"score": 3}, "rr": 2.0, "model": "y", "direction": 1},
+    ]
+    d = decide_exploration(
+        all_entries=candidates, min_confluence_score=8,
+        state="READY", symbol="BTC-USDT", boundary_sample_count=0,
+        base_epsilon=1.0,
+    )
+    assert d.is_exploration is False
+    assert d.reason == "no_boundary_candidate_available"
+
+
+def test_count_exploration_trades_isolates_source_tag():
+    """Attribution must be able to separate exploration P&L."""
+    from learning.exploration import count_exploration_trades
+    records = [
+        {"source": "backtest", "r_multiple": 2.0},
+        {"source": "exploration", "r_multiple": -1.0, "symbol": "BTC-USDT"},
+        {"is_exploration": True, "r_multiple": 1.5, "symbol": "BTC-USDT"},
+        {"source": "exploration", "r_multiple": 0.5, "symbol": "ETH-USDT"},
+    ]
+    assert count_exploration_trades(records) == 3
+    assert count_exploration_trades(records, symbol="BTC-USDT") == 2
+
+
 def test_slippage_distribution_computes_per_symbol_side_percentiles():
     """P2-13: fills with known offset → percentile bucket correctly."""
     from learning.slippage_model import estimate_slippage_distribution
