@@ -1254,26 +1254,44 @@ body { background: var(--bg-base); color: var(--text-primary); }
         <span class="text-sm text-slate-200 font-semibold">學習歷史與績效</span>
         <span class="text-xs text-slate-500" id="cdesk-history-summary">—</span>
       </div>
-      <!-- 摘要區：四個關鍵 KPI 純色塊 -->
+      <!-- 摘要區：6 個關鍵 KPI 純色塊（前 2 大塊強調實際收益） -->
+      <div class="grid grid-cols-3 gap-3 mb-3">
+        <div class="p-4" style="background:#0f172a;border-radius:3px;border-left:4px solid #10b981">
+          <div class="text-xs text-slate-500">模擬帳戶淨值 (USDT)</div>
+          <div id="cdesk-kpi-equity" class="text-2xl font-mono text-slate-100 mt-1">—</div>
+          <div class="text-xs mt-1" id="cdesk-kpi-equity-sub">起始 $100,000.00</div>
+        </div>
+        <div class="p-4" style="background:#0f172a;border-radius:3px;border-left:4px solid #16a34a">
+          <div class="text-xs text-slate-500">總收益 (USDT)</div>
+          <div id="cdesk-kpi-pnl" class="text-2xl font-mono text-slate-100 mt-1">—</div>
+          <div class="text-xs mt-1" id="cdesk-kpi-pnl-sub">已實現 / 未實現</div>
+        </div>
+        <div class="p-4" style="background:#0f172a;border-radius:3px;border-left:4px solid #f59e0b">
+          <div class="text-xs text-slate-500">成交數 / 勝率</div>
+          <div id="cdesk-kpi-fills" class="text-2xl font-mono text-slate-100 mt-1">—</div>
+          <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-fills-sub">—</div>
+        </div>
+      </div>
+      <!-- 次要指標 -->
       <div class="grid grid-cols-4 gap-3 mb-3">
         <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #0ea5e9">
-          <div class="text-xs text-slate-500">總 tick 次數</div>
-          <div id="cdesk-kpi-ticks" class="text-xl font-mono text-slate-100 mt-1">0</div>
+          <div class="text-xs text-slate-500">總 tick</div>
+          <div id="cdesk-kpi-ticks" class="text-lg font-mono text-slate-100 mt-1">0</div>
           <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-ticks-sub">—</div>
         </div>
-        <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #10b981">
-          <div class="text-xs text-slate-500">期望 E[R]</div>
-          <div id="cdesk-kpi-er" class="text-xl font-mono text-slate-100 mt-1">—</div>
+        <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #6366f1">
+          <div class="text-xs text-slate-500">回測 E[R]</div>
+          <div id="cdesk-kpi-er" class="text-lg font-mono text-slate-100 mt-1">—</div>
           <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-er-sub">—</div>
         </div>
-        <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #f59e0b">
-          <div class="text-xs text-slate-500">勝率 / Sharpe</div>
-          <div id="cdesk-kpi-win" class="text-xl font-mono text-slate-100 mt-1">—</div>
+        <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #94a3b8">
+          <div class="text-xs text-slate-500">回測勝率/Sharpe</div>
+          <div id="cdesk-kpi-win" class="text-lg font-mono text-slate-100 mt-1">—</div>
           <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-win-sub">—</div>
         </div>
         <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #a855f7">
           <div class="text-xs text-slate-500">節流間隔</div>
-          <div id="cdesk-kpi-throttle" class="text-xl font-mono text-slate-100 mt-1">—</div>
+          <div id="cdesk-kpi-throttle" class="text-lg font-mono text-slate-100 mt-1">—</div>
           <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-throttle-sub">—</div>
         </div>
       </div>
@@ -1284,20 +1302,21 @@ body { background: var(--bg-base); color: var(--text-primary); }
             <tr class="text-slate-500" style="border-bottom:1px solid #334155">
               <th class="text-left py-2 px-2">時間</th>
               <th class="text-left py-2 px-2">狀態</th>
+              <th class="text-right py-2 px-2">淨值 (USDT)</th>
+              <th class="text-right py-2 px-2">已實現</th>
+              <th class="text-right py-2 px-2">未實現</th>
+              <th class="text-right py-2 px-2">成交</th>
               <th class="text-right py-2 px-2">ledger</th>
               <th class="text-right py-2 px-2">Δ</th>
-              <th class="text-right py-2 px-2">驗證</th>
               <th class="text-right py-2 px-2">E[R]</th>
-              <th class="text-right py-2 px-2">ΔE[R]</th>
               <th class="text-right py-2 px-2">勝率</th>
               <th class="text-left py-2 px-2">指標</th>
-              <th class="text-right py-2 px-2">權重</th>
               <th class="text-right py-2 px-2">下單</th>
               <th class="text-right py-2 px-2">下次</th>
             </tr>
           </thead>
           <tbody id="cdesk-history-rows">
-            <tr><td colspan="12" class="py-3 text-center text-slate-500">尚無 tick 紀錄 — 開啟自動學習開始累積</td></tr>
+            <tr><td colspan="13" class="py-3 text-center text-slate-500">尚無 tick 紀錄 — 開啟自動學習開始累積</td></tr>
           </tbody>
         </table>
       </div>
@@ -10427,25 +10446,52 @@ async function cdeskRefreshHistory() {
     const s = data.summary || {};
     const ticks = data.ticks || [];
 
-    // KPI cards
+    const latest = s.latest || {};
+    // ─── 主要 KPI：實際 P&L ───
+    const fmtUSD = (v) => (v === null || v === undefined) ? '—'
+      : '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const equityNow = latest.equity_usdt;
+    $('cdesk-kpi-equity').textContent = fmtUSD(equityNow);
+    $('cdesk-kpi-equity').style.color = (equityNow > 100000) ? '#10b981'
+      : (equityNow < 100000 ? '#ef4444' : '#cbd5e1');
+    if (equityNow !== null && equityNow !== undefined) {
+      const pct = ((equityNow - 100000) / 100000) * 100;
+      const pctColor = pct > 0 ? '#10b981' : pct < 0 ? '#ef4444' : '#94a3b8';
+      $('cdesk-kpi-equity-sub').innerHTML = `<span style="color:${pctColor}">${pct >= 0 ? '+' : ''}${pct.toFixed(3)}%</span> 起始 $100,000`;
+    }
+    const totalPnl = latest.equity_delta_usdt;
+    $('cdesk-kpi-pnl').textContent = (totalPnl === null || totalPnl === undefined) ? '—'
+      : (totalPnl >= 0 ? '+' : '') + fmtUSD(totalPnl).replace('$', '$');
+    $('cdesk-kpi-pnl').style.color = (totalPnl > 0) ? '#10b981'
+      : (totalPnl < 0 ? '#ef4444' : '#cbd5e1');
+    const rPnl = latest.realized_pnl_usdt, uPnl = latest.unrealized_pnl_usdt;
+    $('cdesk-kpi-pnl-sub').innerHTML =
+      `已實現 <span style="color:${rPnl>0?'#10b981':rPnl<0?'#ef4444':'#94a3b8'}">${fmtUSD(rPnl)}</span> · 未實現 <span style="color:${uPnl>0?'#10b981':uPnl<0?'#ef4444':'#94a3b8'}">${fmtUSD(uPnl)}</span>`;
+    const totFills = latest.total_fills || 0;
+    const winFills = latest.winning_fills || 0;
+    $('cdesk-kpi-fills').textContent = totFills;
+    $('cdesk-kpi-fills-sub').textContent = totFills > 0
+      ? `${winFills} 贏 / ${totFills - winFills} 輸 · ${((winFills/totFills)*100).toFixed(1)}%`
+      : '尚無成交';
+
+    // ─── 次要 KPI ───
     $('cdesk-kpi-ticks').textContent = s.total_ticks || 0;
     $('cdesk-kpi-ticks-sub').textContent =
       `下單 ${s.total_orders || 0} · 樣本 +${s.total_new_samples || 0}`;
     const er = s.avg_expected_R;
-    const erTxt = er === null || er === undefined ? '—' : (er >= 0 ? '+' : '') + Number(er).toFixed(3);
+    const erTxt = er === null || er === undefined ? '—' : (er >= 0 ? '+' : '') + Number(er).toFixed(2);
     $('cdesk-kpi-er').textContent = erTxt;
     $('cdesk-kpi-er').style.color = (er > 0) ? '#10b981' : (er < 0 ? '#ef4444' : '#cbd5e1');
     const best = s.best_expected_R, worst = s.worst_expected_R;
     $('cdesk-kpi-er-sub').textContent =
       (best !== null && best !== undefined)
-        ? `最佳 ${Number(best).toFixed(2)} · 最差 ${Number(worst || 0).toFixed(2)}`
+        ? `${Number(worst || 0).toFixed(1)} ~ ${Number(best).toFixed(1)}`
         : '—';
     const wr = s.avg_win_rate, shp = s.avg_sharpe;
     $('cdesk-kpi-win').textContent =
-      (wr !== null && wr !== undefined) ? (wr * 100).toFixed(1) + '%' : '—';
+      (wr !== null && wr !== undefined) ? (wr * 100).toFixed(0) + '%' : '—';
     $('cdesk-kpi-win-sub').textContent =
-      (shp !== null && shp !== undefined) ? 'Sharpe ' + Number(shp).toFixed(2) : '—';
-    const latest = s.latest || {};
+      (shp !== null && shp !== undefined) ? 'Sharpe ' + Number(shp).toFixed(1) : '—';
     const nextSec = latest.next_interval_seconds || 30;
     let throttleLabel;
     let throttleColor;
@@ -10464,7 +10510,7 @@ async function cdeskRefreshHistory() {
     // Tick table
     const tbody = $('cdesk-history-rows');
     if (!ticks.length) {
-      tbody.innerHTML = '<tr><td colspan="12" class="py-3 text-center text-slate-500">尚無 tick 紀錄</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="13" class="py-3 text-center text-slate-500">尚無 tick 紀錄</td></tr>';
       return;
     }
     const fmt = (v, d=2) => (v === null || v === undefined) ? '—' : Number(v).toFixed(d);
@@ -10474,6 +10520,11 @@ async function cdeskRefreshHistory() {
       const color = n > 0 ? '#10b981' : n < 0 ? '#ef4444' : '#94a3b8';
       const sign = n > 0 ? '+' : '';
       return `<span style="color:${color}">${sign}${n.toFixed(2)}</span>`;
+    };
+    const pnlColor = (v) => {
+      if (v === null || v === undefined) return '#cbd5e1';
+      const n = Number(v);
+      return n > 0 ? '#10b981' : (n < 0 ? '#ef4444' : '#cbd5e1');
     };
     const stateBg = {LEARNING:'#1e40af',VALIDATING:'#a16207',READY:'#047857',TRADING:'#16a34a',PAUSED:'#475569'};
     const indCol = {active:'#10b981',stagnant:'#f59e0b',degrading:'#ef4444',insufficient_data:'#64748b'};
@@ -10487,17 +10538,22 @@ async function cdeskRefreshHistory() {
       const orderCell = t.order_placed
         ? `<span style="color:#10b981">${(t.order_id || '').slice(0,10)}</span>`
         : '—';
+
+      const equityVal = t.equity_usdt !== null && t.equity_usdt !== undefined ? Number(t.equity_usdt) : 100000.0;
+      const equityColor = equityVal > 100000.0 ? '#10b981' : (equityVal < 100000.0 ? '#ef4444' : '#cbd5e1');
+
       return `<tr style="border-bottom:1px solid #1e293b">
         <td class="py-1.5 px-2 text-slate-400">${(t.tick_time || '').slice(11,19)}</td>
         <td class="py-1.5 px-2"><span class="px-1.5 py-0.5 text-xs" style="background:${bg};color:#fff;border-radius:2px">${t.state}</span></td>
+        <td class="py-1.5 px-2 text-right font-mono" style="color:${equityColor}">${fmt(t.equity_usdt, 2)}</td>
+        <td class="py-1.5 px-2 text-right font-mono" style="color:${pnlColor(t.realized_pnl_usdt)}">${t.realized_pnl_usdt > 0 ? '+' : ''}${fmt(t.realized_pnl_usdt, 2)}</td>
+        <td class="py-1.5 px-2 text-right font-mono" style="color:${pnlColor(t.unrealized_pnl_usdt)}">${t.unrealized_pnl_usdt > 0 ? '+' : ''}${fmt(t.unrealized_pnl_usdt, 2)}</td>
+        <td class="py-1.5 px-2 text-right text-slate-300 font-mono">${t.total_fills || 0}</td>
         <td class="py-1.5 px-2 text-right text-slate-300">${t.ledger_size}</td>
         <td class="py-1.5 px-2 text-right">${t.ledger_delta > 0 ? '<span style="color:#10b981">+'+t.ledger_delta+'</span>' : (t.ledger_delta < 0 ? '<span style="color:#ef4444">'+t.ledger_delta+'</span>' : '0')}</td>
-        <td class="py-1.5 px-2 text-right text-slate-300">${t.validation_passed}/${t.validation_total}</td>
         <td class="py-1.5 px-2 text-right text-slate-300">${fmt(t.expected_R, 2)}</td>
-        <td class="py-1.5 px-2 text-right">${fmtDelta(t.expected_R_delta)}</td>
         <td class="py-1.5 px-2 text-right text-slate-300">${t.win_rate !== null ? (Number(t.win_rate)*100).toFixed(0)+'%' : '—'}</td>
         <td class="py-1.5 px-2"><span style="color:${indC}">${ind}</span></td>
-        <td class="py-1.5 px-2 text-right text-slate-400">${t.weights_changed_count}</td>
         <td class="py-1.5 px-2 text-right">${orderCell}</td>
         <td class="py-1.5 px-2 text-right text-slate-500">${intervalLabel}</td>
       </tr>`;

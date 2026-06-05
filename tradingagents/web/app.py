@@ -4242,11 +4242,13 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
             "last_action": last_action,
         }
 
-        # Persist this tick + compute throttling interval for the UI
+        # Persist this tick + compute throttling interval + P&L snapshot
         try:
-            from smc_training_history import record_tick
+            from smc_training_history import record_tick, compute_pnl_snapshot
             from dataclasses import asdict as _asdict
             report_dict = _asdict(report)
+            pnl_snap = compute_pnl_snapshot(api)
+            tick_response["pnl"] = pnl_snap
             conn_h = get_db()
             try:
                 rec = record_tick(
@@ -4255,6 +4257,7 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
                     learning_report=report_dict,
                     training_summary=tick_response.get("training_summary"),
                     elapsed=_time.time() - tick_started,
+                    pnl_snapshot=pnl_snap,
                 )
                 tick_response["history"] = {
                     "next_interval_seconds": rec.next_interval_seconds,
@@ -4264,6 +4267,12 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
                     "win_rate": rec.win_rate,
                     "sharpe": rec.sharpe,
                     "weights_changed": rec.weights_changed,
+                    "equity_usdt": getattr(rec, "equity_usdt", None),
+                    "equity_delta_usdt": getattr(rec, "equity_delta_usdt", None),
+                    "realized_pnl_usdt": getattr(rec, "realized_pnl_usdt", None),
+                    "unrealized_pnl_usdt": getattr(rec, "unrealized_pnl_usdt", None),
+                    "total_fills": getattr(rec, "total_fills", 0),
+                    "winning_fills": getattr(rec, "winning_fills", 0),
                 }
             finally:
                 conn_h.close()

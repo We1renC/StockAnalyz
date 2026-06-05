@@ -35,6 +35,9 @@ from typing import Any, Optional
 # Schema
 # ---------------------------------------------------------------------------
 
+_STARTING_EQUITY_USDT = 100_000.0
+
+
 def ensure_training_history_schema(conn: sqlite3.Connection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS smc_training_history (
@@ -58,14 +61,130 @@ def ensure_training_history_schema(conn: sqlite3.Connection) -> None:
             trades_added INTEGER NOT NULL DEFAULT 0,
             tick_elapsed_seconds REAL,
             next_interval_seconds INTEGER NOT NULL DEFAULT 30,
+            -- Real simulated-market P&L (USDT)
+            equity_usdt REAL,
+            equity_delta_usdt REAL,
+            realized_pnl_usdt REAL,
+            unrealized_pnl_usdt REAL,
+            total_fills INTEGER NOT NULL DEFAULT 0,
+            winning_fills INTEGER NOT NULL DEFAULT 0,
             payload_json TEXT NOT NULL DEFAULT '{}'
         )
     """)
+    # Add columns to existing table (idempotent migration)
+    for col_def in [
+        "equity_usdt REAL",
+        "equity_delta_usdt REAL",
+        "realized_pnl_usdt REAL",
+        "unrealized_pnl_usdt REAL",
+        "total_fills INTEGER NOT NULL DEFAULT 0",
+        "winning_fills INTEGER NOT NULL DEFAULT 0",
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE smc_training_history ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_smc_training_history_symbol_time
         ON smc_training_history(symbol, tick_time DESC)
     """)
     conn.commit()
+
+
+def compute_pnl_snapshot(api) -> dict:
+    """Query the crypto-api for current equity + realized P&L.
+
+    equity_usdt = USDT cash + sum(other_asset_qty × current_market_price)
+    realized_pnl = sum of (sell_proceeds - buy_cost) inferred from fill history
+    unrealized_pnl = current value of open positions - cost basis
+    """
+    try:
+        # Pull balances
+        b = api.balances()
+        bals = (b.get("payload") or {}).get("balances") or b.get("payload") or []
+        if isinstance(bals, dict):
+            bals = bals.get("data") or list(bals.values())
+        positions: dict[str, float] = {}
+        for row in (bals or []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                asset = row.get("asset")
+                qty = float(row.get("total") or row.get("available") or 0)
+                if asset:
+                    positions[asset] = qty
+            except (TypeError, ValueError):
+                pass
+
+        # Compute equity in USDT (mark-to-market every non-USDT asset via ticker)
+        usdt = positions.pop("USDT", 0.0)
+        equity = float(usdt)
+        for asset, qty in positions.items():
+            if qty <= 0:
+                continue
+            symbol = f"{asset}-USDT"
+            try:
+                t = api.ticker(symbol)
+                p = (t.get("payload") or {}).get("price") \
+                    or (t.get("payload") or {}).get("last_price")
+                if p:
+                    equity += qty * float(p)
+            except Exception:
+                pass
+
+        # Pull fills + compute realized P&L
+        f = api._request("GET", "/fills")
+        fills = (f.get("payload") or {}).get("fills") or f.get("payload") or []
+        if isinstance(fills, dict):
+            fills = fills.get("data") or []
+        total_fills = len(fills) if isinstance(fills, list) else 0
+        # Per-symbol cost-basis tracker — simple FIFO weighted-avg
+        cost: dict[str, dict] = {}     # asset → {qty, avg_cost}
+        realized = 0.0
+        winning = 0
+        for fil in (fills or []):
+            if not isinstance(fil, dict):
+                continue
+            try:
+                sym = fil.get("symbol", "")
+                side = fil.get("side", "")
+                qty = float(fil.get("quantity") or 0)
+                price = float(fil.get("price") or 0)
+                fee = float(fil.get("fee") or 0)
+                if not sym or qty <= 0 or price <= 0:
+                    continue
+                base = sym.split("-")[0]
+                pos = cost.setdefault(base, {"qty": 0.0, "avg": 0.0})
+                if side == "buy":
+                    new_qty = pos["qty"] + qty
+                    pos["avg"] = (pos["avg"] * pos["qty"] + price * qty) / new_qty if new_qty else price
+                    pos["qty"] = new_qty
+                else:  # sell
+                    if pos["qty"] > 0:
+                        sell_pnl = (price - pos["avg"]) * min(qty, pos["qty"]) - fee
+                        realized += sell_pnl
+                        if sell_pnl > 0:
+                            winning += 1
+                        pos["qty"] = max(0, pos["qty"] - qty)
+            except (TypeError, ValueError):
+                continue
+
+        equity_delta = equity - _STARTING_EQUITY_USDT
+        unrealized = equity_delta - realized
+        return {
+            "equity_usdt": round(equity, 2),
+            "equity_delta_usdt": round(equity_delta, 2),
+            "realized_pnl_usdt": round(realized, 4),
+            "unrealized_pnl_usdt": round(unrealized, 4),
+            "total_fills": total_fills,
+            "winning_fills": winning,
+        }
+    except Exception:
+        return {
+            "equity_usdt": None, "equity_delta_usdt": None,
+            "realized_pnl_usdt": None, "unrealized_pnl_usdt": None,
+            "total_fills": 0, "winning_fills": 0,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +231,7 @@ def record_tick(
     learning_report: Optional[dict] = None,
     training_summary: Optional[dict] = None,
     elapsed: float = 0.0,
+    pnl_snapshot: Optional[dict] = None,
 ) -> TickRecord:
     """Persist one tick row, computing deltas vs. previous tick."""
     ensure_training_history_schema(conn)
@@ -171,6 +291,17 @@ def record_tick(
         order_id = live.get("id")
         order_placed = True
 
+    # P&L snapshot (real simulated-market equity / realized / unrealized)
+    pnl = pnl_snapshot or {}
+    prev_equity = (prev or {}).get("equity_usdt") if prev else None
+    equity_now = pnl.get("equity_usdt")
+    equity_delta_tick = None
+    if equity_now is not None and prev_equity is not None:
+        try:
+            equity_delta_tick = float(equity_now) - float(prev_equity)
+        except (TypeError, ValueError):
+            equity_delta_tick = None
+
     rec = TickRecord(
         tick_time=tick_payload.get("tick_time") or datetime.now(timezone.utc).isoformat(timespec="seconds"),
         symbol=symbol, state=state,
@@ -187,6 +318,18 @@ def record_tick(
         trades_added=trades_added,
         tick_elapsed_seconds=round(float(elapsed), 3),
     )
+    # attach P&L fields to record via attribute setting (dataclass extras)
+    rec_extras = {
+        "equity_usdt": pnl.get("equity_usdt"),
+        "equity_delta_usdt": pnl.get("equity_delta_usdt"),
+        "equity_tick_delta_usdt": equity_delta_tick,
+        "realized_pnl_usdt": pnl.get("realized_pnl_usdt"),
+        "unrealized_pnl_usdt": pnl.get("unrealized_pnl_usdt"),
+        "total_fills": int(pnl.get("total_fills") or 0),
+        "winning_fills": int(pnl.get("winning_fills") or 0),
+    }
+    for k, v in rec_extras.items():
+        setattr(rec, k, v)
 
     # Decide next interval (throttling)
     next_interval = decide_next_interval(conn, symbol, rec)
@@ -200,8 +343,11 @@ def record_tick(
             expected_R, expected_R_delta, win_rate, sharpe,
             weights_changed_count, weights_changed,
             order_placed, order_id, trades_added,
-            tick_elapsed_seconds, next_interval_seconds, payload_json
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            tick_elapsed_seconds, next_interval_seconds,
+            equity_usdt, equity_delta_usdt, realized_pnl_usdt,
+            unrealized_pnl_usdt, total_fills, winning_fills,
+            payload_json
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         rec.tick_time, rec.symbol, rec.state, rec.ledger_size, rec.ledger_delta,
         rec.validation_passed, rec.validation_total, rec.learning_indicator,
@@ -209,10 +355,17 @@ def record_tick(
         rec.weights_changed_count, json.dumps(rec.weights_changed),
         1 if rec.order_placed else 0, rec.order_id, rec.trades_added,
         rec.tick_elapsed_seconds, rec.next_interval_seconds,
+        getattr(rec, "equity_usdt", None),
+        getattr(rec, "equity_delta_usdt", None),
+        getattr(rec, "realized_pnl_usdt", None),
+        getattr(rec, "unrealized_pnl_usdt", None),
+        getattr(rec, "total_fills", 0),
+        getattr(rec, "winning_fills", 0),
         json.dumps({
             "tick_payload": tick_payload,
             "learning_report": learning_report,
             "training_summary": training_summary,
+            "pnl_snapshot": pnl_snapshot,
         }, default=str),
     ))
     conn.commit()
@@ -295,7 +448,9 @@ def load_training_history(
         f"validation_passed, validation_total, learning_indicator, "
         f"expected_R, expected_R_delta, win_rate, sharpe, "
         f"weights_changed_count, weights_changed, order_placed, order_id, "
-        f"trades_added, tick_elapsed_seconds, next_interval_seconds "
+        f"trades_added, tick_elapsed_seconds, next_interval_seconds, "
+        f"equity_usdt, equity_delta_usdt, realized_pnl_usdt, "
+        f"unrealized_pnl_usdt, total_fills, winning_fills "
         f"FROM smc_training_history {where} ORDER BY id DESC LIMIT ?",
         params,
     ).fetchall()
@@ -331,7 +486,13 @@ def summarize_training_history(
         f"MAX(expected_R) AS best_expected_R, "
         f"MIN(expected_R) AS worst_expected_R, "
         f"AVG(win_rate) AS avg_win_rate, "
-        f"AVG(sharpe) AS avg_sharpe "
+        f"AVG(sharpe) AS avg_sharpe, "
+        f"MAX(equity_usdt) AS peak_equity_usdt, "
+        f"MIN(equity_usdt) AS trough_equity_usdt, "
+        f"MAX(realized_pnl_usdt) AS best_realized_pnl, "
+        f"MIN(realized_pnl_usdt) AS worst_realized_pnl, "
+        f"MAX(total_fills) AS total_fills, "
+        f"MAX(winning_fills) AS total_winning_fills "
         f"FROM smc_training_history {where}",
         params,
     ).fetchone()
@@ -341,7 +502,9 @@ def summarize_training_history(
     # Latest row gives current snapshot
     latest = conn.execute(
         f"SELECT state, ledger_size, learning_indicator, expected_R, win_rate, "
-        f"sharpe, next_interval_seconds, tick_time "
+        f"sharpe, next_interval_seconds, tick_time, "
+        f"equity_usdt, equity_delta_usdt, realized_pnl_usdt, "
+        f"unrealized_pnl_usdt, total_fills, winning_fills "
         f"FROM smc_training_history {where} ORDER BY id DESC LIMIT 1",
         params,
     ).fetchone()

@@ -852,5 +852,95 @@ def test_rate_limiting_api():
             assert res.status_code == 200
 
 
+def test_compute_pnl_snapshot_and_record_tick():
+    from smc_training_history import compute_pnl_snapshot, record_tick
+    import sqlite3
+
+    class MockAPI:
+        def balances(self):
+            return {
+                "payload": {
+                    "balances": [
+                        {"asset": "USDT", "available": "50000.00", "locked": "0.00"},
+                        {"asset": "BTC", "available": "0.5", "locked": "0.0"},
+                        {"asset": "ETH", "available": "1.0", "locked": "0.0"},
+                    ]
+                }
+            }
+
+        def ticker(self, symbol):
+            if symbol == "BTC-USDT":
+                return {"payload": {"price": "100000.00"}}
+            if symbol == "ETH-USDT":
+                return {"payload": {"price": "3000.00"}}
+            return {"payload": {"price": "0.0"}}
+
+        def _request(self, method, endpoint):
+            if endpoint == "/fills":
+                return {
+                    "payload": {
+                        "fills": [
+                            {
+                                "id": "f1",
+                                "symbol": "BTC-USDT",
+                                "side": "buy",
+                                "quantity": "0.5",
+                                "price": "98000.00",
+                                "fee": "10.0",
+                            },
+                            {
+                                "id": "f2",
+                                "symbol": "ETH-USDT",
+                                "side": "buy",
+                                "quantity": "1.0",
+                                "price": "2900.00",
+                                "fee": "5.0",
+                            },
+                            {
+                                "id": "f3",
+                                "symbol": "ETH-USDT",
+                                "side": "sell",
+                                "quantity": "1.0",
+                                "price": "3000.00",
+                                "fee": "5.0",
+                            },
+                        ]
+                    }
+                }
+
+    mock_api = MockAPI()
+    pnl = compute_pnl_snapshot(mock_api)
+
+    assert pnl["equity_usdt"] == 103000.0
+    assert pnl["equity_delta_usdt"] == 3000.0
+    assert pnl["realized_pnl_usdt"] == 95.0
+    assert pnl["unrealized_pnl_usdt"] == 2905.0
+    assert pnl["total_fills"] == 3
+    assert pnl["winning_fills"] == 1
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        rec = record_tick(
+            conn,
+            symbol="BTC-USDT",
+            state="READY",
+            tick_payload={"progress": {"ledger_size": 10, "validation_passed": 5, "validation_total": 5, "learning_indicator": "active"}},
+            pnl_snapshot=pnl
+        )
+        assert getattr(rec, "equity_usdt") == 103000.0
+        assert getattr(rec, "realized_pnl_usdt") == 95.0
+        assert getattr(rec, "unrealized_pnl_usdt") == 2905.0
+        assert getattr(rec, "total_fills") == 3
+        assert getattr(rec, "winning_fills") == 1
+    finally:
+        conn.close()
+
+
+
+
+
+
+
 
 
