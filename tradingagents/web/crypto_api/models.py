@@ -207,7 +207,8 @@ def seed_crypto_data(conn: sqlite3.Connection):
     markets = [
         ("BTC-USDT", "BTC", "USDT", "trading", 2, 6, "0.00001", "100", "5", "0.01", "0.000001", "0.001", "0.001"),
         ("ETH-USDT", "ETH", "USDT", "trading", 2, 5, "0.0001", "1000", "5", "0.01", "0.00001", "0.0015", "0.002"),
-        ("SOL-USDT", "SOL", "USDT", "trading", 3, 3, "0.01", "10000", "5", "0.001", "0.001", "0.002", "0.0025")
+        ("SOL-USDT", "SOL", "USDT", "trading", 3, 3, "0.01", "10000", "5", "0.001", "0.001", "0.002", "0.0025"),
+        ("XRP-USDT", "XRP", "USDT", "trading", 4, 1, "0.1", "100000", "5", "0.0001", "0.1", "0.002", "0.0025")
     ]
     for m in markets:
         c.execute("""
