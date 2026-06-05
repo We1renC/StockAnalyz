@@ -1397,6 +1397,15 @@ body { background: var(--bg-base); color: var(--text-primary); }
         <div class="rounded-lg border border-slate-800/70 bg-slate-950/40 p-3 text-center text-slate-500 text-xs">載入中...</div>
       </div>
       <div id="smc-paper-acceptance-coverage" class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3 text-xs text-slate-500 mb-4">載入中...</div>
+      <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3 mb-4">
+        <div class="flex items-center justify-between gap-3 mb-2">
+          <div class="text-xs font-semibold text-slate-300">運行監控看板</div>
+          <div id="smc-paper-acceptance-dashboard-meta" class="text-[11px] text-slate-500">尚未載入</div>
+        </div>
+        <div id="smc-paper-acceptance-dashboard" class="grid grid-cols-1 xl:grid-cols-3 gap-3 text-xs text-slate-500">
+          <div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3">載入中...</div>
+        </div>
+      </div>
       <div class="grid grid-cols-1 2xl:grid-cols-[minmax(0,1.7fr)_minmax(360px,0.95fr)] gap-4">
         <div class="space-y-4">
           <div class="rounded-lg border border-slate-800/70 bg-slate-950/35 p-3">
@@ -3332,6 +3341,8 @@ function paperAcceptanceFormatJson(value) {
 
 function renderPaperAcceptanceLoading(message = '載入前測驗收...') {
   const overview = $('smc-paper-acceptance-overview');
+  const dashboard = $('smc-paper-acceptance-dashboard');
+  const dashboardMeta = $('smc-paper-acceptance-dashboard-meta');
   const blockers = $('smc-paper-acceptance-blockers');
   const closure = $('smc-paper-acceptance-closure');
   const reports = $('smc-paper-acceptance-reports');
@@ -3353,6 +3364,8 @@ function renderPaperAcceptanceLoading(message = '載入前測驗收...') {
   if (overview) {
     overview.innerHTML = `<div class="rounded-lg border border-slate-800/70 bg-slate-950/40 p-3 text-center text-slate-500 text-xs col-span-full">${escHtml(message)}</div>`;
   }
+  if (dashboard) dashboard.innerHTML = `<div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 text-xs text-slate-500 xl:col-span-3">${escHtml(message)}</div>`;
+  if (dashboardMeta) dashboardMeta.textContent = message;
   if (coverage) coverage.innerHTML = escHtml(message);
   if (closure) closure.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
   if (blockers) blockers.innerHTML = `<div class="text-slate-500">${escHtml(message)}</div>`;
@@ -3377,6 +3390,8 @@ function renderPaperAcceptanceEmpty(symbol) {
   _smcPaperAcceptanceWorkspace = null;
   _smcPaperAcceptanceSection = '';
   const overview = $('smc-paper-acceptance-overview');
+  const dashboard = $('smc-paper-acceptance-dashboard');
+  const dashboardMeta = $('smc-paper-acceptance-dashboard-meta');
   const blockers = $('smc-paper-acceptance-blockers');
   const closure = $('smc-paper-acceptance-closure');
   const reportsEl = $('smc-paper-acceptance-reports');
@@ -3405,6 +3420,14 @@ function renderPaperAcceptanceEmpty(symbol) {
       smcDashboardMetric('交易樣本', '—'),
     ].join('');
   }
+  if (dashboard) {
+    dashboard.innerHTML = `
+      <div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 xl:col-span-3">
+        <div class="text-slate-500">請先選擇標的；系統會依 telemetry、governance、venue profile、stage/deviation 與 review 狀態生成監控摘要。</div>
+      </div>
+    `;
+  }
+  if (dashboardMeta) dashboardMeta.textContent = '請先選擇標的';
   if (blockers) blockers.innerHTML = '<div class="text-slate-500">請先選擇標的；系統會依目前 journal、backtest、event 與 overrides 即時計算驗收狀態。</div>';
   if (closure) closure.innerHTML = '<div class="text-slate-500">尚無 closure summary。</div>';
   if (reportsEl) reportsEl.innerHTML = '<div class="text-slate-500">尚無歷史報告。</div>';
@@ -3599,6 +3622,136 @@ function renderPaperAcceptanceCoverage(coverage) {
     </div>
     ${sectionHtml}
     ${missingHtml}
+  `;
+}
+
+function renderPaperAcceptanceOpsDashboard(workspace) {
+  const metrics = workspace?.report?.metrics || {};
+  const policy = workspace?.policy || {};
+  const ladder = policy.promotion_ladder || {};
+  const review = workspace?.review || {};
+  const governance = workspace?.governance_summary || {};
+  const closure = workspace?.closure_summary || {};
+  const venue = workspace?.venue_summary || {};
+  const threshold = workspace?.threshold_summary || {};
+  const virtual = (workspace?.virtual_account_snapshots || [])[0] || {};
+  const stability = (workspace?.stability_sessions || [])[0] || {};
+  const events = workspace?.events || [];
+  const reconciliationRuns = workspace?.reconciliation_runs || [];
+  const warnings = events.filter(row => ['warning', 'error', 'critical'].includes(String(row.severity || '').toLowerCase())).length;
+  const unresolvedRecon = reconciliationRuns.filter(row =>
+    !['ok', 'resolved', 'pass'].includes(String(row.status || '').toLowerCase()) ||
+    ['warning', 'error', 'critical'].includes(String(row.severity || '').toLowerCase())
+  ).length;
+  const monitoring = (policy.evidence || {}).monitoring_dashboard || {};
+  const monitoringChecks = [
+    ['資產', monitoring.real_time_equity],
+    ['餘額', monitoring.available_balance],
+    ['持倉', monitoring.current_positions],
+    ['掛單', monitoring.open_orders],
+    ['風控', monitoring.risk_control_status],
+    ['交易', monitoring.recent_trades],
+  ];
+  const monitoringHtml = monitoringChecks.map(([label, ok]) => `
+    <span class="inline-flex items-center px-2 py-0.5 rounded border text-[10px] ${ok ? 'border-emerald-800/40 text-emerald-300 bg-emerald-950/10' : 'border-slate-700/60 text-slate-400 bg-slate-900/30'}">
+      ${escHtml(label)} ${ok ? 'ok' : 'gap'}
+    </span>
+  `).join('');
+  const stageLabel = ladder.current_stage?.label || ladder.current_stage?.stage_name || '—';
+  const nextStageLabel = ladder.next_stage?.label || ladder.next_stage?.stage_name || '—';
+  const rateLimit = venue.rate_limit_per_minute != null ? `${venue.rate_limit_per_minute}/min` : '—';
+  const venueName = venue.venue_name || '—';
+  const brokerName = venue.broker_name || '—';
+  const thresholdName = threshold.latest_profile_name || threshold.active_version_tag || 'default';
+  const stabilityRuntime = stability.runtime_hours != null ? `${smcDashboardNum(stability.runtime_hours, 1)}h` : '—';
+  const lastReview = review.review_status || 'pending';
+  const closureAction = closure.next_action || policy.recommendation || 'paper';
+  const reviewBadge = {
+    approved: ['可升級', 'text-emerald-200 border-emerald-800/40 bg-emerald-950/20'],
+    reviewing: ['審閱中', 'text-cyan-200 border-cyan-800/40 bg-cyan-950/20'],
+    changes_required: ['需修補', 'text-amber-200 border-amber-800/40 bg-amber-950/20'],
+    blocked: ['阻擋', 'text-red-200 border-red-800/40 bg-red-950/20'],
+    pending: ['待審閱', 'text-slate-300 border-slate-700/60 bg-slate-900/40'],
+  }[lastReview] || [lastReview, 'text-slate-300 border-slate-700/60 bg-slate-900/40'];
+  return `
+    <div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3">
+      <div class="flex items-center justify-between gap-2 mb-2">
+        <div class="text-[11px] font-semibold text-slate-300">Runtime / Risk</div>
+        <span class="text-[10px] ${paperAcceptanceTone(workspace?.report?.summary?.conclusion || 'unknown')}">${escHtml(paperAcceptanceConclusionLabel(workspace?.report?.summary?.conclusion || 'unknown'))}</span>
+      </div>
+      <div class="grid grid-cols-2 gap-2 mb-2">
+        <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+          <div class="text-[10px] text-slate-500">API Error</div>
+          <div class="font-mono ${metrics.api_error_rate != null && Number(metrics.api_error_rate) > 0.05 ? 'text-red-300' : 'text-emerald-300'}">${smcDashboardPct(metrics.api_error_rate, 1)}</div>
+        </div>
+        <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+          <div class="text-[10px] text-slate-500">Fill / Reject</div>
+          <div class="font-mono text-slate-100">${smcDashboardPct(metrics.fill_rate, 1)} / ${smcDashboardPct(metrics.rejection_ratio, 1)}</div>
+        </div>
+        <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+          <div class="text-[10px] text-slate-500">P95 / P99</div>
+          <div class="font-mono text-slate-100">${smcDashboardNum(metrics.latency_p95, 0)} / ${smcDashboardNum(metrics.latency_p99, 0)} ms</div>
+        </div>
+        <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+          <div class="text-[10px] text-slate-500">Warning / Recon</div>
+          <div class="font-mono ${warnings > 0 || unresolvedRecon > 0 ? 'text-amber-300' : 'text-emerald-300'}">${warnings} / ${unresolvedRecon}</div>
+        </div>
+      </div>
+      <div class="text-[11px] text-slate-500 mb-2">Equity ${smcDashboardNum(virtual.equity, 2)} · Avail ${smcDashboardNum(virtual.available_balance, 2)} · Soak ${escHtml(stabilityRuntime)}</div>
+      <div class="flex flex-wrap gap-1.5">${monitoringHtml || '<span class="text-slate-500">尚無監控訊號</span>'}</div>
+    </div>
+    <div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3">
+      <div class="flex items-center justify-between gap-2 mb-2">
+        <div class="text-[11px] font-semibold text-slate-300">Promotion / Governance</div>
+        <span class="inline-flex items-center px-2 py-0.5 rounded border text-[10px] ${reviewBadge[1]}">${escHtml(reviewBadge[0])}</span>
+      </div>
+      <div class="grid grid-cols-2 gap-2 mb-2">
+        <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+          <div class="text-[10px] text-slate-500">Current Stage</div>
+          <div class="font-mono text-cyan-300 text-[12px]">${escHtml(stageLabel)}</div>
+        </div>
+        <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+          <div class="text-[10px] text-slate-500">Next Stage</div>
+          <div class="font-mono text-slate-100 text-[12px]">${escHtml(nextStageLabel)}</div>
+        </div>
+        <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+          <div class="text-[10px] text-slate-500">Shadow / Deviation</div>
+          <div class="font-mono text-slate-100">${smcDashboardNum(metrics.shadow_parity_score, 2)} / ${smcDashboardNum(metrics.paper_live_max_deviation_ratio, 2)}</div>
+        </div>
+        <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+          <div class="text-[10px] text-slate-500">Freeze / Restart</div>
+          <div class="font-mono ${Number(governance.freeze_violation_count || 0) > 0 ? 'text-red-300' : 'text-emerald-300'}">${governance.freeze_violation_count || 0} / ${smcDashboardPct(governance.restart_stats_completion_ratio, 0)}</div>
+        </div>
+      </div>
+      <div class="text-[11px] text-slate-500">Threshold ${escHtml(thresholdName)} · action ${escHtml(closureAction)}</div>
+      <div class="text-[11px] text-slate-600 mt-1">reviewer ${escHtml(review.reviewer || '—')} · blockers ${escHtml(String(workspace?.report?.summary?.blocking_issue_count || 0))}</div>
+    </div>
+    <div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3">
+      <div class="flex items-center justify-between gap-2 mb-2">
+        <div class="text-[11px] font-semibold text-slate-300">Venue / Cost Taxonomy</div>
+        <span class="text-[10px] ${paperAcceptanceStatusTone(venue.latest_status === 'approved' ? 'pass' : venue.latest_status === 'missing' ? 'unavailable' : 'partial')}">${escHtml(venue.latest_status || 'missing')}</span>
+      </div>
+      <div class="grid grid-cols-2 gap-2 mb-2">
+        <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+          <div class="text-[10px] text-slate-500">Venue / Broker</div>
+          <div class="font-mono text-slate-100 text-[12px]">${escHtml(venueName)} / ${escHtml(brokerName)}</div>
+        </div>
+        <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+          <div class="text-[10px] text-slate-500">Rate Limit</div>
+          <div class="font-mono text-slate-100">${escHtml(rateLimit)} · burst ${escHtml(String(venue.rate_limit_burst ?? '—'))}</div>
+        </div>
+        <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+          <div class="text-[10px] text-slate-500">Fee / Tax (bps)</div>
+          <div class="font-mono text-slate-100">${smcDashboardNum(venue.maker_fee_bps, 2)} / ${smcDashboardNum(venue.taker_fee_bps, 2)} / ${smcDashboardNum(venue.transaction_tax_bps, 2)}</div>
+        </div>
+        <div class="rounded border border-slate-800/60 bg-slate-950/40 px-2 py-2">
+          <div class="text-[10px] text-slate-500">Min / Tick / Prec</div>
+          <div class="font-mono text-slate-100">${smcDashboardNum(venue.min_notional, 2)} / ${smcDashboardNum(venue.tick_size, 4)} / ${escHtml(String(venue.price_precision ?? '—'))}</div>
+        </div>
+      </div>
+      <div class="text-[11px] text-slate-500">reject taxonomy ${escHtml(String(venue.reject_category_count ?? 0))} 類 · version ${escHtml(venue.active_version_tag || '—')}</div>
+      <div class="text-[11px] text-slate-600 mt-1">${escHtml((venue.source_summary || {}).source || '尚未附來源摘要')}</div>
+    </div>
   `;
 }
 
@@ -3923,6 +4076,8 @@ function hydratePaperAcceptanceWorkspaceEditors(workspace) {
 
 function renderPaperAcceptanceWorkspace(workspace) {
   const overview = $('smc-paper-acceptance-overview');
+  const dashboard = $('smc-paper-acceptance-dashboard');
+  const dashboardMeta = $('smc-paper-acceptance-dashboard-meta');
   const coverage = $('smc-paper-acceptance-coverage');
   const observed = $('smc-paper-acceptance-observed');
   const governance = $('smc-paper-acceptance-governance');
@@ -3947,6 +4102,11 @@ function renderPaperAcceptanceWorkspace(workspace) {
       smcDashboardMetric('部分覆蓋', summary.partial ?? 0, (summary.partial || 0) > 0 ? 'text-amber-300' : 'text-slate-300'),
       smcDashboardMetric('交易樣本', metrics.trade_count ?? 0, (metrics.trade_count || 0) > 0 ? 'text-cyan-300' : 'text-slate-300'),
     ].join('');
+  }
+  if (dashboard) dashboard.innerHTML = renderPaperAcceptanceOpsDashboard(workspace);
+  if (dashboardMeta) {
+    const venue = workspace?.venue_summary || {};
+    dashboardMeta.textContent = `${strategy.exchange || workspace?.symbol || '—'} · review ${workspace?.review?.review_status || 'pending'} · venue ${venue.active_version_tag || venue.latest_status || 'missing'}`;
   }
   if (coverage) coverage.innerHTML = renderPaperAcceptanceCoverage(workspace?.coverage || {});
   if (observed) observed.innerHTML = renderPaperAcceptanceObserved(workspace);
@@ -4256,6 +4416,8 @@ async function refreshPaperAcceptance(force = false) {
     return payload;
   } catch (e) {
     const overview = $('smc-paper-acceptance-overview');
+    const dashboard = $('smc-paper-acceptance-dashboard');
+    const dashboardMeta = $('smc-paper-acceptance-dashboard-meta');
     const blockers = $('smc-paper-acceptance-blockers');
     const reports = $('smc-paper-acceptance-reports');
     const sections = $('smc-paper-acceptance-sections');
@@ -4276,6 +4438,8 @@ async function refreshPaperAcceptance(force = false) {
     const catalogMeta = $('smc-paper-acceptance-catalog-meta');
     const msg = `前測驗收讀取失敗：${e}`;
     if (overview) overview.innerHTML = `<div class="rounded-lg border border-red-900/40 bg-red-950/10 p-3 text-center text-red-300 text-xs col-span-full">${escHtml(msg)}</div>`;
+    if (dashboard) dashboard.innerHTML = `<div class="rounded-lg border border-red-900/40 bg-red-950/10 p-3 text-xs text-red-300 xl:col-span-3">${escHtml(msg)}</div>`;
+    if (dashboardMeta) dashboardMeta.textContent = '讀取失敗';
     if (blockers) blockers.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (reports) reports.innerHTML = `<div class="text-red-400">${escHtml(msg)}</div>`;
     if (sections) sections.innerHTML = `<div class="rounded-lg border border-red-900/40 bg-red-950/10 p-3 text-xs text-red-300 md:col-span-2 xl:col-span-3">${escHtml(msg)}</div>`;

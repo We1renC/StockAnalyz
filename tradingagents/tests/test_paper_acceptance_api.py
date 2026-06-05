@@ -343,12 +343,15 @@ def test_api_venue_profiles_round_trip(tmp_path):
         )
 
         rows = app.api_get_paper_acceptance_venue_profiles(symbol="ABAT")
+        dashboard = app.api_get_paper_acceptance_dashboard(symbol="ABAT")
         workspace = app.api_get_paper_acceptance_workspace(symbol="ABAT")
 
         assert payload["ok"] is True
         assert rows["count"] == 1
         assert rows["summary"]["venue_name"] == "NASDAQ"
         assert rows["summary"]["precision_rules_enforced"] is True
+        assert dashboard["venue_profile"]["active_version_tag"] == "venue-v1"
+        assert dashboard["venue_profile"]["broker_name"] == "IBKR"
         assert workspace["venue_summary"]["active_version_tag"] == "venue-v1"
         assert workspace["venue_profiles"][0]["broker_name"] == "IBKR"
     finally:

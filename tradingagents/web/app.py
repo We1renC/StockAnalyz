@@ -5720,6 +5720,15 @@ def api_get_paper_acceptance_dashboard(symbol: str, stage: str = "paper"):
         payload = build_acceptance_workspace(conn, symbol=symbol.strip().upper(), stage=stage, limit_reports=5)
         report = payload.get("report") or {}
         summary = report.get("summary") or {}
+        events = payload.get("events") or []
+        warning_event_count = sum(1 for row in events if str(row.get("severity") or "").lower() in {"warning", "error", "critical"})
+        reconciliation_runs = payload.get("reconciliation_runs") or []
+        unresolved_reconciliation_count = sum(
+            1
+            for row in reconciliation_runs
+            if str(row.get("status") or "").lower() not in {"ok", "resolved", "pass"}
+            or str(row.get("severity") or "").lower() in {"warning", "error", "critical"}
+        )
         return sanitize_float_values({
             "symbol": payload["symbol"],
             "stage": payload["stage"],
@@ -5737,6 +5746,24 @@ def api_get_paper_acceptance_dashboard(symbol: str, stage: str = "paper"):
             "stability": {
                 "sessions": payload.get("stability_sessions") or [],
                 "latest": (payload.get("stability_sessions") or [{}])[0] if payload.get("stability_sessions") else {},
+            },
+            "venue_profile": payload.get("venue_summary") or {},
+            "threshold_profile": payload.get("threshold_summary") or {},
+            "promotion_summary": payload.get("promotion_summary") or {},
+            "closure_summary": payload.get("closure_summary") or {},
+            "event_summary": {
+                "total": len(events),
+                "warning_or_higher": warning_event_count,
+                "latest": events[0] if events else {},
+            },
+            "reconciliation_summary": {
+                "total": len(reconciliation_runs),
+                "unresolved_count": unresolved_reconciliation_count,
+                "latest": reconciliation_runs[0] if reconciliation_runs else {},
+            },
+            "runtime_summary": {
+                "count": len(payload.get("runtime_metrics") or []),
+                "latest": (payload.get("runtime_metrics") or [{}])[0] if payload.get("runtime_metrics") else {},
             },
             "production_checklist": payload.get("production_checklist") or [],
         })
