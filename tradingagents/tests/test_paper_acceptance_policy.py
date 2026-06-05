@@ -104,3 +104,14 @@ def test_policy_snapshot_blocks_when_regime_coverage_is_thin():
     payload = build_acceptance_policy_snapshot(ctx, review={"review_status": "reviewing"})
     assert "15 sample_size_or_market_regime_insufficient" in payload["blockers"]
     assert any(row["key"] == "regime_coverage" for row in payload["promotion_ladder"]["blocker_deltas"])
+
+
+def test_policy_snapshot_blocks_when_threshold_profile_is_unapproved():
+    ctx = _context()
+    ctx["metrics"]["threshold_profile_active"] = True
+    ctx["metrics"]["threshold_profile_approved"] = False
+    payload = build_acceptance_policy_snapshot(ctx, review={"review_status": "approved", "can_promote_to_live": True})
+    assert "20 threshold_profile_unapproved" in payload["blockers"]
+    threshold_gate = payload["evidence"]["quantitative_thresholds"]
+    assert threshold_gate["threshold_profile_active"] is True
+    assert threshold_gate["threshold_profile_approved"] is False

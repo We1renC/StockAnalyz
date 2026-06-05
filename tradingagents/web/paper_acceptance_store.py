@@ -296,6 +296,27 @@ def ensure_paper_acceptance_schema(conn) -> None:
            ON paper_acceptance_governance_events(symbol, stage, created_at DESC, id DESC)"""
     )
     conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_threshold_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            threshold_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            strategy_type TEXT NOT NULL DEFAULT 'intraday',
+            profile_name TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'draft',
+            thresholds_payload TEXT NOT NULL DEFAULT '{}',
+            source_summary TEXT NOT NULL DEFAULT '{}',
+            approved_by TEXT NOT NULL DEFAULT '',
+            version_tag TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_threshold_symbol_created
+           ON paper_acceptance_threshold_profiles(symbol, stage, created_at DESC, id DESC)"""
+    )
+    conn.execute(
         """CREATE TABLE IF NOT EXISTS paper_acceptance_capital_stages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             stage_key TEXT NOT NULL UNIQUE,
@@ -638,6 +659,116 @@ def summarize_governance_events(conn, symbol: str | None, stage: str = "paper", 
         "version_mapping_ratio": round(len(version_tagged) / len(rows), 4) if rows else 1.0,
         "approved_change_ratio": round(len(approved_rows) / len(rows), 4) if rows else 1.0,
         "override_event_count": len(override_rows),
+    }
+
+
+def record_threshold_profile(
+    conn,
+    *,
+    symbol: str,
+    strategy_type: str = "intraday",
+    profile_name: str = "",
+    status: str = "draft",
+    thresholds: dict | None = None,
+    source_summary: dict | None = None,
+    approved_by: str = "",
+    version_tag: str = "",
+    note: str = "",
+    stage: str = "paper",
+) -> dict:
+    """Persist one threshold calibration profile."""
+
+    ensure_paper_acceptance_schema(conn)
+    payload = {
+        "threshold_key": f"paper-threshold-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "strategy_type": (strategy_type or "intraday").strip().lower(),
+        "profile_name": profile_name or "",
+        "status": status or "draft",
+        "thresholds": thresholds or {},
+        "source_summary": source_summary or {},
+        "approved_by": approved_by or "",
+        "version_tag": version_tag or "",
+        "note": note or "",
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_threshold_profiles
+           (threshold_key, symbol, stage, strategy_type, profile_name, status, thresholds_payload,
+            source_summary, approved_by, version_tag, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["threshold_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["strategy_type"],
+            payload["profile_name"],
+            payload["status"],
+            _json_dumps(payload["thresholds"]),
+            _json_dumps(payload["source_summary"]),
+            payload["approved_by"],
+            payload["version_tag"],
+            payload["note"],
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=symbol,
+        stage=stage,
+        change_type="threshold_profile_recorded",
+        target_type="threshold_profile",
+        target_key=payload["threshold_key"],
+        detail={
+            "status": payload["status"],
+            "strategy_type": payload["strategy_type"],
+            "profile_name": payload["profile_name"],
+            "version_tag": payload["version_tag"],
+        },
+    )
+    return payload
+
+
+def load_threshold_profiles(conn, symbol: str | None, stage: str = "paper", limit: int = 20) -> list[dict]:
+    """Load persisted threshold calibration profiles."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_threshold_profiles
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 200))),
+    ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        data = dict(row)
+        data["thresholds"] = _json_loads(data.get("thresholds_payload"), {})
+        data["source_summary"] = _json_loads(data.get("source_summary"), {})
+        out.append(data)
+    return out
+
+
+def summarize_threshold_profiles(conn, symbol: str | None, stage: str = "paper", limit: int = 20) -> dict:
+    """Summarize threshold calibration profiles for policy and workspace use."""
+
+    rows = load_threshold_profiles(conn, symbol, stage=stage, limit=limit)
+    latest = rows[0] if rows else None
+    approved = [row for row in rows if row.get("status") == "approved"]
+    return {
+        "profiles": rows,
+        "count": len(rows),
+        "approved_count": len(approved),
+        "latest": latest or {},
+        "latest_status": (latest or {}).get("status") or "missing",
+        "latest_profile_name": (latest or {}).get("profile_name") or "",
+        "latest_strategy_type": (latest or {}).get("strategy_type") or "",
+        "active_thresholds": (latest or {}).get("thresholds") or {},
+        "active_status": (latest or {}).get("status") or "missing",
+        "active_version_tag": (latest or {}).get("version_tag") or "",
+        "approved_by": (latest or {}).get("approved_by") or "",
     }
 
 
@@ -1924,6 +2055,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
     shadow_parity = summarize_shadow_parity_traces(conn, symbol=key, stage="paper", limit=200)
     shadow_rows = load_shadow_parity_traces(conn, key, stage="paper", limit=50)
     governance_summary = summarize_governance_events(conn, key, stage="paper", limit=200)
+    threshold_summary = summarize_threshold_profiles(conn, key, stage="paper", limit=20)
     telemetry = summarize_acceptance_telemetry(conn, symbol=key, stage="paper")
     live_telemetry = summarize_acceptance_telemetry(conn, symbol=key, stage="live")
     scenarios = summarize_scenario_evidence(conn, symbol=key, stage="paper")
@@ -2008,6 +2140,8 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "logs_avoid_secrets": None,
         "revocation_process": None,
         "thresholds_defined": False,
+        "threshold_profile_active": False,
+        "threshold_profile_approved": False,
         "capital_stage_count": 2 if live_summary.get("trade_count") else 1,
         "paper_trade_count": paper_summary.get("trade_count"),
         "live_trade_count": live_summary.get("trade_count"),
@@ -2038,6 +2172,10 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "governance_approved_change_ratio": governance_summary.get("approved_change_ratio"),
         "governance_override_event_count": governance_summary.get("override_event_count"),
         "parameters_frozen": governance_summary.get("parameter_change_count", 0) == 0 and governance_summary.get("freeze_violation_count", 0) == 0,
+        "policy_thresholds": threshold_summary.get("active_thresholds") or {},
+        "threshold_profile_active": bool(threshold_summary.get("count")),
+        "threshold_profile_approved": threshold_summary.get("active_status") == "approved",
+        "threshold_profile_version_tag": threshold_summary.get("active_version_tag"),
     }
     metrics.update({key: value for key, value in telemetry.get("metrics", {}).items() if value is not None})
     metrics.update({key: value for key, value in overrides["metrics"].items() if value is not None})
@@ -2134,6 +2272,7 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "shadow_parity_summary": shadow_parity,
         "shadow_parity_traces": shadow_rows,
         "governance_summary": governance_summary,
+        "threshold_summary": threshold_summary,
     }
 
 
@@ -2579,6 +2718,7 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
     reports = load_acceptance_reports(conn, symbol=key, limit=limit_reports)
     changes = load_acceptance_change_log(conn, key, stage=stage, limit=80)
     governance_rows = load_governance_events(conn, key, stage=stage, limit=50)
+    threshold_profiles = load_threshold_profiles(conn, key, stage=stage, limit=20)
     coverage = _build_coverage_summary(catalog)
     closure_summary = _build_closure_summary(
         report,
@@ -2619,6 +2759,8 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
         "shadow_parity_traces": context.get("shadow_parity_traces") or [],
         "governance_summary": context.get("governance_summary") or {},
         "governance_events": governance_rows,
+        "threshold_summary": context.get("threshold_summary") or {},
+        "threshold_profiles": threshold_profiles,
     }
 
 
@@ -2639,6 +2781,7 @@ __all__ = [
     "load_order_audit_rows",
     "load_capital_stages",
     "load_deviation_snapshots",
+    "load_threshold_profiles",
     "load_shadow_parity_traces",
     "load_reconciliation_runs",
     "load_runtime_metrics",
@@ -2650,11 +2793,13 @@ __all__ = [
     "record_capital_stage",
     "record_deviation_snapshot",
     "record_governance_event",
+    "record_threshold_profile",
     "record_shadow_parity_trace",
     "record_order_audit",
     "record_reconciliation_run",
     "record_runtime_metric",
     "refresh_acceptance_reports_for_symbols",
+    "summarize_threshold_profiles",
     "summarize_governance_events",
     "summarize_shadow_parity_traces",
     "run_acceptance_scenario",

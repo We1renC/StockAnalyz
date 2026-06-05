@@ -58,12 +58,14 @@ from paper_acceptance_store import (
     load_runtime_metrics,
     load_scenario_runs,
     load_shadow_parity_traces,
+    load_threshold_profiles,
     record_alert_delivery,
     record_acceptance_change,
     record_acceptance_event,
     record_capital_stage,
     record_deviation_snapshot,
     record_governance_event,
+    record_threshold_profile,
     record_shadow_parity_trace,
     record_order_audit,
     record_reconciliation_run,
@@ -72,6 +74,7 @@ from paper_acceptance_store import (
     run_acceptance_scenario,
     summarize_governance_events,
     summarize_shadow_parity_traces,
+    summarize_threshold_profiles,
     upsert_acceptance_review,
     upsert_acceptance_check,
     upsert_acceptance_context_overrides,
@@ -4957,6 +4960,19 @@ class PaperAcceptanceGovernanceEventCreate(BaseModel):
     stage: str = "paper"
 
 
+class PaperAcceptanceThresholdProfileCreate(BaseModel):
+    symbol: str
+    strategy_type: str = "intraday"
+    profile_name: str = ""
+    status: str = "draft"
+    thresholds: Optional[dict] = None
+    source_summary: Optional[dict] = None
+    approved_by: str = ""
+    version_tag: str = ""
+    note: str = ""
+    stage: str = "paper"
+
+
 def _json_dumps_compact(value, fallback):
     if value is None:
         value = fallback
@@ -5746,6 +5762,44 @@ def api_get_paper_acceptance_governance(symbol: str, stage: str = "paper", limit
         rows = load_governance_events(conn, symbol.strip().upper(), stage=stage, limit=limit)
         summary = summarize_governance_events(conn, symbol.strip().upper(), stage=stage, limit=limit)
         return sanitize_float_values({"rows": rows, "summary": summary, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+@app.get("/api/paper-acceptance/threshold-profiles")
+def api_get_paper_acceptance_threshold_profiles(symbol: str, stage: str = "paper", limit: int = 50):
+    if not symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        key = symbol.strip().upper()
+        rows = load_threshold_profiles(conn, key, stage=stage, limit=limit)
+        summary = summarize_threshold_profiles(conn, key, stage=stage, limit=limit)
+        return sanitize_float_values({"rows": rows, "summary": summary, "count": len(rows)})
+    finally:
+        conn.close()
+
+
+@app.post("/api/paper-acceptance/threshold-profiles")
+def api_record_paper_acceptance_threshold_profile(req: PaperAcceptanceThresholdProfileCreate):
+    if not req.symbol.strip():
+        raise HTTPException(400, "symbol is required")
+    conn = get_db()
+    try:
+        row = record_threshold_profile(
+            conn,
+            symbol=req.symbol.strip().upper(),
+            strategy_type=req.strategy_type,
+            profile_name=req.profile_name,
+            status=req.status,
+            thresholds=req.thresholds or {},
+            source_summary=req.source_summary or {},
+            approved_by=req.approved_by,
+            version_tag=req.version_tag,
+            note=req.note,
+            stage=req.stage,
+        )
+        return sanitize_float_values({"ok": True, "row": row})
     finally:
         conn.close()
 

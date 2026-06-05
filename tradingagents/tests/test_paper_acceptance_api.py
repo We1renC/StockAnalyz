@@ -17,6 +17,7 @@ from app import (
     PaperAcceptanceRuntimeMetricCreate,
     PaperAcceptanceScenarioRunRequest,
     PaperAcceptanceShadowParityCreate,
+    PaperAcceptanceThresholdProfileCreate,
     PaperAcceptanceWorkspaceUpdate,
     SMCJournalCreate,
 )
@@ -387,6 +388,37 @@ def test_api_governance_event_round_trip(tmp_path):
         assert rows["summary"]["freeze_violation_count"] == 1
         assert workspace["governance_summary"]["freeze_violation_count"] == 1
         assert workspace["policy"]["evidence"]["research_discipline"]["strategy_parameters_frozen"] is False
+    finally:
+        app.DB = original
+
+
+def test_api_threshold_profile_round_trip(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        payload = app.api_record_paper_acceptance_threshold_profile(
+            PaperAcceptanceThresholdProfileCreate(
+                symbol="ABAT",
+                strategy_type="intraday",
+                profile_name="q2-calibration",
+                status="approved",
+                thresholds={"min_trade_count": 78, "max_average_slippage_bps": 42.0},
+                source_summary={"window": "2026-04~2026-06", "sources": ["paper", "live"]},
+                approved_by="qa",
+                version_tag="thr-2026q2",
+                note="以最新 paper/live 偏差重估",
+            )
+        )
+
+        rows = app.api_get_paper_acceptance_threshold_profiles(symbol="ABAT")
+        promotion = app.api_get_paper_acceptance_promotion(symbol="ABAT")
+        workspace = app.api_get_paper_acceptance_workspace(symbol="ABAT")
+
+        assert payload["ok"] is True
+        assert rows["count"] == 1
+        assert rows["summary"]["active_thresholds"]["min_trade_count"] == 78
+        assert rows["summary"]["active_version_tag"] == "thr-2026q2"
+        assert promotion["policy"]["thresholds"]["max_average_slippage_bps"] == 42.0
+        assert workspace["threshold_profiles"][0]["profile_name"] == "q2-calibration"
     finally:
         app.DB = original
 

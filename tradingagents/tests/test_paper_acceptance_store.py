@@ -21,6 +21,7 @@ from paper_acceptance_store import (
     load_order_audit_rows,
     load_reconciliation_runs,
     load_runtime_metrics,
+    load_threshold_profiles,
     load_shadow_parity_traces,
     persist_acceptance_report,
     record_alert_delivery,
@@ -28,6 +29,7 @@ from paper_acceptance_store import (
     record_capital_stage,
     record_deviation_snapshot,
     record_governance_event,
+    record_threshold_profile,
     record_shadow_parity_trace,
     record_order_audit,
     record_reconciliation_run,
@@ -36,6 +38,7 @@ from paper_acceptance_store import (
     run_acceptance_scenario,
     summarize_governance_events,
     summarize_shadow_parity_traces,
+    summarize_threshold_profiles,
     upsert_acceptance_review,
     upsert_acceptance_check,
     upsert_acceptance_context_overrides,
@@ -609,6 +612,54 @@ def test_governance_events_feed_research_discipline_metrics():
     research_gate = context["policy"]["evidence"]["research_discipline"]
     assert research_gate["strategy_parameters_frozen"] is False
     assert research_gate["modifications_restart_stats"] is False
+
+
+def test_threshold_profiles_feed_policy_metrics_and_workspace():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+    ensure_paper_acceptance_schema(conn)
+
+    draft = record_threshold_profile(
+        conn,
+        symbol="ABAT",
+        strategy_type="intraday",
+        profile_name="baseline-calibration",
+        status="draft",
+        thresholds={"min_trade_count": 72, "max_average_slippage_bps": 45.0},
+        source_summary={"sample_window": "2026Q2"},
+        version_tag="thr-v1",
+        note="待 reviewer 確認",
+    )
+    approved = record_threshold_profile(
+        conn,
+        symbol="ABAT",
+        strategy_type="intraday",
+        profile_name="baseline-calibration",
+        status="approved",
+        thresholds={"min_trade_count": 80, "max_average_slippage_bps": 40.0},
+        source_summary={"sample_window": "2026Q2", "source": "paper-live"},
+        approved_by="qa",
+        version_tag="thr-v2",
+        note="正式校準",
+    )
+
+    rows = load_threshold_profiles(conn, "ABAT")
+    summary = summarize_threshold_profiles(conn, "ABAT")
+    context = build_smc_acceptance_context(conn, symbol="ABAT")
+    workspace = build_acceptance_workspace(conn, symbol="ABAT")
+
+    assert rows[0]["threshold_key"] == approved["threshold_key"]
+    assert rows[1]["threshold_key"] == draft["threshold_key"]
+    assert summary["count"] == 2
+    assert summary["approved_count"] == 1
+    assert summary["active_thresholds"]["min_trade_count"] == 80
+    assert summary["latest_status"] == "approved"
+    assert context["metrics"]["policy_thresholds"]["max_average_slippage_bps"] == 40.0
+    assert context["metrics"]["threshold_profile_active"] is True
+    assert context["metrics"]["threshold_profile_approved"] is True
+    assert context["metrics"]["threshold_profile_version_tag"] == "thr-v2"
+    assert workspace["threshold_summary"]["active_version_tag"] == "thr-v2"
+    assert workspace["threshold_profiles"][0]["approved_by"] == "qa"
 
 
 def test_workspace_auto_generates_stage_and_deviation_from_live_telemetry():

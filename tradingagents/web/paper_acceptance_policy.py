@@ -366,6 +366,9 @@ def build_acceptance_policy_snapshot(
         "capacity_threshold": capital_stage_count >= thresholds["min_capital_stage_count"],
     }
     derived_evidence["quantitative_thresholds"] = threshold_flags
+    if metrics.get("threshold_profile_active"):
+        derived_evidence["quantitative_thresholds"]["threshold_profile_active"] = True
+        derived_evidence["quantitative_thresholds"]["threshold_profile_approved"] = bool(metrics.get("threshold_profile_approved"))
 
     blockers: list[str] = []
     if not shared_architecture:
@@ -397,6 +400,8 @@ def build_acceptance_policy_snapshot(
         blockers.append("20 slippage_threshold_failed")
     if not threshold_flags["limit_fill_threshold"]:
         blockers.append("20 fill_rate_threshold_failed")
+    if metrics.get("threshold_profile_active") and not metrics.get("threshold_profile_approved"):
+        blockers.append("20 threshold_profile_unapproved")
     if any(bool(value) for value in prohibitions.values()):
         blockers.append("21 prohibition_flags_present")
     if review_payload and review_payload.get("review_status") == "blocked":
