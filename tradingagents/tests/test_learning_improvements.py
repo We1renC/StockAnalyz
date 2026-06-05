@@ -191,6 +191,68 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_time_decay_weights_decay_to_50pct_at_half_life():
+    """P3-21: trade at exactly 1 half-life gets weight = 0.5."""
+    from learning.time_decay import compute_decay_weights
+    from datetime import datetime, timezone, timedelta
+    now = datetime(2026, 6, 5, tzinfo=timezone.utc)
+    records = [
+        {"entry_time": now.isoformat()},                              # weight ≈ 1.0
+        {"entry_time": (now - timedelta(days=30)).isoformat()},       # weight ≈ 0.5
+        {"entry_time": (now - timedelta(days=60)).isoformat()},       # weight ≈ 0.25
+        {"entry_time": (now - timedelta(days=90)).isoformat()},       # weight ≈ 0.125
+    ]
+    ws = compute_decay_weights(records, half_life_days=30, now=now)
+    assert abs(ws[0] - 1.0) < 0.01
+    assert abs(ws[1] - 0.5) < 0.01
+    assert abs(ws[2] - 0.25) < 0.01
+    assert abs(ws[3] - 0.125) < 0.01
+
+
+def test_time_decay_safe_when_no_timestamp():
+    """Records without entry_time get neutral weight 1.0, not crash."""
+    from learning.time_decay import compute_decay_weights
+    ws = compute_decay_weights([{}, {"entry_time": "broken-iso"}], half_life_days=30)
+    assert ws == [1.0, 1.0]
+
+
+def test_weighted_expectancy_favours_recent_trades():
+    """A regime shift: old +R, recent -R → naive E[R] > 0 but weighted < naive."""
+    from learning.time_decay import weighted_expectancy
+    from datetime import datetime, timezone, timedelta
+    now = datetime(2026, 6, 5, tzinfo=timezone.utc)
+    records = [
+        # 30 old winners
+        *[{"entry_time": (now - timedelta(days=120)).isoformat(),
+           "r_multiple": 2.0, "outcome": "target"} for _ in range(30)],
+        # 10 recent losers
+        *[{"entry_time": (now - timedelta(hours=12)).isoformat(),
+           "r_multiple": -1.0, "outcome": "stop"} for _ in range(10)],
+    ]
+    out = weighted_expectancy(records, half_life_days=30, now=now)
+    # Naive: (30*2 + 10*-1) / 40 = 1.25
+    assert abs(out["naive_expectancy"] - 1.25) < 0.01
+    # Weighted: recent -R should drag below naive
+    assert out["weighted_expectancy"] < out["naive_expectancy"]
+    # ESS captures information shrinkage from skewed weights
+    assert out["effective_sample_size"] < out["n"]
+
+
+def test_split_active_vs_stale_buckets_by_threshold():
+    """Trade > 3.3 half-lives old → weight < 0.10 → stale."""
+    from learning.time_decay import split_active_vs_stale
+    from datetime import datetime, timezone, timedelta
+    now = datetime(2026, 6, 5, tzinfo=timezone.utc)
+    records = [
+        {"entry_time": now.isoformat()},
+        {"entry_time": (now - timedelta(days=30)).isoformat()},
+        {"entry_time": (now - timedelta(days=200)).isoformat()},   # very stale
+    ]
+    out = split_active_vs_stale(records, half_life_days=30, decay_threshold=0.10, now=now)
+    assert out["active_count"] == 2
+    assert out["stale_count"] == 1
+
+
 def test_adaptive_cooldown_doubles_after_loss_streak():
     """P2-16: 3 連敗 → cooldown ×2"""
     from smc_auto_workflow import _adaptive_cooldown_multiplier
