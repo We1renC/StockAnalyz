@@ -1,11 +1,17 @@
 """Tests for conservative paper execution simulation."""
 
 from paper_execution import (
+    ExecutionMarketSnapshot,
+    LiveDryRunExecutionAdapter,
     PaperAccountState,
     PaperOrderIntent,
     PaperRiskLimits,
+    ShadowExecutionAdapter,
+    SimulatedBookExecutionAdapter,
     check_order_risk,
+    execute_runtime_order,
     handle_unknown_order_state,
+    runtime_outcome_to_shadow_trace,
     simulate_limit_order,
     simulate_market_order,
 )
@@ -134,3 +140,82 @@ def test_unknown_order_state_never_allows_blind_resubmit():
     assert result["reconcile_required"] is True
     assert result["allow_resubmit"] is False
     assert result["reason"] == "query_by_client_order_id_required"
+
+
+def test_shared_runtime_contract_is_consistent_between_paper_and_shadow():
+    intent = PaperOrderIntent(
+        symbol="ABAT",
+        side="buy",
+        quantity=5.0,
+        order_type="market",
+        signal_price=10.0,
+        strategy_version="v1",
+        parameter_version="p1",
+        client_order_id="runtime-1",
+    )
+    snapshot = ExecutionMarketSnapshot(
+        current_price=10.0,
+        order_book={"asks": [{"price": 10.1, "size": 10.0}]},
+        fee_rate=0.001,
+        volatility_bps=5.0,
+    )
+    account = PaperAccountState(cash={"USD": 1_000.0})
+    limits = PaperRiskLimits(max_order_notional=1_000.0)
+
+    paper = execute_runtime_order(
+        intent,
+        account=account,
+        limits=limits,
+        snapshot=snapshot,
+        adapter=SimulatedBookExecutionAdapter(),
+    )
+    shadow = execute_runtime_order(
+        intent,
+        account=account,
+        limits=limits,
+        snapshot=snapshot,
+        adapter=ShadowExecutionAdapter(),
+    )
+
+    assert paper["contract_version"] == "shared_execution_runtime_v1"
+    assert shadow["contract_version"] == paper["contract_version"]
+    assert paper["approved"] is True and shadow["approved"] is True
+    assert paper["trace"]["live_signal_process"] is True
+    assert shadow["trace"]["live_signal_process"] is True
+    assert paper["trace"]["no_exchange_submission"] is False
+    assert shadow["trace"]["no_exchange_submission"] is True
+    assert paper["execution"]["avg_price"] == shadow["execution"]["avg_price"]
+
+
+def test_live_dry_run_adapter_keeps_same_runtime_contract_without_submitting():
+    intent = PaperOrderIntent(symbol="ABAT", side="buy", quantity=2.0, order_type="limit", price=10.2, signal_price=10.0)
+    runtime = execute_runtime_order(
+        intent,
+        account=PaperAccountState(cash={"USD": 1_000.0}),
+        limits=PaperRiskLimits(max_order_notional=1_000.0),
+        snapshot=ExecutionMarketSnapshot(current_price=10.0, order_book={"asks": [{"price": 10.1, "size": 10.0}]}),
+        adapter=LiveDryRunExecutionAdapter(),
+    )
+
+    assert runtime["runtime_stage"] == "live_dry_run"
+    assert runtime["trace"]["ready_for_exchange_submission"] is True
+    assert runtime["execution"]["reason"] == "ready_for_exchange_submission"
+    assert runtime["execution"]["filled_qty"] == 0.0
+
+
+def test_runtime_outcome_can_be_converted_to_shadow_trace_payload():
+    intent = PaperOrderIntent(symbol="ABAT", side="buy", quantity=1.0, order_type="market", signal_price=10.0)
+    runtime = execute_runtime_order(
+        intent,
+        account=PaperAccountState(cash={"USD": 1_000.0}),
+        limits=PaperRiskLimits(max_order_notional=500.0),
+        snapshot=ExecutionMarketSnapshot(current_price=10.0, order_book={"asks": [{"price": 10.1, "size": 5.0}]}),
+        adapter=ShadowExecutionAdapter(),
+    )
+    payload = runtime_outcome_to_shadow_trace(runtime)
+
+    assert payload["runtime_stage"] == "shadow"
+    assert payload["adapter_name"] == "shadow_book_adapter"
+    assert payload["market_data_source_shared"] is True
+    assert payload["no_exchange_submission"] is True
+    assert payload["likely_execution_price_recorded"] is True

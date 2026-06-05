@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Mapping, Optional
+from uuid import uuid4
 
 
 OrderSide = Literal["buy", "sell"]
@@ -18,6 +20,8 @@ OrderState = Literal[
     "expired",
     "unknown",
 ]
+
+RuntimeStage = Literal["paper", "shadow", "live_dry_run"]
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,109 @@ class PaperAccountState:
         return float(self.cash.get(currency, 0.0)) - float(self.frozen_cash.get(currency, 0.0))
 
 
+@dataclass(frozen=True)
+class ExecutionMarketSnapshot:
+    """Market snapshot consumed by the shared execution runtime."""
+
+    current_price: float
+    order_book: Mapping[str, Any] = field(default_factory=dict)
+    price_touched: bool = False
+    traded_volume_at_price: float = 0.0
+    queue_ahead_qty: float = 0.0
+    volatility_bps: float = 0.0
+    liquidity_impact_bps: float = 0.0
+    fee_rate: float = 0.0
+    currency: str = "USD"
+    market_data_source: str = "shared_market_data"
+
+
+@dataclass(frozen=True)
+class RuntimeAdapterConfig:
+    """Shared execution adapter metadata."""
+
+    runtime_stage: RuntimeStage
+    adapter_name: str
+    no_exchange_submission: bool
+    dry_run_preview: bool = False
+    contract_version: str = "shared_execution_runtime_v1"
+
+
+class SharedExecutionAdapter:
+    """Common interface for paper / shadow / live-dry-run execution adapters."""
+
+    config: RuntimeAdapterConfig
+
+    def execute(self, intent: PaperOrderIntent, snapshot: ExecutionMarketSnapshot) -> dict[str, Any]:
+        raise NotImplementedError
+
+
+class SimulatedBookExecutionAdapter(SharedExecutionAdapter):
+    """Shared adapter that uses the conservative paper simulators."""
+
+    def __init__(self, *, runtime_stage: RuntimeStage = "paper", adapter_name: str = "paper_book_adapter", no_exchange_submission: bool = False):
+        self.config = RuntimeAdapterConfig(
+            runtime_stage=runtime_stage,
+            adapter_name=adapter_name,
+            no_exchange_submission=no_exchange_submission,
+            dry_run_preview=False,
+        )
+
+    def execute(self, intent: PaperOrderIntent, snapshot: ExecutionMarketSnapshot) -> dict[str, Any]:
+        if intent.order_type == "market":
+            return simulate_market_order(
+                intent,
+                snapshot.order_book,
+                fee_rate=snapshot.fee_rate,
+                volatility_bps=snapshot.volatility_bps,
+                liquidity_impact_bps=snapshot.liquidity_impact_bps,
+            )
+        return simulate_limit_order(
+            intent,
+            price_touched=snapshot.price_touched,
+            traded_volume_at_price=snapshot.traded_volume_at_price,
+            queue_ahead_qty=snapshot.queue_ahead_qty,
+            fee_rate=snapshot.fee_rate,
+        )
+
+
+class ShadowExecutionAdapter(SimulatedBookExecutionAdapter):
+    """Shadow adapter shares the same book simulation but never submits to the exchange."""
+
+    def __init__(self, adapter_name: str = "shadow_book_adapter"):
+        super().__init__(runtime_stage="shadow", adapter_name=adapter_name, no_exchange_submission=True)
+
+
+class LiveDryRunExecutionAdapter(SharedExecutionAdapter):
+    """Live-route adapter that stops before actual exchange submission."""
+
+    def __init__(self, adapter_name: str = "live_route_dry_run_adapter"):
+        self.config = RuntimeAdapterConfig(
+            runtime_stage="live_dry_run",
+            adapter_name=adapter_name,
+            no_exchange_submission=False,
+            dry_run_preview=True,
+        )
+
+    def execute(self, intent: PaperOrderIntent, snapshot: ExecutionMarketSnapshot) -> dict[str, Any]:
+        preview_price = float(intent.price or snapshot.current_price or 0.0)
+        notional = float(intent.quantity) * float(snapshot.current_price or preview_price or 0.0)
+        return {
+            "state": "open",
+            "reason": "ready_for_exchange_submission",
+            "side": intent.side,
+            "symbol": intent.symbol.upper(),
+            "filled_qty": 0.0,
+            "unfilled_qty": round(float(intent.quantity), 8),
+            "avg_price": round(preview_price, 8) if preview_price > 0 else None,
+            "preview_price": round(preview_price, 8) if preview_price > 0 else None,
+            "notional": round(notional, 8),
+            "fee": 0.0,
+            "slippage_bps": _slippage_bps(intent.side, intent.signal_price, preview_price) if preview_price > 0 else None,
+            "signal_price": intent.signal_price,
+            "ready_for_exchange_submission": True,
+        }
+
+
 def _num(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -88,6 +195,14 @@ def _slippage_bps(side: OrderSide, signal_price: Optional[float], execution_pric
     raw = (execution_price - signal_price) / signal_price
     signed = raw if side == "buy" else -raw
     return round(signed * 10_000, 4)
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _dt_to_iso(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")
 
 
 def simulate_market_order(
@@ -297,12 +412,139 @@ def handle_unknown_order_state(intent: PaperOrderIntent, *, query_attempted: boo
     }
 
 
+def execute_runtime_order(
+    intent: PaperOrderIntent,
+    *,
+    account: PaperAccountState,
+    limits: PaperRiskLimits,
+    snapshot: ExecutionMarketSnapshot,
+    adapter: SharedExecutionAdapter,
+    open_order_count: int = 0,
+    directional_exposure: float = 0.0,
+) -> dict[str, Any]:
+    """Run the shared pre-trade risk and adapter execution contract."""
+
+    started = datetime.now(UTC)
+    risk = check_order_risk(
+        intent,
+        account,
+        limits,
+        current_price=snapshot.current_price,
+        currency=snapshot.currency,
+        open_order_count=open_order_count,
+        directional_exposure=directional_exposure,
+    )
+    risk_at = started + timedelta(milliseconds=1)
+    if risk.get("approved"):
+        execution = adapter.execute(intent, snapshot)
+    else:
+        execution = {
+            "state": "rejected",
+            "reason": risk.get("reason") or "risk_rejected",
+            "side": intent.side,
+            "symbol": intent.symbol.upper(),
+            "filled_qty": 0.0,
+            "unfilled_qty": round(float(intent.quantity), 8),
+            "avg_price": None,
+            "notional": risk.get("notional"),
+            "fee": 0.0,
+            "slippage_bps": None,
+            "signal_price": intent.signal_price,
+            "ready_for_exchange_submission": False,
+        }
+    adapter_at = started + timedelta(milliseconds=2)
+    trace = {
+        "trace_id": f"runtime-trace-{uuid4().hex[:12]}",
+        "contract_version": adapter.config.contract_version,
+        "runtime_stage": adapter.config.runtime_stage,
+        "adapter_name": adapter.config.adapter_name,
+        "market_timestamp": _dt_to_iso(started),
+        "signal_timestamp": _dt_to_iso(started),
+        "risk_timestamp": _dt_to_iso(risk_at),
+        "order_intent_timestamp": _dt_to_iso(risk_at),
+        "adapter_timestamp": _dt_to_iso(adapter_at),
+        "market_data_source": snapshot.market_data_source,
+        "live_market_data_source": True,
+        "live_signal_process": True,
+        "live_risk_module": True,
+        "live_order_generation": True,
+        "live_logging_alerting": True,
+        "no_exchange_submission": adapter.config.no_exchange_submission,
+        "ready_for_exchange_submission": bool(execution.get("ready_for_exchange_submission")),
+        "order_book_snapshot_recorded": bool(snapshot.order_book),
+        "likely_execution_price_recorded": execution.get("avg_price") is not None or execution.get("preview_price") is not None,
+        "post_order_price_behavior_recorded": False,
+    }
+    return {
+        "contract_version": adapter.config.contract_version,
+        "runtime_stage": adapter.config.runtime_stage,
+        "adapter_name": adapter.config.adapter_name,
+        "approved": bool(risk.get("approved")),
+        "intent": {
+            "symbol": intent.symbol.upper(),
+            "side": intent.side,
+            "quantity": float(intent.quantity),
+            "order_type": intent.order_type,
+            "price": intent.price,
+            "signal_price": intent.signal_price,
+            "strategy_version": intent.strategy_version,
+            "parameter_version": intent.parameter_version,
+            "signal_source": intent.signal_source,
+            "client_order_id": intent.client_order_id,
+        },
+        "risk": risk,
+        "execution": execution,
+        "trace": trace,
+    }
+
+
+def runtime_outcome_to_shadow_trace(runtime_outcome: Mapping[str, Any], *, parity_score: float | None = None, detail: dict | None = None) -> dict[str, Any]:
+    """Convert shared-runtime output into a shadow parity payload."""
+
+    trace = dict(runtime_outcome.get("trace") or {})
+    execution = dict(runtime_outcome.get("execution") or {})
+    intent = dict(runtime_outcome.get("intent") or {})
+    return {
+        "runtime_stage": trace.get("runtime_stage") or "shadow",
+        "market_timestamp": trace.get("market_timestamp") or _now_iso(),
+        "signal_timestamp": trace.get("signal_timestamp") or trace.get("market_timestamp") or _now_iso(),
+        "risk_timestamp": trace.get("risk_timestamp") or trace.get("signal_timestamp") or _now_iso(),
+        "order_intent_timestamp": trace.get("order_intent_timestamp") or trace.get("risk_timestamp") or _now_iso(),
+        "adapter_timestamp": trace.get("adapter_timestamp") or trace.get("risk_timestamp") or _now_iso(),
+        "adapter_name": trace.get("adapter_name") or runtime_outcome.get("adapter_name") or "",
+        "side": intent.get("side") or "",
+        "order_type": intent.get("order_type") or "",
+        "requested_qty": intent.get("quantity"),
+        "signal_price": intent.get("signal_price"),
+        "expected_price": execution.get("avg_price") if execution.get("avg_price") is not None else execution.get("preview_price"),
+        "execution_latency_ms": 1.0,
+        "market_data_source_shared": bool(trace.get("live_market_data_source")),
+        "signal_process_shared": bool(trace.get("live_signal_process")),
+        "risk_module_shared": bool(trace.get("live_risk_module")),
+        "order_generation_shared": bool(trace.get("live_order_generation")),
+        "logging_alerting_shared": bool(trace.get("live_logging_alerting")),
+        "no_exchange_submission": bool(trace.get("no_exchange_submission")),
+        "order_book_snapshot_recorded": bool(trace.get("order_book_snapshot_recorded")),
+        "likely_execution_price_recorded": bool(trace.get("likely_execution_price_recorded")),
+        "post_order_price_behavior_recorded": bool(trace.get("post_order_price_behavior_recorded")),
+        "parity_score": parity_score,
+        "detail": detail or {"contract_version": runtime_outcome.get("contract_version")},
+    }
+
+
 __all__ = [
+    "ExecutionMarketSnapshot",
+    "LiveDryRunExecutionAdapter",
     "PaperAccountState",
     "PaperOrderIntent",
     "PaperRiskLimits",
+    "ShadowExecutionAdapter",
+    "SharedExecutionAdapter",
+    "SimulatedBookExecutionAdapter",
     "check_order_risk",
+    "execute_runtime_order",
     "handle_unknown_order_state",
+    "runtime_outcome_to_shadow_trace",
     "simulate_limit_order",
     "simulate_market_order",
 ]

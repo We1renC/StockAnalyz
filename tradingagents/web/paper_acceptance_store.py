@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 from paper_acceptance import (
@@ -12,6 +13,31 @@ from paper_acceptance import (
     build_acceptance_report,
     render_acceptance_markdown,
 )
+from paper_acceptance_metrics import (
+    ensure_paper_acceptance_metrics_schema,
+    load_alert_deliveries,
+    load_order_audit_rows,
+    load_reconciliation_runs,
+    load_runtime_metrics,
+    load_stability_sessions,
+    load_virtual_account_snapshots,
+    record_alert_delivery,
+    record_order_audit,
+    record_reconciliation_run,
+    record_runtime_metric,
+    record_stability_session,
+    record_virtual_account_snapshot,
+    summarize_acceptance_telemetry,
+)
+from paper_acceptance_scenarios import (
+    ensure_paper_acceptance_scenario_schema,
+    load_scenario_runs,
+    run_acceptance_scenario,
+    scenario_catalog,
+    summarize_scenario_evidence,
+)
+from paper_acceptance_policy import build_acceptance_policy_snapshot
+from paper_acceptance_security import run_security_scan
 
 
 FRAMEWORK_CAPABILITY_CHECKS: dict[str, dict[str, bool]] = {
@@ -210,6 +236,230 @@ def ensure_paper_acceptance_schema(conn) -> None:
         """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_evidence_symbol_gate
            ON paper_acceptance_evidence(symbol, stage, gate_id, updated_at DESC)"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            review_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            run_key TEXT,
+            reviewer TEXT NOT NULL DEFAULT '',
+            review_status TEXT NOT NULL DEFAULT 'pending',
+            fixed_in_version TEXT NOT NULL DEFAULT '',
+            retest_required INTEGER NOT NULL DEFAULT 0,
+            can_promote_to_live INTEGER NOT NULL DEFAULT 0,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_reviews_symbol_updated
+           ON paper_acceptance_reviews(symbol, stage, updated_at DESC, id DESC)"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_change_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            change_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            change_type TEXT NOT NULL,
+            target_type TEXT NOT NULL,
+            target_key TEXT NOT NULL DEFAULT '',
+            detail TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_change_log_symbol_created
+           ON paper_acceptance_change_log(symbol, stage, created_at DESC, id DESC)"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_governance_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            governance_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            change_scope TEXT NOT NULL DEFAULT 'parameter',
+            change_class TEXT NOT NULL DEFAULT 'research',
+            version_tag TEXT NOT NULL DEFAULT '',
+            approved_by TEXT NOT NULL DEFAULT '',
+            requires_restart_stats INTEGER NOT NULL DEFAULT 0,
+            stats_restarted INTEGER NOT NULL DEFAULT 0,
+            inside_freeze_window INTEGER NOT NULL DEFAULT 0,
+            freeze_window_started_at TEXT,
+            freeze_window_ended_at TEXT,
+            event_timestamp TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            detail TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_governance_symbol_created
+           ON paper_acceptance_governance_events(symbol, stage, created_at DESC, id DESC)"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_threshold_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            threshold_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            strategy_type TEXT NOT NULL DEFAULT 'intraday',
+            profile_name TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'draft',
+            thresholds_payload TEXT NOT NULL DEFAULT '{}',
+            source_summary TEXT NOT NULL DEFAULT '{}',
+            approved_by TEXT NOT NULL DEFAULT '',
+            version_tag TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_threshold_symbol_created
+           ON paper_acceptance_threshold_profiles(symbol, stage, created_at DESC, id DESC)"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_promotion_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            from_stage_name TEXT NOT NULL DEFAULT '',
+            target_stage_name TEXT NOT NULL DEFAULT '',
+            decision TEXT NOT NULL DEFAULT 'conditional',
+            approved_by TEXT NOT NULL DEFAULT '',
+            review_status TEXT NOT NULL DEFAULT '',
+            threshold_profile_version_tag TEXT NOT NULL DEFAULT '',
+            blocker_snapshot TEXT NOT NULL DEFAULT '[]',
+            threshold_snapshot TEXT NOT NULL DEFAULT '{}',
+            rationale TEXT NOT NULL DEFAULT '[]',
+            required_actions TEXT NOT NULL DEFAULT '[]',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_promotion_symbol_created
+           ON paper_acceptance_promotion_decisions(symbol, stage, created_at DESC, id DESC)"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_venue_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            venue_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            venue_name TEXT NOT NULL DEFAULT '',
+            broker_name TEXT NOT NULL DEFAULT '',
+            market_type TEXT NOT NULL DEFAULT 'spot',
+            status TEXT NOT NULL DEFAULT 'draft',
+            maker_fee_bps REAL,
+            taker_fee_bps REAL,
+            transaction_tax_bps REAL,
+            min_notional REAL,
+            tick_size REAL,
+            lot_size REAL,
+            quantity_precision INTEGER,
+            price_precision INTEGER,
+            rate_limit_per_minute INTEGER,
+            rate_limit_burst INTEGER,
+            reject_taxonomy_payload TEXT NOT NULL DEFAULT '{}',
+            source_summary TEXT NOT NULL DEFAULT '{}',
+            approved_by TEXT NOT NULL DEFAULT '',
+            version_tag TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_venue_symbol_created
+           ON paper_acceptance_venue_profiles(symbol, stage, created_at DESC, id DESC)"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_capital_stages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            stage_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            stage_name TEXT NOT NULL,
+            capital_ratio REAL,
+            capital_range_label TEXT NOT NULL DEFAULT '',
+            trade_count INTEGER NOT NULL DEFAULT 0,
+            observation_days INTEGER NOT NULL DEFAULT 0,
+            slippage_bps REAL,
+            fill_rate REAL,
+            drawdown REAL,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_capital_stage_symbol_created
+           ON paper_acceptance_capital_stages(symbol, stage, created_at DESC, id DESC)"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_deviation_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            baseline_source TEXT NOT NULL DEFAULT 'backtest',
+            comparison_source TEXT NOT NULL DEFAULT 'paper',
+            win_rate_delta REAL,
+            fill_rate_delta REAL,
+            slippage_delta_bps REAL,
+            drawdown_delta REAL,
+            holding_time_delta_minutes REAL,
+            trade_frequency_delta REAL,
+            deviation_score REAL,
+            detail TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_deviation_symbol_created
+           ON paper_acceptance_deviation_snapshots(symbol, stage, created_at DESC, id DESC)"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS paper_acceptance_shadow_parity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            parity_key TEXT NOT NULL UNIQUE,
+            symbol TEXT NOT NULL,
+            stage TEXT NOT NULL DEFAULT 'paper',
+            runtime_stage TEXT NOT NULL DEFAULT 'shadow',
+            market_timestamp TEXT,
+            signal_timestamp TEXT,
+            risk_timestamp TEXT,
+            order_intent_timestamp TEXT,
+            adapter_timestamp TEXT,
+            adapter_name TEXT NOT NULL DEFAULT '',
+            side TEXT NOT NULL DEFAULT '',
+            order_type TEXT NOT NULL DEFAULT '',
+            requested_qty REAL,
+            signal_price REAL,
+            expected_price REAL,
+            execution_latency_ms REAL,
+            market_data_source_shared INTEGER NOT NULL DEFAULT 0,
+            signal_process_shared INTEGER NOT NULL DEFAULT 0,
+            risk_module_shared INTEGER NOT NULL DEFAULT 0,
+            order_generation_shared INTEGER NOT NULL DEFAULT 0,
+            logging_alerting_shared INTEGER NOT NULL DEFAULT 0,
+            no_exchange_submission INTEGER NOT NULL DEFAULT 1,
+            order_book_snapshot_recorded INTEGER NOT NULL DEFAULT 0,
+            likely_execution_price_recorded INTEGER NOT NULL DEFAULT 0,
+            post_order_price_behavior_recorded INTEGER NOT NULL DEFAULT 0,
+            parity_score REAL,
+            detail TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_paper_acceptance_shadow_parity_symbol_created
+           ON paper_acceptance_shadow_parity(symbol, stage, created_at DESC, id DESC)"""
+    )
+    ensure_paper_acceptance_metrics_schema(conn)
+    ensure_paper_acceptance_scenario_schema(conn)
     conn.commit()
 
 
@@ -245,7 +495,1041 @@ def persist_acceptance_report(conn, report: dict, markdown: str | None = None) -
         ),
     )
     conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=_symbol_key(strategy.get("symbol")),
+        stage=strategy.get("stage") or "paper",
+        change_type="report_generated",
+        target_type="report",
+        target_key=run_key,
+        detail={
+            "conclusion": summary.get("conclusion") or "failed_repeat_paper",
+            "blocking_issue_count": summary.get("blocking_issue_count") or 0,
+        },
+    )
     return run_key
+
+
+def record_acceptance_change(
+    conn,
+    *,
+    symbol: str,
+    stage: str = "paper",
+    change_type: str,
+    target_type: str,
+    target_key: str = "",
+    detail: dict | None = None,
+) -> dict:
+    """Persist a governance change trail for acceptance workspace operations."""
+
+    ensure_paper_acceptance_schema(conn)
+    payload = {
+        "change_key": f"paper-change-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "change_type": change_type,
+        "target_type": target_type,
+        "target_key": target_key or "",
+        "detail": detail or {},
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_change_log
+           (change_key, symbol, stage, change_type, target_type, target_key, detail, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["change_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["change_type"],
+            payload["target_type"],
+            payload["target_key"],
+            _json_dumps(payload["detail"]),
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    return payload
+
+
+def load_acceptance_change_log(conn, symbol: str | None, stage: str = "paper", limit: int = 100) -> list[dict]:
+    """Load recent acceptance workspace governance changes."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_change_log
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 1000))),
+    ).fetchall()
+    out = []
+    for row in rows:
+        data = dict(row)
+        data["detail"] = _json_loads(data.get("detail"), {})
+        out.append(data)
+    return out
+
+
+def record_governance_event(
+    conn,
+    *,
+    symbol: str,
+    change_scope: str = "parameter",
+    change_class: str = "research",
+    version_tag: str = "",
+    approved_by: str = "",
+    requires_restart_stats: bool = False,
+    stats_restarted: bool = False,
+    freeze_window_started_at: str | None = None,
+    freeze_window_ended_at: str | None = None,
+    event_timestamp: str | None = None,
+    reason: str = "",
+    detail: dict | None = None,
+    stage: str = "paper",
+) -> dict:
+    """Persist one research-governance or freeze-window event."""
+
+    ensure_paper_acceptance_schema(conn)
+    effective_at = event_timestamp or _now_iso()
+    event_ts = _parse_ts(effective_at)
+    freeze_start = _parse_ts(freeze_window_started_at)
+    freeze_end = _parse_ts(freeze_window_ended_at)
+    inside_freeze_window = False
+    if event_ts and freeze_start:
+        inside_freeze_window = event_ts >= freeze_start and (freeze_end is None or event_ts <= freeze_end)
+    payload = {
+        "governance_key": f"paper-governance-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "change_scope": (change_scope or "parameter").strip().lower(),
+        "change_class": (change_class or "research").strip().lower(),
+        "version_tag": version_tag or "",
+        "approved_by": approved_by or "",
+        "requires_restart_stats": bool(requires_restart_stats),
+        "stats_restarted": bool(stats_restarted),
+        "inside_freeze_window": bool(inside_freeze_window),
+        "freeze_window_started_at": freeze_window_started_at,
+        "freeze_window_ended_at": freeze_window_ended_at,
+        "event_timestamp": effective_at,
+        "reason": reason or "",
+        "detail": detail or {},
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_governance_events
+           (governance_key, symbol, stage, change_scope, change_class, version_tag, approved_by,
+            requires_restart_stats, stats_restarted, inside_freeze_window,
+            freeze_window_started_at, freeze_window_ended_at, event_timestamp,
+            reason, detail, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["governance_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["change_scope"],
+            payload["change_class"],
+            payload["version_tag"],
+            payload["approved_by"],
+            1 if payload["requires_restart_stats"] else 0,
+            1 if payload["stats_restarted"] else 0,
+            1 if payload["inside_freeze_window"] else 0,
+            payload["freeze_window_started_at"],
+            payload["freeze_window_ended_at"],
+            payload["event_timestamp"],
+            payload["reason"],
+            _json_dumps(payload["detail"]),
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=symbol,
+        stage=stage,
+        change_type="governance_event_recorded",
+        target_type="governance",
+        target_key=payload["governance_key"],
+        detail={
+            "change_scope": payload["change_scope"],
+            "change_class": payload["change_class"],
+            "inside_freeze_window": payload["inside_freeze_window"],
+            "version_tag": payload["version_tag"],
+        },
+    )
+    return payload
+
+
+def load_governance_events(conn, symbol: str | None, stage: str = "paper", limit: int = 100) -> list[dict]:
+    """Load recent governance events for one acceptance workspace."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_governance_events
+           WHERE symbol=? AND stage=?
+           ORDER BY event_timestamp DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 1000))),
+    ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        data = dict(row)
+        data["requires_restart_stats"] = bool(data.get("requires_restart_stats"))
+        data["stats_restarted"] = bool(data.get("stats_restarted"))
+        data["inside_freeze_window"] = bool(data.get("inside_freeze_window"))
+        data["detail"] = _json_loads(data.get("detail"), {})
+        out.append(data)
+    return out
+
+
+def summarize_governance_events(conn, symbol: str | None, stage: str = "paper", limit: int = 200) -> dict:
+    """Summarize governance event discipline for policy evaluation."""
+
+    rows = load_governance_events(conn, symbol, stage=stage, limit=limit)
+    by_scope: dict[str, int] = {}
+    by_class: dict[str, int] = {}
+    for row in rows:
+        scope = str(row.get("change_scope") or "unknown")
+        by_scope[scope] = by_scope.get(scope, 0) + 1
+        change_class = str(row.get("change_class") or "unknown")
+        by_class[change_class] = by_class.get(change_class, 0) + 1
+    freeze_violations = [
+        row for row in rows
+        if row.get("inside_freeze_window") and row.get("change_scope") in {"parameter", "logic", "risk"}
+    ]
+    restart_required_rows = [row for row in rows if row.get("requires_restart_stats")]
+    restart_completed = [row for row in restart_required_rows if row.get("stats_restarted")]
+    version_tagged = [row for row in rows if str(row.get("version_tag") or "").strip()]
+    approved_rows = [row for row in rows if str(row.get("approved_by") or "").strip()]
+    reasoned_rows = [row for row in rows if str(row.get("reason") or "").strip()]
+    override_rows = [row for row in rows if "override" in str(row.get("change_class") or "")]
+    return {
+        "rows": rows,
+        "total_changes": len(rows),
+        "by_scope": by_scope,
+        "by_class": by_class,
+        "parameter_change_count": by_scope.get("parameter", 0),
+        "risk_change_count": by_scope.get("risk", 0),
+        "logic_change_count": by_scope.get("logic", 0),
+        "freeze_violation_count": len(freeze_violations),
+        "restart_required_count": len(restart_required_rows),
+        "restart_completed_count": len(restart_completed),
+        "restart_stats_completion_ratio": round(len(restart_completed) / len(restart_required_rows), 4) if restart_required_rows else 1.0,
+        "reason_coverage_ratio": round(len(reasoned_rows) / len(rows), 4) if rows else 1.0,
+        "version_mapping_ratio": round(len(version_tagged) / len(rows), 4) if rows else 1.0,
+        "approved_change_ratio": round(len(approved_rows) / len(rows), 4) if rows else 1.0,
+        "override_event_count": len(override_rows),
+    }
+
+
+def record_threshold_profile(
+    conn,
+    *,
+    symbol: str,
+    strategy_type: str = "intraday",
+    profile_name: str = "",
+    status: str = "draft",
+    thresholds: dict | None = None,
+    source_summary: dict | None = None,
+    approved_by: str = "",
+    version_tag: str = "",
+    note: str = "",
+    stage: str = "paper",
+) -> dict:
+    """Persist one threshold calibration profile."""
+
+    ensure_paper_acceptance_schema(conn)
+    payload = {
+        "threshold_key": f"paper-threshold-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "strategy_type": (strategy_type or "intraday").strip().lower(),
+        "profile_name": profile_name or "",
+        "status": status or "draft",
+        "thresholds": thresholds or {},
+        "source_summary": source_summary or {},
+        "approved_by": approved_by or "",
+        "version_tag": version_tag or "",
+        "note": note or "",
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_threshold_profiles
+           (threshold_key, symbol, stage, strategy_type, profile_name, status, thresholds_payload,
+            source_summary, approved_by, version_tag, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["threshold_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["strategy_type"],
+            payload["profile_name"],
+            payload["status"],
+            _json_dumps(payload["thresholds"]),
+            _json_dumps(payload["source_summary"]),
+            payload["approved_by"],
+            payload["version_tag"],
+            payload["note"],
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=symbol,
+        stage=stage,
+        change_type="threshold_profile_recorded",
+        target_type="threshold_profile",
+        target_key=payload["threshold_key"],
+        detail={
+            "status": payload["status"],
+            "strategy_type": payload["strategy_type"],
+            "profile_name": payload["profile_name"],
+            "version_tag": payload["version_tag"],
+        },
+    )
+    return payload
+
+
+def load_threshold_profiles(conn, symbol: str | None, stage: str = "paper", limit: int = 20) -> list[dict]:
+    """Load persisted threshold calibration profiles."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_threshold_profiles
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 200))),
+    ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        data = dict(row)
+        data["thresholds"] = _json_loads(data.get("thresholds_payload"), {})
+        data["source_summary"] = _json_loads(data.get("source_summary"), {})
+        out.append(data)
+    return out
+
+
+def summarize_threshold_profiles(conn, symbol: str | None, stage: str = "paper", limit: int = 20) -> dict:
+    """Summarize threshold calibration profiles for policy and workspace use."""
+
+    rows = load_threshold_profiles(conn, symbol, stage=stage, limit=limit)
+    latest = rows[0] if rows else None
+    approved = [row for row in rows if row.get("status") == "approved"]
+    return {
+        "profiles": rows,
+        "count": len(rows),
+        "approved_count": len(approved),
+        "latest": latest or {},
+        "latest_status": (latest or {}).get("status") or "missing",
+        "latest_profile_name": (latest or {}).get("profile_name") or "",
+        "latest_strategy_type": (latest or {}).get("strategy_type") or "",
+        "active_thresholds": (latest or {}).get("thresholds") or {},
+        "active_status": (latest or {}).get("status") or "missing",
+        "active_version_tag": (latest or {}).get("version_tag") or "",
+        "approved_by": (latest or {}).get("approved_by") or "",
+    }
+
+
+def record_promotion_decision(
+    conn,
+    *,
+    symbol: str,
+    from_stage_name: str = "",
+    target_stage_name: str = "",
+    decision: str = "conditional",
+    approved_by: str = "",
+    review_status: str = "",
+    threshold_profile_version_tag: str = "",
+    blocker_snapshot: list | None = None,
+    threshold_snapshot: dict | None = None,
+    rationale: list | None = None,
+    required_actions: list | None = None,
+    note: str = "",
+    stage: str = "paper",
+) -> dict:
+    """Persist one promotion decision snapshot for audit and rollout governance."""
+
+    ensure_paper_acceptance_schema(conn)
+    payload = {
+        "decision_key": f"paper-promotion-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "from_stage_name": from_stage_name or "",
+        "target_stage_name": target_stage_name or "",
+        "decision": (decision or "conditional").strip().lower(),
+        "approved_by": approved_by or "",
+        "review_status": review_status or "",
+        "threshold_profile_version_tag": threshold_profile_version_tag or "",
+        "blocker_snapshot": blocker_snapshot or [],
+        "threshold_snapshot": threshold_snapshot or {},
+        "rationale": rationale or [],
+        "required_actions": required_actions or [],
+        "note": note or "",
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_promotion_decisions
+           (decision_key, symbol, stage, from_stage_name, target_stage_name, decision, approved_by,
+            review_status, threshold_profile_version_tag, blocker_snapshot, threshold_snapshot,
+            rationale, required_actions, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["decision_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["from_stage_name"],
+            payload["target_stage_name"],
+            payload["decision"],
+            payload["approved_by"],
+            payload["review_status"],
+            payload["threshold_profile_version_tag"],
+            _json_dumps(payload["blocker_snapshot"]),
+            _json_dumps(payload["threshold_snapshot"]),
+            _json_dumps(payload["rationale"]),
+            _json_dumps(payload["required_actions"]),
+            payload["note"],
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=symbol,
+        stage=stage,
+        change_type="promotion_decision_recorded",
+        target_type="promotion_decision",
+        target_key=payload["decision_key"],
+        detail={
+            "decision": payload["decision"],
+            "from_stage_name": payload["from_stage_name"],
+            "target_stage_name": payload["target_stage_name"],
+            "review_status": payload["review_status"],
+            "threshold_profile_version_tag": payload["threshold_profile_version_tag"],
+        },
+    )
+    return payload
+
+
+def load_promotion_decisions(conn, symbol: str | None, stage: str = "paper", limit: int = 20) -> list[dict]:
+    """Load persisted promotion decisions."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_promotion_decisions
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 200))),
+    ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        data = dict(row)
+        data["blocker_snapshot"] = _json_loads(data.get("blocker_snapshot"), [])
+        data["threshold_snapshot"] = _json_loads(data.get("threshold_snapshot"), {})
+        data["rationale"] = _json_loads(data.get("rationale"), [])
+        data["required_actions"] = _json_loads(data.get("required_actions"), [])
+        out.append(data)
+    return out
+
+
+def summarize_promotion_decisions(conn, symbol: str | None, stage: str = "paper", limit: int = 20) -> dict:
+    """Summarize promotion decisions for workspace and closure use."""
+
+    rows = load_promotion_decisions(conn, symbol, stage=stage, limit=limit)
+    latest = rows[0] if rows else None
+    decision_counts: dict[str, int] = {}
+    for row in rows:
+        key = str(row.get("decision") or "unknown")
+        decision_counts[key] = decision_counts.get(key, 0) + 1
+    return {
+        "rows": rows,
+        "count": len(rows),
+        "latest": latest or {},
+        "latest_decision": (latest or {}).get("decision") or "missing",
+        "latest_target_stage_name": (latest or {}).get("target_stage_name") or "",
+        "latest_review_status": (latest or {}).get("review_status") or "",
+        "decision_counts": decision_counts,
+    }
+
+
+def record_venue_profile(
+    conn,
+    *,
+    symbol: str,
+    venue_name: str,
+    broker_name: str = "",
+    market_type: str = "spot",
+    status: str = "draft",
+    maker_fee_bps: float | None = None,
+    taker_fee_bps: float | None = None,
+    transaction_tax_bps: float | None = None,
+    min_notional: float | None = None,
+    tick_size: float | None = None,
+    lot_size: float | None = None,
+    quantity_precision: int | None = None,
+    price_precision: int | None = None,
+    rate_limit_per_minute: int | None = None,
+    rate_limit_burst: int | None = None,
+    reject_taxonomy: dict | None = None,
+    source_summary: dict | None = None,
+    approved_by: str = "",
+    version_tag: str = "",
+    note: str = "",
+    stage: str = "paper",
+) -> dict:
+    """Persist one venue/broker execution profile for venue-specific acceptance checks."""
+
+    ensure_paper_acceptance_schema(conn)
+    payload = {
+        "venue_key": f"paper-venue-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "venue_name": venue_name or "",
+        "broker_name": broker_name or "",
+        "market_type": market_type or "spot",
+        "status": (status or "draft").strip().lower(),
+        "maker_fee_bps": _safe_float(maker_fee_bps),
+        "taker_fee_bps": _safe_float(taker_fee_bps),
+        "transaction_tax_bps": _safe_float(transaction_tax_bps),
+        "min_notional": _safe_float(min_notional),
+        "tick_size": _safe_float(tick_size),
+        "lot_size": _safe_float(lot_size),
+        "quantity_precision": int(quantity_precision) if quantity_precision is not None else None,
+        "price_precision": int(price_precision) if price_precision is not None else None,
+        "rate_limit_per_minute": int(rate_limit_per_minute) if rate_limit_per_minute is not None else None,
+        "rate_limit_burst": int(rate_limit_burst) if rate_limit_burst is not None else None,
+        "reject_taxonomy": reject_taxonomy or {},
+        "source_summary": source_summary or {},
+        "approved_by": approved_by or "",
+        "version_tag": version_tag or "",
+        "note": note or "",
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_venue_profiles
+           (venue_key, symbol, stage, venue_name, broker_name, market_type, status,
+            maker_fee_bps, taker_fee_bps, transaction_tax_bps, min_notional, tick_size,
+            lot_size, quantity_precision, price_precision, rate_limit_per_minute,
+            rate_limit_burst, reject_taxonomy_payload, source_summary, approved_by,
+            version_tag, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["venue_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["venue_name"],
+            payload["broker_name"],
+            payload["market_type"],
+            payload["status"],
+            payload["maker_fee_bps"],
+            payload["taker_fee_bps"],
+            payload["transaction_tax_bps"],
+            payload["min_notional"],
+            payload["tick_size"],
+            payload["lot_size"],
+            payload["quantity_precision"],
+            payload["price_precision"],
+            payload["rate_limit_per_minute"],
+            payload["rate_limit_burst"],
+            _json_dumps(payload["reject_taxonomy"]),
+            _json_dumps(payload["source_summary"]),
+            payload["approved_by"],
+            payload["version_tag"],
+            payload["note"],
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=payload["symbol"],
+        stage=payload["stage"],
+        change_type="venue_profile_recorded",
+        target_type="venue_profile",
+        target_key=payload["version_tag"] or payload["venue_name"],
+        detail={
+            "venue_name": payload["venue_name"],
+            "broker_name": payload["broker_name"],
+            "status": payload["status"],
+            "market_type": payload["market_type"],
+        },
+    )
+    return payload
+
+
+def load_venue_profiles(conn, symbol: str | None, stage: str = "paper", limit: int = 20) -> list[dict]:
+    """Load persisted venue/broker execution profiles."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_venue_profiles
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 200))),
+    ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        data = dict(row)
+        data["reject_taxonomy"] = _json_loads(data.get("reject_taxonomy_payload"), {})
+        data["source_summary"] = _json_loads(data.get("source_summary"), {})
+        out.append(data)
+    return out
+
+
+def summarize_venue_profiles(conn, symbol: str | None, stage: str = "paper", limit: int = 20) -> dict:
+    """Summarize latest active venue rules for acceptance evidence and UI."""
+
+    rows = load_venue_profiles(conn, symbol, stage=stage, limit=limit)
+    latest = rows[0] if rows else None
+    approved = [row for row in rows if row.get("status") == "approved"]
+    latest_reject_taxonomy = (latest or {}).get("reject_taxonomy") or {}
+    reject_category_count = sum(1 for value in latest_reject_taxonomy.values() if value)
+    return {
+        "profiles": rows,
+        "count": len(rows),
+        "approved_count": len(approved),
+        "latest": latest or {},
+        "latest_status": (latest or {}).get("status") or "missing",
+        "active_version_tag": (latest or {}).get("version_tag") or "",
+        "venue_name": (latest or {}).get("venue_name") or "",
+        "broker_name": (latest or {}).get("broker_name") or "",
+        "market_type": (latest or {}).get("market_type") or "",
+        "maker_fee_bps": _safe_float((latest or {}).get("maker_fee_bps")),
+        "taker_fee_bps": _safe_float((latest or {}).get("taker_fee_bps")),
+        "transaction_tax_bps": _safe_float((latest or {}).get("transaction_tax_bps")),
+        "min_notional": _safe_float((latest or {}).get("min_notional")),
+        "tick_size": _safe_float((latest or {}).get("tick_size")),
+        "lot_size": _safe_float((latest or {}).get("lot_size")),
+        "quantity_precision": (latest or {}).get("quantity_precision"),
+        "price_precision": (latest or {}).get("price_precision"),
+        "rate_limit_per_minute": (latest or {}).get("rate_limit_per_minute"),
+        "rate_limit_burst": (latest or {}).get("rate_limit_burst"),
+        "approved_by": (latest or {}).get("approved_by") or "",
+        "source_summary": (latest or {}).get("source_summary") or {},
+        "reject_taxonomy": latest_reject_taxonomy,
+        "reject_category_count": reject_category_count,
+        "pair_fee_differences_considered": any(
+            _safe_float((latest or {}).get(key)) is not None
+            for key in ("maker_fee_bps", "taker_fee_bps", "transaction_tax_bps")
+        ),
+        "precision_rules_enforced": (
+            (latest or {}).get("quantity_precision") is not None
+            and (latest or {}).get("price_precision") is not None
+        ),
+        "minimum_notional_enforced": _safe_float((latest or {}).get("min_notional")) is not None,
+        "api_rate_limit_rules_defined": (latest or {}).get("rate_limit_per_minute") is not None,
+    }
+
+
+def record_capital_stage(
+    conn,
+    *,
+    symbol: str,
+    stage_name: str,
+    capital_ratio: float | None = None,
+    capital_range_label: str = "",
+    trade_count: int = 0,
+    observation_days: int = 0,
+    slippage_bps: float | None = None,
+    fill_rate: float | None = None,
+    drawdown: float | None = None,
+    note: str = "",
+    stage: str = "paper",
+) -> dict:
+    """Persist a staged capital exposure evidence snapshot."""
+
+    ensure_paper_acceptance_schema(conn)
+    payload = {
+        "stage_key": f"paper-capacity-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "stage_name": stage_name,
+        "capital_ratio": _safe_float(capital_ratio),
+        "capital_range_label": capital_range_label or "",
+        "trade_count": int(trade_count or 0),
+        "observation_days": int(observation_days or 0),
+        "slippage_bps": _safe_float(slippage_bps),
+        "fill_rate": _safe_float(fill_rate),
+        "drawdown": _safe_float(drawdown),
+        "note": note or "",
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_capital_stages
+           (stage_key, symbol, stage, stage_name, capital_ratio, capital_range_label,
+            trade_count, observation_days, slippage_bps, fill_rate, drawdown, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["stage_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["stage_name"],
+            payload["capital_ratio"],
+            payload["capital_range_label"],
+            payload["trade_count"],
+            payload["observation_days"],
+            payload["slippage_bps"],
+            payload["fill_rate"],
+            payload["drawdown"],
+            payload["note"],
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=payload["symbol"],
+        stage=payload["stage"],
+        change_type="capital_stage_recorded",
+        target_type="capital_stage",
+        target_key=payload["stage_name"],
+        detail={"capital_ratio": payload["capital_ratio"], "trade_count": payload["trade_count"]},
+    )
+    return payload
+
+
+def load_capital_stages(conn, symbol: str | None, stage: str = "paper", limit: int = 50) -> list[dict]:
+    """Load persisted capital stage evidence snapshots."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_capital_stages
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 500))),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def record_deviation_snapshot(
+    conn,
+    *,
+    symbol: str,
+    baseline_source: str,
+    comparison_source: str,
+    win_rate_delta: float | None = None,
+    fill_rate_delta: float | None = None,
+    slippage_delta_bps: float | None = None,
+    drawdown_delta: float | None = None,
+    holding_time_delta_minutes: float | None = None,
+    trade_frequency_delta: float | None = None,
+    deviation_score: float | None = None,
+    detail: dict | None = None,
+    stage: str = "paper",
+) -> dict:
+    """Persist a cross-stage deviation snapshot for paper/live comparison."""
+
+    ensure_paper_acceptance_schema(conn)
+    payload = {
+        "snapshot_key": f"paper-deviation-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "baseline_source": baseline_source,
+        "comparison_source": comparison_source,
+        "win_rate_delta": _safe_float(win_rate_delta),
+        "fill_rate_delta": _safe_float(fill_rate_delta),
+        "slippage_delta_bps": _safe_float(slippage_delta_bps),
+        "drawdown_delta": _safe_float(drawdown_delta),
+        "holding_time_delta_minutes": _safe_float(holding_time_delta_minutes),
+        "trade_frequency_delta": _safe_float(trade_frequency_delta),
+        "deviation_score": _safe_float(deviation_score),
+        "detail": detail or {},
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_deviation_snapshots
+           (snapshot_key, symbol, stage, baseline_source, comparison_source,
+            win_rate_delta, fill_rate_delta, slippage_delta_bps, drawdown_delta,
+            holding_time_delta_minutes, trade_frequency_delta, deviation_score,
+            detail, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["snapshot_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["baseline_source"],
+            payload["comparison_source"],
+            payload["win_rate_delta"],
+            payload["fill_rate_delta"],
+            payload["slippage_delta_bps"],
+            payload["drawdown_delta"],
+            payload["holding_time_delta_minutes"],
+            payload["trade_frequency_delta"],
+            payload["deviation_score"],
+            _json_dumps(payload["detail"]),
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=payload["symbol"],
+        stage=payload["stage"],
+        change_type="deviation_snapshot_recorded",
+        target_type="deviation_snapshot",
+        target_key=f"{baseline_source}->{comparison_source}",
+        detail={"deviation_score": payload["deviation_score"]},
+    )
+    return payload
+
+
+def load_deviation_snapshots(conn, symbol: str | None, stage: str = "paper", limit: int = 50) -> list[dict]:
+    """Load persisted paper/live deviation snapshots."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_deviation_snapshots
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 500))),
+    ).fetchall()
+    out = []
+    for row in rows:
+        data = dict(row)
+        data["detail"] = _json_loads(data.get("detail"), {})
+        out.append(data)
+    return out
+
+
+def record_shadow_parity_trace(
+    conn,
+    *,
+    symbol: str,
+    runtime_stage: str = "shadow",
+    market_timestamp: str | None = None,
+    signal_timestamp: str | None = None,
+    risk_timestamp: str | None = None,
+    order_intent_timestamp: str | None = None,
+    adapter_timestamp: str | None = None,
+    adapter_name: str = "",
+    side: str = "",
+    order_type: str = "",
+    requested_qty: float | None = None,
+    signal_price: float | None = None,
+    expected_price: float | None = None,
+    execution_latency_ms: float | None = None,
+    market_data_source_shared: bool = False,
+    signal_process_shared: bool = False,
+    risk_module_shared: bool = False,
+    order_generation_shared: bool = False,
+    logging_alerting_shared: bool = False,
+    no_exchange_submission: bool = True,
+    order_book_snapshot_recorded: bool = False,
+    likely_execution_price_recorded: bool = False,
+    post_order_price_behavior_recorded: bool = False,
+    parity_score: float | None = None,
+    detail: dict | None = None,
+    stage: str = "paper",
+) -> dict:
+    """Persist one shadow/live parity trace for architecture equivalence checks."""
+
+    ensure_paper_acceptance_schema(conn)
+    bool_flags = [
+        bool(market_data_source_shared),
+        bool(signal_process_shared),
+        bool(risk_module_shared),
+        bool(order_generation_shared),
+        bool(logging_alerting_shared),
+        bool(no_exchange_submission),
+        bool(order_intent_timestamp and adapter_timestamp),
+        bool(order_book_snapshot_recorded),
+        bool(likely_execution_price_recorded),
+        bool(post_order_price_behavior_recorded),
+    ]
+    derived_score = round(sum(1.0 for item in bool_flags if item) / len(bool_flags), 4)
+    payload = {
+        "parity_key": f"paper-shadow-{uuid4().hex[:12]}",
+        "symbol": _symbol_key(symbol),
+        "stage": stage,
+        "runtime_stage": runtime_stage or "shadow",
+        "market_timestamp": market_timestamp,
+        "signal_timestamp": signal_timestamp,
+        "risk_timestamp": risk_timestamp,
+        "order_intent_timestamp": order_intent_timestamp,
+        "adapter_timestamp": adapter_timestamp,
+        "adapter_name": adapter_name or "",
+        "side": side or "",
+        "order_type": order_type or "",
+        "requested_qty": _safe_float(requested_qty),
+        "signal_price": _safe_float(signal_price),
+        "expected_price": _safe_float(expected_price),
+        "execution_latency_ms": _safe_float(execution_latency_ms),
+        "market_data_source_shared": bool(market_data_source_shared),
+        "signal_process_shared": bool(signal_process_shared),
+        "risk_module_shared": bool(risk_module_shared),
+        "order_generation_shared": bool(order_generation_shared),
+        "logging_alerting_shared": bool(logging_alerting_shared),
+        "no_exchange_submission": bool(no_exchange_submission),
+        "order_book_snapshot_recorded": bool(order_book_snapshot_recorded),
+        "likely_execution_price_recorded": bool(likely_execution_price_recorded),
+        "post_order_price_behavior_recorded": bool(post_order_price_behavior_recorded),
+        "parity_score": _safe_float(parity_score, derived_score),
+        "detail": detail or {},
+        "created_at": _now_iso(),
+    }
+    conn.execute(
+        """INSERT INTO paper_acceptance_shadow_parity
+           (parity_key, symbol, stage, runtime_stage, market_timestamp, signal_timestamp,
+            risk_timestamp, order_intent_timestamp, adapter_timestamp, adapter_name, side,
+            order_type, requested_qty, signal_price, expected_price, execution_latency_ms,
+            market_data_source_shared, signal_process_shared, risk_module_shared,
+            order_generation_shared, logging_alerting_shared, no_exchange_submission,
+            order_book_snapshot_recorded, likely_execution_price_recorded,
+            post_order_price_behavior_recorded, parity_score, detail, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            payload["parity_key"],
+            payload["symbol"],
+            payload["stage"],
+            payload["runtime_stage"],
+            payload["market_timestamp"],
+            payload["signal_timestamp"],
+            payload["risk_timestamp"],
+            payload["order_intent_timestamp"],
+            payload["adapter_timestamp"],
+            payload["adapter_name"],
+            payload["side"],
+            payload["order_type"],
+            payload["requested_qty"],
+            payload["signal_price"],
+            payload["expected_price"],
+            payload["execution_latency_ms"],
+            1 if payload["market_data_source_shared"] else 0,
+            1 if payload["signal_process_shared"] else 0,
+            1 if payload["risk_module_shared"] else 0,
+            1 if payload["order_generation_shared"] else 0,
+            1 if payload["logging_alerting_shared"] else 0,
+            1 if payload["no_exchange_submission"] else 0,
+            1 if payload["order_book_snapshot_recorded"] else 0,
+            1 if payload["likely_execution_price_recorded"] else 0,
+            1 if payload["post_order_price_behavior_recorded"] else 0,
+            payload["parity_score"],
+            _json_dumps(payload["detail"]),
+            payload["created_at"],
+        ),
+    )
+    conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=payload["symbol"],
+        stage=payload["stage"],
+        change_type="shadow_parity_recorded",
+        target_type="shadow_parity",
+        target_key=payload["runtime_stage"],
+        detail={"parity_score": payload["parity_score"], "adapter_name": payload["adapter_name"]},
+    )
+    return payload
+
+
+def load_shadow_parity_traces(conn, symbol: str | None, stage: str = "paper", limit: int = 100) -> list[dict]:
+    """Load persisted shadow/live parity traces."""
+
+    ensure_paper_acceptance_schema(conn)
+    rows = conn.execute(
+        """SELECT * FROM paper_acceptance_shadow_parity
+           WHERE symbol=? AND stage=?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?""",
+        (_symbol_key(symbol), stage, max(1, min(int(limit), 1000))),
+    ).fetchall()
+    out = []
+    for row in rows:
+        data = dict(row)
+        data["detail"] = _json_loads(data.get("detail"), {})
+        for key in (
+            "market_data_source_shared",
+            "signal_process_shared",
+            "risk_module_shared",
+            "order_generation_shared",
+            "logging_alerting_shared",
+            "no_exchange_submission",
+            "order_book_snapshot_recorded",
+            "likely_execution_price_recorded",
+            "post_order_price_behavior_recorded",
+        ):
+            data[key] = bool(data.get(key))
+        out.append(data)
+    return out
+
+
+def summarize_shadow_parity_traces(conn, symbol: str | None, stage: str = "paper", limit: int = 100) -> dict:
+    """Summarize shadow parity traces into ratios usable by gates and policy."""
+
+    rows = load_shadow_parity_traces(conn, symbol, stage=stage, limit=limit)
+    if not rows:
+        return {
+            "trace_count": 0,
+            "runtime_stages": [],
+            "shared_module_ratio": None,
+            "market_data_shared_ratio": None,
+            "signal_process_shared_ratio": None,
+            "risk_module_shared_ratio": None,
+            "order_generation_shared_ratio": None,
+            "logging_alerting_shared_ratio": None,
+            "no_exchange_submission_ratio": None,
+            "order_book_snapshot_ratio": None,
+            "likely_execution_price_ratio": None,
+            "post_order_price_behavior_ratio": None,
+            "avg_parity_score": None,
+            "avg_execution_latency_ms": None,
+            "avg_intent_to_adapter_ms": None,
+        }
+
+    def _ratio(key: str) -> float:
+        return round(sum(1 for row in rows if row.get(key)) / len(rows), 4)
+
+    def _avg(values: list[float]) -> float | None:
+        return round(sum(values) / len(values), 4) if values else None
+
+    parity_scores = [float(row["parity_score"]) for row in rows if _safe_float(row.get("parity_score")) is not None]
+    execution_latencies = [float(row["execution_latency_ms"]) for row in rows if _safe_float(row.get("execution_latency_ms")) is not None]
+    intent_to_adapter: list[float] = []
+    for row in rows:
+        start = _parse_ts(row.get("order_intent_timestamp"))
+        end = _parse_ts(row.get("adapter_timestamp"))
+        if start and end and end >= start:
+            intent_to_adapter.append((end - start).total_seconds() * 1000)
+    shared_keys = (
+        "market_data_source_shared",
+        "signal_process_shared",
+        "risk_module_shared",
+        "order_generation_shared",
+        "logging_alerting_shared",
+    )
+    shared_module_ratio = round(
+        sum(_ratio(key) for key in shared_keys if rows) / len(shared_keys),
+        4,
+    )
+    return {
+        "trace_count": len(rows),
+        "runtime_stages": sorted({str(row.get("runtime_stage") or "").strip() for row in rows if row.get("runtime_stage")}),
+        "shared_module_ratio": shared_module_ratio,
+        "market_data_shared_ratio": _ratio("market_data_source_shared"),
+        "signal_process_shared_ratio": _ratio("signal_process_shared"),
+        "risk_module_shared_ratio": _ratio("risk_module_shared"),
+        "order_generation_shared_ratio": _ratio("order_generation_shared"),
+        "logging_alerting_shared_ratio": _ratio("logging_alerting_shared"),
+        "no_exchange_submission_ratio": _ratio("no_exchange_submission"),
+        "order_book_snapshot_ratio": _ratio("order_book_snapshot_recorded"),
+        "likely_execution_price_ratio": _ratio("likely_execution_price_recorded"),
+        "post_order_price_behavior_ratio": _ratio("post_order_price_behavior_recorded"),
+        "avg_parity_score": _avg(parity_scores),
+        "avg_execution_latency_ms": _avg(execution_latencies),
+        "avg_intent_to_adapter_ms": _avg(intent_to_adapter),
+    }
+
+
+def _same_numeric(a, b, *, precision: int = 6) -> bool:
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    return round(float(a), precision) == round(float(b), precision)
 
 
 def _run_row_to_dict(row) -> dict:
@@ -273,6 +1557,103 @@ def load_acceptance_reports(conn, symbol: str | None = None, limit: int = 50) ->
         params + [max(1, min(int(limit), 500))],
     ).fetchall()
     return [_run_row_to_dict(row) for row in rows]
+
+
+def load_acceptance_review(conn, symbol: str | None, stage: str = "paper") -> dict:
+    """Load the latest governance review metadata for one acceptance workspace."""
+
+    ensure_paper_acceptance_schema(conn)
+    row = conn.execute(
+        """SELECT * FROM paper_acceptance_reviews
+           WHERE symbol=? AND stage=?
+           ORDER BY updated_at DESC, id DESC
+           LIMIT 1""",
+        (_symbol_key(symbol), stage),
+    ).fetchone()
+    if not row:
+        return {
+            "symbol": _symbol_key(symbol),
+            "stage": stage,
+            "reviewer": "",
+            "review_status": "pending",
+            "fixed_in_version": "",
+            "retest_required": False,
+            "can_promote_to_live": False,
+            "note": "",
+            "run_key": None,
+            "created_at": None,
+            "updated_at": None,
+        }
+    return {
+        "symbol": row["symbol"],
+        "stage": row["stage"],
+        "reviewer": row["reviewer"],
+        "review_status": row["review_status"],
+        "fixed_in_version": row["fixed_in_version"],
+        "retest_required": bool(row["retest_required"]),
+        "can_promote_to_live": bool(row["can_promote_to_live"]),
+        "note": row["note"],
+        "run_key": row["run_key"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def upsert_acceptance_review(
+    conn,
+    *,
+    symbol: str,
+    stage: str = "paper",
+    reviewer: str = "",
+    review_status: str = "pending",
+    fixed_in_version: str = "",
+    retest_required: bool = False,
+    can_promote_to_live: bool = False,
+    note: str = "",
+    run_key: str | None = None,
+) -> dict:
+    """Persist governance metadata without overwriting review history."""
+
+    ensure_paper_acceptance_schema(conn)
+    now = _now_iso()
+    review_key = f"paper-review-{uuid4().hex[:12]}"
+    conn.execute(
+        """INSERT INTO paper_acceptance_reviews
+           (review_key, symbol, stage, run_key, reviewer, review_status, fixed_in_version,
+            retest_required, can_promote_to_live, note, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            review_key,
+            _symbol_key(symbol),
+            stage,
+            run_key,
+            reviewer or "",
+            review_status or "pending",
+            fixed_in_version or "",
+            1 if retest_required else 0,
+            1 if can_promote_to_live else 0,
+            note or "",
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=symbol,
+        stage=stage,
+        change_type="review_updated",
+        target_type="review",
+        target_key=run_key or "",
+        detail={
+            "reviewer": reviewer or "",
+            "review_status": review_status or "pending",
+            "fixed_in_version": fixed_in_version or "",
+            "retest_required": bool(retest_required),
+            "can_promote_to_live": bool(can_promote_to_live),
+        },
+    )
+    return load_acceptance_review(conn, symbol, stage=stage)
 
 
 def record_acceptance_event(
@@ -398,6 +1779,19 @@ def upsert_acceptance_context_overrides(
         ),
     )
     conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=key,
+        stage=stage,
+        change_type="workspace_override_updated",
+        target_type="workspace",
+        target_key=key,
+        detail={
+            "strategy_keys": sorted(strategy_payload.keys()),
+            "metrics_keys": sorted(metrics_payload.keys()),
+            "prohibitions_keys": sorted(prohibitions_payload.keys()),
+        },
+    )
     return load_acceptance_context_overrides(conn, key, stage=stage)
 
 
@@ -463,6 +1857,15 @@ def upsert_acceptance_check(
         ),
     )
     conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=_symbol_key(symbol),
+        stage=stage,
+        change_type="check_upserted",
+        target_type="check",
+        target_key=f"{gate_id}.{check_key}",
+        detail={"value": value, "source": source or "manual", "note": note or ""},
+    )
     return {
         "symbol": _symbol_key(symbol),
         "stage": stage,
@@ -485,6 +1888,15 @@ def delete_acceptance_check(conn, *, symbol: str, gate_id: str, check_key: str, 
         (_symbol_key(symbol), stage, gate_id, check_key),
     )
     conn.commit()
+    record_acceptance_change(
+        conn,
+        symbol=_symbol_key(symbol),
+        stage=stage,
+        change_type="check_deleted",
+        target_type="check",
+        target_key=f"{gate_id}.{check_key}",
+        detail={},
+    )
 
 
 def _merge_check(evidence: dict, gate_id: str, check_key: str, value, *, source: str, note: str = "") -> None:
@@ -725,25 +2137,100 @@ def _build_auto_evidence(
 
     if paper_summary["trade_count"]:
         _merge_check(evidence, "sample_size_period", "sufficient_trade_samples", metrics.get("trade_count", 0) >= 1, source="observed")
-        _merge_check(evidence, "sample_size_period", "complete_trading_cycle", metrics.get("testing_days", 0) >= 1, source="observed")
-        _merge_check(evidence, "sample_size_period", "consecutive_loss_periods", metrics.get("max_consecutive_losses", 0) >= 1, source="observed")
+        _merge_check(
+            evidence,
+            "sample_size_period",
+            "complete_trading_cycle",
+            max(int(metrics.get("testing_days", 0) or 0), int(metrics.get("trade_day_span", 0) or 0)) >= 2,
+            source="observed",
+        )
+        _merge_check(
+            evidence,
+            "sample_size_period",
+            "enough_market_conditions",
+            (metrics.get("regime_coverage_score") or 0) >= 0.6
+            or int(metrics.get("regime_combo_count") or 0) >= 3,
+            source="observed",
+        )
         _merge_check(evidence, "sample_size_period", "not_only_one_way_market", paper_summary.get("win_rate") not in (None, 0.0, 1.0), source="observed")
+        _merge_check(
+            evidence,
+            "sample_size_period",
+            "vol_expansion_contraction",
+            int(metrics.get("high_vol_trade_count") or 0) > 0 and int(metrics.get("low_vol_trade_count") or 0) > 0,
+            source="observed",
+        )
+        _merge_check(
+            evidence,
+            "sample_size_period",
+            "no_trade_periods",
+            int(metrics.get("idle_day_count") or 0) > 0,
+            source="observed",
+        )
+        _merge_check(
+            evidence,
+            "sample_size_period",
+            "consecutive_loss_periods",
+            metrics.get("max_consecutive_losses", 0) >= 1,
+            source="observed",
+        )
+        _merge_check(
+            evidence,
+            "sample_size_period",
+            "weak_liquidity_periods",
+            int(metrics.get("thin_liquidity_trade_count") or 0) > 0,
+            source="observed",
+        )
 
-    if strategy.get("shadow_trading_used") is True:
-        for key in (
-            "live_market_data_source",
-            "live_signal_process",
-            "live_risk_module",
-            "live_order_generation",
-            "live_logging_alerting",
-            "no_exchange_submission",
-        ):
-            _merge_check(evidence, "shadow_trading", key, True, source="observed")
+    if strategy.get("shadow_trading_used") is True or int(metrics.get("shadow_trace_count") or 0) > 0:
+        shadow_mapping = {
+            "live_market_data_source": _safe_float(metrics.get("shadow_market_data_shared_ratio")),
+            "live_signal_process": _safe_float(metrics.get("shadow_signal_process_shared_ratio")),
+            "live_risk_module": _safe_float(metrics.get("shadow_risk_module_shared_ratio")),
+            "live_order_generation": _safe_float(metrics.get("shadow_order_generation_shared_ratio")),
+            "live_logging_alerting": _safe_float(metrics.get("shadow_logging_alerting_shared_ratio")),
+            "no_exchange_submission": _safe_float(metrics.get("shadow_no_exchange_submission_ratio")),
+            "theoretical_submission_time": _safe_float(metrics.get("shadow_avg_intent_to_adapter_ms")),
+            "order_book_snapshot_recorded": _safe_float(metrics.get("shadow_order_book_snapshot_ratio")),
+            "likely_execution_price": _safe_float(metrics.get("shadow_likely_execution_price_ratio")),
+            "post_order_price_behavior": _safe_float(metrics.get("shadow_post_order_price_behavior_ratio")),
+        }
+        for key, value in shadow_mapping.items():
+            if value is None:
+                continue
+            if key == "theoretical_submission_time":
+                _merge_check(evidence, "shadow_trading", key, True, source="observed")
+            else:
+                _merge_check(evidence, "shadow_trading", key, value >= 0.8, source="observed")
 
     if metrics.get("parameters_frozen") is not None:
         _merge_check(evidence, "research_discipline", "strategy_parameters_frozen", bool(metrics.get("parameters_frozen")), source="observed")
     if metrics.get("parameter_change_count") is not None:
         _merge_check(evidence, "research_discipline", "no_short_term_parameter_tuning", metrics.get("parameter_change_count") == 0, source="observed")
+    if metrics.get("restart_stats_completion_ratio") is not None:
+        _merge_check(
+            evidence,
+            "research_discipline",
+            "modifications_restart_stats",
+            float(metrics.get("restart_stats_completion_ratio") or 0) >= 1.0,
+            source="observed",
+        )
+    if metrics.get("governance_reason_coverage_ratio") is not None:
+        _merge_check(
+            evidence,
+            "research_discipline",
+            "modification_reasons_recorded",
+            float(metrics.get("governance_reason_coverage_ratio") or 0) >= 1.0,
+            source="observed",
+        )
+    if metrics.get("governance_version_mapping_ratio") is not None:
+        _merge_check(
+            evidence,
+            "research_discipline",
+            "version_result_mapping",
+            float(metrics.get("governance_version_mapping_ratio") or 0) >= 1.0,
+            source="observed",
+        )
     if strategy.get("strategy_version") or strategy.get("parameter_version"):
         _merge_check(evidence, "research_discipline", "version_result_mapping", True, source="observed")
 
@@ -912,10 +2399,20 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
 
     key = _symbol_key(symbol)
     overrides = load_acceptance_context_overrides(conn, key, stage="paper")
+    review = load_acceptance_review(conn, key, stage="paper")
     paper_rows = _load_journal_rows(conn, symbol=key, environment="paper")
     live_rows = _load_journal_rows(conn, symbol=key, environment="live")
     backtest_runs = _load_backtest_runs(conn, symbol=key, limit=20)
     events = load_acceptance_events(conn, symbol=key, limit=500)
+    shadow_parity = summarize_shadow_parity_traces(conn, symbol=key, stage="paper", limit=200)
+    shadow_rows = load_shadow_parity_traces(conn, key, stage="paper", limit=50)
+    governance_summary = summarize_governance_events(conn, key, stage="paper", limit=200)
+    threshold_summary = summarize_threshold_profiles(conn, key, stage="paper", limit=20)
+    venue_summary = summarize_venue_profiles(conn, key, stage="paper", limit=20)
+    telemetry = summarize_acceptance_telemetry(conn, symbol=key, stage="paper")
+    live_telemetry = summarize_acceptance_telemetry(conn, symbol=key, stage="live")
+    scenarios = summarize_scenario_evidence(conn, symbol=key, stage="paper")
+    security_scan = run_security_scan(Path(__file__).resolve().parents[2])
     strategy_payload = dict(overrides["strategy"] or {})
     strategy_payload.update(strategy or {})
     strategy_payload.setdefault("name", "SMC Paper Acceptance")
@@ -923,6 +2420,17 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
     strategy_payload.setdefault("stage", "paper")
     strategy_payload.setdefault("symbol", key)
     strategy_payload.setdefault("exchange", "paper-sim")
+    if venue_summary.get("venue_name"):
+        strategy_payload["exchange"] = venue_summary["venue_name"]
+    if venue_summary.get("broker_name"):
+        strategy_payload.setdefault("broker", venue_summary["broker_name"])
+    if venue_summary.get("market_type"):
+        strategy_payload.setdefault("market_type", venue_summary["market_type"])
+    strategy_payload.setdefault("execution_model_version", "shared_execution_runtime_v1")
+    if int(shadow_parity.get("trace_count") or 0) > 0:
+        strategy_payload.setdefault("shadow_trading_used", True)
+    if shadow_parity.get("shared_module_ratio") is not None:
+        strategy_payload.setdefault("shared_live_architecture", float(shadow_parity["shared_module_ratio"]) >= 0.8)
     if not strategy_payload.get("testing_period"):
         combined_rows = _sorted_trade_rows(_journal_closed_rows(paper_rows))
         if combined_rows:
@@ -979,6 +2487,10 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "kill_switch_tested": False,
         "parameters_frozen": False,
         "parameter_change_count": None,
+        "freeze_violation_count": 0,
+        "governance_reason_coverage_ratio": 1.0,
+        "governance_version_mapping_ratio": 1.0,
+        "restart_stats_completion_ratio": 1.0,
         "hardcoded_api_keys": False,
         "withdrawal_permission_enabled": False,
         "api_key_permissions_minimized": None,
@@ -987,12 +2499,102 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         "logs_avoid_secrets": None,
         "revocation_process": None,
         "thresholds_defined": False,
+        "threshold_profile_active": False,
+        "threshold_profile_approved": False,
         "capital_stage_count": 2 if live_summary.get("trade_count") else 1,
         "paper_trade_count": paper_summary.get("trade_count"),
         "live_trade_count": live_summary.get("trade_count"),
         "backtest_trade_count": latest_backtest.get("total_trades"),
+        "fill_rate_live": live_telemetry.get("metrics", {}).get("fill_rate"),
+        "average_slippage_live": live_telemetry.get("metrics", {}).get("average_slippage"),
+        "shadow_trace_count": shadow_parity.get("trace_count"),
+        "shadow_parity_score": shadow_parity.get("avg_parity_score"),
+        "shadow_shared_module_ratio": shadow_parity.get("shared_module_ratio"),
+        "shadow_market_data_shared_ratio": shadow_parity.get("market_data_shared_ratio"),
+        "shadow_signal_process_shared_ratio": shadow_parity.get("signal_process_shared_ratio"),
+        "shadow_risk_module_shared_ratio": shadow_parity.get("risk_module_shared_ratio"),
+        "shadow_order_generation_shared_ratio": shadow_parity.get("order_generation_shared_ratio"),
+        "shadow_logging_alerting_shared_ratio": shadow_parity.get("logging_alerting_shared_ratio"),
+        "shadow_no_exchange_submission_ratio": shadow_parity.get("no_exchange_submission_ratio"),
+        "shadow_order_book_snapshot_ratio": shadow_parity.get("order_book_snapshot_ratio"),
+        "shadow_likely_execution_price_ratio": shadow_parity.get("likely_execution_price_ratio"),
+        "shadow_post_order_price_behavior_ratio": shadow_parity.get("post_order_price_behavior_ratio"),
+        "shadow_avg_execution_latency_ms": shadow_parity.get("avg_execution_latency_ms"),
+        "shadow_avg_intent_to_adapter_ms": shadow_parity.get("avg_intent_to_adapter_ms"),
+        "parameter_change_count": governance_summary.get("parameter_change_count"),
+        "risk_change_count": governance_summary.get("risk_change_count"),
+        "logic_change_count": governance_summary.get("logic_change_count"),
+        "freeze_violation_count": governance_summary.get("freeze_violation_count"),
+        "restart_stats_completion_ratio": governance_summary.get("restart_stats_completion_ratio"),
+        "governance_reason_coverage_ratio": governance_summary.get("reason_coverage_ratio"),
+        "governance_version_mapping_ratio": governance_summary.get("version_mapping_ratio"),
+        "governance_approved_change_ratio": governance_summary.get("approved_change_ratio"),
+        "governance_override_event_count": governance_summary.get("override_event_count"),
+        "parameters_frozen": governance_summary.get("parameter_change_count", 0) == 0 and governance_summary.get("freeze_violation_count", 0) == 0,
+        "policy_thresholds": threshold_summary.get("active_thresholds") or {},
+        "threshold_profile_active": bool(threshold_summary.get("count")),
+        "threshold_profile_approved": threshold_summary.get("active_status") == "approved",
+        "threshold_profile_version_tag": threshold_summary.get("active_version_tag"),
+        "threshold_profile_name": threshold_summary.get("latest_profile_name"),
+        "threshold_profile_strategy_type": threshold_summary.get("latest_strategy_type"),
+        "threshold_profile_approved_by": threshold_summary.get("approved_by"),
+        "threshold_profile_source_summary": (threshold_summary.get("latest") or {}).get("source_summary") or {},
+        "venue_profile_active": bool(venue_summary.get("count")),
+        "venue_profile_approved": venue_summary.get("latest_status") == "approved",
+        "venue_profile_version_tag": venue_summary.get("active_version_tag"),
+        "venue_profile_market_type": venue_summary.get("market_type"),
+        "venue_profile_name": venue_summary.get("venue_name"),
+        "venue_profile_broker_name": venue_summary.get("broker_name"),
+        "venue_profile_maker_fee_bps": venue_summary.get("maker_fee_bps"),
+        "venue_profile_taker_fee_bps": venue_summary.get("taker_fee_bps"),
+        "venue_profile_transaction_tax_bps": venue_summary.get("transaction_tax_bps"),
+        "venue_profile_min_notional": venue_summary.get("min_notional"),
+        "venue_profile_tick_size": venue_summary.get("tick_size"),
+        "venue_profile_lot_size": venue_summary.get("lot_size"),
+        "venue_profile_quantity_precision": venue_summary.get("quantity_precision"),
+        "venue_profile_price_precision": venue_summary.get("price_precision"),
+        "venue_profile_rate_limit_per_minute": venue_summary.get("rate_limit_per_minute"),
+        "venue_profile_rate_limit_burst": venue_summary.get("rate_limit_burst"),
+        "venue_profile_reject_category_count": venue_summary.get("reject_category_count"),
+        "venue_profile_source_summary": venue_summary.get("source_summary") or {},
     }
+    metrics.update({key: value for key, value in telemetry.get("metrics", {}).items() if value is not None})
     metrics.update({key: value for key, value in overrides["metrics"].items() if value is not None})
+    stage_and_deviation = _ensure_capacity_and_deviation_snapshots(
+        conn,
+        symbol=key,
+        strategy=strategy_payload,
+        metrics=metrics,
+        live_metrics=live_telemetry.get("metrics", {}),
+        paper_summary=paper_summary,
+        live_summary=live_summary,
+        latest_backtest=latest_backtest,
+    )
+    capital_stages = load_capital_stages(conn, key, stage="paper", limit=20)
+    deviation_snapshots = load_deviation_snapshots(conn, key, stage="paper", limit=20)
+    metrics["capital_stage_count"] = len({row.get("stage_name") for row in capital_stages if row.get("stage_name")})
+    latest_live_deviation = next(
+        (row for row in deviation_snapshots if row.get("baseline_source") == "paper" and row.get("comparison_source") == "live"),
+        None,
+    )
+    latest_backtest_deviation = next(
+        (row for row in deviation_snapshots if row.get("baseline_source") == "backtest" and row.get("comparison_source") == "paper"),
+        None,
+    )
+    if latest_live_deviation:
+        metrics["paper_live_max_deviation_ratio"] = _safe_float(latest_live_deviation.get("deviation_score"))
+        metrics["paper_live_comparison_ready"] = True
+        metrics["average_slippage_live"] = _safe_float(latest_live_deviation.get("detail", {}).get("live_average_slippage"))
+    if latest_backtest_deviation:
+        metrics["behavior_alignment_score"] = round(1.0 - min(1.0, _safe_float(latest_backtest_deviation.get("deviation_score")) or 0), 4)
+    metrics.update({
+        "hardcoded_api_keys": not bool(security_scan.get("no_hardcoded_keys")),
+        "test_live_keys_separated": security_scan.get("test_live_separation"),
+        "revocation_process": security_scan.get("revocation_process"),
+        "logs_avoid_secrets": security_scan.get("no_hardcoded_keys"),
+        "security_scan_file_count": security_scan.get("scanned_files"),
+        "security_scan_hit_count": security_scan.get("hardcoded_secret_count"),
+    })
     evidence = _build_auto_evidence(
         strategy=strategy_payload,
         metrics=metrics,
@@ -1001,6 +2603,39 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
         backtest_runs=backtest_runs,
         events=events,
     )
+    for gate_id, checks in (telemetry.get("evidence") or {}).items():
+        for check_key, value in (checks or {}).items():
+            _merge_check(evidence, gate_id, check_key, value, source="observed")
+    if venue_summary.get("pair_fee_differences_considered"):
+        _merge_check(evidence, "fees_and_costs", "pair_fee_differences_considered", True, source="observed")
+    if venue_summary.get("minimum_notional_enforced"):
+        _merge_check(evidence, "virtual_account", "minimum_notional_enforced", True, source="observed")
+    if venue_summary.get("precision_rules_enforced"):
+        _merge_check(evidence, "virtual_account", "precision_rules_enforced", True, source="observed")
+    if venue_summary.get("api_rate_limit_rules_defined"):
+        for check_key in ("global_request_weight_management", "order_count_management", "central_control_for_shared_api"):
+            _merge_check(evidence, "api_rate_limits", check_key, True, source="observed")
+    for gate_id, checks in (scenarios.get("evidence") or {}).items():
+        for check_key, value in (checks or {}).items():
+            _merge_check(evidence, gate_id, check_key, value, source="observed")
+    policy = build_acceptance_policy_snapshot(
+        {
+            "strategy": strategy_payload,
+            "metrics": metrics,
+            "evidence": evidence,
+            "prohibitions": overrides.get("prohibitions") or {},
+            "capital_stages": capital_stages,
+            "deviation_snapshots": deviation_snapshots,
+        },
+        review=review,
+    )
+    ladder = policy.get("promotion_ladder") or {}
+    if ladder.get("rationale"):
+        metrics["deviation_explanation"] = " | ".join(str(item) for item in ladder.get("rationale", [])[:4])
+    metrics["thresholds_defined"] = bool(policy.get("thresholds"))
+    for gate_id, checks in (policy.get("evidence") or {}).items():
+        for check_key, value in (checks or {}).items():
+            _merge_check(evidence, gate_id, check_key, value, source="observed")
     _apply_manual_evidence(evidence, load_acceptance_checks(conn, key, stage="paper"))
     prohibitions = _build_auto_prohibitions(metrics, strategy_payload, evidence)
     prohibitions.update({key: bool(value) for key, value in (overrides["prohibitions"] or {}).items()})
@@ -1018,6 +2653,17 @@ def build_smc_acceptance_context(conn, symbol: str | None = None, strategy: dict
             }
             for row in _journal_closed_rows(paper_rows)
         ],
+        "telemetry": telemetry,
+        "scenario_runs": scenarios.get("runs") or [],
+        "policy": policy,
+        "security_scan": security_scan,
+        "capital_stages": capital_stages,
+        "deviation_snapshots": deviation_snapshots,
+        "shadow_parity_summary": shadow_parity,
+        "shadow_parity_traces": shadow_rows,
+        "governance_summary": governance_summary,
+        "threshold_summary": threshold_summary,
+        "venue_summary": venue_summary,
     }
 
 
@@ -1030,6 +2676,507 @@ def build_and_persist_smc_acceptance_report(conn, symbol: str | None = None, str
     return {"run_key": run_key, "report": report}
 
 
+def _symbol_has_acceptance_inputs(conn, symbol: str, stage: str = "paper") -> bool:
+    key = _symbol_key(symbol)
+    checks = [
+        ("smc_trade_journal", "symbol=? AND environment IN ('paper', 'live')"),
+        ("smc_backtest_runs", "symbol=?"),
+        ("paper_acceptance_events", "symbol=?"),
+        ("paper_acceptance_evidence", "symbol=? AND stage=?"),
+        ("paper_acceptance_context_overrides", "symbol=? AND stage=?"),
+        ("paper_acceptance_runtime_metrics", "symbol=? AND stage=?"),
+        ("paper_acceptance_reconciliation_runs", "symbol=? AND stage=?"),
+        ("paper_acceptance_order_audit", "symbol=? AND stage=?"),
+        ("paper_acceptance_alert_deliveries", "symbol=? AND stage=?"),
+        ("paper_acceptance_scenario_runs", "symbol=? AND stage=?"),
+    ]
+    for table, where in checks:
+        params = (key, stage) if "stage=?" in where else (key,)
+        try:
+            row = conn.execute(f"SELECT 1 FROM {table} WHERE {where} LIMIT 1", params).fetchone()
+        except Exception:
+            row = None
+        if row:
+            return True
+    return False
+
+
+def refresh_acceptance_reports_for_symbols(
+    conn,
+    symbols: list[str],
+    *,
+    stage: str = "paper",
+    min_interval_minutes: int = 30,
+) -> dict:
+    """Persist fresh acceptance reports for active symbols when inputs changed enough.
+
+    The helper is designed for monitor/refresh loops:
+    - skip symbols without any acceptance inputs;
+    - skip symbols that already have a recent report inside the cooldown window;
+    - return structured counts for logging and API summaries.
+    """
+
+    ensure_paper_acceptance_schema(conn)
+    refreshed: list[str] = []
+    skipped_recent: list[str] = []
+    skipped_empty: list[str] = []
+    now = datetime.now(UTC)
+    seen: set[str] = set()
+    for raw_symbol in symbols:
+        key = _symbol_key(raw_symbol)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if not _symbol_has_acceptance_inputs(conn, key, stage=stage):
+            skipped_empty.append(key)
+            continue
+        recent = conn.execute(
+            """SELECT created_at FROM paper_acceptance_runs
+               WHERE symbol=? AND stage=?
+               ORDER BY created_at DESC, id DESC
+               LIMIT 1""",
+            (key, stage),
+        ).fetchone()
+        if recent:
+            recent_ts = _parse_ts(recent["created_at"])
+            if recent_ts and (now - recent_ts).total_seconds() < max(1, min_interval_minutes) * 60:
+                skipped_recent.append(key)
+                continue
+        build_and_persist_smc_acceptance_report(conn, symbol=key)
+        refreshed.append(key)
+    return {
+        "symbols": sorted(seen),
+        "refreshed_symbols": refreshed,
+        "skipped_recent_symbols": skipped_recent,
+        "skipped_empty_symbols": skipped_empty,
+        "refreshed_count": len(refreshed),
+        "skipped_recent_count": len(skipped_recent),
+        "skipped_empty_count": len(skipped_empty),
+    }
+
+
+def _build_acceptance_timeline(events: list[dict], scenario_runs: list[dict], changes: list[dict], governance_rows: list[dict]) -> list[dict]:
+    timeline: list[dict] = []
+    for row in events:
+        timeline.append({
+            "kind": "event",
+            "title": row.get("event_type") or "event",
+            "severity": row.get("severity") or "info",
+            "status": row.get("status") or "open",
+            "detail": row.get("detail") or {},
+            "created_at": row.get("created_at"),
+        })
+    for row in scenario_runs:
+        timeline.append({
+            "kind": "scenario",
+            "title": row.get("title") or row.get("scenario_id"),
+            "severity": "critical" if row.get("status") != "pass" else "info",
+            "status": row.get("status") or "pass",
+            "detail": {
+                "expected_behavior": row.get("expected_behavior"),
+                "actual_behavior": row.get("actual_behavior"),
+                "scenario_id": row.get("scenario_id"),
+            },
+            "created_at": row.get("created_at"),
+        })
+    for row in changes:
+        timeline.append({
+            "kind": "change",
+            "title": row.get("change_type") or "change",
+            "severity": "info",
+            "status": row.get("target_type") or "",
+            "detail": row.get("detail") or {},
+            "created_at": row.get("created_at"),
+        })
+    for row in governance_rows:
+        timeline.append({
+            "kind": "governance",
+            "title": row.get("change_scope") or "governance",
+            "severity": "warning" if row.get("inside_freeze_window") else "info",
+            "status": row.get("change_class") or "",
+            "detail": {
+                "reason": row.get("reason"),
+                "approved_by": row.get("approved_by"),
+                "version_tag": row.get("version_tag"),
+            },
+            "created_at": row.get("event_timestamp") or row.get("created_at"),
+        })
+    timeline.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return timeline[:80]
+
+
+def _build_section_trend(reports: list[dict]) -> list[dict]:
+    trend: list[dict] = []
+    for row in reports[:10]:
+        payload = row.get("report_payload") or {}
+        summary = payload.get("summary") or row.get("gate_summary") or {}
+        trend.append({
+            "run_key": row.get("run_key"),
+            "created_at": row.get("created_at"),
+            "conclusion": summary.get("conclusion") or row.get("conclusion"),
+            "blocking_issue_count": summary.get("blocking_issue_count") or row.get("blocking_issue_count") or 0,
+            "passed_ratio": round(
+                (summary.get("passed") or 0) / max(1, summary.get("gate_count") or row.get("gate_count") or 1),
+                4,
+            ),
+        })
+    return trend
+
+
+def _build_coverage_summary(catalog: list[dict]) -> dict:
+    source_counts = {"framework": 0, "observed": 0, "manual": 0, "unknown": 0}
+    source_gates = {"framework": set(), "observed": set(), "manual": set(), "unknown": set()}
+    missing_checks = 0
+    total_checks = 0
+    total_gates = 0
+    gates_with_missing: list[str] = []
+    section_rows: list[dict] = []
+    missing_details: list[dict] = []
+    for section in catalog:
+        section_total = 0
+        section_missing = 0
+        section_gates_with_missing: list[str] = []
+        for gate in section.get("gates") or []:
+            total_gates += 1
+            gate_has_missing = False
+            gate_missing_checks: list[str] = []
+            for check in gate.get("checks") or []:
+                total_checks += 1
+                section_total += 1
+                source = str(check.get("source") or "unknown")
+                if source not in source_counts:
+                    source = "unknown"
+                source_counts[source] += 1
+                source_gates[source].add(gate.get("id"))
+                if check.get("value") is None:
+                    missing_checks += 1
+                    section_missing += 1
+                    gate_has_missing = True
+                    gate_missing_checks.append(check.get("key") or "")
+            if gate_has_missing:
+                gates_with_missing.append(gate.get("id"))
+                section_gates_with_missing.append(gate.get("id"))
+                missing_details.append({
+                    "section": section.get("section"),
+                    "section_title": section.get("title"),
+                    "gate_id": gate.get("id"),
+                    "gate_name": gate.get("name"),
+                    "missing_checks": gate_missing_checks,
+                    "missing_count": len(gate_missing_checks),
+                })
+        section_rows.append({
+            "section": section.get("section"),
+            "title": section.get("title"),
+            "total_checks": section_total,
+            "missing_checks": section_missing,
+            "covered_ratio": round((section_total - section_missing) / max(1, section_total), 4),
+            "gates_with_missing": section_gates_with_missing,
+        })
+    return {
+        "total_gates": total_gates,
+        "total_checks": total_checks,
+        "missing_checks": missing_checks,
+        "covered_ratio": round((total_checks - missing_checks) / max(1, total_checks), 4),
+        "source_counts": source_counts,
+        "source_gate_counts": {key: len(value) for key, value in source_gates.items()},
+        "gates_with_missing": gates_with_missing,
+        "sections": section_rows,
+        "missing_details": missing_details[:20],
+    }
+
+
+def _build_production_checklist(
+    report: dict,
+    policy: dict,
+    coverage: dict,
+    review: dict,
+    governance_summary: dict,
+    threshold_summary: dict,
+    promotion_summary: dict,
+) -> list[dict]:
+    blockers = list(policy.get("blockers") or [])
+    summary = report.get("summary") or {}
+    review_status = str(review.get("review_status") or "pending")
+    threshold_profile_approved = threshold_summary.get("active_status") == "approved"
+    latest_decision = promotion_summary.get("latest_decision") or "missing"
+    return [
+        {
+            "key": "blocking_issues_cleared",
+            "label": "阻擋條件清空",
+            "status": "pass" if not blockers and not summary.get("blocking_issue_count") else "fail",
+            "detail": "沒有 blockers 與 prohibition flags 才能進入 live promotion。",
+        },
+        {
+            "key": "shared_runtime_validated",
+            "label": "共享 runtime 驗證",
+            "status": "pass" if policy.get("shared_architecture_ready") else "fail",
+            "detail": "paper / shadow / live-dry-run 必須走同一個 execution contract。",
+        },
+        {
+            "key": "observed_evidence_coverage",
+            "label": "Observed 證據覆蓋",
+            "status": "pass" if float(coverage.get("covered_ratio") or 0) >= 0.85 else "partial",
+            "detail": f"目前 covered ratio {coverage.get('covered_ratio') or 0:.2f}。",
+        },
+        {
+            "key": "thresholds_calibrated",
+            "label": "門檻已校準",
+            "status": "pass" if threshold_profile_approved else "partial",
+            "detail": "定量門檻應來自已核准的 threshold profile，而不是僅靠預設值。",
+        },
+        {
+            "key": "review_signed_off",
+            "label": "審閱已簽核",
+            "status": "pass" if review_status == "approved" and not review.get("retest_required") else "fail",
+            "detail": f"目前 review status = {review_status}。",
+        },
+        {
+            "key": "promotion_governance_recorded",
+            "label": "升級治理留痕",
+            "status": "pass" if promotion_summary.get("count") else "partial",
+            "detail": f"最近一筆 recorded decision = {latest_decision}。",
+        },
+        {
+            "key": "freeze_and_restart_clean",
+            "label": "Freeze / restart 乾淨",
+            "status": (
+                "pass"
+                if int(governance_summary.get("freeze_violation_count") or 0) == 0
+                and float(governance_summary.get("restart_stats_completion_ratio") or 1.0) >= 1.0
+                else "fail"
+            ),
+            "detail": "freeze window 不應違規，治理變更後需完成 restart stats。",
+        },
+    ]
+
+
+def _build_closure_summary(
+    report: dict,
+    policy: dict,
+    coverage: dict,
+    review: dict,
+    events: list[dict],
+    governance_summary: dict,
+    promotion_summary: dict,
+    production_checklist: list[dict],
+) -> dict:
+    summary = report.get("summary") or {}
+    ladder = policy.get("promotion_ladder") or {}
+    blockers = list(policy.get("blockers") or [])
+    blocking_issues = list(report.get("blocking_issues") or [])
+    missing_rows = list((coverage or {}).get("missing_details") or [])
+    if policy.get("can_promote"):
+        next_action = "allow_small_live"
+    elif blockers:
+        next_action = "repair_and_repeat_paper"
+    elif policy.get("recommendation") == "shadow":
+        next_action = "continue_shadow"
+    else:
+        next_action = "continue_paper"
+
+    rationale: list[str] = []
+    rationale.extend(str(item) for item in (ladder.get("rationale") or [])[:3])
+    if governance_summary.get("freeze_violation_count"):
+        rationale.append(f"研究治理仍有 {governance_summary['freeze_violation_count']} 筆 freeze window 違規。")
+    latest_event = next((row for row in events if row.get("severity") in {"critical", "error", "warning"}), None)
+    if latest_event:
+        reason = latest_event.get("detail", {}).get("reason") or latest_event.get("detail", {}).get("message") or latest_event.get("event_type")
+        rationale.append(f"最近異常事件：{reason}。")
+    required_actions: list[str] = []
+    for row in blocking_issues[:3]:
+        message = row.get("message") or row.get("issue") or row.get("id") or "blocking_issue"
+        required_actions.append(str(message))
+    for row in missing_rows[:3]:
+        missing = ", ".join((row.get("missing_checks") or [])[:2]) or "缺證據"
+        required_actions.append(f"補齊 §{row.get('section')} {row.get('gate_name') or row.get('gate_id')}: {missing}")
+    if governance_summary.get("restart_stats_completion_ratio", 1.0) < 1.0:
+        required_actions.append("治理變更後尚未完整重跑統計。")
+    latest_promotion = promotion_summary.get("latest") or {}
+    if latest_promotion:
+        rationale.append(
+            f"最近一次升級決策為 {latest_promotion.get('decision') or 'unknown'}，"
+            f"目標階段 {latest_promotion.get('target_stage_name') or '未指定'}。"
+        )
+    checklist_pass_count = sum(1 for row in production_checklist if row.get("status") == "pass")
+    return {
+        "conclusion": summary.get("conclusion") or "failed_repeat_paper",
+        "review_status": review.get("review_status") or "pending",
+        "recommendation": policy.get("recommendation") or "paper",
+        "next_action": next_action,
+        "blocking_issue_count": summary.get("blocking_issue_count") or len(blocking_issues),
+        "missing_check_count": coverage.get("missing_checks") or 0,
+        "freeze_violation_count": governance_summary.get("freeze_violation_count") or 0,
+        "rationale": rationale[:6],
+        "required_actions": required_actions[:6],
+        "current_stage": ladder.get("current_stage") or {},
+        "next_stage": ladder.get("next_stage") or {},
+        "promotion_decision_summary": {
+            "count": promotion_summary.get("count") or 0,
+            "latest_decision": promotion_summary.get("latest_decision") or "missing",
+            "latest_target_stage_name": promotion_summary.get("latest_target_stage_name") or "",
+        },
+        "production_checklist_pass_count": checklist_pass_count,
+        "production_checklist_total": len(production_checklist),
+    }
+
+
+def _auto_stage_name(capital_ratio: float | None) -> tuple[str, str]:
+    ratio = float(capital_ratio or 0)
+    if ratio <= 0:
+        return "stage0_paper", "stage 0 paper"
+    if ratio <= 0.05:
+        return "stage1_1_5", "stage 1 1%-5%"
+    if ratio <= 0.20:
+        return "stage2_10_20", "stage 2 10%-20%"
+    if ratio <= 0.50:
+        return "stage3_25_50", "stage 3 25%-50%"
+    return "stage4_full", "stage 4 full"
+
+
+def _ensure_capacity_and_deviation_snapshots(
+    conn,
+    *,
+    symbol: str,
+    strategy: dict,
+    metrics: dict,
+    live_metrics: dict,
+    paper_summary: dict,
+    live_summary: dict,
+    latest_backtest: dict,
+) -> dict:
+    capital_ratio = _safe_float(strategy.get("live_capital_ratio"))
+    if capital_ratio is None:
+        capital_ratio = 0.0 if int(live_summary.get("trade_count") or 0) == 0 else 0.05
+    stage_name, stage_label = _auto_stage_name(capital_ratio)
+    latest_stage = next(iter(load_capital_stages(conn, symbol, stage="paper", limit=1)), None)
+    stage_trade_count = int(max(int(paper_summary.get("trade_count") or 0), int(live_summary.get("trade_count") or 0)))
+    stage_observation_days = int(max(int(paper_summary.get("testing_days") or 0), int(live_summary.get("testing_days") or 0)))
+    stage_slippage = _safe_float(metrics.get("average_slippage"))
+    stage_fill_rate = _safe_float(metrics.get("fill_rate"))
+    stage_drawdown = _safe_float(metrics.get("max_drawdown"))
+    if not latest_stage or any([
+        latest_stage.get("stage_name") != stage_name,
+        not _same_numeric(latest_stage.get("capital_ratio"), capital_ratio),
+        int(latest_stage.get("trade_count") or 0) != stage_trade_count,
+        int(latest_stage.get("observation_days") or 0) != stage_observation_days,
+        not _same_numeric(latest_stage.get("slippage_bps"), stage_slippage),
+        not _same_numeric(latest_stage.get("fill_rate"), stage_fill_rate),
+        not _same_numeric(latest_stage.get("drawdown"), stage_drawdown),
+    ]):
+        record_capital_stage(
+            conn,
+            symbol=symbol,
+            stage_name=stage_name,
+            capital_ratio=capital_ratio,
+            capital_range_label=stage_label,
+            trade_count=stage_trade_count,
+            observation_days=stage_observation_days,
+            slippage_bps=stage_slippage,
+            fill_rate=stage_fill_rate,
+            drawdown=stage_drawdown,
+            note="auto-generated acceptance capacity stage snapshot",
+            stage="paper",
+        )
+    latest_paper_vs_live = None
+    if live_summary.get("trade_count") and paper_summary.get("trade_count"):
+        win_rate_delta = abs((_safe_float(live_summary.get("win_rate")) or 0) - (_safe_float(paper_summary.get("win_rate")) or 0))
+        paper_fill_rate = _safe_float(metrics.get("fill_rate"))
+        live_fill_rate = _safe_float(live_metrics.get("fill_rate"))
+        fill_rate_delta = abs(live_fill_rate - paper_fill_rate) if live_fill_rate is not None and paper_fill_rate is not None else None
+        paper_slippage = _safe_float(metrics.get("average_slippage"))
+        live_slippage = _safe_float(live_metrics.get("average_slippage"))
+        slippage_delta_bps = abs(live_slippage - paper_slippage) if live_slippage is not None and paper_slippage is not None else None
+        drawdown_delta = abs(abs(_safe_float(live_summary.get("max_drawdown")) or 0) - abs(_safe_float(paper_summary.get("max_drawdown")) or 0))
+        holding_delta = abs((_safe_float(live_summary.get("average_holding_minutes")) or 0) - (_safe_float(paper_summary.get("average_holding_minutes")) or 0))
+        trade_freq_delta = abs(
+            ((live_summary.get("trade_count") or 0) / max(1, live_summary.get("testing_days") or 1))
+            - ((paper_summary.get("trade_count") or 0) / max(1, paper_summary.get("testing_days") or 1))
+        )
+        score_parts = [win_rate_delta, drawdown_delta]
+        if fill_rate_delta is not None:
+            score_parts.append(fill_rate_delta)
+        deviation_score = round(sum(score_parts) / max(1, len(score_parts)), 4)
+        latest_live_dev = next(
+            (
+                row for row in load_deviation_snapshots(conn, symbol, stage="paper", limit=10)
+                if row.get("baseline_source") == "paper" and row.get("comparison_source") == "live"
+            ),
+            None,
+        )
+        if not latest_live_dev or any([
+            not _same_numeric(latest_live_dev.get("win_rate_delta"), win_rate_delta),
+            not _same_numeric(latest_live_dev.get("fill_rate_delta"), fill_rate_delta),
+            not _same_numeric(latest_live_dev.get("slippage_delta_bps"), slippage_delta_bps),
+            not _same_numeric(latest_live_dev.get("drawdown_delta"), drawdown_delta),
+            not _same_numeric(latest_live_dev.get("holding_time_delta_minutes"), holding_delta),
+            not _same_numeric(latest_live_dev.get("trade_frequency_delta"), trade_freq_delta),
+            not _same_numeric(latest_live_dev.get("deviation_score"), deviation_score),
+        ]):
+            latest_paper_vs_live = record_deviation_snapshot(
+                conn,
+                symbol=symbol,
+                baseline_source="paper",
+                comparison_source="live",
+                win_rate_delta=win_rate_delta,
+                fill_rate_delta=fill_rate_delta,
+                slippage_delta_bps=slippage_delta_bps,
+                drawdown_delta=drawdown_delta,
+                holding_time_delta_minutes=holding_delta,
+                trade_frequency_delta=trade_freq_delta,
+                deviation_score=deviation_score,
+                detail={
+                    "origin": "auto",
+                    "paper_fill_rate": paper_fill_rate,
+                    "live_fill_rate": live_fill_rate,
+                    "paper_average_slippage": paper_slippage,
+                    "live_average_slippage": live_slippage,
+                },
+                stage="paper",
+            )
+        else:
+            latest_paper_vs_live = latest_live_dev
+    latest_backtest_vs_paper = None
+    if latest_backtest and paper_summary.get("trade_count"):
+        win_rate_delta = abs((_safe_float(latest_backtest.get("win_rate")) or 0) - (_safe_float(paper_summary.get("win_rate")) or 0))
+        drawdown_delta = abs(abs(_safe_float(latest_backtest.get("max_drawdown")) or 0) - abs(_safe_float(paper_summary.get("max_drawdown")) or 0))
+        trade_freq_delta = abs(
+            ((_safe_float(latest_backtest.get("total_trades")) or 0) / max(1, paper_summary.get("testing_days") or 1))
+            - ((paper_summary.get("trade_count") or 0) / max(1, paper_summary.get("testing_days") or 1))
+        )
+        deviation_score = round(sum([win_rate_delta, drawdown_delta, trade_freq_delta]) / 3, 4)
+        latest_backtest_dev = next(
+            (
+                row for row in load_deviation_snapshots(conn, symbol, stage="paper", limit=10)
+                if row.get("baseline_source") == "backtest" and row.get("comparison_source") == "paper"
+            ),
+            None,
+        )
+        if not latest_backtest_dev or any([
+            not _same_numeric(latest_backtest_dev.get("win_rate_delta"), win_rate_delta),
+            not _same_numeric(latest_backtest_dev.get("drawdown_delta"), drawdown_delta),
+            not _same_numeric(latest_backtest_dev.get("trade_frequency_delta"), trade_freq_delta),
+            not _same_numeric(latest_backtest_dev.get("deviation_score"), deviation_score),
+        ]):
+            latest_backtest_vs_paper = record_deviation_snapshot(
+                conn,
+                symbol=symbol,
+                baseline_source="backtest",
+                comparison_source="paper",
+                win_rate_delta=win_rate_delta,
+                drawdown_delta=drawdown_delta,
+                trade_frequency_delta=trade_freq_delta,
+                deviation_score=deviation_score,
+                detail={"origin": "auto"},
+                stage="paper",
+            )
+        else:
+            latest_backtest_vs_paper = latest_backtest_dev
+    return {
+        "latest_paper_vs_live": latest_paper_vs_live,
+        "latest_backtest_vs_paper": latest_backtest_vs_paper,
+    }
+
+
 def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", limit_reports: int = 5) -> dict:
     """Build the full acceptance workspace payload for UI editing and reporting."""
 
@@ -1038,17 +3185,75 @@ def build_acceptance_workspace(conn, symbol: str | None, stage: str = "paper", l
     context = build_smc_acceptance_context(conn, symbol=key, strategy=overrides["strategy"])
     report = build_acceptance_report(context)
     catalog, section_summaries = _augment_report_catalog(report, context.get("evidence") or {})
+    events = load_acceptance_events(conn, symbol=key, limit=100)
+    scenario_runs = load_scenario_runs(conn, symbol=key, stage=stage, limit=40)
+    reports = load_acceptance_reports(conn, symbol=key, limit=limit_reports)
+    changes = load_acceptance_change_log(conn, key, stage=stage, limit=80)
+    governance_rows = load_governance_events(conn, key, stage=stage, limit=50)
+    threshold_profiles = load_threshold_profiles(conn, key, stage=stage, limit=20)
+    venue_profiles = load_venue_profiles(conn, key, stage=stage, limit=20)
+    promotion_decisions = load_promotion_decisions(conn, key, stage=stage, limit=20)
+    promotion_summary = summarize_promotion_decisions(conn, key, stage=stage, limit=20)
+    coverage = _build_coverage_summary(catalog)
+    production_checklist = _build_production_checklist(
+        report,
+        context.get("policy") or {},
+        coverage,
+        load_acceptance_review(conn, key, stage=stage),
+        context.get("governance_summary") or {},
+        context.get("threshold_summary") or {},
+        promotion_summary,
+    )
+    closure_summary = _build_closure_summary(
+        report,
+        context.get("policy") or {},
+        coverage,
+        load_acceptance_review(conn, key, stage=stage),
+        events,
+        context.get("governance_summary") or {},
+        promotion_summary,
+        production_checklist,
+    )
     return {
         "symbol": key,
         "stage": stage,
         "strategy_overrides": overrides["strategy"],
         "metrics_overrides": overrides["metrics"],
         "prohibitions_overrides": overrides["prohibitions"],
+        "review": load_acceptance_review(conn, key, stage=stage),
+        "policy": context.get("policy") or {},
+        "security_scan": context.get("security_scan") or {},
         "report": report,
         "sections": section_summaries,
         "catalog": catalog,
-        "events": load_acceptance_events(conn, symbol=key, limit=100),
-        "reports": load_acceptance_reports(conn, symbol=key, limit=limit_reports),
+        "events": events,
+        "runtime_metrics": load_runtime_metrics(conn, symbol=key, stage=stage, limit=60),
+        "reconciliation_runs": load_reconciliation_runs(conn, symbol=key, stage=stage, limit=30),
+        "order_audit": load_order_audit_rows(conn, symbol=key, stage=stage, limit=40),
+        "alert_deliveries": load_alert_deliveries(conn, symbol=key, stage=stage, limit=40),
+        "virtual_account_snapshots": load_virtual_account_snapshots(conn, symbol=key, stage=stage, limit=40),
+        "stability_sessions": load_stability_sessions(conn, symbol=key, stage=stage, limit=20),
+        "scenario_runs": scenario_runs,
+        "scenario_catalog": scenario_catalog(),
+        "change_log": changes,
+        "timeline": _build_acceptance_timeline(events, scenario_runs, changes, governance_rows),
+        "reports": reports,
+        "section_trend": _build_section_trend(reports),
+        "coverage": coverage,
+        "closure_summary": closure_summary,
+        "capital_stages": context.get("capital_stages") or [],
+        "deviation_snapshots": context.get("deviation_snapshots") or [],
+        "shadow_parity_summary": context.get("shadow_parity_summary") or {},
+        "shadow_parity_traces": context.get("shadow_parity_traces") or [],
+        "governance_summary": context.get("governance_summary") or {},
+        "governance_events": governance_rows,
+        "threshold_summary": context.get("threshold_summary") or {},
+        "threshold_profiles": threshold_profiles,
+        "venue_summary": context.get("venue_summary") or {},
+        "venue_profiles": venue_profiles,
+        "promotion_decisions": promotion_decisions,
+        "promotion_summary": promotion_summary,
+        "production_checklist": production_checklist,
     }
 
 
@@ -1058,12 +3263,50 @@ __all__ = [
     "build_smc_acceptance_context",
     "delete_acceptance_check",
     "ensure_paper_acceptance_schema",
+    "load_alert_deliveries",
     "load_acceptance_checks",
+    "load_acceptance_change_log",
     "load_acceptance_context_overrides",
     "load_acceptance_events",
+    "load_governance_events",
     "load_acceptance_reports",
+    "load_acceptance_review",
+    "load_order_audit_rows",
+    "load_capital_stages",
+    "load_deviation_snapshots",
+    "load_promotion_decisions",
+    "load_threshold_profiles",
+    "load_venue_profiles",
+    "load_shadow_parity_traces",
+    "load_reconciliation_runs",
+    "load_runtime_metrics",
+    "load_stability_sessions",
+    "load_virtual_account_snapshots",
+    "load_scenario_runs",
     "persist_acceptance_report",
+    "record_alert_delivery",
+    "record_acceptance_change",
     "record_acceptance_event",
+    "record_capital_stage",
+    "record_deviation_snapshot",
+    "record_governance_event",
+    "record_promotion_decision",
+    "record_threshold_profile",
+    "record_venue_profile",
+    "record_shadow_parity_trace",
+    "record_order_audit",
+    "record_reconciliation_run",
+    "record_runtime_metric",
+    "record_stability_session",
+    "record_virtual_account_snapshot",
+    "refresh_acceptance_reports_for_symbols",
+    "summarize_threshold_profiles",
+    "summarize_governance_events",
+    "summarize_promotion_decisions",
+    "summarize_venue_profiles",
+    "summarize_shadow_parity_traces",
+    "run_acceptance_scenario",
+    "upsert_acceptance_review",
     "upsert_acceptance_check",
     "upsert_acceptance_context_overrides",
 ]

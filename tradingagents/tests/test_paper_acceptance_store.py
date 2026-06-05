@@ -9,12 +9,47 @@ from paper_acceptance_store import (
     build_smc_acceptance_context,
     delete_acceptance_check,
     ensure_paper_acceptance_schema,
+    load_alert_deliveries,
     load_acceptance_checks,
+    load_acceptance_change_log,
     load_acceptance_context_overrides,
     load_acceptance_events,
+    load_governance_events,
     load_acceptance_reports,
+    load_capital_stages,
+    load_deviation_snapshots,
+    load_order_audit_rows,
+    load_promotion_decisions,
+    load_reconciliation_runs,
+    load_runtime_metrics,
+    load_threshold_profiles,
+    load_venue_profiles,
+    load_stability_sessions,
+    load_shadow_parity_traces,
+    load_virtual_account_snapshots,
     persist_acceptance_report,
+    record_alert_delivery,
     record_acceptance_event,
+    record_capital_stage,
+    record_deviation_snapshot,
+    record_governance_event,
+    record_promotion_decision,
+    record_threshold_profile,
+    record_venue_profile,
+    record_shadow_parity_trace,
+    record_order_audit,
+    record_reconciliation_run,
+    record_runtime_metric,
+    record_stability_session,
+    refresh_acceptance_reports_for_symbols,
+    run_acceptance_scenario,
+    summarize_governance_events,
+    summarize_promotion_decisions,
+    summarize_shadow_parity_traces,
+    summarize_threshold_profiles,
+    summarize_venue_profiles,
+    record_virtual_account_snapshot,
+    upsert_acceptance_review,
     upsert_acceptance_check,
     upsert_acceptance_context_overrides,
 )
@@ -219,3 +254,637 @@ def test_workspace_overrides_and_manual_checks_are_reflected_in_workspace():
         if row["key"] == "entry_conditions"
     )
     assert check_after_clear["source"] != "manual"
+
+
+def test_venue_profiles_are_reflected_in_context_and_workspace():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+
+    row = record_venue_profile(
+        conn,
+        symbol="ABAT",
+        venue_name="NASDAQ",
+        broker_name="IBKR",
+        market_type="equity",
+        status="approved",
+        maker_fee_bps=1.5,
+        taker_fee_bps=3.2,
+        min_notional=1.0,
+        tick_size=0.01,
+        lot_size=1,
+        quantity_precision=0,
+        price_precision=2,
+        rate_limit_per_minute=120,
+        rate_limit_burst=20,
+        reject_taxonomy={"precision": "reject", "insufficient_buying_power": "reject"},
+        source_summary={"source": "broker spec"},
+        approved_by="qa",
+        version_tag="venue-v1",
+    )
+
+    rows = load_venue_profiles(conn, "ABAT")
+    summary = summarize_venue_profiles(conn, "ABAT")
+    context = build_smc_acceptance_context(conn, symbol="ABAT")
+    workspace = build_acceptance_workspace(conn, symbol="ABAT")
+
+    assert row["venue_name"] == "NASDAQ"
+    assert rows[0]["broker_name"] == "IBKR"
+    assert summary["precision_rules_enforced"] is True
+    assert context["strategy"]["exchange"] == "NASDAQ"
+    assert context["metrics"]["venue_profile_version_tag"] == "venue-v1"
+    assert context["evidence"]["virtual_account"]["checks"]["precision_rules_enforced"] is True
+    assert context["evidence"]["fees_and_costs"]["checks"]["pair_fee_differences_considered"] is True
+    assert workspace["venue_summary"]["broker_name"] == "IBKR"
+    assert workspace["venue_profiles"][0]["reject_taxonomy"]["precision"] == "reject"
+
+
+def test_telemetry_and_order_audit_are_aggregated_into_acceptance_context():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+    ensure_paper_acceptance_schema(conn)
+
+    record_runtime_metric(conn, symbol="ABAT", metric_name="api_request", value=10)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="api_error", value=1, severity="error")
+    record_runtime_metric(conn, symbol="ABAT", metric_name="api_latency_ms", value=120)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="api_latency_ms", value=240)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="market_data_latency_ms", value=80)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="signal_compute_time_ms", value=15)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="order_request_latency_ms", value=55)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="exchange_response_latency_ms", value=65)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="database_write_latency_ms", value=25)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="loop_runtime_ms", value=90)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="memory_pct", value=40)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="cpu_pct", value=35)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="disk_free_gb", value=18)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="clock_offset_ms", value=1200)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="log_size_mb", value=30)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="db_connection_count", value=4)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="request_weight", value=50)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="order_count", value=5)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="shared_api_budget", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="rate_limit_backoff", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="bounded_retry", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="request_priority_rule", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="latency_pause", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="risk_status", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="scheduled_task_ok", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="restart_state_recovery", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="missing_data_handled", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="duplicate_data_handled", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="out_of_order_data_handled", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="reconnect_backfill", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="real_time_equity", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="available_balance", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="current_positions", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="open_orders", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="daily_total_pnl", value=1)
+    record_runtime_metric(conn, symbol="ABAT", metric_name="max_drawdown_displayed", value=1)
+
+    record_reconciliation_run(
+        conn,
+        symbol="ABAT",
+        status="resolved",
+        severity="warning",
+        order_diff_count=1,
+        position_diff_count=0,
+        balance_diff_count=0,
+        trade_diff_count=1,
+        auto_suspend_recommended=True,
+        restoration_result="recovered",
+    )
+    record_order_audit(
+        conn,
+        symbol="ABAT",
+        side="buy",
+        order_type="market",
+        state="filled",
+        requested_qty=5,
+        filled_qty=5,
+        signal_price=10.0,
+        avg_price=10.15,
+        notional=50.75,
+        fee=0.1,
+        slippage_bps=150.0,
+        market_impact_bps=25.0,
+        execution_latency_ms=180,
+        strategy_version="v1",
+        parameter_version="p1",
+        signal_source="smc",
+        detail={
+            "volatility_bps": 18,
+            "maker_taker": "taker",
+            "spread_bps": 12,
+            "recent_volume_ratio": 0.08,
+            "book_depth_ratio": 1.6,
+            "expected_edge_bps": 280,
+            "liquidity_regime": "normal",
+            "market_data_source": "exchange_ws",
+        },
+    )
+    record_order_audit(
+        conn,
+        symbol="ABAT",
+        side="buy",
+        order_type="limit",
+        state="partially_filled",
+        requested_qty=10,
+        filled_qty=6,
+        unfilled_qty=4,
+        signal_price=10.0,
+        limit_price=10.05,
+        avg_price=10.05,
+        notional=60.3,
+        fee=0.08,
+        slippage_bps=50.0,
+        market_impact_bps=10.0,
+        execution_latency_ms=420,
+        client_order_id="cli-1",
+        strategy_version="v1",
+        parameter_version="p1",
+        signal_source="smc",
+        submitted_at="2026-06-01T09:00:00Z",
+        fill_at="2026-06-01T09:00:03Z",
+        detail={
+            "adverse_selection_bps": 12,
+            "post_order_price_move_bps": 30,
+            "maker_taker": "maker",
+            "spread_bps": 18,
+            "recent_volume_ratio": 0.12,
+            "book_depth_ratio": 1.3,
+            "expected_edge_bps": 190,
+            "liquidity_regime": "normal",
+            "market_data_source": "exchange_ws",
+        },
+    )
+    record_alert_delivery(conn, symbol="ABAT", event_type="api_error", severity="warning")
+    record_alert_delivery(conn, symbol="ABAT", event_type="reconciliation", severity="warning")
+    record_alert_delivery(conn, symbol="ABAT", event_type="kill_switch", severity="critical")
+
+    context = build_smc_acceptance_context(conn, symbol="ABAT")
+    workspace = build_acceptance_workspace(conn, symbol="ABAT")
+
+    assert context["metrics"]["fees_included"] is True
+    assert context["metrics"]["slippage_included"] is True
+    assert context["metrics"]["reconciliation_implemented"] is True
+    assert context["metrics"]["fill_rate"] == 1.0
+    assert context["metrics"]["partial_fill_ratio"] == 0.5
+    assert context["metrics"]["latency_p95"] is not None
+    assert len(workspace["runtime_metrics"]) >= 5
+    assert len(workspace["reconciliation_runs"]) == 1
+    assert len(workspace["order_audit"]) == 2
+    assert len(workspace["alert_deliveries"]) == 3
+
+    alert_gate = next(item for item in workspace["catalog"] if item["section"] == "11.2")
+    kill_switch_check = next(
+        row for row in alert_gate["gates"][0]["checks"]
+        if row["key"] == "kill_switch_notifications"
+    )
+    assert kill_switch_check["value"] is True
+    liquidity_gate = next(item for item in workspace["catalog"] if item["section"] == "3.2")
+    spread_check = next(row for row in liquidity_gate["gates"][0]["checks"] if row["key"] == "spread_acceptable")
+    assert spread_check["value"] is True
+    trace_gate = next(item for item in workspace["catalog"] if item["section"] == "3.3")
+    duplicate_check = next(row for row in trace_gate["gates"][0]["checks"] if row["key"] == "duplicate_data_handled")
+    assert duplicate_check["value"] is True
+
+    assert load_runtime_metrics(conn, symbol="ABAT")
+    assert load_reconciliation_runs(conn, symbol="ABAT")
+    assert load_order_audit_rows(conn, symbol="ABAT")
+    assert load_alert_deliveries(conn, symbol="ABAT")
+
+
+def test_workspace_includes_review_timeline_and_trend():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+
+    run_acceptance_scenario(conn, symbol="ABAT", scenario_id="kill_switch_blocks_orders")
+    record_acceptance_event(conn, symbol="ABAT", event_type="kill_switch", severity="critical", detail={"reason": "manual test"})
+    payload = build_and_persist_smc_acceptance_report(conn, symbol="ABAT")
+    review = upsert_acceptance_review(
+        conn,
+        symbol="ABAT",
+        reviewer="qa",
+        review_status="changes_required",
+        fixed_in_version="v2",
+        retest_required=True,
+        can_promote_to_live=False,
+        note="需要補成本證據",
+        run_key=payload["run_key"],
+    )
+    workspace = build_acceptance_workspace(conn, symbol="ABAT")
+
+    assert review["review_status"] == "changes_required"
+    assert workspace["review"]["reviewer"] == "qa"
+    assert workspace["review"]["retest_required"] is True
+    assert workspace["timeline"][0]["kind"] in {"event", "scenario", "change"}
+    assert workspace["section_trend"][0]["run_key"] == payload["run_key"]
+    assert "recommendation" in workspace["policy"]
+    assert "promotion_ladder" in workspace["policy"]
+    assert "covered_ratio" in workspace["coverage"]
+    assert workspace["closure_summary"]["next_action"] in {"repair_and_repeat_paper", "continue_shadow", "continue_paper", "allow_small_live"}
+    assert isinstance(workspace["coverage"]["sections"], list)
+    assert isinstance(workspace["coverage"]["missing_details"], list)
+    assert isinstance(workspace["capital_stages"], list)
+    assert isinstance(workspace["deviation_snapshots"], list)
+    changes = load_acceptance_change_log(conn, "ABAT")
+    assert any(row["change_type"] == "review_updated" for row in changes)
+    assert any(item["kind"] == "change" for item in workspace["timeline"])
+
+
+def test_capital_stage_and_deviation_snapshot_round_trip():
+    conn = _conn()
+
+    stage = record_capital_stage(
+        conn,
+        symbol="ABAT",
+        stage_name="stage2_10_20",
+        capital_ratio=0.12,
+        capital_range_label="stage 2 10%-20%",
+        trade_count=32,
+        observation_days=18,
+        slippage_bps=22.5,
+        fill_rate=0.91,
+        drawdown=-0.08,
+        note="manual capacity review",
+    )
+    deviation = record_deviation_snapshot(
+        conn,
+        symbol="ABAT",
+        baseline_source="paper",
+        comparison_source="live",
+        win_rate_delta=0.08,
+        fill_rate_delta=0.04,
+        slippage_delta_bps=12.0,
+        drawdown_delta=0.03,
+        holding_time_delta_minutes=45.0,
+        trade_frequency_delta=0.2,
+        deviation_score=0.05,
+        detail={"origin": "manual"},
+    )
+
+    stages = load_capital_stages(conn, "ABAT")
+    deviations = load_deviation_snapshots(conn, "ABAT")
+
+    assert stages[0]["stage_name"] == stage["stage_name"]
+    assert stages[0]["capital_ratio"] == stage["capital_ratio"]
+    assert stages[0]["note"] == "manual capacity review"
+    assert deviations[0]["baseline_source"] == deviation["baseline_source"]
+    assert deviations[0]["comparison_source"] == deviation["comparison_source"]
+    assert deviations[0]["detail"]["origin"] == "manual"
+
+
+def test_shadow_parity_round_trip_and_context_mapping():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+
+    trace = record_shadow_parity_trace(
+        conn,
+        symbol="ABAT",
+        market_timestamp="2026-06-05T09:00:00Z",
+        signal_timestamp="2026-06-05T09:00:01Z",
+        risk_timestamp="2026-06-05T09:00:02Z",
+        order_intent_timestamp="2026-06-05T09:00:03Z",
+        adapter_timestamp="2026-06-05T09:00:03.150000Z",
+        adapter_name="shadow_adapter_v1",
+        side="buy",
+        order_type="limit",
+        requested_qty=5,
+        signal_price=10.0,
+        expected_price=10.05,
+        execution_latency_ms=150,
+        market_data_source_shared=True,
+        signal_process_shared=True,
+        risk_module_shared=True,
+        order_generation_shared=True,
+        logging_alerting_shared=True,
+        no_exchange_submission=True,
+        order_book_snapshot_recorded=True,
+        likely_execution_price_recorded=True,
+        post_order_price_behavior_recorded=True,
+        detail={"origin": "manual"},
+    )
+
+    rows = load_shadow_parity_traces(conn, "ABAT")
+    summary = summarize_shadow_parity_traces(conn, "ABAT")
+    context = build_smc_acceptance_context(conn, symbol="ABAT")
+
+    assert rows[0]["parity_key"] == trace["parity_key"]
+    assert summary["trace_count"] == 1
+    assert summary["shared_module_ratio"] == 1.0
+    assert context["strategy"]["shadow_trading_used"] is True
+    assert context["strategy"]["shared_live_architecture"] is True
+    assert context["metrics"]["shadow_parity_score"] == 1.0
+    shadow_gate = context["evidence"]["shadow_trading"]["checks"]
+    assert shadow_gate["live_market_data_source"] is True
+    assert shadow_gate["no_exchange_submission"] is True
+    assert context["policy"]["promotion_ladder"]["shadow_trace_count"] == 1
+
+
+def test_context_maps_regime_coverage_metrics_into_policy():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+    ensure_paper_acceptance_schema(conn)
+    conn.executemany(
+        """INSERT INTO smc_trade_journal
+           (symbol, environment, status, entry_time, created_at, pnl, r_multiple)
+           VALUES (?, 'paper', 'closed', ?, ?, ?, ?)""",
+        [
+            ("ABAT", "2026-06-01T01:00:00Z", "2026-06-01T01:00:00Z", 12.0, 1.1),
+            ("ABAT", "2026-06-03T10:00:00Z", "2026-06-03T10:00:00Z", -8.0, -0.7),
+            ("ABAT", "2026-06-05T18:30:00Z", "2026-06-05T18:30:00Z", 6.0, 0.6),
+        ],
+    )
+    conn.commit()
+
+    rows = [
+        ("2026-06-01T01:00:00Z", {"volatility_bps": 20, "liquidity_regime": "normal", "spread_bps": 12, "recent_volume_ratio": 0.08, "book_depth_ratio": 1.8}),
+        ("2026-06-03T10:00:00Z", {"volatility_bps": 145, "liquidity_regime": "thin", "spread_bps": 96, "recent_volume_ratio": 0.24, "book_depth_ratio": 0.7}),
+        ("2026-06-05T18:30:00Z", {"volatility_bps": 70, "liquidity_regime": "deep", "spread_bps": 8, "recent_volume_ratio": 0.04, "book_depth_ratio": 2.5}),
+    ]
+    for submitted_at, detail in rows:
+        record_order_audit(
+            conn,
+            symbol="ABAT",
+            side="buy",
+            order_type="limit",
+            state="filled",
+            requested_qty=5,
+            filled_qty=5,
+            signal_price=10.0,
+            avg_price=10.05,
+            notional=50.25,
+            fee=0.1,
+            slippage_bps=15.0,
+            execution_latency_ms=90,
+            submitted_at=submitted_at,
+            detail=detail,
+            stage="paper",
+        )
+
+    context = build_smc_acceptance_context(conn, symbol="ABAT", strategy={"strategy_type": "intraday"})
+
+    assert context["metrics"]["regime_coverage_score"] >= 0.8
+    assert context["metrics"]["session_bucket_count"] == 3
+    sample_gate = context["policy"]["evidence"]["sample_size_period"]
+    assert sample_gate["enough_market_conditions"] is True
+    assert sample_gate["weak_liquidity_periods"] is True
+
+
+def test_governance_events_feed_research_discipline_metrics():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+    ensure_paper_acceptance_schema(conn)
+
+    record_governance_event(
+        conn,
+        symbol="ABAT",
+        change_scope="parameter",
+        change_class="research_override",
+        version_tag="v2",
+        approved_by="qa",
+        requires_restart_stats=True,
+        stats_restarted=False,
+        freeze_window_started_at="2026-06-05T00:00:00Z",
+        freeze_window_ended_at="2026-06-10T00:00:00Z",
+        event_timestamp="2026-06-06T09:00:00Z",
+        reason="微調風險參數",
+        detail={"restart_ticket": "PA-12"},
+    )
+
+    rows = load_governance_events(conn, "ABAT")
+    summary = summarize_governance_events(conn, "ABAT")
+    context = build_smc_acceptance_context(conn, symbol="ABAT", strategy={"strategy_type": "intraday"})
+
+    assert rows[0]["change_scope"] == "parameter"
+    assert rows[0]["inside_freeze_window"] is True
+    assert summary["freeze_violation_count"] == 1
+    assert summary["restart_stats_completion_ratio"] == 0.0
+    assert context["metrics"]["freeze_violation_count"] == 1
+    assert context["metrics"]["parameter_change_count"] == 1
+    research_gate = context["policy"]["evidence"]["research_discipline"]
+    assert research_gate["strategy_parameters_frozen"] is False
+    assert research_gate["modifications_restart_stats"] is False
+
+
+def test_threshold_profiles_feed_policy_metrics_and_workspace():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+    ensure_paper_acceptance_schema(conn)
+
+    draft = record_threshold_profile(
+        conn,
+        symbol="ABAT",
+        strategy_type="intraday",
+        profile_name="baseline-calibration",
+        status="draft",
+        thresholds={"min_trade_count": 72, "max_average_slippage_bps": 45.0},
+        source_summary={"sample_window": "2026Q2"},
+        version_tag="thr-v1",
+        note="待 reviewer 確認",
+    )
+    approved = record_threshold_profile(
+        conn,
+        symbol="ABAT",
+        strategy_type="intraday",
+        profile_name="baseline-calibration",
+        status="approved",
+        thresholds={"min_trade_count": 80, "max_average_slippage_bps": 40.0},
+        source_summary={"sample_window": "2026Q2", "source": "paper-live"},
+        approved_by="qa",
+        version_tag="thr-v2",
+        note="正式校準",
+    )
+
+    rows = load_threshold_profiles(conn, "ABAT")
+    summary = summarize_threshold_profiles(conn, "ABAT")
+    context = build_smc_acceptance_context(conn, symbol="ABAT")
+    workspace = build_acceptance_workspace(conn, symbol="ABAT")
+
+    assert rows[0]["threshold_key"] == approved["threshold_key"]
+    assert rows[1]["threshold_key"] == draft["threshold_key"]
+    assert summary["count"] == 2
+    assert summary["approved_count"] == 1
+    assert summary["active_thresholds"]["min_trade_count"] == 80
+    assert summary["latest_status"] == "approved"
+    assert context["metrics"]["policy_thresholds"]["max_average_slippage_bps"] == 40.0
+    assert context["metrics"]["threshold_profile_active"] is True
+    assert context["metrics"]["threshold_profile_approved"] is True
+    assert context["metrics"]["threshold_profile_version_tag"] == "thr-v2"
+    assert context["metrics"]["threshold_profile_name"] == "baseline-calibration"
+    assert context["metrics"]["threshold_profile_approved_by"] == "qa"
+    assert context["metrics"]["threshold_profile_source_summary"]["source"] == "paper-live"
+    assert workspace["threshold_summary"]["active_version_tag"] == "thr-v2"
+    assert workspace["threshold_profiles"][0]["approved_by"] == "qa"
+
+
+def test_promotion_decisions_are_persisted_into_workspace_and_closure():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+    ensure_paper_acceptance_schema(conn)
+
+    record_threshold_profile(
+        conn,
+        symbol="ABAT",
+        strategy_type="intraday",
+        profile_name="q2-calibration",
+        status="approved",
+        thresholds={"min_trade_count": 60, "max_average_slippage_bps": 55.0},
+        approved_by="qa",
+        version_tag="thr-v2",
+    )
+    record_promotion_decision(
+        conn,
+        symbol="ABAT",
+        from_stage_name="stage1_1_5",
+        target_stage_name="stage2_10_20",
+        decision="conditional",
+        approved_by="qa",
+        review_status="reviewing",
+        threshold_profile_version_tag="thr-v2",
+        blocker_snapshot=["20 api_error_threshold_failed"],
+        threshold_snapshot={"min_trade_count": 60},
+        rationale=["樣本足夠，但 API error 尚需收斂。"],
+        required_actions=["降低 API error rate 至門檻內。"],
+        note="保留 shadow 觀察一週",
+    )
+
+    rows = load_promotion_decisions(conn, "ABAT")
+    summary = summarize_promotion_decisions(conn, "ABAT")
+    workspace = build_acceptance_workspace(conn, symbol="ABAT")
+
+    assert rows[0]["decision"] == "conditional"
+    assert rows[0]["blocker_snapshot"] == ["20 api_error_threshold_failed"]
+    assert summary["latest_decision"] == "conditional"
+    assert workspace["promotion_summary"]["latest_target_stage_name"] == "stage2_10_20"
+    assert workspace["promotion_decisions"][0]["threshold_profile_version_tag"] == "thr-v2"
+    assert workspace["closure_summary"]["promotion_decision_summary"]["latest_decision"] == "conditional"
+    checklist = {row["key"]: row for row in workspace["production_checklist"]}
+    assert checklist["promotion_governance_recorded"]["status"] == "pass"
+    assert workspace["closure_summary"]["production_checklist_total"] == len(workspace["production_checklist"])
+
+
+def test_workspace_auto_generates_stage_and_deviation_from_live_telemetry():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+    ensure_paper_acceptance_schema(conn)
+    conn.executemany(
+        """INSERT INTO smc_trade_journal
+           (symbol, environment, status, entry_time, created_at, pnl, r_multiple)
+           VALUES (?, 'live', 'closed', ?, ?, ?, ?)""",
+        [
+            ("ABAT", "2026-06-03T09:00:00Z", "2026-06-03T09:00:00Z", 12.0, 1.2),
+            ("ABAT", "2026-06-04T09:00:00Z", "2026-06-04T09:00:00Z", -4.0, -0.4),
+        ],
+    )
+    conn.commit()
+    record_order_audit(
+        conn,
+        symbol="ABAT",
+        side="buy",
+        order_type="market",
+        state="filled",
+        requested_qty=5,
+        filled_qty=5,
+        signal_price=10.0,
+        avg_price=10.12,
+        notional=50.6,
+        fee=0.1,
+        slippage_bps=12.0,
+        execution_latency_ms=100,
+        stage="paper",
+    )
+    record_order_audit(
+        conn,
+        symbol="ABAT",
+        side="buy",
+        order_type="market",
+        state="filled",
+        requested_qty=4,
+        filled_qty=4,
+        signal_price=10.0,
+        avg_price=10.18,
+        notional=40.72,
+        fee=0.09,
+        slippage_bps=18.0,
+        execution_latency_ms=90,
+        stage="live",
+    )
+
+    workspace = build_acceptance_workspace(conn, symbol="ABAT")
+
+    assert workspace["capital_stages"]
+    assert workspace["deviation_snapshots"]
+    live_deviation = next(
+        row for row in workspace["deviation_snapshots"]
+        if row["baseline_source"] == "paper" and row["comparison_source"] == "live"
+    )
+    assert live_deviation["fill_rate_delta"] == 0.0
+    assert live_deviation["slippage_delta_bps"] == 6.0
+    assert live_deviation["detail"]["live_average_slippage"] == 18.0
+
+
+def test_workspace_includes_virtual_account_and_stability_operational_evidence():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+    ensure_paper_acceptance_schema(conn)
+
+    record_virtual_account_snapshot(
+        conn,
+        symbol="ABAT",
+        account_currency="USD",
+        equity=10120.0,
+        available_balance=8400.0,
+        frozen_balance=250.0,
+        margin_used=900.0,
+        unrealized_pnl=120.0,
+        realized_pnl=80.0,
+        open_position_count=2,
+        open_order_count=1,
+        detail={"minimum_notional_enforced": True},
+    )
+    record_stability_session(
+        conn,
+        symbol="ABAT",
+        session_name="weekly-soak",
+        started_at="2026-05-01T00:00:00Z",
+        ended_at="2026-05-08T00:00:00Z",
+        runtime_hours=168,
+        restart_count=0,
+        reconnect_count=1,
+        max_memory_pct=58.0,
+        max_cpu_pct=42.0,
+        max_api_latency_ms=180.0,
+        result="pass",
+        detail={"restart_state_recovery": True},
+    )
+
+    workspace = build_acceptance_workspace(conn, symbol="ABAT")
+
+    assert load_virtual_account_snapshots(conn, symbol="ABAT")
+    assert load_stability_sessions(conn, symbol="ABAT")
+    assert workspace["virtual_account_snapshots"][0]["equity"] == 10120.0
+    assert workspace["stability_sessions"][0]["runtime_hours"] == 168.0
+    dashboard_section = next(item for item in workspace["catalog"] if item["section"] == "11.1")
+    dashboard_gate = dashboard_section["gates"][0]
+    dashboard_check = next(row for row in dashboard_gate["checks"] if row["key"] == "available_balance")
+    stability_section = next(item for item in workspace["catalog"] if item["section"] == "8.3")
+    stability_gate = stability_section["gates"][0]
+    stability_check = next(row for row in stability_gate["checks"] if row["key"] == "seven_day_runtime")
+    assert dashboard_check["value"] is True
+    assert stability_check["value"] is True
+
+
+def test_refresh_acceptance_reports_for_symbols_skips_recent_and_empty():
+    conn = _conn()
+    _create_smc_source_tables(conn)
+
+    first = refresh_acceptance_reports_for_symbols(conn, ["ABAT", "TEST.TW"], min_interval_minutes=30)
+    rows = load_acceptance_reports(conn, symbol="ABAT")
+    second = refresh_acceptance_reports_for_symbols(conn, ["ABAT", "EMPTY"], min_interval_minutes=30)
+
+    assert first["refreshed_symbols"] == ["ABAT"]
+    assert "TEST.TW" in first["skipped_empty_symbols"]
+    assert rows[0]["symbol"] == "ABAT"
+    assert second["refreshed_count"] == 0
+    assert second["skipped_recent_symbols"] == ["ABAT"]
+    assert "EMPTY" in second["skipped_empty_symbols"]
