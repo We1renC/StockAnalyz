@@ -4213,6 +4213,29 @@ def api_smc_crypto_score_calibration(symbol: Optional[str] = None):
         raise HTTPException(status_code=500, detail=f"calibration failed: {e}")
 
 
+@app.post("/api/smc-crypto/reconcile-missed-signals")
+def api_smc_crypto_reconcile_missed_signals(payload: Optional[dict] = None):
+    """Audit fix P2-15+: fill outcome_at_5/20_bars + MAE/MFE_R from real K.
+
+    Without this, the missed-signals jsonl never becomes a feedback
+    signal; we know runner rejected score=7 but never check what would
+    have happened.
+    """
+    try:
+        from smc_missed_signals_reconciler import reconcile_missed_signals
+        from dataclasses import asdict
+        from pathlib import Path
+        api = _crypto_api_client()
+        payload = payload or {}
+        symbol = payload.get("symbol", "BTC-USDT")
+        interval = payload.get("interval", "15m")
+        path = Path("tmp") / f"missed_signals_{symbol.replace('/', '-')}.jsonl"
+        res = reconcile_missed_signals(api, str(path), interval=interval)
+        return asdict(res)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"reconcile-missed failed: {e}")
+
+
 @app.get("/api/smc-crypto/missed-signals")
 def api_smc_crypto_missed_signals(symbol: str = "BTC-USDT", limit: int = 50):
     """Audit fix P2-15: opportunity-cost signals (qualified candidates that

@@ -191,6 +191,82 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_missed_signals_reconciler_fills_outcome_when_target_hits(tmp_path):
+    """P2-15+: future kline reaches target → outcome_at_5_bars='target'."""
+    from smc_missed_signals_reconciler import reconcile_missed_signals
+    from unittest.mock import MagicMock
+    from datetime import datetime, timezone, timedelta
+
+    path = tmp_path / "missed.jsonl"
+    # 20 × 15min = 300min = 5h ; need logged ≥ 5h ago. Use 24h to be safe.
+    logged = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="seconds")
+    rec = {
+        "logged_at": logged, "symbol": "BTC-USDT", "interval": "15m",
+        "direction": 1, "entry": 100.0, "stop": 99.0, "target": 102.0,
+        "bias": "bullish", "model": "x", "score": 6,
+    }
+    path.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+
+    # Fabricate bars starting at logged_at; 4th bar hits target
+    base = datetime.now(timezone.utc) - timedelta(hours=24)
+    bars = []
+    for i in range(10):
+        ts = (base + timedelta(minutes=15 * i)).isoformat(timespec="seconds").replace("+00:00", "Z")
+        if i == 3:
+            bars.append({"open_time": ts, "high": "102.5", "low": "100.0", "open": "100", "close": "102.3"})
+        else:
+            bars.append({"open_time": ts, "high": "100.5", "low": "99.8", "open": "100", "close": "100.2"})
+
+    api = MagicMock()
+    api.klines.return_value = {"status": 200, "payload": {"data": bars}}
+    res = reconcile_missed_signals(api, str(path), interval="15m")
+    assert res.matched == 1
+    # Read back the resolved row
+    rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    assert rows[0]["outcome_at_5_bars"] == "target"
+    # MAE accumulates over pre-breakout bars; on breakout we exit. The
+    # sideways high (100.5) gives 0.5R favorable before target hit.
+    assert rows[0]["max_favorable_R"] >= 0.5
+
+
+def test_missed_signals_reconciler_skips_too_young(tmp_path):
+    """Logged just now → not enough future bars → skipped_too_young."""
+    from smc_missed_signals_reconciler import reconcile_missed_signals
+    from unittest.mock import MagicMock
+    from datetime import datetime, timezone
+
+    path = tmp_path / "missed.jsonl"
+    fresh = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    path.write_text(json.dumps({
+        "logged_at": fresh, "symbol": "BTC-USDT",
+        "direction": 1, "entry": 100, "stop": 99, "target": 102,
+    }) + "\n", encoding="utf-8")
+    api = MagicMock()
+    api.klines.return_value = {"status": 200, "payload": {"data": []}}
+    res = reconcile_missed_signals(api, str(path), interval="15m")
+    assert res.skipped_too_young == 1
+    assert res.matched == 0
+
+
+def test_missed_signals_reconciler_skips_already_resolved(tmp_path):
+    """Already-filled rows are not re-processed."""
+    from smc_missed_signals_reconciler import reconcile_missed_signals
+    from unittest.mock import MagicMock
+    from datetime import datetime, timezone, timedelta
+    path = tmp_path / "missed.jsonl"
+    path.write_text(json.dumps({
+        "logged_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+        "symbol": "BTC-USDT", "direction": 1,
+        "entry": 100, "stop": 99, "target": 102,
+        "outcome_at_20_bars": "target",   # already resolved
+        "max_favorable_R": 2.0,
+    }) + "\n", encoding="utf-8")
+    api = MagicMock()
+    res = reconcile_missed_signals(api, str(path), interval="15m")
+    assert res.skipped_done == 1
+    assert res.matched == 0
+
+
 def test_exploration_size_multiplier_shrinks_crypto_qty(tmp_path):
     """P2-14+: entry with exploration_size_multiplier=0.20 → qty × 0.20."""
     from smc_paper_runner import SmcPaperRunner, PaperRunConfig
