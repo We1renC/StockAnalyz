@@ -485,6 +485,36 @@ def test_api_token_middleware_off_when_env_unset(monkeypatch):
     assert _token() == ""
 
 
+def test_api_token_reads_local_settings_when_env_missing(monkeypatch, tmp_path):
+    """A2: env absent → fallback to local settings.json dashboard_api_token."""
+    import json
+    import llm_providers
+    monkeypatch.delenv("DASHBOARD_API_TOKEN", raising=False)
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"dashboard_api_token": "from-settings"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(llm_providers, "SETTINGS_FILE", settings_path)
+    from learning.api_auth import _token
+    assert _token() == "from-settings"
+
+
+def test_api_token_env_overrides_local_settings(monkeypatch, tmp_path):
+    """A2: explicit env token wins over settings.json fallback."""
+    import json
+    import llm_providers
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"dashboard_api_token": "from-settings"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(llm_providers, "SETTINGS_FILE", settings_path)
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "from-env")
+    from learning.api_auth import _token
+    assert _token() == "from-env"
+
+
 def test_api_token_middleware_protects_smc_endpoints(monkeypatch):
     """A2: when token set, protected prefix without X-API-Token → 401."""
     import asyncio

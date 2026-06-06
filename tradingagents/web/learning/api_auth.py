@@ -6,8 +6,11 @@ calibration / mutate strategy.yaml. 127.0.0.1-binding is not enough
 once VS Code remote / Docker / ssh forwarding gets involved.
 
 Policy (intentionally minimal to avoid scope creep):
-  • If env var ``DASHBOARD_API_TOKEN`` is unset → middleware no-op
-    (preserves dev ergonomics; opt-in for prod).
+  • Token source order:
+      1. env var ``DASHBOARD_API_TOKEN``
+      2. local ``tradingagents/web/settings.json`` root key
+         ``dashboard_api_token``
+    If neither exists → middleware no-op (preserves dev ergonomics).
   • If set → every request to a path matching ``PROTECTED_PREFIXES``
     must carry header ``X-API-Token: <token>``.
   • Token is compared with ``hmac.compare_digest`` (constant-time).
@@ -37,7 +40,17 @@ OPEN_PATHS: frozenset[str] = frozenset({
 
 
 def _token() -> str:
-    return os.environ.get("DASHBOARD_API_TOKEN", "").strip()
+    env_token = os.environ.get("DASHBOARD_API_TOKEN", "").strip()
+    if env_token:
+        return env_token
+    try:
+        from llm_providers import load_settings
+        settings = load_settings() or {}
+        if isinstance(settings, dict):
+            return str(settings.get("dashboard_api_token") or "").strip()
+    except Exception:
+        pass
+    return ""
 
 
 def _is_protected(path: str, prefixes: Iterable[str] = PROTECTED_PREFIXES) -> bool:

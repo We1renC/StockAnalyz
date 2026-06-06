@@ -30,6 +30,9 @@
     "api": "走 SDK 呼叫，按 token 計費"
   },
 
+  "dashboard_api_token": "",
+  "_dashboard_api_token_comment": "若有填寫，/api/smc-crypto/* 等受保護路由需帶 X-API-Token。留空則不啟用。",
+
   "obsidian_vault_path": "",
   "_obsidian_comment": "Obsidian vault 根目錄路徑，例如 ~/Documents/MyVault。研究結果會存到 {vault}/Research/{領域}/ 下。留空則不存 Obsidian 筆記。"
 }
