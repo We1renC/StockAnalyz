@@ -4312,6 +4312,18 @@ def api_smc_crypto_baseline_equity_reset(payload: Optional[dict] = None):
         raise HTTPException(status_code=500, detail=f"baseline-reset failed: {e}")
 
 
+@app.post("/api/smc-crypto/rotate-ledger")
+def api_smc_crypto_rotate_ledger(keep_per_symbol: int = 500):
+    """Audit fix G3: trim training ledger to a rolling window per symbol,
+    gzip-archiving the overflow (automation of the manual Plan B trim)."""
+    try:
+        from learning.ledger_rotation import rotate_ledger
+        return rotate_ledger(LedgerPaths.training_ledger(),
+                              keep_per_symbol=int(keep_per_symbol))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"rotate-ledger failed: {e}")
+
+
 @app.get("/api/smc-crypto/ops-metrics")
 def api_smc_crypto_ops_metrics():
     """Audit fix G2: single ops surface — autolearn scheduler state,

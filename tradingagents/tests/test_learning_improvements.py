@@ -2192,3 +2192,47 @@ def test_g2_ops_metrics_endpoint_shape():
     except Exception as e:
         import pytest as _pytest
         _pytest.skip(f"app import failed: {e}")
+
+
+def test_g3_rotate_ledger_archives_overflow(tmp_path):
+    """G3: rotation keeps rolling window per symbol, gzip-archives the rest,
+    and nothing is lost."""
+    import json, gzip, os
+    from learning.ledger_rotation import rotate_ledger
+    p = tmp_path / "led.jsonl"
+    rows = []
+    for i in range(120):
+        rows.append({"symbol": "BTC-USDT", "entry_time": f"2026-01-01T{i:02d}:00:00",
+                     "outcome": "target", "r_multiple": 1.0})
+    for i in range(30):
+        rows.append({"symbol": "ETH-USDT", "entry_time": f"2026-01-01T{i:02d}:00:00",
+                     "outcome": "stop", "r_multiple": -1.0})
+    p.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    rep = rotate_ledger(str(p), keep_per_symbol=50, archive_dir=str(tmp_path / "arch"))
+    assert rep["rotated"] is True
+    # BTC: 120 → keep 50, archive 70; ETH: 30 → keep all 30
+    assert rep["per_symbol"]["BTC-USDT"]["kept"] == 50
+    assert rep["per_symbol"]["BTC-USDT"]["archived"] == 70
+    assert rep["per_symbol"]["ETH-USDT"]["archived"] == 0
+    # live file now has 80 rows
+    live = [json.loads(l) for l in open(p) if l.strip()]
+    assert len(live) == 80
+    # archive has the 70 overflow, nothing lost
+    gz_rows = []
+    with gzip.open(rep["archive_path"], "rt") as g:
+        gz_rows = [json.loads(l) for l in g if l.strip()]
+    assert len(gz_rows) == 70
+    assert len(live) + len(gz_rows) == 150
+
+
+def test_g3_rotate_ledger_noop_under_cap(tmp_path):
+    """G3: already under cap → no archive, no rewrite."""
+    import json
+    from learning.ledger_rotation import rotate_ledger
+    p = tmp_path / "led.jsonl"
+    rows = [{"symbol": "BTC-USDT", "entry_time": f"2026-01-01T{i:02d}:00:00",
+             "outcome": "target", "r_multiple": 1.0} for i in range(10)]
+    p.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    rep = rotate_ledger(str(p), keep_per_symbol=500, archive_dir=str(tmp_path / "arch"))
+    assert rep["rotated"] is False
+    assert rep["reason"] == "under_cap"
