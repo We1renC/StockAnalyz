@@ -2342,3 +2342,41 @@ def test_roundn_run_maintenance_includes_wal_checkpoint(tmp_path, monkeypatch):
     # checkpoint may error in the bare test env; assert the key exists either way
     out = sched._run_maintenance()
     assert "wal_checkpoint" in out
+
+
+def test_roundo_sanitize_weight_overrides_filters_corrupt():
+    """Round O: corrupt weight values are rejected, valid ones kept."""
+    from smc_quant import _sanitize_weight_overrides
+    clean, rejected = _sanitize_weight_overrides({
+        "htf_bias_aligned": 3,        # ok
+        "ote_zone": "abc",            # not numeric → reject
+        "killzone": float("nan"),     # nan → reject
+        "unmitigated_ob": 999,        # out of range → reject
+        "liquidity_swept": 2.0,       # float-coercible → 2
+        "flag": True,                 # bool → reject
+    })
+    assert clean == {"htf_bias_aligned": 3, "liquidity_swept": 2}
+    reasons = {r["factor"]: r["reason"] for r in rejected}
+    assert reasons["ote_zone"] == "not_numeric"
+    assert reasons["killzone"] == "not_numeric"
+    assert reasons["unmitigated_ob"] == "out_of_range"
+    assert reasons["flag"] == "not_numeric"
+
+
+def test_roundo_apply_overrides_reports_rejected(monkeypatch):
+    """Round O: apply_strategy_yaml_overrides returns a rejected[] list and
+    a corrupt weight never reaches the live scorer."""
+    import smc_quant
+    monkeypatch.setattr(smc_quant, "load_yaml_config", lambda name: (
+        {"confluence": {"weights": {"htf_bias_aligned": 2, "ote_zone": "junk"}}}
+        if name == "strategy.yaml" else {}
+    ))
+    saved = dict(smc_quant.CONFLUENCE_WEIGHTS_DEFAULT)
+    try:
+        out = smc_quant.apply_strategy_yaml_overrides()
+        assert any(r["factor"] == "ote_zone" for r in out["rejected"])
+        # corrupt value did NOT land in the live weights
+        assert smc_quant.CONFLUENCE_WEIGHTS_DEFAULT.get("ote_zone") != "junk"
+    finally:
+        smc_quant.CONFLUENCE_WEIGHTS_DEFAULT.clear()
+        smc_quant.CONFLUENCE_WEIGHTS_DEFAULT.update(saved)

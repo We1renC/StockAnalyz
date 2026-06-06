@@ -2610,18 +2610,50 @@ def snapshot_crypto_confluence_weights() -> dict:
         return dict(CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT)
 
 
+def _sanitize_weight_overrides(raw: dict, *, lo: int = -10, hi: int = 10) -> tuple[dict, list]:
+    """Round O: validate confluence-weight overrides before they touch the
+    live scorer. A corrupt strategy.yaml (string / NaN / absurd value)
+    would otherwise silently poison every confluence score.
+
+    Returns (clean_overrides, rejected) where rejected is a list of
+    ``{factor, value, reason}`` for audit/logging. Accepts int-coercible
+    numbers within [lo, hi]; everything else is dropped (the prior
+    learned/default value is kept).
+    """
+    import math as _math
+    clean: dict = {}
+    rejected: list = []
+    for k, v in (raw or {}).items():
+        try:
+            if isinstance(v, bool):           # bool is an int subclass — reject
+                raise ValueError("bool")
+            fv = float(v)
+            if _math.isnan(fv) or _math.isinf(fv):
+                raise ValueError("nan/inf")
+            iv = int(round(fv))
+            if iv < lo or iv > hi:
+                rejected.append({"factor": k, "value": v, "reason": "out_of_range"})
+                continue
+            clean[str(k)] = iv
+        except (TypeError, ValueError):
+            rejected.append({"factor": k, "value": v, "reason": "not_numeric"})
+    return clean, rejected
+
+
 def apply_strategy_yaml_overrides() -> dict:
     """§M0.3 — overlay ``config/strategy.yaml`` onto in-code defaults.
 
     Mutates module-level ``MARKET_CONFIGS`` / ``CONFLUENCE_WEIGHTS_DEFAULT`` /
     ``CONFLUENCE_THRESHOLD_DEFAULT`` / ``CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT``
     so every downstream function picks up the overrides automatically.
-    Returns the merged config dict for caller-side audit.
+    Returns the merged config dict for caller-side audit (includes a
+    ``rejected`` list per Round O validation).
     """
     global MARKET_CONFIGS, CONFLUENCE_WEIGHTS_DEFAULT
     global CONFLUENCE_THRESHOLD_DEFAULT, CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT
     markets_yaml = load_yaml_config("markets.yaml")
     strategy_yaml = load_yaml_config("strategy.yaml")
+    rejected: list = []
     # Audit fix E4: this is a read-modify-write on module globals. Under
     # FastAPI's sync-endpoint threadpool, two concurrent writers (startup
     # + a training tick) could lost-update each other. Serialize the whole
@@ -2632,17 +2664,30 @@ def apply_strategy_yaml_overrides() -> dict:
             MARKET_CONFIGS = _merge_market_configs(MARKET_CONFIGS, markets_yaml)
         conf = strategy_yaml.get("confluence") or {}
         if "weights" in conf and isinstance(conf["weights"], dict):
-            CONFLUENCE_WEIGHTS_DEFAULT = {**CONFLUENCE_WEIGHTS_DEFAULT, **conf["weights"]}
+            # Round O: validate before applying.
+            clean, rej = _sanitize_weight_overrides(conf["weights"])
+            rejected.extend({"section": "confluence", **r} for r in rej)
+            CONFLUENCE_WEIGHTS_DEFAULT = {**CONFLUENCE_WEIGHTS_DEFAULT, **clean}
         if "threshold" in conf:
             try:
                 CONFLUENCE_THRESHOLD_DEFAULT = int(conf["threshold"])
             except Exception:
-                pass
+                rejected.append({"section": "confluence", "factor": "threshold",
+                                  "value": conf.get("threshold"), "reason": "not_int"})
         crypto_w = strategy_yaml.get("crypto_confluence") or {}
         if isinstance(crypto_w, dict) and crypto_w:
+            clean_c, rej_c = _sanitize_weight_overrides(crypto_w)
+            rejected.extend({"section": "crypto_confluence", **r} for r in rej_c)
             CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT = {
-                **CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT, **crypto_w,
+                **CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT, **clean_c,
             }
+    if rejected:
+        try:
+            from learning.obs_log import get_logger, log_event
+            log_event(get_logger(__name__), "strategy_yaml_rejected_weights",
+                      count=len(rejected))
+        except Exception:
+            pass
     return {
         "markets": MARKET_CONFIGS,
         "confluence_weights": CONFLUENCE_WEIGHTS_DEFAULT,
@@ -2651,6 +2696,7 @@ def apply_strategy_yaml_overrides() -> dict:
         "risk": strategy_yaml.get("risk") or {},
         "backtest": strategy_yaml.get("backtest") or {},
         "adaptive": strategy_yaml.get("adaptive") or {},
+        "rejected": rejected,
     }
 
 
