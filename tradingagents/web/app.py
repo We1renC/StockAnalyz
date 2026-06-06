@@ -4213,6 +4213,35 @@ def api_smc_crypto_score_calibration(symbol: Optional[str] = None):
         raise HTTPException(status_code=500, detail=f"calibration failed: {e}")
 
 
+@app.get("/api/smc-crypto/cluster-ensemble")
+def api_smc_crypto_cluster_ensemble(symbol: Optional[str] = None,
+                                      min_samples: int = 10):
+    """Audit fix P3-19: per-(model, symbol, interval, regime) ensemble.
+
+    Returns each cluster's per-factor lift (E[R|active]−E[R|inactive])
+    so the tuner can spot "this factor is great for BTC 1h trending
+    but poison for ETH 15m ranging" — invisible to the global average.
+    """
+    try:
+        from learning.cluster_ensemble import (
+            build_cluster_weight_table, cluster_summary,
+        )
+        from smc_quant import load_trade_records, CONFLUENCE_WEIGHTS_DEFAULT
+        records = load_trade_records("tmp/smc_training_ledger.jsonl")
+        if symbol:
+            records = [r for r in records if r.get("symbol") == symbol]
+        factors = list(CONFLUENCE_WEIGHTS_DEFAULT.keys())
+        table = build_cluster_weight_table(records, factors=factors,
+                                              min_samples=int(min_samples))
+        return {
+            "n_clusters": len(table),
+            "clusters": cluster_summary(table),
+            "factors_tracked": factors,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"cluster-ensemble failed: {e}")
+
+
 @app.get("/api/smc-crypto/hyperparameter-sweep")
 def api_smc_crypto_hyperparameter_sweep(symbol: Optional[str] = None,
                                           min_trades: int = 20,

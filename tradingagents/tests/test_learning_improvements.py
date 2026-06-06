@@ -191,6 +191,83 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_cluster_ensemble_buckets_records_correctly():
+    """P3-19: clustering by (model, symbol, interval, regime) creates
+    distinct buckets."""
+    from learning.cluster_ensemble import cluster_records
+    recs = [
+        {"model": "sweep_reversal", "symbol": "BTC-USDT", "interval": "1h",
+         "regime": "trending", "outcome": "target", "r_multiple": 1.0},
+        {"model": "sweep_reversal", "symbol": "BTC-USDT", "interval": "1h",
+         "regime": "trending", "outcome": "stop", "r_multiple": -1.0},
+        {"model": "ote_retracement", "symbol": "ETH-USDT", "interval": "15m",
+         "regime": "ranging", "outcome": "target", "r_multiple": 1.5},
+        # Unresolved → must be skipped
+        {"model": "sweep_reversal", "symbol": "BTC-USDT", "interval": "1h",
+         "regime": "trending", "outcome": "pending", "r_multiple": None},
+    ]
+    clusters = cluster_records(recs)
+    assert ("sweep_reversal", "BTC-USDT", "1h", "trending") in clusters
+    assert ("ote_retracement", "ETH-USDT", "15m", "ranging") in clusters
+    assert len(clusters[("sweep_reversal", "BTC-USDT", "1h", "trending")]) == 2
+
+
+def test_cluster_ensemble_lift_detects_anti_signal_factor():
+    """A factor that's active mostly in losers → negative lift."""
+    from learning.cluster_ensemble import build_cluster_weight_table
+    recs = []
+    # Active "ote_zone" → all losers (-1R each)
+    for _ in range(8):
+        recs.append({
+            "model": "sweep_reversal", "symbol": "BTC", "interval": "1h",
+            "regime": "ranging", "outcome": "stop", "r_multiple": -1.0,
+            "factors_active": ["ote_zone", "htf_bias_aligned"],
+        })
+    # Inactive "ote_zone" → all winners (+1R each)
+    for _ in range(8):
+        recs.append({
+            "model": "sweep_reversal", "symbol": "BTC", "interval": "1h",
+            "regime": "ranging", "outcome": "target", "r_multiple": 1.0,
+            "factors_active": ["htf_bias_aligned"],
+        })
+    table = build_cluster_weight_table(recs, factors=["ote_zone"], min_samples=10)
+    k = ("sweep_reversal", "BTC", "1h", "ranging")
+    assert k in table
+    lift = table[k]["factors"]["ote_zone"]["lift"]
+    # Active mean = -1, inactive mean = +1 → lift = -2
+    assert lift == -2.0
+
+
+def test_resolve_cluster_weights_respects_confidence_threshold():
+    """Only override weights when cluster has enough samples."""
+    from learning.cluster_ensemble import resolve_cluster_weights
+    k = ("sweep_reversal", "BTC", "1h", "ranging")
+    # Cluster A: too small (n_total=15 < 30) → no override
+    table_small = {k: {"n_total": 15, "mean_R": -1.0,
+                        "factors": {"ote_zone": {"lift": -2.0, "n_active": 8, "n_inactive": 7}}}}
+    base = {"ote_zone": 1, "htf_bias_aligned": 2}
+    out = resolve_cluster_weights(table_small, cluster=k, base_weights=base)
+    assert out == base
+    # Cluster B: enough samples + strong negative lift → nudge down
+    table_big = {k: {"n_total": 50, "mean_R": -0.5,
+                       "factors": {"ote_zone": {"lift": -2.0, "n_active": 25, "n_inactive": 25}}}}
+    out2 = resolve_cluster_weights(table_big, cluster=k, base_weights=base)
+    assert out2["ote_zone"] == 0  # 1 - 1
+    assert out2["htf_bias_aligned"] == 2  # untouched
+
+
+def test_resolve_cluster_weights_skips_weak_lift():
+    """Lift below threshold → no override even with enough samples."""
+    from learning.cluster_ensemble import resolve_cluster_weights
+    k = ("m", "s", "i", "r")
+    table = {k: {"n_total": 100, "mean_R": 0.1,
+                  "factors": {"ote_zone": {"lift": 0.05, "n_active": 50, "n_inactive": 50}}}}
+    base = {"ote_zone": 1}
+    out = resolve_cluster_weights(table, cluster=k, base_weights=base,
+                                     lift_threshold=0.15)
+    assert out["ote_zone"] == 1  # unchanged
+
+
 def test_hyperparameter_sweep_picks_best_sharpe_cell():
     """P3-18 sweep: when one cell clearly dominates, sweep picks it."""
     from learning.hyperparameter_sweep import sweep_hyperparameters
