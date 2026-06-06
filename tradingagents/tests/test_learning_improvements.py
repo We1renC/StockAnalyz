@@ -191,6 +191,76 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_edge_decay_trail_writes_alert_to_sqlite(tmp_path, monkeypatch):
+    """P1-8+: edge decay emit a record_alert_delivery row."""
+    import sqlite3 as _sqlite3
+    from smc_training_loop import _emit_edge_decay_trail
+    from paper_acceptance_metrics import (
+        ensure_paper_acceptance_metrics_schema, load_alert_deliveries,
+    )
+
+    # Force vault to a non-existent path so the Obsidian branch is a no-op
+    monkeypatch.setattr(
+        "llm_providers.load_settings",
+        lambda: {"obsidian_vault_path": ""},
+        raising=False,
+    )
+
+    conn = _sqlite3.connect(":memory:")
+    conn.row_factory = _sqlite3.Row
+    ensure_paper_acceptance_metrics_schema(conn)
+
+    decay = {
+        "is_decaying": True,
+        "warning_message": "Recent expectancy crashed",
+        "overall_expectancy": 1.5,
+        "recent_expectancy": -0.5,
+        "overall_win_rate": 0.6,
+        "recent_win_rate": 0.2,
+    }
+    _emit_edge_decay_trail(
+        conn, symbol="BTC-USDT", decay=decay, new_mode="VALIDATING_PROBE",
+    )
+    rows = load_alert_deliveries(conn, symbol="BTC-USDT", limit=10)
+    assert len(rows) >= 1
+    found = [r for r in rows if r.get("event_type") == "edge_decay_demotion"]
+    assert found
+    assert found[0]["severity"] == "warning"
+
+
+def test_edge_decay_trail_writes_obsidian_note_when_vault_set(tmp_path, monkeypatch):
+    """When vault path is configured → SMC/EdgeDecay/<sym>_<ts>.md is written."""
+    import sqlite3 as _sqlite3
+    from smc_training_loop import _emit_edge_decay_trail
+    from paper_acceptance_metrics import ensure_paper_acceptance_metrics_schema
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    monkeypatch.setattr(
+        "llm_providers.load_settings",
+        lambda: {"obsidian_vault_path": str(vault)},
+        raising=False,
+    )
+    conn = _sqlite3.connect(":memory:"); conn.row_factory = _sqlite3.Row
+    ensure_paper_acceptance_metrics_schema(conn)
+
+    decay = {
+        "is_decaying": True, "warning_message": "decay test",
+        "overall_expectancy": 1.0, "recent_expectancy": -0.5,
+        "overall_win_rate": 0.6, "recent_win_rate": 0.3,
+    }
+    _emit_edge_decay_trail(
+        conn, symbol="BTC-USDT", decay=decay, new_mode="VALIDATING_PROBE",
+    )
+    decay_dir = vault / "SMC" / "EdgeDecay"
+    assert decay_dir.is_dir()
+    notes = list(decay_dir.glob("BTC-USDT_*.md"))
+    assert len(notes) >= 1
+    content = notes[0].read_text(encoding="utf-8")
+    assert "edge_decay" in content
+    assert "VALIDATING_PROBE" in content
+
+
 def test_learning_curve_bins_and_cumulates_correctly():
     """P3-20: 25 resolved trades / bin_size=10 → 3 bins (10,10,5)."""
     from learning.learning_curve import cumulative_curve

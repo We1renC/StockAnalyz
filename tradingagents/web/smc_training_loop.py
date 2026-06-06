@@ -120,6 +120,84 @@ _FM_OOS_MIN_TEST = 4              # each test fold must have ≥4 rows
 _FM_OOS_ACC_MARGIN = 0.02         # FM must beat LR by ≥2pp OOS to be adopted
 
 
+def _emit_edge_decay_trail(
+    adaptive_conn,
+    *,
+    symbol: str,
+    decay: dict,
+    new_mode: str,
+) -> None:
+    """P1-8+ — write an audit trail when edge decay forces a state demotion.
+
+    Two writes:
+      1. paper_acceptance_metrics.record_alert_delivery (SQLite alert log)
+      2. Obsidian vault note (best-effort, silently ignored if vault unset)
+    """
+    msg = decay.get("warning_message") or "edge decay detected"
+    # 1) SQLite alert row — non-blocking, swallow errors so a failed alert
+    # never breaks the learning tick.
+    if adaptive_conn is not None:
+        try:
+            record_alert_delivery(
+                adaptive_conn,
+                symbol=symbol,
+                event_type="edge_decay_demotion",
+                severity="warning",
+                channel="learning_loop",
+                delivered=True,
+                detail={
+                    "new_mode": new_mode,
+                    "reason": msg,
+                    "diagnostics": decay,
+                },
+            )
+        except Exception:
+            pass
+
+    # 2) Obsidian markdown note — only when vault path is configured
+    try:
+        from llm_providers import load_settings
+        from pathlib import Path
+        vault_path = (load_settings() or {}).get("obsidian_vault_path", "")
+        if not vault_path:
+            return
+        vault = Path(vault_path).expanduser()
+        if not vault.is_dir():
+            return
+        out_dir = vault / "SMC" / "EdgeDecay"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        safe_ts = ts.replace(":", "-").replace("+", "_")
+        safe_sym = symbol.replace("/", "-").replace(":", "-")
+        path = out_dir / f"{safe_sym}_{safe_ts}.md"
+        overall_E = decay.get("overall_expectancy")
+        recent_E = decay.get("recent_expectancy")
+        overall_wr = decay.get("overall_win_rate")
+        recent_wr = decay.get("recent_win_rate")
+        body = (
+            f"---\n"
+            f"type: smc-edge-decay\n"
+            f"symbol: {symbol}\n"
+            f"new_mode: {new_mode}\n"
+            f"triggered_at: {ts}\n"
+            f"tags: [smc, edge_decay, audit]\n"
+            f"---\n\n"
+            f"# Edge Decay Trail — {symbol}\n\n"
+            f"- triggered at: `{ts}`\n"
+            f"- demoted to: **{new_mode}**\n\n"
+            f"## Diagnostics\n\n"
+            f"- overall expectancy: `{overall_E}`\n"
+            f"- recent expectancy: `{recent_E}`\n"
+            f"- overall win rate: `{overall_wr}`\n"
+            f"- recent win rate: `{recent_wr}`\n\n"
+            f"## Reason\n\n"
+            f"> {msg}\n"
+        )
+        path.write_text(body, encoding="utf-8")
+    except Exception:
+        pass
+
+
 def _detect_recent_edge_decay(records: list[dict], window_size: int = 20) -> dict:
     """P1-8 — wrap learning.decay_monitor for in-process use.
 
@@ -839,6 +917,12 @@ def train_from_ledger(
         adaptive_state["edge_decay_reason"] = decay_block.get("warning_message")
         adaptive_state["risk_multiplier"] = min(
             float(adaptive_state.get("risk_multiplier") or 1.0), 0.1
+        )
+        # P1-8+ audit fix: leave an audit trail (alert + Obsidian) so the
+        # user finds out the system demoted itself.
+        _emit_edge_decay_trail(
+            adaptive_conn, symbol=symbol, decay=decay_block,
+            new_mode=adaptive_state["mode"],
         )
     else:
         adaptive_state["edge_decay_triggered"] = False
