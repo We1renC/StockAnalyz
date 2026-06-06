@@ -2566,3 +2566,131 @@ def test_historical_seeder_runs_post_seed_training(monkeypatch):
     assert payload["sample_size"] == 123
     assert payload["learning_indicator"] == "VALIDATING_PROBE"
     assert payload["weights_changed"] == ["fvg_weight"]
+
+
+def test_lr_and_fm_expose_predict_proba():
+    from learning.uniqueness_weighted_lr import fit_uniqueness_weighted_lr
+    from learning.fm_challenger import fit_factorization_machine_classifier
+    import numpy as np
+
+    # 製造假特徵與標籤
+    X = np.random.normal(0, 1, size=(40, 12))
+    y = (X[:, 0] > 0).astype(int)
+    w = np.ones(40, dtype=float)
+
+    # 1. 測試 LR
+    lr_fit = fit_uniqueness_weighted_lr(
+        X, y, w, feature_cols=[f"x{i}" for i in range(12)]
+    )
+    assert lr_fit["trained"] is True
+    assert "predict_proba" in lr_fit
+    assert callable(lr_fit["predict_proba"])
+
+    # 驗證 predict_proba 預估 1D 樣本
+    pred_1d = lr_fit["predict_proba"](X[0])
+    assert isinstance(pred_1d, float)
+    assert 0.0 <= pred_1d <= 1.0
+
+    # 驗證 predict_proba 預估 2D 樣本
+    pred_2d = lr_fit["predict_proba"](X)
+    assert pred_2d.shape == (40,)
+    assert np.all((pred_2d >= 0.0) & (pred_2d <= 1.0))
+
+    # 2. 測試 FM
+    fm_fit = fit_factorization_machine_classifier(
+        X, y, w, n_eff=35.0, feature_cols=[f"x{i}" for i in range(12)]
+    )
+    assert fm_fit["trained"] is True
+    assert "predict_proba" in fm_fit
+    assert callable(fm_fit["predict_proba"])
+
+    # 驗證 predict_proba 預估 1D 樣本
+    pred_fm_1d = fm_fit["predict_proba"](X[0])
+    assert isinstance(pred_fm_1d, float)
+    assert 0.0 <= pred_fm_1d <= 1.0
+
+    # 驗證 predict_proba 預估 2D 樣本
+    pred_fm_2d = fm_fit["predict_proba"](X)
+    assert pred_fm_2d.shape == (40,)
+    assert np.all((pred_fm_2d >= 0.0) & (pred_fm_2d <= 1.0))
+
+
+def test_soft_adoption_in_validating_probe_mode(tmp_path):
+    from smc_training_loop import train_from_ledger
+    from smc_quant import read_trade_ledger
+    from learning.adaptive_store import ensure_adaptive_calibration_schema
+    import sqlite3
+    import yaml
+
+    yaml_path = tmp_path / "strategy.yaml"
+    # 初始化 baseline 權重全都設成 2
+    yaml_path.write_text("confluence:\n  weights:\n    htf_bias_aligned: 2\n    unmitigated_ob: 2\n", encoding="utf-8")
+
+    db_path = tmp_path / "portfolio.db"
+    conn = sqlite3.connect(db_path)
+    ensure_adaptive_calibration_schema(conn)
+    conn.close()
+
+    # 製造假交易 ledger
+    ledger_path = tmp_path / "ledger.jsonl"
+    records = []
+    for idx in range(40):
+        records.append({
+            "trade_id": f"trade-{idx}",
+            "symbol": "BTC-USDT",
+            "entry_time": f"2026-06-06T00:{idx:02d}:00Z",
+            "exit_time": f"2026-06-06T01:{idx:02d}:00Z",
+            "entry_price": 100.0,
+            "exit_price": 102.0,
+            "stop_price": 99.0,
+            "target_price": 102.0,
+            "pnl_usdt": 2.0,
+            "r_multiple": 2.0,
+            "outcome": "target",
+            "htf_bias_aligned": 1,
+            "unmitigated_ob": 1,
+            "probe": 0,
+            "model_version": "smc_adaptive_v1",
+            "config_hash": "cfg-1",
+        })
+    with open(ledger_path, "w", encoding="utf-8") as fh:
+        for r in records:
+            fh.write(json.dumps(r) + "\n")
+
+    # 執行訓練
+    import smc_training_loop
+    from unittest.mock import patch
+
+    original_metrics = smc_training_loop._adaptive_metrics_from_records
+    def mock_metrics(*args, **kwargs):
+        res = original_metrics(*args, **kwargs)
+        res["validation"]["state_hint"] = "VALIDATING_PROBE"
+        res["validation"]["risk_multiplier"] = 0.05
+        return res
+
+    with patch("smc_training_loop._adaptive_metrics_from_records", side_effect=mock_metrics):
+        with patch("smc_training_loop.run_closed_loop_calibration") as mock_calib:
+            mock_calib.return_value = {
+                "verdict": {"adopt": True, "reason": "test_pass"},
+                "proposed_calibration": {
+                    "weights": {
+                        "htf_bias_aligned": 5,   # 原始 baseline 是 2，Proposed 是 5
+                        "unmitigated_ob": 2,
+                    }
+                }
+            }
+            res = train_from_ledger(
+                ledger_path=str(ledger_path),
+                strategy_yaml_path=str(yaml_path),
+                db_path=str(db_path),
+                symbol="BTC-USDT",
+                apply_strategy_patch=True,
+            )
+
+    # 驗證軟採用更新
+    assert res.adopted is True
+    assert res.strategy_yaml_updated is True
+    with open(yaml_path, "r", encoding="utf-8") as fh:
+        updated_yaml = yaml.safe_load(fh)
+    assert updated_yaml["confluence"]["weights"]["htf_bias_aligned"] == 3
+

@@ -115,11 +115,27 @@ def fit_factorization_machine_classifier(
             ranked_pairs.append((cols[i], cols[j], float(interaction_strength[i, j])))
     ranked_pairs.sort(key=lambda item: item[2], reverse=True)
 
+    def predict_proba_fn(X_test):
+        X_test_arr = np.asarray(X_test, dtype=float)
+        is_1d = X_test_arr.ndim == 1
+        if is_1d:
+            X_test_arr = X_test_arr[None, :]
+        means = scaled["means"]
+        stds = scaled["stds"]
+        Xz_test = (X_test_arr - means) / np.maximum(stds, 1e-8)
+        xv_test = Xz_test @ V
+        interaction_test = 0.5 * np.sum(xv_test ** 2 - (Xz_test ** 2) @ (V ** 2), axis=1)
+        logits_test = bias + Xz_test @ linear + interaction_test
+        p = _sigmoid(logits_test)
+        return p[0] if is_1d else p
+
     return {
         "trained": True,
         "embedding_dim": emb_dim,
         "bias": float(bias),
         "linear_weights": {col: float(linear[idx]) for idx, col in enumerate(cols)},
+        "V": V.tolist(),
+        "predict_proba": predict_proba_fn,
         "interaction_strength_matrix": interaction_strength.tolist(),
         "top_interactions": [
             {"left": left, "right": right, "strength": round(strength, 6)}

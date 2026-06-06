@@ -114,11 +114,25 @@ def fit_uniqueness_weighted_lr(
     proposal = {}
     for idx, col in enumerate(cols):
         proposal[col] = float(np.clip(theta[idx], -1.5, 1.5))
+
+    def predict_proba_fn(X_test):
+        X_test_arr = np.asarray(X_test, dtype=float)
+        is_1d = X_test_arr.ndim == 1
+        if is_1d:
+            X_test_arr = X_test_arr[None, :]
+        means = scaled["means"]
+        stds = scaled["stds"]
+        Xz_test = (X_test_arr - means) / np.maximum(stds, 1e-8)
+        z = Xz_test @ theta + bias
+        p = _sigmoid(z)
+        return p[0] if is_1d else p
+
     return {
         "trained": True,
         "coefficients": coefficients,
         "intercept": float(bias),
         "proposal": proposal,
+        "predict_proba": predict_proba_fn,
         "sample_weight_summary": {
             "min": round(float(np.min(w)), 6),
             "max": round(float(np.max(w)), 6),

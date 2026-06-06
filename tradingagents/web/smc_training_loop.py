@@ -1015,9 +1015,26 @@ def train_from_ledger(
             adaptive_state["mode"] = probe_plan.get("state_hint", "DRY_RUN")
             adaptive_state["risk_multiplier"] = 0.0
 
-    adopted = bool(verdict.get("adopt")) and adaptive_state["mode"] == "READY"
+    adopted = False
+    is_soft_adopted = False
+    if bool(verdict.get("adopt")):
+        if adaptive_state["mode"] == "READY":
+            adopted = True
+        elif adaptive_state["mode"] == "VALIDATING_PROBE" and proposed:
+            alpha = 0.3
+            soft_proposed = {}
+            for k, proposed_v in proposed.items():
+                before_v = weights_before.get(k, proposed_v)
+                soft_proposed[k] = int(round((1.0 - alpha) * before_v + alpha * proposed_v))
+            proposed = soft_proposed
+            adopted = True
+            is_soft_adopted = True
+            notes.append("soft_adoption active: updating weights incrementally by step 0.3 in VALIDATING_PROBE mode")
+            verdict = {**verdict, "adopt": True, "soft_adopted": True}
+
     if bool(verdict.get("adopt")) and not adopted:
         verdict = {**verdict, "adopt": False, "reason": "adaptive_state_not_ready"}
+
 
     runtime_patch = {
         "state": {
