@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from learning.adaptive_store import strategy_config_snapshot
+from smc_quant import LedgerPaths
 from smc_training_loop import TrainingResult, train_from_ledger
 
 
@@ -24,11 +25,12 @@ class AdaptiveCalibrationReport:
 
 def build_adaptive_calibration_report(
     *,
-    ledger_path: str = "tmp/smc_training_ledger.jsonl",
+    ledger_path: Optional[str] = None,
     strategy_yaml_path: str = "config/strategy.yaml",
     db_path: Optional[str] = None,
     symbol: str = "ALL",
 ) -> AdaptiveCalibrationReport:
+    ledger_path = ledger_path or LedgerPaths.training_ledger()
     snapshot = strategy_config_snapshot(strategy_yaml_path)
     result = train_from_ledger(
         ledger_path=ledger_path,

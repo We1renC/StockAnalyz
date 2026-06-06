@@ -58,6 +58,7 @@ import numpy as np
 import pandas as pd
 
 from smc_quant import (
+    LedgerPaths,
     SMCConfig,
     CONFLUENCE_WEIGHTS_DEFAULT,
     CONFLUENCE_THRESHOLD_DEFAULT,
@@ -69,6 +70,8 @@ from smc_quant import (
     estimate_pbo,
     edge_decay_check,
     evaluate_entry_models,
+    load_runtime_cluster_weight_table,
+    load_trade_records,
     monthly_edge_stability,
     normalize_ohlcv,
     persist_trade_records,
@@ -383,7 +386,7 @@ def auto_backtest_window(
     *,
     interval: str = "1h",
     bars: int = 500,
-    ledger_path: str = "tmp/smc_training_ledger.jsonl",
+    ledger_path: Optional[str] = None,
     max_hold_bars: int = 20,
     db_path: Optional[str] = None,
     model_version: str = ADAPTIVE_MODEL_VERSION,
@@ -393,6 +396,7 @@ def auto_backtest_window(
 
     Returns a compact summary so caller can chart it.
     """
+    ledger_path = ledger_path or LedgerPaths.training_ledger()
     profile = profile_for_symbol(symbol)
     kl = api.klines(symbol, interval=interval, limit=bars)
     rows = (kl.get("payload") or {}).get("data") or []
@@ -406,11 +410,15 @@ def auto_backtest_window(
     )
     # evaluate_entry_models expects lowercase columns (h.low etc.)
     df = normalize_ohlcv(df_raw)
+    cluster_weight_table = load_runtime_cluster_weight_table(ledger_path)
     analysis = build_smc_analysis(
         df_raw, symbol=symbol,
+        timeframe=interval,
         config=SMCConfig(swing_length=profile.swing_length,
                          internal_swing_length=profile.internal_swing_length),
         account_equity=100_000.0,
+        cluster_weight_table=cluster_weight_table,
+        cluster_key_hint=("runtime", symbol, interval, None),
     )
     config_snapshot = strategy_config_snapshot()
     em = (analysis.get("concepts") or {}).get("entry_models") or {}
@@ -755,7 +763,7 @@ def _adaptive_metrics_from_records(records: list[dict], calib: dict) -> dict:
 
 
 def train_from_ledger(
-    ledger_path: str = "tmp/smc_training_ledger.jsonl",
+    ledger_path: Optional[str] = None,
     strategy_yaml_path: str = "config/strategy.yaml",
     *,
     base_weights: Optional[dict[str, int]] = None,
@@ -774,14 +782,8 @@ def train_from_ledger(
     weights_before = dict(CONFLUENCE_WEIGHTS_DEFAULT)
     config_snapshot = strategy_config_snapshot(strategy_yaml_path)
 
-    records: list[dict] = []
-    p = Path(ledger_path)
-    if p.exists():
-        for line in p.read_text(encoding="utf-8").splitlines():
-            try:
-                records.append(json.loads(line))
-            except Exception:
-                continue
+    ledger_path = ledger_path or LedgerPaths.training_ledger()
+    records: list[dict] = load_trade_records(ledger_path)
     if not records:
         if db_path:
             conn = sqlite3.connect(db_path)
@@ -1277,7 +1279,7 @@ class LearningAudit:
 
 
 def audit_learning_capability(
-    ledger_path: str = "tmp/smc_training_ledger.jsonl",
+    ledger_path: Optional[str] = None,
     *,
     symbol: Optional[str] = None,
     baseline_weights: Optional[dict] = None,
@@ -1292,14 +1294,8 @@ def audit_learning_capability(
       • before/after expected_R difference is positive
     """
     notes: list[str] = []
-    records: list[dict] = []
-    p = Path(ledger_path)
-    if p.exists():
-        for line in p.read_text(encoding="utf-8").splitlines():
-            try:
-                records.append(json.loads(line))
-            except Exception:
-                continue
+    ledger_path = ledger_path or LedgerPaths.training_ledger()
+    records: list[dict] = load_trade_records(ledger_path)
     if symbol:
         records = [r for r in records if r.get("symbol") == symbol]
 
@@ -1370,12 +1366,13 @@ def run_training_cycle(
     db_path: str,
     interval: str = "1h",
     bars: int = 500,
-    ledger_path: str = "tmp/smc_training_ledger.jsonl",
+    ledger_path: Optional[str] = None,
 ) -> dict:
     """Full cycle: backtest each symbol → ingest evidence → train →
     audit learning. Single API for the UI 'Train Now' button."""
     started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     t0 = time.time()
+    ledger_path = ledger_path or LedgerPaths.training_ledger()
     conn = sqlite3.connect(db_path); conn.row_factory = sqlite3.Row
     backtest_summaries: list[dict] = []
     try:

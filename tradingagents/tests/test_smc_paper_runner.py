@@ -167,3 +167,47 @@ def test_smc_paper_runner_places_order_when_entry_passes_all_gates(crypto_app, p
         assert records_file.exists()
         lines = [l for l in records_file.read_text(encoding="utf-8").splitlines() if l.strip()]
         assert lines, "trade record journal should have at least one row"
+
+
+def test_smc_paper_runner_threads_cluster_weight_table_into_analysis(tmp_path, monkeypatch):
+    """B2: runtime runner must pass the learned cluster table into build_smc_analysis."""
+    from smc_paper_runner import SmcPaperRunner, PaperRunConfig
+    import smc_paper_runner as runner_mod
+
+    class _StubClient:
+        def klines(self, symbol, interval="1h", limit=200):
+            base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+            rows = []
+            price = 30000.0
+            for i in range(limit):
+                rows.append({
+                    "open_time": (base + timedelta(hours=i)).isoformat().replace("+00:00", "Z"),
+                    "open": str(price),
+                    "high": str(price + 50),
+                    "low": str(price - 50),
+                    "close": str(price + 5),
+                    "volume": "10.0",
+                })
+                price += 5
+            return {"status": 200, "payload": {"data": rows}}
+
+    captured = {}
+
+    def fake_analysis(df, symbol, **kwargs):
+        captured["symbol"] = symbol
+        captured["kwargs"] = kwargs
+        return {"summary": {"bias": "bullish"}, "concepts": {"entry_models": {}}}
+
+    monkeypatch.setattr(runner_mod, "build_smc_analysis", fake_analysis)
+    monkeypatch.setattr(runner_mod, "load_runtime_cluster_weight_table", lambda path: {"cluster": "ok"})
+
+    runner = SmcPaperRunner(
+        _StubClient(),
+        PaperRunConfig(symbol="BTC-USDT", interval="1h", bars=40, journal_path=str(tmp_path / "paper.jsonl")),
+    )
+    result = runner.run_once()
+
+    assert result.action == "skipped:no_qualified_entry"
+    assert captured["symbol"] == "BTC-USDT"
+    assert captured["kwargs"]["timeframe"] == "1h"
+    assert captured["kwargs"]["cluster_weight_table"] == {"cluster": "ok"}

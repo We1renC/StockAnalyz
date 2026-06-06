@@ -47,6 +47,7 @@ from smc_quant import (
     SMCConfig,
     build_smc_analysis,
     build_trade_record,
+    load_runtime_cluster_weight_table,
 )
 from smc_paper_runner import CryptoApiClient, SmcPaperRunner, PaperRunConfig
 from paper_execution import PaperOrderIntent, simulate_market_order
@@ -128,6 +129,7 @@ class UnifiedTradingSession:
         """Run §3–§17 SMC engine across every configured symbol."""
         cfg = self.config
         decisions: list[SymbolDecision] = []
+        cluster_weight_table = load_runtime_cluster_weight_table()
         for sym in cfg.symbols:
             runner = SmcPaperRunner(
                 self.api,
@@ -150,11 +152,14 @@ class UnifiedTradingSession:
                 continue
             analysis = build_smc_analysis(
                 df, symbol=sym,
+                timeframe=cfg.interval,
                 config=SMCConfig(
                     swing_length=cfg.swing_length,
                     internal_swing_length=cfg.internal_swing_length,
                 ),
                 account_equity=cfg.account_equity,
+                cluster_weight_table=cluster_weight_table,
+                cluster_key_hint=("runtime", sym, cfg.interval, None),
             )
             bias = (analysis.get("summary") or {}).get("bias")
             entry = runner._pick_best_entry(analysis)

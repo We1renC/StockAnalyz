@@ -6514,7 +6514,8 @@ def estimate_pbo(in_sample_R: list[float], out_of_sample_R: list[float]) -> dict
     }
 
 
-TRADE_RECORD_SCHEMA_VERSION = 1
+TRADE_LEDGER_SCHEMA_VERSION = 2
+TRADE_RECORD_SCHEMA_VERSION = TRADE_LEDGER_SCHEMA_VERSION
 
 
 def build_trade_record(
@@ -6671,12 +6672,6 @@ def _trade_dedup_key(rec: dict) -> str:
     ])
 
 
-# Audit fix A4: every trade record gets stamped with the schema version
-# at persist time so future migrations can route by version (instead of
-# silently breaking when a field is renamed).
-TRADE_LEDGER_SCHEMA_VERSION = 2
-
-
 # Audit fix C2: hardcoded paths were repeated 17× across app.py / runner /
 # training_loop / tests. Centralize so a single edit retargets the whole
 # system (e.g. to switch the prod ledger to /var/lib/smc/ or to parquet).
@@ -6713,8 +6708,12 @@ class LedgerPaths:
 
 
 def _stamp_schema_version(record: dict) -> dict:
-    """Set ``schema_version`` if missing. Idempotent."""
-    if "schema_version" not in record:
+    """Upgrade persisted records to the current schema version."""
+    try:
+        current = int(record.get("schema_version") or 0)
+    except (TypeError, ValueError):
+        current = 0
+    if current < TRADE_LEDGER_SCHEMA_VERSION:
         record["schema_version"] = TRADE_LEDGER_SCHEMA_VERSION
     return record
 
@@ -6820,18 +6819,47 @@ def load_trade_records(path: str) -> list[dict]:
         except Exception:
             return []
     records: list[dict] = []
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                # Audit fix A4: route through version normalizer so v1
-                # records get backfilled fields and a v2 stamp.
-                records.append(_normalize_record_by_version(json.loads(line)))
-            except Exception:
-                continue
+    try:
+        from learning.file_lock import locked_read
+    except Exception:
+        from contextlib import contextmanager
+        @contextmanager
+        def locked_read(_path):  # type: ignore[no-redef]
+            yield
+    with locked_read(path):
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    # Audit fix A4: route through version normalizer so v1
+                    # records get backfilled fields and a v2 stamp.
+                    records.append(_normalize_record_by_version(json.loads(line)))
+                except Exception:
+                    continue
     return records
+
+
+def load_runtime_cluster_weight_table(
+    ledger_path: Optional[str] = None,
+    *,
+    min_samples: int = 10,
+) -> dict:
+    """Build the current cluster-weight table from the shared training ledger."""
+    try:
+        from learning.cluster_ensemble import build_cluster_weight_table
+        from learning.ledger_cache import cached_load_trade_records
+    except Exception:
+        return {}
+    records = cached_load_trade_records(ledger_path or LedgerPaths.training_ledger())
+    if not records:
+        return {}
+    return build_cluster_weight_table(
+        records,
+        factors=list(CONFLUENCE_WEIGHTS_DEFAULT.keys()),
+        min_samples=min_samples,
+    )
 
 
 def compute_expectancy(trade_records: list[dict]) -> dict:

@@ -34,10 +34,12 @@ import pandas as pd
 
 # Layer 1
 from smc_quant import (
+    LedgerPaths,
     compute_expectancy,
     sharpe_ratio,
     deflated_sharpe_ratio,
     bonferroni_threshold,
+    load_trade_records,
     monthly_edge_stability,
 )
 # Layer 2
@@ -86,16 +88,7 @@ from paper_acceptance_security import run_security_scan
 # ---------------------------------------------------------------------------
 
 def _load_records(ledger_path: str) -> list[dict]:
-    p = Path(ledger_path)
-    if not p.exists():
-        return []
-    out: list[dict] = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        try:
-            out.append(json.loads(line))
-        except Exception:
-            continue
-    return out
+    return load_trade_records(ledger_path)
 
 
 def _records_for(records: list[dict], symbol: Optional[str]) -> list[dict]:
@@ -359,13 +352,14 @@ def _learning_indicator(report: dict, records: list[dict]) -> str:
 
 def build_learning_report(
     *,
-    ledger_path: str = "tmp/smc_training_ledger.jsonl",
+    ledger_path: Optional[str] = None,
     db_path: Optional[str] = None,
     symbol: Optional[str] = None,
     df_sample: Optional[pd.DataFrame] = None,
 ) -> LearningReport:
     """One-call orchestrator — runs every learning primitive."""
     t0 = time.time()
+    ledger_path = ledger_path or LedgerPaths.training_ledger()
     records = _records_for(_load_records(ledger_path), symbol)
 
     l1 = layer_statistics(records)

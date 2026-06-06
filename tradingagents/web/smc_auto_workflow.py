@@ -210,8 +210,8 @@ def _recent_outcomes_for_cooldown(db_path: str, symbol: str, n: int = 5) -> list
     Returns ``["win","loss","win"]``-style list.
     """
     try:
-        from smc_quant import load_trade_records
-        all_recs = load_trade_records("tmp/smc_training_ledger.jsonl")
+        from smc_quant import LedgerPaths, load_trade_records
+        all_recs = load_trade_records(LedgerPaths.training_ledger())
     except Exception:
         return []
     filtered = []

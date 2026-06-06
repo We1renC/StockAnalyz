@@ -392,6 +392,22 @@ def test_build_trade_record_accepts_regime_as_string():
     assert rec["regime_detail"] == {}
 
 
+def test_build_trade_record_emits_current_schema_version():
+    """A4: newly built records should already emit the latest schema version."""
+    from smc_quant import (
+        TRADE_LEDGER_SCHEMA_VERSION,
+        build_trade_record,
+    )
+    rec = build_trade_record(
+        {"model": "x", "direction": 1, "entry": 100, "stop": 98, "target": 104,
+         "factors": {}, "confluence": {"score": 8}, "triggered": True},
+        trade_outcome={"outcome": "target", "r_multiple": 1.0, "entry_index": 0},
+        symbol="BTC-USDT",
+        timeframe="1h",
+    )
+    assert rec["schema_version"] == TRADE_LEDGER_SCHEMA_VERSION == 2
+
+
 def test_schema_version_stamped_on_persist(tmp_path):
     """A4: persist_trade_records stamps schema_version=2 on every record."""
     from smc_quant import persist_trade_records, load_trade_records

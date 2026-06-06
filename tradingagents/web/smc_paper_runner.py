@@ -37,11 +37,13 @@ from typing import Any, Optional
 import pandas as pd
 
 from smc_quant import (
+    LedgerPaths,
     SMCConfig,
     apply_risk_pipeline,
     build_smc_analysis,
     build_trade_record,
     calculate_position_size,
+    load_runtime_cluster_weight_table,
     persist_trade_records,
 )
 
@@ -155,7 +157,7 @@ class PaperRunConfig:
     risk_pct: float = 0.01
     min_confluence_score: int = 8
     min_rr: float = 1.5
-    journal_path: str = "tmp/smc_paper_journal.jsonl"
+    journal_path: str = field(default_factory=LedgerPaths.paper_journal)
     # SMC engine tuning
     swing_length: int = 5
     internal_swing_length: int = 3
@@ -287,7 +289,7 @@ class SmcPaperRunner:
             # Only fire if state is READY (caller passes via _last_state cache)
             state = getattr(self, "_last_state_hint", None) or "READY"
             try:
-                all_recs = load_trade_records("tmp/smc_training_ledger.jsonl")
+                all_recs = load_trade_records(LedgerPaths.training_ledger())
             except Exception:
                 all_recs = []
             boundary_n = count_exploration_trades(all_recs, symbol=self.config.symbol)
@@ -324,11 +326,11 @@ class SmcPaperRunner:
             from smc_quant import load_trade_records
             if not hasattr(self, "_mae_mfe_cal_cache"):
                 ledger_path = getattr(self.config, "journal_path",
-                                       "tmp/smc_paper_journal.jsonl")
+                                       LedgerPaths.paper_journal())
                 trade_ledger = ledger_path.replace(".jsonl", "_trades.jsonl")
                 records = load_trade_records(trade_ledger)
                 try:
-                    records += load_trade_records("tmp/smc_training_ledger.jsonl")
+                    records += load_trade_records(LedgerPaths.training_ledger())
                 except Exception:
                     pass
                 self._mae_mfe_cal_cache = build_model_calibration_table(records) or {}
@@ -461,15 +463,21 @@ class SmcPaperRunner:
         # the analysis so candidate RR (used by _pick_best_entry) reflects
         # calibrated stop/target.
         cal_table = self._build_mae_mfe_table()
+        cluster_weight_table = load_runtime_cluster_weight_table(
+            LedgerPaths.training_ledger()
+        )
         analysis = build_smc_analysis(
             df,
             symbol=cfg.symbol,
+            timeframe=cfg.interval,
             config=SMCConfig(
                 swing_length=cfg.swing_length,
                 internal_swing_length=cfg.internal_swing_length,
             ),
             account_equity=cfg.account_equity,
             mae_mfe_calibration=cal_table,
+            cluster_weight_table=cluster_weight_table,
+            cluster_key_hint=("runtime", cfg.symbol, cfg.interval, None),
         )
         result.bias = (analysis.get("summary") or {}).get("bias")
 
@@ -567,7 +575,7 @@ class SmcPaperRunner:
         result.trade_record["plan_entry"] = float(entry.get("entry") or 0)
         # Audit fix B3 + B4: stamp source / interval / regime so
         # live_vs_backtest_correlation gate and cluster_ensemble can bucket.
-        result.trade_record["source"] = "paper" if order_id else "live"
+        result.trade_record["source"] = "paper"
         result.trade_record["interval"] = cfg.interval
         try:
             from smc_quant import classify_asset_volatility
