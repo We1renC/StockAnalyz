@@ -191,6 +191,48 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_ledger_cache_hits_on_unchanged_mtime(tmp_path):
+    """A3: second call with same mtime → cache hit, no re-read."""
+    from learning.ledger_cache import _LedgerCache
+    cache = _LedgerCache(max_entries=4, ttl_sec=60.0)
+    f = tmp_path / "ledger.jsonl"
+    f.write_text('{"a":1}\n{"a":2}\n', encoding="utf-8")
+
+    calls = []
+    def loader(path):
+        calls.append(path)
+        return [{"a": 1}, {"a": 2}]
+
+    r1 = cache.get(str(f), loader)
+    r2 = cache.get(str(f), loader)
+    assert r1 == r2
+    assert len(calls) == 1  # second call hit cache
+    assert cache.stats()["hits"] == 1
+    assert cache.stats()["misses"] == 1
+
+
+def test_ledger_cache_invalidates_on_mtime_change(tmp_path):
+    """A3: file rewritten → mtime changes → cache miss → re-read."""
+    import os, time
+    from learning.ledger_cache import _LedgerCache
+    cache = _LedgerCache(max_entries=4, ttl_sec=60.0)
+    f = tmp_path / "ledger.jsonl"
+    f.write_text('{"a":1}\n', encoding="utf-8")
+
+    calls = []
+    def loader(path):
+        calls.append(path)
+        return [{"a": len(calls)}]
+
+    cache.get(str(f), loader)
+    # Force mtime advance (some filesystems coalesce ns; touch with future ts)
+    future = time.time() + 5
+    os.utime(f, (future, future))
+    f.write_text('{"a":1}\n{"a":2}\n', encoding="utf-8")
+    cache.get(str(f), loader)
+    assert len(calls) == 2
+
+
 def test_api_token_middleware_off_when_env_unset(monkeypatch):
     """A2: DASHBOARD_API_TOKEN unset → middleware is a no-op."""
     monkeypatch.delenv("DASHBOARD_API_TOKEN", raising=False)

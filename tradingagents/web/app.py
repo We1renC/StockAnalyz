@@ -4189,7 +4189,7 @@ def api_smc_crypto_mae_mfe_calibration(symbol: Optional[str] = None):
         from learning.mae_mfe_calibration import (
             build_model_calibration_table, calibration_summary,
         )
-        from smc_quant import load_trade_records
+        from learning.ledger_cache import cached_load_trade_records as load_trade_records
         records = load_trade_records("tmp/smc_training_ledger.jsonl")
         if symbol:
             records = [r for r in records if r.get("symbol") == symbol]
@@ -4212,7 +4212,7 @@ def api_smc_crypto_score_calibration(symbol: Optional[str] = None):
     """
     try:
         from learning.score_calibration import calibration_diagnostics
-        from smc_quant import load_trade_records
+        from learning.ledger_cache import cached_load_trade_records as load_trade_records
         records = load_trade_records("tmp/smc_training_ledger.jsonl")
         if symbol:
             records = [r for r in records if r.get("symbol") == symbol]
@@ -4234,7 +4234,8 @@ def api_smc_crypto_cluster_ensemble(symbol: Optional[str] = None,
         from learning.cluster_ensemble import (
             build_cluster_weight_table, cluster_summary,
         )
-        from smc_quant import load_trade_records, CONFLUENCE_WEIGHTS_DEFAULT
+        from smc_quant import CONFLUENCE_WEIGHTS_DEFAULT
+        from learning.ledger_cache import cached_load_trade_records as load_trade_records
         records = load_trade_records("tmp/smc_training_ledger.jsonl")
         if symbol:
             records = [r for r in records if r.get("symbol") == symbol]
@@ -4264,7 +4265,7 @@ def api_smc_crypto_hyperparameter_sweep(symbol: Optional[str] = None,
         from learning.hyperparameter_sweep import (
             sweep_hyperparameters, should_apply_recommendation,
         )
-        from smc_quant import load_trade_records
+        from learning.ledger_cache import cached_load_trade_records as load_trade_records
         records = load_trade_records("tmp/smc_training_ledger.jsonl")
         if symbol:
             records = [r for r in records if r.get("symbol") == symbol]
@@ -4290,7 +4291,7 @@ def api_smc_crypto_real_pnl_gates(symbol: Optional[str] = None,
     """
     try:
         from learning.real_pnl_gates import run_real_pnl_gates
-        from smc_quant import load_trade_records
+        from learning.ledger_cache import cached_load_trade_records as load_trade_records
         records = load_trade_records("tmp/smc_training_ledger.jsonl")
         if symbol:
             records = [r for r in records if r.get("symbol") == symbol]
@@ -4318,7 +4319,7 @@ def api_smc_crypto_learning_curve(symbol: Optional[str] = None,
     """
     try:
         from learning.learning_curve import learning_curve_diagnostics
-        from smc_quant import load_trade_records
+        from learning.ledger_cache import cached_load_trade_records as load_trade_records
         records = load_trade_records("tmp/smc_training_ledger.jsonl")
         if symbol:
             records = [r for r in records if r.get("symbol") == symbol]
