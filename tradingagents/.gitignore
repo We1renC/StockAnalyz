@@ -23,6 +23,23 @@ web/portfolio.db-*
 web/seed_data_private.py
 **/seed_data_private.py
 
+# SMC 學習子系統訓練資料
+# 與 portfolio.db 同風險類別：含真實 R-multiple、trade timing、
+# symbol 偏好、策略行為歷史。詳見 web/SMC_OPS.md。
+**/tmp/
+**/smc_training_ledger*.jsonl
+**/smc_paper_journal*.jsonl
+**/smc_missed_signals*.jsonl
+**/decommissioned.json
+**/ledger_archive/
+**/.smc_*.lock
+**/reset_backup_*/
+**/smc_auto/
+**/smc_unified/
+*.jsonl.bak
+*.jsonl.gz
+*.bak
+
 # 工作筆記（個人交接、不適合公開）
 .agent-handoff.md
 *.handoff.md
