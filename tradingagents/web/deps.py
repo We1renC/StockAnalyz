@@ -18,9 +18,31 @@ call-sites keep working unchanged.
 
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 from pathlib import Path
+
+import numpy as np
+
+
+def sanitize_float_values(obj):
+    """Recursively replace NaN / ±inf with None for JSON safety.
+
+    Moved here from app.py (F1-cont) so routers can sanitize responses
+    without importing app. app.py re-exports it for its own call-sites.
+    """
+    if isinstance(obj, dict):
+        return {k: sanitize_float_values(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_float_values(v) for v in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+    elif isinstance(obj, (np.floating, np.integer)):
+        if np.isnan(obj):
+            return None
+    return obj
 
 
 def portfolio_db_path() -> str:
