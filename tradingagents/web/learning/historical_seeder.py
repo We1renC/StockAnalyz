@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict, is_dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -90,6 +90,54 @@ class SeedResult:
     window_start: str
     window_end: str
     elapsed_s: float
+
+
+def run_post_seed_training(
+    *,
+    ledger_path: Optional[str] = None,
+    db_path: Optional[str] = None,
+    symbol: str = "ALL",
+) -> dict:
+    """Close the loop after a historical backfill by retraining once.
+
+    Seeding writes trade records into the shared training ledger, but that
+    alone does not refresh adaptive gates / runtime patches. This helper runs
+    one learning cycle over the freshly seeded ledger and returns a compact
+    summary for CLI or automation callers.
+    """
+    from smc_quant import LedgerPaths
+    from smc_training_loop import train_from_ledger
+
+    result = train_from_ledger(
+        ledger_path=ledger_path or LedgerPaths.training_ledger(),
+        db_path=db_path,
+        symbol=symbol,
+    )
+    if is_dataclass(result):
+        payload = asdict(result)
+    elif isinstance(result, dict):
+        payload = dict(result)
+    else:
+        payload = {
+            "sample_size": getattr(result, "sample_size", 0),
+            "adopted": getattr(result, "adopted", False),
+            "verdict": getattr(result, "verdict", {}),
+            "weights_changed": getattr(result, "weights_changed", []),
+            "adaptive_patch_key": getattr(result, "adaptive_patch_key", None),
+            "strategy_patch_key": getattr(result, "strategy_patch_key", None),
+            "notes": getattr(result, "notes", []),
+            "adaptive_state": getattr(result, "adaptive_state", {}),
+        }
+    return {
+        "sample_size": payload["sample_size"],
+        "adopted": payload["adopted"],
+        "verdict": payload["verdict"],
+        "learning_indicator": payload.get("adaptive_state", {}).get("mode"),
+        "weights_changed": payload["weights_changed"],
+        "adaptive_patch_key": payload.get("adaptive_patch_key"),
+        "strategy_patch_key": payload.get("strategy_patch_key"),
+        "notes": payload["notes"],
+    }
 
 
 def seed_one_symbol(
@@ -208,6 +256,8 @@ def _cli() -> None:
                      help="override profile interval (otherwise per profile_for_symbol)")
     p.add_argument("--bars-per-run", type=int, default=500)
     p.add_argument("--step-bars", type=int, default=100)
+    p.add_argument("--skip-training", action="store_true",
+                   help="only seed history, skip the post-seed learning cycle")
     args = p.parse_args()
 
     from smc_auto_workflow import profile_for_symbol
@@ -228,6 +278,22 @@ def _cli() -> None:
     for r in results:
         print(f"{r.symbol:<12} {r.interval:<6} {r.klines_fetched:>7} "
               f"{r.backtests_run:>10} {r.trades_persisted:>8} {r.elapsed_s:>7}s")
+
+    if not args.skip_training:
+        training = run_post_seed_training()
+        print("\n=== post-seed training ===")
+        print(
+            f"sample_size={training['sample_size']} "
+            f"mode={training.get('learning_indicator')} "
+            f"adopted={training['adopted']} "
+            f"verdict={training['verdict']}"
+        )
+        if training.get("weights_changed"):
+            print(f"weights_changed={training['weights_changed']}")
+        if training.get("notes"):
+            print("notes:")
+            for note in training["notes"]:
+                print(f"  - {note}")
 
 
 if __name__ == "__main__":

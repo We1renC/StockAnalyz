@@ -2485,3 +2485,26 @@ def test_historical_seeder_fetch_klines_window():
     # weekend gaps / partial bars / clock drift)
     assert 100 <= len(rows) <= 300, f"expected ~240 bars, got {len(rows)}"
     assert "open" in rows[0] and "close" in rows[0]
+
+
+def test_historical_seeder_runs_post_seed_training(monkeypatch):
+    from learning.historical_seeder import run_post_seed_training
+
+    class _FakeResult:
+        sample_size = 123
+        adopted = False
+        verdict = {"adopt": False, "reason": "quality_floor_not_met"}
+        weights_changed = ["fvg_weight"]
+        adaptive_patch_key = "patch-1"
+        strategy_patch_key = None
+        notes = ["seeded ledger consumed"]
+        adaptive_state = {"mode": "VALIDATING_PROBE"}
+
+    monkeypatch.setattr(
+        "smc_training_loop.train_from_ledger",
+        lambda **kwargs: _FakeResult(),
+    )
+    payload = run_post_seed_training(ledger_path="/tmp/demo.jsonl", symbol="BTC-USDT")
+    assert payload["sample_size"] == 123
+    assert payload["learning_indicator"] == "VALIDATING_PROBE"
+    assert payload["weights_changed"] == ["fvg_weight"]
