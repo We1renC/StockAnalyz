@@ -34,6 +34,40 @@ def _rr_value(record: dict) -> float:
     return 0.0
 
 
+def _cost_for_record(
+    record: dict,
+    *,
+    fee_per_trade: float,
+    slippage_sampler=None,
+) -> float:
+    """Audit fix D5 — return per-trade execution cost in P&L units.
+
+    Default behaviour (sampler=None) matches the legacy flat-fee model
+    so older callers stay unchanged. When a sampler is supplied:
+
+      • Sampler signature: ``(symbol, side) -> slippage_bps``
+        (see learning.slippage_model.build_slippage_sampler)
+      • Cost subtraction = ``fee_per_trade + slippage_bps / 10_000``
+        — bps is fractional, additive to the flat fee
+      • Sampler errors / missing fields fall back to flat fee
+
+    Entry + exit are typically a round-trip in our ledger; we charge
+    *one* slippage hit per trade (entry side) — the exit is at the
+    structural stop/target which is, by definition, no-discretion.
+    """
+    flat = float(fee_per_trade or 0.0)
+    if slippage_sampler is None:
+        return flat
+    try:
+        symbol = record.get("symbol") or ""
+        direction = int(record.get("direction") or 0)
+        side = "buy" if direction >= 0 else "sell"
+        slip_bps = float(slippage_sampler(symbol, side) or 0.0)
+        return flat + slip_bps / 10_000.0
+    except Exception:
+        return flat
+
+
 def _selected_returns(
     records: list[dict],
     *,
@@ -41,6 +75,7 @@ def _selected_returns(
     min_rr: float,
     risk_pct: float,
     fee_per_trade: float = 0.001,
+    slippage_sampler=None,
 ) -> list[float]:
     """Return per-trade realized returns for rows that pass the candidate gate."""
     rs: list[float] = []
@@ -54,9 +89,10 @@ def _selected_returns(
             rm_val = float(rm)
         except (TypeError, ValueError):
             continue
-        # P&L per trade in account-currency units = r_multiple × risk_pct
-        # minus a flat fee fraction.
-        rs.append(rm_val * risk_pct - fee_per_trade)
+        cost = _cost_for_record(r, fee_per_trade=fee_per_trade,
+                                  slippage_sampler=slippage_sampler)
+        # P&L per trade = r_multiple × risk_pct − (fee + slippage).
+        rs.append(rm_val * risk_pct - cost)
     return rs
 
 
@@ -89,6 +125,7 @@ def _simulate(
     min_rr: float,
     risk_pct: float,
     fee_per_trade: float = 0.001,
+    slippage_sampler=None,
 ) -> dict:
     """Replay history with candidate knobs; return P&L stats."""
     rs = _selected_returns(
@@ -97,6 +134,7 @@ def _simulate(
         min_rr=min_rr,
         risk_pct=risk_pct,
         fee_per_trade=fee_per_trade,
+        slippage_sampler=slippage_sampler,
     )
     return _stats_from_returns(rs)
 
@@ -126,6 +164,7 @@ def sweep_hyperparameters(
     risk_pct_grid: Optional[list[float]] = None,
     min_trades: int = 20,
     fee_per_trade: float = 0.001,
+    slippage_sampler=None,
 ) -> dict:
     """Run grid sweep over (min_score, min_rr, risk_pct).
 
@@ -160,6 +199,7 @@ def sweep_hyperparameters(
             min_rr=r,
             risk_pct=p,
             fee_per_trade=fee_per_trade,
+            slippage_sampler=slippage_sampler,
         )
         cells.append(
             {
@@ -194,6 +234,33 @@ def sweep_hyperparameters(
     }
 
 
+def build_empirical_slippage_sampler(
+    fills: list[dict],
+    submitted_prices: dict[str, float],
+    *,
+    default_bps: float = 5.0,
+    min_samples_for_real: int = 8,
+    percentile: float = 0.75,
+):
+    """Audit fix D5 — convenience wrapper: fills → sampler.
+
+    Wraps ``learning.slippage_model.estimate_slippage_distribution`` +
+    ``build_slippage_sampler`` so sweep callers don't have to import two
+    modules.
+    """
+    try:
+        from learning.slippage_model import (
+            estimate_slippage_distribution, build_slippage_sampler,
+        )
+    except Exception:
+        return None
+    dist = estimate_slippage_distribution(fills or [], submitted_prices or {})
+    return build_slippage_sampler(
+        dist, default_bps=default_bps,
+        min_samples_for_real=min_samples_for_real, percentile=percentile,
+    )
+
+
 def _chronological_records(records: list[dict]) -> list[dict]:
     """Sort resolved records by entry_time (ISO string sort works for UTC)."""
     out = [
@@ -216,6 +283,7 @@ def sweep_walk_forward(
     risk_pct_grid: Optional[list[float]] = None,
     min_trades_per_fold: int = 10,
     fee_per_trade: float = 0.001,
+    slippage_sampler=None,
 ) -> dict:
     """Purged expanding-window walk-forward over the ledger.
 
@@ -320,6 +388,7 @@ def sweep_walk_forward(
             risk_pct_grid=risk_pct_grid,
             min_trades=min_trades_per_fold,
             fee_per_trade=fee_per_trade,
+            slippage_sampler=slippage_sampler,
         )
         if train_sweep.get("status") != "ok":
             per_fold.append(
@@ -341,6 +410,7 @@ def sweep_walk_forward(
             min_rr=picked["min_rr"],
             risk_pct=picked["risk_pct"],
             fee_per_trade=fee_per_trade,
+            slippage_sampler=slippage_sampler,
         )
         if picked_oos_score["n_trades"] >= 1:
             train_selected_oos_sharpes.append(float(picked_oos_score["sharpe"]))
@@ -367,6 +437,7 @@ def sweep_walk_forward(
                 min_rr=r,
                 risk_pct=p,
                 fee_per_trade=fee_per_trade,
+                slippage_sampler=slippage_sampler,
             )
             fold_score = _stats_from_returns(oos_returns)
             cell = aggregate[(s, r, p)]

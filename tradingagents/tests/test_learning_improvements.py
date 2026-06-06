@@ -191,6 +191,47 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_cost_aware_sweep_penalizes_high_slippage_symbols():
+    """D5: same records, different slippage profile → flat fee vs heavy
+    slippage sampler give different total/sharpe."""
+    from learning.hyperparameter_sweep import _simulate
+    records = [
+        {"confluence_score": 9, "rr_planned": 2.5, "outcome": "target",
+         "r_multiple": 1.0, "symbol": "BTC", "direction": 1}
+        for _ in range(20)
+    ]
+    base = _simulate(records, min_score=8, min_rr=2.0, risk_pct=1.0)
+    # 50 bps slippage on every fill
+    heavy = lambda sym, side: 50.0
+    cost = _simulate(records, min_score=8, min_rr=2.0, risk_pct=1.0,
+                       slippage_sampler=heavy)
+    assert base["total"] > cost["total"]   # heavy slippage subtracts more
+    # 20 trades × 50 bps × 1.0 risk_pct = 20 × 0.005 = 0.10 dollars difference
+    assert abs((base["total"] - cost["total"]) - 0.10) < 1e-6
+
+
+def test_build_empirical_slippage_sampler_from_fills():
+    """D5: convenience helper produces a working sampler from real fills."""
+    from learning.hyperparameter_sweep import build_empirical_slippage_sampler
+    fills = []
+    submitted = {}
+    # 10 BTC buys, each filled 30 bps worse than submitted
+    for i in range(10):
+        oid = f"o-{i}"
+        submitted[oid] = 100.0
+        fills.append({"symbol": "BTC", "side": "buy", "price": 100.3,
+                       "order_id": oid})
+    sampler = build_empirical_slippage_sampler(fills, submitted,
+                                                  min_samples_for_real=5,
+                                                  percentile=0.75)
+    assert sampler is not None
+    bps = sampler("BTC", "buy")
+    # P75 of 10 identical 30bps samples = ~30
+    assert 25.0 <= bps <= 35.0
+    # Unknown symbol → default fallback
+    assert sampler("UNKNOWN", "buy") == 5.0
+
+
 def test_sweep_walk_forward_emits_best_oos_cell():
     """D2: walk-forward returns a best cell whose score is OOS-derived,
     not in-sample. Picked cell must beat the loser pattern in test fixture."""
