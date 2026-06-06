@@ -2380,3 +2380,38 @@ def test_roundo_apply_overrides_reports_rejected(monkeypatch):
     finally:
         smc_quant.CONFLUENCE_WEIGHTS_DEFAULT.clear()
         smc_quant.CONFLUENCE_WEIGHTS_DEFAULT.update(saved)
+
+
+def test_roundp_selfcheck_shape_and_statuses(monkeypatch, tmp_path):
+    """Round P: run_selfcheck returns overall + per-check pass/warn/fail,
+    never raising even in a bare env."""
+    monkeypatch.setenv("SMC_LEDGER_DIR", str(tmp_path))
+    monkeypatch.delenv("DASHBOARD_API_TOKEN", raising=False)
+    monkeypatch.delenv("SMC_AUTOLEARN_ENABLED", raising=False)
+    import importlib, learning.selfcheck as sc
+    importlib.reload(sc)
+    out = sc.run_selfcheck()
+    assert out["overall"] in ("pass", "warn", "fail")
+    names = {c["name"] for c in out["checks"]}
+    assert {"db_wal", "ledger_readable", "strategy_yaml_valid",
+            "autolearn_scheduler", "api_token", "obsidian_vault",
+            "wal_size"} <= names
+    # every check has a valid status
+    for c in out["checks"]:
+        assert c["status"] in ("pass", "warn", "fail")
+    # summary counts add up
+    s = out["summary"]
+    assert s["pass"] + s["warn"] + s["fail"] == len(out["checks"])
+
+
+def test_roundp_selfcheck_warns_when_token_and_autolearn_unset(monkeypatch, tmp_path):
+    """Round P: unconfigured prod knobs surface as warn, not silent."""
+    monkeypatch.setenv("SMC_LEDGER_DIR", str(tmp_path))
+    monkeypatch.delenv("DASHBOARD_API_TOKEN", raising=False)
+    monkeypatch.delenv("SMC_AUTOLEARN_ENABLED", raising=False)
+    import importlib, learning.selfcheck as sc
+    importlib.reload(sc)
+    out = sc.run_selfcheck()
+    by = {c["name"]: c["status"] for c in out["checks"]}
+    assert by["api_token"] == "warn"
+    assert by["autolearn_scheduler"] == "warn"

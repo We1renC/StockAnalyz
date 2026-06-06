@@ -81,6 +81,17 @@ def api_smc_crypto_ops_metrics():
     return out
 
 
+@router.get("/api/smc-crypto/selfcheck")
+def api_smc_crypto_selfcheck():
+    """Round P: deployment preflight — validates DB/WAL, ledger, strategy.yaml,
+    scheduler, API token, Obsidian vault, WAL size. Read-only, never raises."""
+    try:
+        from learning.selfcheck import run_selfcheck
+        return run_selfcheck()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"selfcheck failed: {e}")
+
+
 @router.post("/api/smc-crypto/wal-checkpoint")
 def api_smc_crypto_wal_checkpoint():
     """Round N: manually force a WAL TRUNCATE checkpoint (also runs
