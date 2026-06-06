@@ -990,13 +990,16 @@ def test_smc_quant_load_cached_trade_records_falls_back_to_fresh_read(monkeypatc
 def test_read_trade_ledger_supports_symbol_filter_and_copy(monkeypatch):
     """Unified read helper should centralize filter/copy policy."""
     import smc_quant
+    # F3: read_trade_ledger now lives in smc_ledger_io and resolves
+    # load_cached_trade_records from that module's namespace, so patch there.
+    import smc_ledger_io
 
     source = [
         {"symbol": "BTC-USDT", "r_multiple": 1.0},
         {"symbol": "ETH-USDT", "r_multiple": -1.0},
     ]
 
-    monkeypatch.setattr(smc_quant, "load_cached_trade_records", lambda path: source)
+    monkeypatch.setattr(smc_ledger_io, "load_cached_trade_records", lambda path: source)
     same_ref = smc_quant.read_trade_ledger("tmp/x.jsonl")
     filtered = smc_quant.read_trade_ledger("tmp/x.jsonl", symbol="ETH-USDT")
     copied = smc_quant.read_trade_ledger("tmp/x.jsonl", copy_records=True)
