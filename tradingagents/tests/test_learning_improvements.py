@@ -427,6 +427,34 @@ def test_apply_decommission_to_analysis_clears_entries():
     assert em["ote_retracement"]["entries"] == [{"b": 1}]
 
 
+def test_learning_report_includes_model_quality_breakdown(tmp_path):
+    """Learning report should surface per-cluster quality breaches so the
+    UI / Obsidian report can show which model-slices are tail-distorted."""
+    import json
+    from dataclasses import asdict
+    from smc_learning_orchestrator import build_learning_report
+
+    ledger = tmp_path / "smc_training_ledger.jsonl"
+    rows = []
+    for i in range(19):
+        rows.append({
+            "model": "unicorn", "symbol": "ETH-USDT", "interval": "1h",
+            "entry_time": f"2026-03-{1 + i // 24:02d}T{i % 24:02d}:00:00",
+            "outcome": "stop", "r_multiple": -1.0,
+        })
+    rows.append({
+        "model": "unicorn", "symbol": "ETH-USDT", "interval": "1h",
+        "entry_time": "2026-03-20T00:00:00",
+        "outcome": "target", "r_multiple": 25.0,
+    })
+    ledger.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+    report = asdict(build_learning_report(ledger_path=str(ledger), symbol="ETH-USDT"))
+    assert report["layer_model_quality"]["n_quality_breach"] == 1
+    assert report["layer_model_quality"]["top_breaches"][0]["model"] == "unicorn"
+    assert "quality_breach_clusters=1" in report["notes"]
+
+
 def test_bh_fdr_filter_picks_extreme_tail_only():
     """D1: BH-FDR with 10 hypotheses, only the smallest two p-values should
     pass at alpha=0.10."""

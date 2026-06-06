@@ -206,6 +206,63 @@ def layer_validation(records: list[dict]) -> dict:
     }
 
 
+def layer_model_quality(
+    records: list[dict],
+    *,
+    window_size: int = 50,
+    min_samples: int = 20,
+    min_win_rate: float = 0.05,
+    min_clipped_mean_R: float = 0.0,
+) -> dict:
+    """Per-cluster quality diagnostics based on robust trailing stats."""
+    if not records:
+        return {"status": "no_data"}
+    from learning.model_decommission import compute_per_model_health
+
+    health = compute_per_model_health(
+        records,
+        window_size=window_size,
+        min_samples=min_samples,
+    )
+    rows = []
+    for key, stats in health.items():
+        model, symbol, interval = key
+        quality_breach = (
+            bool(stats.get("eligible"))
+            and float(stats.get("win_rate") or 0.0) <= min_win_rate
+            and float(stats.get("clipped_mean_R") or 0.0) <= min_clipped_mean_R
+        )
+        rows.append(
+            {
+                "model": model,
+                "symbol": symbol,
+                "interval": interval,
+                **stats,
+                "quality_breach": quality_breach,
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            not row["quality_breach"],
+            -int(row.get("eligible", False)),
+            float(row.get("clipped_mean_R") or 0.0),
+            float(row.get("win_rate") or 0.0),
+        )
+    )
+    return {
+        "n_clusters": len(rows),
+        "n_quality_breach": sum(1 for row in rows if row["quality_breach"]),
+        "thresholds": {
+            "window_size": window_size,
+            "min_samples": min_samples,
+            "min_win_rate": min_win_rate,
+            "min_clipped_mean_R": min_clipped_mean_R,
+        },
+        "top_breaches": [row for row in rows if row["quality_breach"]][:10],
+        "top_clusters": rows[:10],
+    }
+
+
 def layer_ml(records: list[dict]) -> dict:
     """Layer 5 — multi-factor logistic regression with SHAP-like attribution."""
     if not records or len(records) < 20:
@@ -292,6 +349,7 @@ class LearningReport:
     layer_2_attribution: dict
     layer_3_calibration: dict
     layer_4_validation: dict
+    layer_model_quality: dict
     layer_5_ml: dict
     layer_6_proposal: dict
     layer_7_acceptance: dict
@@ -374,6 +432,7 @@ def build_learning_report(
     fe = (l2.get("factor_edge") or {}) if isinstance(l2, dict) else {}
     l3 = layer_calibration(records, fe)
     l4 = layer_validation(records)
+    l_quality = layer_model_quality(records)
     l5 = layer_ml(records)
     l6 = layer_proposal(records)
     l_adapt = layer_adaptive(df_sample)
@@ -400,12 +459,20 @@ def build_learning_report(
         layer_2_attribution=l2,
         layer_3_calibration=l3,
         layer_4_validation=l4,
+        layer_model_quality=l_quality,
         layer_5_ml=l5,
         layer_6_proposal=l6,
         layer_7_acceptance=l7,
         layer_adaptive=l_adapt,
         learning_indicator=indicator,
         promotion_decision=promotion,
+        notes=(
+            [
+                f"quality_breach_clusters={int((l_quality or {}).get('n_quality_breach') or 0)}"
+            ]
+            if (l_quality or {}).get("status") != "no_data"
+            else []
+        ),
     )
 
 
