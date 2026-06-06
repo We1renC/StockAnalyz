@@ -6855,6 +6855,34 @@ def load_cached_trade_records(path: str) -> list[dict]:
     return cached_load_trade_records(path)
 
 
+def read_trade_ledger(
+    path: str,
+    *,
+    symbol: Optional[str] = None,
+    use_cache: bool = True,
+    copy_records: bool = False,
+) -> list[dict]:
+    """Unified trade-ledger read policy.
+
+    Args:
+        path: Ledger path.
+        symbol: Optional symbol filter.
+        use_cache: Use the shared in-process cache for read-heavy paths.
+        copy_records: Return a caller-owned list when subsequent mutation
+            (extend/sort/pop/annotation) is expected.
+
+    Returns:
+        A list of normalized ledger records, optionally symbol-filtered.
+    """
+    records = load_cached_trade_records(path) if use_cache else load_trade_records(path)
+    if symbol:
+        # Filtering already produces a caller-owned list.
+        return [r for r in records if r.get("symbol") == symbol]
+    if copy_records:
+        return list(records)
+    return records
+
+
 def load_runtime_cluster_weight_table(
     ledger_path: Optional[str] = None,
     *,
@@ -6865,7 +6893,7 @@ def load_runtime_cluster_weight_table(
         from learning.cluster_ensemble import build_cluster_weight_table
     except Exception:
         return {}
-    records = load_cached_trade_records(ledger_path or LedgerPaths.training_ledger())
+    records = read_trade_ledger(ledger_path or LedgerPaths.training_ledger())
     if not records:
         return {}
     return build_cluster_weight_table(

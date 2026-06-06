@@ -285,11 +285,14 @@ class SmcPaperRunner:
             from learning.exploration import (
                 decide_exploration, count_exploration_trades,
             )
-            from smc_quant import load_cached_trade_records
+            from smc_quant import read_trade_ledger
             # Only fire if state is READY (caller passes via _last_state cache)
             state = getattr(self, "_last_state_hint", None) or "READY"
             try:
-                all_recs = load_cached_trade_records(LedgerPaths.training_ledger())
+                all_recs = read_trade_ledger(
+                    LedgerPaths.training_ledger(),
+                    symbol=self.config.symbol,
+                )
             except Exception:
                 all_recs = []
             boundary_n = count_exploration_trades(all_recs, symbol=self.config.symbol)
@@ -323,14 +326,19 @@ class SmcPaperRunner:
         """
         try:
             from learning.mae_mfe_calibration import build_model_calibration_table
-            from smc_quant import load_cached_trade_records
+            from smc_quant import read_trade_ledger
             if not hasattr(self, "_mae_mfe_cal_cache"):
                 ledger_path = getattr(self.config, "journal_path",
                                        LedgerPaths.paper_journal())
                 trade_ledger = ledger_path.replace(".jsonl", "_trades.jsonl")
-                records = list(load_cached_trade_records(trade_ledger))
+                records = read_trade_ledger(trade_ledger, copy_records=True)
                 try:
-                    records.extend(load_cached_trade_records(LedgerPaths.training_ledger()))
+                    records.extend(
+                        read_trade_ledger(
+                            LedgerPaths.training_ledger(),
+                            symbol=self.config.symbol,
+                        )
+                    )
                 except Exception:
                     pass
                 self._mae_mfe_cal_cache = build_model_calibration_table(records) or {}

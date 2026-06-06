@@ -4189,10 +4189,8 @@ def api_smc_crypto_mae_mfe_calibration(symbol: Optional[str] = None):
         from learning.mae_mfe_calibration import (
             build_model_calibration_table, calibration_summary,
         )
-        from smc_quant import load_cached_trade_records
-        records = load_cached_trade_records(LedgerPaths.training_ledger())
-        if symbol:
-            records = [r for r in records if r.get("symbol") == symbol]
+        from smc_quant import read_trade_ledger
+        records = read_trade_ledger(LedgerPaths.training_ledger(), symbol=symbol)
         table = build_model_calibration_table(records)
         return {
             "n_records": len(records),
@@ -4212,10 +4210,8 @@ def api_smc_crypto_score_calibration(symbol: Optional[str] = None):
     """
     try:
         from learning.score_calibration import calibration_diagnostics
-        from smc_quant import load_cached_trade_records
-        records = load_cached_trade_records(LedgerPaths.training_ledger())
-        if symbol:
-            records = [r for r in records if r.get("symbol") == symbol]
+        from smc_quant import read_trade_ledger
+        records = read_trade_ledger(LedgerPaths.training_ledger(), symbol=symbol)
         return calibration_diagnostics(records)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"calibration failed: {e}")
@@ -4232,10 +4228,8 @@ def api_smc_crypto_weekly_digest(symbol: Optional[str] = None,
     """
     try:
         from learning.weekly_digest import build_weekly_digest, write_weekly_digest
-        from smc_quant import load_cached_trade_records
-        records = load_cached_trade_records(LedgerPaths.training_ledger())
-        if symbol:
-            records = [r for r in records if r.get("symbol") == symbol]
+        from smc_quant import read_trade_ledger
+        records = read_trade_ledger(LedgerPaths.training_ledger(), symbol=symbol)
         import os as _os
         if not write_to_vault:
             return build_weekly_digest(records)
@@ -4254,10 +4248,8 @@ def api_smc_crypto_learning_health(symbol: Optional[str] = None,
     """Audit fix C1: aggregated 0-100 health score across all 4 panels."""
     try:
         from learning.learning_health import compute_learning_health
-        from smc_quant import load_cached_trade_records
-        records = load_cached_trade_records(LedgerPaths.training_ledger())
-        if symbol:
-            records = [r for r in records if r.get("symbol") == symbol]
+        from smc_quant import read_trade_ledger
+        records = read_trade_ledger(LedgerPaths.training_ledger(), symbol=symbol)
         # Kill-switch state is in the adaptive sqlite; pull lazily.
         kill_state = "READY"
         try:
@@ -4288,10 +4280,8 @@ def api_smc_crypto_cluster_ensemble(symbol: Optional[str] = None,
         from learning.cluster_ensemble import (
             build_cluster_weight_table, cluster_summary,
         )
-        from smc_quant import CONFLUENCE_WEIGHTS_DEFAULT, load_cached_trade_records
-        records = load_cached_trade_records(LedgerPaths.training_ledger())
-        if symbol:
-            records = [r for r in records if r.get("symbol") == symbol]
+        from smc_quant import CONFLUENCE_WEIGHTS_DEFAULT, read_trade_ledger
+        records = read_trade_ledger(LedgerPaths.training_ledger(), symbol=symbol)
         factors = list(CONFLUENCE_WEIGHTS_DEFAULT.keys())
         table = build_cluster_weight_table(records, factors=factors,
                                               min_samples=int(min_samples))
@@ -4319,10 +4309,8 @@ def api_smc_crypto_hyperparameter_sweep(symbol: Optional[str] = None,
         from learning.hyperparameter_sweep import (
             sweep_hyperparameters, sweep_walk_forward, should_apply_recommendation,
         )
-        from smc_quant import load_cached_trade_records
-        records = load_cached_trade_records(LedgerPaths.training_ledger())
-        if symbol:
-            records = [r for r in records if r.get("symbol") == symbol]
+        from smc_quant import read_trade_ledger
+        records = read_trade_ledger(LedgerPaths.training_ledger(), symbol=symbol)
         wf_min_trades = (
             int(min_trades_per_fold)
             if min_trades_per_fold is not None
@@ -4370,10 +4358,8 @@ def api_smc_crypto_real_pnl_gates(symbol: Optional[str] = None,
     """
     try:
         from learning.real_pnl_gates import run_real_pnl_gates
-        from smc_quant import load_cached_trade_records
-        records = load_cached_trade_records(LedgerPaths.training_ledger())
-        if symbol:
-            records = [r for r in records if r.get("symbol") == symbol]
+        from smc_quant import read_trade_ledger
+        records = read_trade_ledger(LedgerPaths.training_ledger(), symbol=symbol)
         return run_real_pnl_gates(
             records,
             min_total_R=float(min_total_R),
@@ -4398,10 +4384,8 @@ def api_smc_crypto_learning_curve(symbol: Optional[str] = None,
     """
     try:
         from learning.learning_curve import learning_curve_diagnostics
-        from smc_quant import load_cached_trade_records
-        records = load_cached_trade_records(LedgerPaths.training_ledger())
-        if symbol:
-            records = [r for r in records if r.get("symbol") == symbol]
+        from smc_quant import read_trade_ledger
+        records = read_trade_ledger(LedgerPaths.training_ledger(), symbol=symbol)
         return learning_curve_diagnostics(
             records, bin_size=int(bin_size),
             target_sample_size=int(target_sample_size),

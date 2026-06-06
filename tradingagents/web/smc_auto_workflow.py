@@ -210,14 +210,12 @@ def _recent_outcomes_for_cooldown(db_path: str, symbol: str, n: int = 5) -> list
     Returns ``["win","loss","win"]``-style list.
     """
     try:
-        from smc_quant import LedgerPaths, load_cached_trade_records
-        all_recs = load_cached_trade_records(LedgerPaths.training_ledger())
+        from smc_quant import LedgerPaths, read_trade_ledger
+        all_recs = read_trade_ledger(LedgerPaths.training_ledger(), symbol=symbol)
     except Exception:
         return []
     filtered = []
     for r in all_recs:
-        if r.get("symbol") != symbol:
-            continue
         outcome = r.get("outcome")
         if outcome in (None, "pending"):
             continue

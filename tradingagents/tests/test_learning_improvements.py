@@ -516,7 +516,7 @@ def test_learning_orchestrator_load_records_uses_shared_ledger_cache(monkeypatch
         seen.append(path)
         return [{"symbol": "BTC-USDT", "outcome": "target", "r_multiple": 1.0}]
 
-    monkeypatch.setattr(orch, "load_cached_trade_records", fake_cached_load)
+    monkeypatch.setattr(orch, "read_trade_ledger", fake_cached_load)
     out = orch._load_records("tmp/test-ledger.jsonl")
     assert seen == ["tmp/test-ledger.jsonl"]
     assert out[0]["symbol"] == "BTC-USDT"
@@ -528,14 +528,14 @@ def test_recent_outcomes_for_cooldown_uses_shared_cached_reader(monkeypatch):
 
     seen = []
 
-    def fake_load(path):
-        seen.append(path)
+    def fake_load(path, *, symbol=None, use_cache=True, copy_records=False):
+        seen.append((path, symbol, use_cache, copy_records))
         return []
 
-    monkeypatch.setattr("smc_quant.load_cached_trade_records", fake_load)
+    monkeypatch.setattr("smc_quant.read_trade_ledger", fake_load)
     out = aw._recent_outcomes_for_cooldown("db.sqlite", "BTC-USDT", n=3)
     assert out == []
-    assert seen
+    assert seen == [("tmp/smc_training_ledger.jsonl", "BTC-USDT", True, False)]
 
 
 def test_train_from_ledger_uses_shared_cached_reader(monkeypatch):
@@ -544,14 +544,14 @@ def test_train_from_ledger_uses_shared_cached_reader(monkeypatch):
 
     seen = []
 
-    def fake_load(path):
-        seen.append(path)
+    def fake_load(path, *, symbol=None, use_cache=True, copy_records=False):
+        seen.append((path, symbol, use_cache, copy_records))
         return []
 
-    monkeypatch.setattr(stl, "load_cached_trade_records", fake_load)
+    monkeypatch.setattr(stl, "read_trade_ledger", fake_load)
     out = stl.train_from_ledger(ledger_path="tmp/test-ledger.jsonl")
     assert out.sample_size == 0
-    assert seen == ["tmp/test-ledger.jsonl"]
+    assert seen == [("tmp/test-ledger.jsonl", None, True, False)]
 
 
 def test_smc_quant_load_cached_trade_records_falls_back_to_fresh_read(monkeypatch, tmp_path):
@@ -573,6 +573,26 @@ def test_smc_quant_load_cached_trade_records_falls_back_to_fresh_read(monkeypatc
     assert recs[0]["symbol"] == "BTC"
 
 
+def test_read_trade_ledger_supports_symbol_filter_and_copy(monkeypatch):
+    """Unified read helper should centralize filter/copy policy."""
+    import smc_quant
+
+    source = [
+        {"symbol": "BTC-USDT", "r_multiple": 1.0},
+        {"symbol": "ETH-USDT", "r_multiple": -1.0},
+    ]
+
+    monkeypatch.setattr(smc_quant, "load_cached_trade_records", lambda path: source)
+    same_ref = smc_quant.read_trade_ledger("tmp/x.jsonl")
+    filtered = smc_quant.read_trade_ledger("tmp/x.jsonl", symbol="ETH-USDT")
+    copied = smc_quant.read_trade_ledger("tmp/x.jsonl", copy_records=True)
+
+    assert same_ref is source
+    assert filtered == [{"symbol": "ETH-USDT", "r_multiple": -1.0}]
+    assert copied == source
+    assert copied is not source
+
+
 def test_paper_runner_mae_mfe_table_does_not_mutate_cached_ledger_lists(monkeypatch, tmp_path):
     """Cached ledger lists are shared references and must not be extended in place."""
     import smc_paper_runner as spr
@@ -582,16 +602,17 @@ def test_paper_runner_mae_mfe_table_does_not_mutate_cached_ledger_lists(monkeypa
     training_records = [{"symbol": "BTC-USDT", "model": "train"}]
     captured = {}
 
-    def fake_load(path):
-        if path.endswith("_trades.jsonl"):
-            return paper_records
-        return training_records
+    def fake_load(path, *, symbol=None, use_cache=True, copy_records=False):
+        base = paper_records if path.endswith("_trades.jsonl") else training_records
+        if symbol:
+            base = [r for r in base if r.get("symbol") == symbol]
+        return list(base) if copy_records else base
 
     def fake_build(records):
         captured["records"] = records
         return {"ok": True}
 
-    monkeypatch.setattr(smc_quant, "load_cached_trade_records", fake_load)
+    monkeypatch.setattr(smc_quant, "read_trade_ledger", fake_load)
     monkeypatch.setattr(
         "learning.mae_mfe_calibration.build_model_calibration_table",
         fake_build,
