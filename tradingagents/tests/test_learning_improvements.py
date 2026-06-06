@@ -516,10 +516,61 @@ def test_learning_orchestrator_load_records_uses_shared_ledger_cache(monkeypatch
         seen.append(path)
         return [{"symbol": "BTC-USDT", "outcome": "target", "r_multiple": 1.0}]
 
-    monkeypatch.setattr(orch, "cached_load_trade_records", fake_cached_load)
+    monkeypatch.setattr(orch, "load_cached_trade_records", fake_cached_load)
     out = orch._load_records("tmp/test-ledger.jsonl")
     assert seen == ["tmp/test-ledger.jsonl"]
     assert out[0]["symbol"] == "BTC-USDT"
+
+
+def test_recent_outcomes_for_cooldown_uses_shared_cached_reader(monkeypatch):
+    """Data-flow audit: cooldown reads should route through shared cached reader."""
+    import smc_auto_workflow as aw
+
+    seen = []
+
+    def fake_load(path):
+        seen.append(path)
+        return []
+
+    monkeypatch.setattr("smc_quant.load_cached_trade_records", fake_load)
+    out = aw._recent_outcomes_for_cooldown("db.sqlite", "BTC-USDT", n=3)
+    assert out == []
+    assert seen
+
+
+def test_train_from_ledger_uses_shared_cached_reader(monkeypatch):
+    """Data-flow audit: training should pull ledger via the shared cached entry point."""
+    import smc_training_loop as stl
+
+    seen = []
+
+    def fake_load(path):
+        seen.append(path)
+        return []
+
+    monkeypatch.setattr(stl, "load_cached_trade_records", fake_load)
+    out = stl.train_from_ledger(ledger_path="tmp/test-ledger.jsonl")
+    assert out.sample_size == 0
+    assert seen == ["tmp/test-ledger.jsonl"]
+
+
+def test_smc_quant_load_cached_trade_records_falls_back_to_fresh_read(monkeypatch, tmp_path):
+    """If the cache layer is unavailable, the core helper must still work."""
+    import smc_quant
+
+    p = tmp_path / "ledger.jsonl"
+    p.write_text('{"symbol":"BTC","r_multiple":1.0}\n', encoding="utf-8")
+
+    real_import = __import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "learning.ledger_cache":
+            raise ImportError("cache unavailable")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    recs = smc_quant.load_cached_trade_records(str(p))
+    assert recs[0]["symbol"] == "BTC"
 
 
 def test_api_token_middleware_off_when_env_unset(monkeypatch):

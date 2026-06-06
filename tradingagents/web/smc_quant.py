@@ -6841,6 +6841,20 @@ def load_trade_records(path: str) -> list[dict]:
     return records
 
 
+def load_cached_trade_records(path: str) -> list[dict]:
+    """Shared cached ledger read for read-heavy workflows.
+
+    This keeps cache ownership inside ``smc_quant`` so callers do not need
+    to know about ``learning.ledger_cache`` directly. If the cache layer is
+    unavailable, we safely fall back to a fresh read.
+    """
+    try:
+        from learning.ledger_cache import cached_load_trade_records
+    except Exception:
+        return load_trade_records(path)
+    return cached_load_trade_records(path)
+
+
 def load_runtime_cluster_weight_table(
     ledger_path: Optional[str] = None,
     *,
@@ -6849,10 +6863,9 @@ def load_runtime_cluster_weight_table(
     """Build the current cluster-weight table from the shared training ledger."""
     try:
         from learning.cluster_ensemble import build_cluster_weight_table
-        from learning.ledger_cache import cached_load_trade_records
     except Exception:
         return {}
-    records = cached_load_trade_records(ledger_path or LedgerPaths.training_ledger())
+    records = load_cached_trade_records(ledger_path or LedgerPaths.training_ledger())
     if not records:
         return {}
     return build_cluster_weight_table(

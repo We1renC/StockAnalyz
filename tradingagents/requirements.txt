@@ -1,3 +1,4 @@
 mcp[cli]>=1.0.0
 tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git
 certifi>=2024.0.0
+PyYAML>=6.0

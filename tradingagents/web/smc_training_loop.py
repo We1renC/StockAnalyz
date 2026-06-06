@@ -70,8 +70,8 @@ from smc_quant import (
     estimate_pbo,
     edge_decay_check,
     evaluate_entry_models,
+    load_cached_trade_records,
     load_runtime_cluster_weight_table,
-    load_trade_records,
     monthly_edge_stability,
     normalize_ohlcv,
     persist_trade_records,
@@ -783,7 +783,7 @@ def train_from_ledger(
     config_snapshot = strategy_config_snapshot(strategy_yaml_path)
 
     ledger_path = ledger_path or LedgerPaths.training_ledger()
-    records: list[dict] = load_trade_records(ledger_path)
+    records: list[dict] = load_cached_trade_records(ledger_path)
     if not records:
         if db_path:
             conn = sqlite3.connect(db_path)
@@ -1295,7 +1295,7 @@ def audit_learning_capability(
     """
     notes: list[str] = []
     ledger_path = ledger_path or LedgerPaths.training_ledger()
-    records: list[dict] = load_trade_records(ledger_path)
+    records: list[dict] = load_cached_trade_records(ledger_path)
     if symbol:
         records = [r for r in records if r.get("symbol") == symbol]
 
