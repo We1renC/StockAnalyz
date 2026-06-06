@@ -2585,6 +2585,30 @@ CONFLUENCE_WEIGHTS_DEFAULT = {
 }
 CONFLUENCE_THRESHOLD_DEFAULT = 8
 
+# Audit fix E4: guards read-modify-write on the four module-level config
+# globals so concurrent apply_strategy_yaml_overrides() callers (startup +
+# training ticks under the FastAPI threadpool) can't lost-update.
+import threading as _threading
+_WEIGHTS_LOCK = _threading.RLock()
+
+
+def snapshot_confluence_weights() -> dict:
+    """Thread-safe snapshot of the live confluence weights.
+
+    Returns a fresh dict copy taken under the lock, so readers that need
+    a consistent view (e.g. building a long-lived analysis) don't observe
+    a half-applied override. Most call-sites do ``{**CONFLUENCE_WEIGHTS_DEFAULT}``
+    which is already atomic under the GIL — use this only when you need
+    the snapshot to outlive the read.
+    """
+    with _WEIGHTS_LOCK:
+        return dict(CONFLUENCE_WEIGHTS_DEFAULT)
+
+
+def snapshot_crypto_confluence_weights() -> dict:
+    with _WEIGHTS_LOCK:
+        return dict(CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT)
+
 
 def apply_strategy_yaml_overrides() -> dict:
     """§M0.3 — overlay ``config/strategy.yaml`` onto in-code defaults.
@@ -2598,21 +2622,27 @@ def apply_strategy_yaml_overrides() -> dict:
     global CONFLUENCE_THRESHOLD_DEFAULT, CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT
     markets_yaml = load_yaml_config("markets.yaml")
     strategy_yaml = load_yaml_config("strategy.yaml")
-    if markets_yaml:
-        MARKET_CONFIGS = _merge_market_configs(MARKET_CONFIGS, markets_yaml)
-    conf = strategy_yaml.get("confluence") or {}
-    if "weights" in conf and isinstance(conf["weights"], dict):
-        CONFLUENCE_WEIGHTS_DEFAULT = {**CONFLUENCE_WEIGHTS_DEFAULT, **conf["weights"]}
-    if "threshold" in conf:
-        try:
-            CONFLUENCE_THRESHOLD_DEFAULT = int(conf["threshold"])
-        except Exception:
-            pass
-    crypto_w = strategy_yaml.get("crypto_confluence") or {}
-    if isinstance(crypto_w, dict) and crypto_w:
-        CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT = {
-            **CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT, **crypto_w,
-        }
+    # Audit fix E4: this is a read-modify-write on module globals. Under
+    # FastAPI's sync-endpoint threadpool, two concurrent writers (startup
+    # + a training tick) could lost-update each other. Serialize the whole
+    # rebind under _WEIGHTS_LOCK. Readers that want a consistent view use
+    # snapshot_confluence_weights() below.
+    with _WEIGHTS_LOCK:
+        if markets_yaml:
+            MARKET_CONFIGS = _merge_market_configs(MARKET_CONFIGS, markets_yaml)
+        conf = strategy_yaml.get("confluence") or {}
+        if "weights" in conf and isinstance(conf["weights"], dict):
+            CONFLUENCE_WEIGHTS_DEFAULT = {**CONFLUENCE_WEIGHTS_DEFAULT, **conf["weights"]}
+        if "threshold" in conf:
+            try:
+                CONFLUENCE_THRESHOLD_DEFAULT = int(conf["threshold"])
+            except Exception:
+                pass
+        crypto_w = strategy_yaml.get("crypto_confluence") or {}
+        if isinstance(crypto_w, dict) and crypto_w:
+            CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT = {
+                **CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT, **crypto_w,
+            }
     return {
         "markets": MARKET_CONFIGS,
         "confluence_weights": CONFLUENCE_WEIGHTS_DEFAULT,

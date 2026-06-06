@@ -2049,3 +2049,30 @@ def test_min_score_for_target_returns_lowest_qualifying_bucket():
     assert cal["min_score_for_target"](0.55) == 9
     # 0.9 not reached anywhere
     assert cal["min_score_for_target"](0.9) is None
+
+
+def test_e4_apply_overrides_is_thread_safe():
+    """E4: concurrent apply_strategy_yaml_overrides must not lost-update;
+    snapshot accessor returns a consistent copy."""
+    import threading
+    import smc_quant
+    from smc_quant import apply_strategy_yaml_overrides, snapshot_confluence_weights
+    errors = []
+    def worker():
+        try:
+            for _ in range(20):
+                apply_strategy_yaml_overrides()
+                snap = snapshot_confluence_weights()
+                assert isinstance(snap, dict)
+                # core factor must always be present (never half-applied)
+                assert "htf_bias_aligned" in snap
+        except Exception as e:
+            errors.append(e)
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+    assert not errors, errors
+    # snapshot is a copy — mutating it must not affect the global
+    snap = snapshot_confluence_weights()
+    snap["htf_bias_aligned"] = 999
+    assert smc_quant.CONFLUENCE_WEIGHTS_DEFAULT["htf_bias_aligned"] != 999
