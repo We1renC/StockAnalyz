@@ -328,9 +328,9 @@ class SmcPaperRunner:
                 ledger_path = getattr(self.config, "journal_path",
                                        LedgerPaths.paper_journal())
                 trade_ledger = ledger_path.replace(".jsonl", "_trades.jsonl")
-                records = load_cached_trade_records(trade_ledger)
+                records = list(load_cached_trade_records(trade_ledger))
                 try:
-                    records += load_cached_trade_records(LedgerPaths.training_ledger())
+                    records.extend(load_cached_trade_records(LedgerPaths.training_ledger()))
                 except Exception:
                     pass
                 self._mae_mfe_cal_cache = build_model_calibration_table(records) or {}

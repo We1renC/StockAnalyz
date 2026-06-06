@@ -573,6 +573,40 @@ def test_smc_quant_load_cached_trade_records_falls_back_to_fresh_read(monkeypatc
     assert recs[0]["symbol"] == "BTC"
 
 
+def test_paper_runner_mae_mfe_table_does_not_mutate_cached_ledger_lists(monkeypatch, tmp_path):
+    """Cached ledger lists are shared references and must not be extended in place."""
+    import smc_paper_runner as spr
+    import smc_quant
+
+    paper_records = [{"symbol": "BTC-USDT", "model": "paper"}]
+    training_records = [{"symbol": "BTC-USDT", "model": "train"}]
+    captured = {}
+
+    def fake_load(path):
+        if path.endswith("_trades.jsonl"):
+            return paper_records
+        return training_records
+
+    def fake_build(records):
+        captured["records"] = records
+        return {"ok": True}
+
+    monkeypatch.setattr(smc_quant, "load_cached_trade_records", fake_load)
+    monkeypatch.setattr(
+        "learning.mae_mfe_calibration.build_model_calibration_table",
+        fake_build,
+    )
+    cfg = spr.PaperRunConfig(journal_path=str(tmp_path / "paper_journal.jsonl"))
+    runner = spr.SmcPaperRunner(client=MagicMock(), config=cfg)
+
+    out = runner._build_mae_mfe_table()
+
+    assert out == {"ok": True}
+    assert paper_records == [{"symbol": "BTC-USDT", "model": "paper"}]
+    assert training_records == [{"symbol": "BTC-USDT", "model": "train"}]
+    assert len(captured["records"]) == 2
+
+
 def test_api_token_middleware_off_when_env_unset(monkeypatch):
     """A2: DASHBOARD_API_TOKEN unset → middleware is a no-op."""
     monkeypatch.delenv("DASHBOARD_API_TOKEN", raising=False)
