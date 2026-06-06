@@ -1143,6 +1143,35 @@ def train_from_ledger(
                     apply_strategy_yaml_overrides()
                     yaml_written = True
                     notes.append(f"strategy.yaml updated; {len(changed)} weight(s) changed")
+                    # Audit fix B1: opportunistically also run the monthly
+                    # hyperparameter sweep auto-apply. Skipped if cooldown
+                    # active so it really only fires once a month.
+                    try:
+                        from learning.sweep_auto_apply import auto_apply_sweep
+                        profile_path = os.environ.get(
+                            "SMC_PROFILE_YAML",
+                            os.path.join(os.path.dirname(yaml_path),
+                                          "profile.yaml"),
+                        )
+                        sweep_out = auto_apply_sweep(
+                            records=records,
+                            profile_path=profile_path,
+                            obsidian_vault=os.environ.get("OBSIDIAN_VAULT_PATH"),
+                        )
+                        if sweep_out.get("applied"):
+                            notes.append(
+                                f"sweep auto-apply: "
+                                f"min_score={sweep_out['after']['min_score']}, "
+                                f"min_rr={sweep_out['after']['min_rr']}, "
+                                f"risk_pct={sweep_out['after']['risk_pct']}, "
+                                f"Δsharpe={sweep_out.get('delta_sharpe')}"
+                            )
+                        else:
+                            notes.append(
+                                f"sweep auto-apply skipped: {sweep_out.get('reason')}"
+                            )
+                    except Exception as exc:
+                        notes.append(f"sweep auto-apply error: {exc}")
                 else:
                     notes.append(f"strategy patch staged; {len(changed)} weight(s) pending apply")
             except Exception as exc:

@@ -191,6 +191,49 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_auto_apply_sweep_writes_to_profile_when_improvement_clears(tmp_path):
+    """B1: when sweep beats cooldown + improvement threshold, profile.yaml
+    is updated and last_auto_apply audit field is stamped."""
+    import yaml
+    from learning.sweep_auto_apply import auto_apply_sweep
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(yaml.safe_dump({
+        "min_score": 6, "min_rr": 1.5, "risk_pct": 1.0,
+    }), encoding="utf-8")
+    # Construct records that the sweep will clearly prefer at min_score=9
+    records = []
+    for r in (1.5, 2.0, 1.0, 1.2, 0.8, 1.7, 1.3) * 5:
+        records.append({"confluence_score": 9, "rr": 2.5, "r_multiple": r})
+    for r in (-1.0, -1.2, 0.3, -0.8, -1.5, 0.2, -1.0) * 5:
+        records.append({"confluence_score": 6, "rr": 1.5, "r_multiple": r})
+    out = auto_apply_sweep(records=records, profile_path=str(profile))
+    assert out["applied"] is True
+    on_disk = yaml.safe_load(profile.read_text())
+    assert on_disk["last_auto_apply"]["delta_sharpe"] > 0
+    # at least one of the gating knobs must have moved
+    assert (on_disk["min_score"], on_disk["min_rr"]) != (6, 1.5)
+
+
+def test_auto_apply_sweep_respects_cooldown(tmp_path):
+    """Re-applying within cooldown returns reason=cooldown_active."""
+    import yaml
+    from datetime import datetime, timezone
+    from learning.sweep_auto_apply import auto_apply_sweep
+    profile = tmp_path / "profile.yaml"
+    profile.write_text(yaml.safe_dump({
+        "min_score": 8, "min_rr": 2.0, "risk_pct": 1.0,
+        "last_auto_apply": {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "sharpe": 0.3, "delta_sharpe": 0.2, "n_trades": 35,
+            "before": {},
+        },
+    }), encoding="utf-8")
+    out = auto_apply_sweep(records=[], profile_path=str(profile),
+                             min_days_since_last_apply=30)
+    assert out["applied"] is False
+    assert out["reason"] == "cooldown_active"
+
+
 def test_cluster_weight_table_threads_per_model_weights_to_detectors():
     """B2: when build_smc_analysis is called with cluster_weight_table,
     _cluster_weights_for(model_name) must resolve to model-specific weights
