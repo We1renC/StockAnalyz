@@ -565,6 +565,22 @@ class SmcPaperRunner:
         result.trade_record["plan_stop"] = float(entry.get("stop") or 0)
         result.trade_record["plan_target"] = float(entry.get("target") or 0)
         result.trade_record["plan_entry"] = float(entry.get("entry") or 0)
+        # Audit fix B3 + B4: stamp source / interval / regime so
+        # live_vs_backtest_correlation gate and cluster_ensemble can bucket.
+        result.trade_record["source"] = "paper" if order_id else "live"
+        result.trade_record["interval"] = cfg.interval
+        try:
+            from smc_quant import classify_asset_volatility
+            df_for_regime = analysis.get("_h") if isinstance(analysis, dict) else None
+            if df_for_regime is not None:
+                result.trade_record["regime"] = (
+                    classify_asset_volatility(df_for_regime) or {}
+                ).get("bucket") or "unknown"
+            else:
+                ai = analysis.get("adaptive_info") if isinstance(analysis, dict) else None
+                result.trade_record["regime"] = (ai or {}).get("bucket") or "unknown"
+        except Exception:
+            result.trade_record["regime"] = "unknown"
         self._journal(result)
         return result
 

@@ -6545,12 +6545,27 @@ def build_trade_record(
     factors = dict(entry.get("factors") or {})
     conf = dict(entry.get("confluence") or {})
     dol = dict(entry.get("dol_target") or {}) if entry.get("dol_target") else {}
+    # Audit fix B4: ``regime`` was a dict (volatility classifier output).
+    # cluster_ensemble keys on a flat string (e.g. "trending"/"ranging").
+    # Accept both: if dict, prefer ``bucket``/``regime``/``label`` keys;
+    # if str/None, use as-is.
+    if isinstance(regime, dict):
+        regime_str = (regime.get("bucket") or regime.get("regime")
+                       or regime.get("label") or "unknown")
+        regime_obj = dict(regime)
+    else:
+        regime_str = str(regime) if regime else "unknown"
+        regime_obj = {}
     return {
         "schema_version": TRADE_RECORD_SCHEMA_VERSION,
         "trade_id": trade_id or f"{symbol}:{entry.get('model')}:{entry.get('entry')}:{trade_outcome.get('entry_index')}",
         "symbol": symbol,
         "market": market or infer_market(symbol),
         "timeframe": timeframe,
+        # Audit fix B4: explicit ``interval`` alias so cluster_ensemble's
+        # default cluster key picks it up without having to know about
+        # the historical ``timeframe`` name.
+        "interval": timeframe,
         "direction": int(entry.get("direction", 0)),
         "side": "long" if int(entry.get("direction", 0)) >= 0 else "short",
         "model": entry.get("model"),
@@ -6561,7 +6576,10 @@ def build_trade_record(
         "confluence_triggered": bool(entry.get("triggered")),
         "factors": factors,
         "crypto_factors": dict(crypto_factors or {}),
-        "regime": dict(regime or {}),
+        # Audit fix B4: ``regime`` stays a flat string for cluster bucketing;
+        # ``regime_detail`` preserves the original dict for diagnostics.
+        "regime": regime_str,
+        "regime_detail": regime_obj,
         "dol_kind": dol.get("target_kind"),
         "dol_distance": dol.get("distance"),
         "probe": bool(probe),

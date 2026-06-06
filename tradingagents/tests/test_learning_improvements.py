@@ -191,6 +191,39 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_build_trade_record_stamps_interval_and_regime_string():
+    """B4: build_trade_record produces flat interval + regime string for
+    cluster_ensemble bucketing."""
+    from smc_quant import build_trade_record
+    rec = build_trade_record(
+        {"model": "sweep_reversal", "direction": 1,
+         "entry": 100.0, "stop": 98.0, "target": 104.0,
+         "factors": {}, "confluence": {"score": 8}, "triggered": True},
+        trade_outcome={"outcome": "target", "r_multiple": 1.5, "entry_index": 0},
+        symbol="BTC-USDT", timeframe="1h",
+        regime={"bucket": "trending", "atr": 100},
+        source="paper",
+    )
+    assert rec["interval"] == "1h"
+    assert rec["regime"] == "trending"     # flat string
+    assert rec["regime_detail"]["atr"] == 100   # dict preserved
+    assert rec["source"] == "paper"
+
+
+def test_build_trade_record_accepts_regime_as_string():
+    """B4: passing regime as string (cluster ensemble caller path) also works."""
+    from smc_quant import build_trade_record
+    rec = build_trade_record(
+        {"model": "x", "direction": -1, "entry": 100, "stop": 102, "target": 96,
+         "factors": {}, "confluence": {"score": 9}, "triggered": True},
+        trade_outcome={"outcome": "stop", "r_multiple": -1.0, "entry_index": 0},
+        symbol="ETH", timeframe="15m",
+        regime="ranging",
+    )
+    assert rec["regime"] == "ranging"
+    assert rec["regime_detail"] == {}
+
+
 def test_schema_version_stamped_on_persist(tmp_path):
     """A4: persist_trade_records stamps schema_version=2 on every record."""
     from smc_quant import persist_trade_records, load_trade_records
