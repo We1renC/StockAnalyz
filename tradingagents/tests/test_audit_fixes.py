@@ -155,6 +155,7 @@ def test_validation_entropy_sizing_ignores_system_meta_key():
         walk_forward_pass_ratio=1.0, pbo=0.10, dsr_probability=0.99,
         recent_expectancy=0.60, historical_expectancy=0.80,
         calibration_new_score=0.50, calibration_old_score=0.20,
+        overall_expectancy=0.50,
     )
     out = validation_entropy_sizing(ready_gates, n_eff=80.0)
     assert out["state_hint"] == "READY"
