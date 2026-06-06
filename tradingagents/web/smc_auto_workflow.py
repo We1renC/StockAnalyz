@@ -354,11 +354,17 @@ def run_symbol(
     risk_multiplier = float((patch.get("risk") or {}).get("risk_multiplier", 1.0))
     probe_cap = float((patch.get("risk") or {}).get("probe_notional_cap_usdt", 5.0))
     min_score = (patch.get("strategy") or {}).get("confluence_min_score")
+    optimal_interval = (patch.get("strategy") or {}).get("optimal_interval")
 
     risk_pct = profile.risk_pct
     max_notional = profile.max_notional_usdt
     min_confluence_score = profile.min_confluence_score
     probe_active = False
+
+    # Override profile interval if system evaluated an optimal one
+    interval = optimal_interval if optimal_interval else profile.interval
+    if optimal_interval:
+        notes.append(f"Auto-selected optimal interval: {optimal_interval} (overrode default {profile.interval})")
 
     if mode == "VALIDATING_PROBE":
         risk_pct = float(profile.risk_pct) * risk_multiplier
@@ -371,7 +377,7 @@ def run_symbol(
 
     cfg = UnifiedSessionConfig(
         symbols=[symbol],
-        interval=profile.interval, bars=profile.bars,
+        interval=interval, bars=profile.bars,
         swing_length=profile.swing_length,
         internal_swing_length=profile.internal_swing_length,
         min_confluence_score=min_confluence_score,

@@ -826,6 +826,7 @@ def train_from_ledger(
     symbol: str = "ALL",
     model_version: str = ADAPTIVE_MODEL_VERSION,
     apply_strategy_patch: bool = True,
+    optimal_interval: Optional[str] = None,
 ) -> TrainingResult:
     """Run the §18.5 closed-loop calibration over the ledger; if OOS
     passes, persist suggested weights back to ``config/strategy.yaml``
@@ -1049,6 +1050,7 @@ def train_from_ledger(
         },
         "strategy": {
             "confluence_min_score": adaptive_state["dynamic_confluence_threshold"],
+            "optimal_interval": optimal_interval,
         },
         "model": {
             # ``active_model`` reflects the *currently deployed* model. The
