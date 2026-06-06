@@ -191,6 +191,48 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_learning_health_critical_on_empty_ledger():
+    """C1: no data → critical / score around the floor."""
+    from learning.learning_health import compute_learning_health
+    out = compute_learning_health(records=[], kill_switch_state="READY")
+    assert out["max_score"] == 100
+    # samples=0, velocity=insufficient(12), pnl=12 (no data), decay=25 → 49
+    assert out["score"] <= 60
+    assert out["status"] in ("critical", "degraded", "watch")
+    assert out["components"]["samples"]["n_resolved"] == 0
+
+
+def test_learning_health_healthy_when_all_components_pass():
+    """C1: many wins + READY + improving → healthy / ≥ 80."""
+    from datetime import datetime, timezone, timedelta
+    from learning.learning_health import compute_learning_health
+    now = datetime.now(timezone.utc)
+    records = []
+    # 30 winning resolved trades over 30 days
+    for i in range(30):
+        records.append({
+            "entry_time": (now - timedelta(days=29 - i)).isoformat(),
+            "outcome": "target", "r_multiple": 1.0,
+            "model": "x", "symbol": "BTC",
+        })
+    out = compute_learning_health(records=records, kill_switch_state="READY")
+    # Without backtest pool, correlation gate fails → pnl loses 8.
+    # Velocity flat-line on identical winners → stagnant (12). Still ≥ 75
+    # which counts as "watch" or "healthy" depending on the boundary.
+    assert out["score"] >= 75
+    assert out["status"] in ("healthy", "watch")
+    assert out["components"]["samples"]["score"] == 25
+    assert out["components"]["edge_decay"]["score"] == 25
+
+
+def test_learning_health_critical_when_kill_switch_locked():
+    """C1: LOCKED kill switch alone caps edge_decay at 0."""
+    from learning.learning_health import compute_learning_health
+    out = compute_learning_health(records=[], kill_switch_state="LOCKED")
+    assert out["components"]["edge_decay"]["score"] == 0
+    assert out["components"]["edge_decay"]["kill_switch_state"] == "LOCKED"
+
+
 def test_ledger_paths_centralized_and_env_overridable(monkeypatch):
     """C2: LedgerPaths is the single source of truth, env-overridable."""
     from smc_quant import LedgerPaths

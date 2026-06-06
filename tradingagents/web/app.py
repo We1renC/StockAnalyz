@@ -4221,6 +4221,33 @@ def api_smc_crypto_score_calibration(symbol: Optional[str] = None):
         raise HTTPException(status_code=500, detail=f"calibration failed: {e}")
 
 
+@app.get("/api/smc-crypto/learning-health")
+def api_smc_crypto_learning_health(symbol: Optional[str] = None,
+                                     target_sample_size: int = 30):
+    """Audit fix C1: aggregated 0-100 health score across all 4 panels."""
+    try:
+        from learning.learning_health import compute_learning_health
+        from learning.ledger_cache import cached_load_trade_records as load_trade_records
+        records = load_trade_records(LedgerPaths.training_ledger())
+        if symbol:
+            records = [r for r in records if r.get("symbol") == symbol]
+        # Kill-switch state is in the adaptive sqlite; pull lazily.
+        kill_state = "READY"
+        try:
+            from smc_adaptive_store import get_kill_switch_state, open_adaptive_db
+            conn = open_adaptive_db()
+            s = get_kill_switch_state(conn, symbol=symbol or "_global")
+            kill_state = (s or {}).get("state") or "READY"
+        except Exception:
+            pass
+        return compute_learning_health(
+            records=records, kill_switch_state=kill_state,
+            target_sample_size=int(target_sample_size),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"learning-health failed: {e}")
+
+
 @app.get("/api/smc-crypto/cluster-ensemble")
 def api_smc_crypto_cluster_ensemble(symbol: Optional[str] = None,
                                       min_samples: int = 10):
