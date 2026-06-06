@@ -35,7 +35,77 @@ from typing import Any, Optional
 # Schema
 # ---------------------------------------------------------------------------
 
-_STARTING_EQUITY_USDT = 100_000.0
+# Audit fix: hardcoded $100k is a fictitious baseline that produces
+# misleading "+X%" headlines (equity − 100000 even when no trade ever
+# fired). Kept as a *fallback* only when the caller can't supply a DB
+# connection; the real baseline is the first observed equity at the
+# very first compute_pnl_snapshot call after the runner starts (or after
+# the user explicitly resets it). Stored in smc_baseline_equity.
+_FALLBACK_STARTING_EQUITY_USDT = 100_000.0
+
+
+def ensure_baseline_equity_schema(conn: sqlite3.Connection) -> None:
+    """One-row table holding the first observed equity for "+X%" math."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS smc_baseline_equity (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            baseline_usdt REAL NOT NULL,
+            captured_at TEXT NOT NULL,
+            note TEXT
+        )
+    """)
+    conn.commit()
+
+
+def get_or_init_baseline(
+    conn: sqlite3.Connection,
+    current_equity: float,
+    *,
+    note: str = "auto_first_snapshot",
+) -> dict:
+    """Return persisted baseline; seed it from ``current_equity`` if missing.
+
+    Returns ``{"baseline_usdt": float, "captured_at": str, "is_new": bool}``.
+    """
+    ensure_baseline_equity_schema(conn)
+    row = conn.execute(
+        "SELECT baseline_usdt, captured_at FROM smc_baseline_equity WHERE id=1"
+    ).fetchone()
+    if row is not None:
+        return {
+            "baseline_usdt": float(row[0]),
+            "captured_at": str(row[1]),
+            "is_new": False,
+        }
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        "INSERT INTO smc_baseline_equity (id, baseline_usdt, captured_at, note) "
+        "VALUES (1, ?, ?, ?)",
+        (float(current_equity), ts, note),
+    )
+    conn.commit()
+    return {
+        "baseline_usdt": float(current_equity),
+        "captured_at": ts, "is_new": True,
+    }
+
+
+def reset_baseline_equity(
+    conn: sqlite3.Connection,
+    new_baseline: float,
+    *,
+    note: str = "manual_reset",
+) -> dict:
+    """Explicit reset — overwrites the existing baseline. Returns new row."""
+    ensure_baseline_equity_schema(conn)
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        "INSERT OR REPLACE INTO smc_baseline_equity "
+        "(id, baseline_usdt, captured_at, note) VALUES (1, ?, ?, ?)",
+        (float(new_baseline), ts, note),
+    )
+    conn.commit()
+    return {"baseline_usdt": float(new_baseline), "captured_at": ts, "is_new": False}
 
 
 def ensure_training_history_schema(conn: sqlite3.Connection) -> None:
@@ -91,12 +161,27 @@ def ensure_training_history_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def compute_pnl_snapshot(api) -> dict:
-    """Query the crypto-api for current equity + realized P&L.
+def compute_pnl_snapshot(api, conn: Optional[sqlite3.Connection] = None) -> dict:
+    """Query the crypto-api for current equity + realized + unrealized P&L.
 
-    equity_usdt = USDT cash + sum(other_asset_qty × current_market_price)
-    realized_pnl = sum of (sell_proceeds - buy_cost) inferred from fill history
-    unrealized_pnl = current value of open positions - cost basis
+    Corrected math (audit fix — was using fictitious $100k baseline):
+
+      equity_usdt = USDT cash + Σ (other_asset_qty × current_ticker_price)
+      baseline   = first observed equity_usdt (persisted to
+                   smc_baseline_equity); fallback $100k when no DB
+      realized_pnl = Σ (sell_price − weighted_avg_buy_cost) × min(qty, held)
+                     − fee, from /fills using FIFO/weighted-avg cost basis.
+                     Closed round-trips only.
+      unrealized_pnl = Σ (current_ticker_price − weighted_avg_buy_cost)
+                       × open_qty  — *only* positions still held.
+                       Does NOT include the pre-funded portion that was
+                       there before the runner started; baseline absorbs
+                       that.
+      equity_delta_usdt = equity_usdt − baseline_usdt
+                          (what the runner actually moved the needle by)
+
+    The "+X%" headline is now equity_delta / baseline, so a pre-funded
+    test account no longer claims false attribution.
     """
     try:
         # Pull balances
@@ -116,9 +201,11 @@ def compute_pnl_snapshot(api) -> dict:
             except (TypeError, ValueError):
                 pass
 
-        # Compute equity in USDT (mark-to-market every non-USDT asset via ticker)
+        # Mark-to-market equity (cache prices so we can also use them
+        # for unrealized PnL on still-held positions).
         usdt = positions.pop("USDT", 0.0)
         equity = float(usdt)
+        prices: dict[str, float] = {}
         for asset, qty in positions.items():
             if qty <= 0:
                 continue
@@ -128,18 +215,19 @@ def compute_pnl_snapshot(api) -> dict:
                 p = (t.get("payload") or {}).get("price") \
                     or (t.get("payload") or {}).get("last_price")
                 if p:
-                    equity += qty * float(p)
+                    px = float(p)
+                    prices[asset] = px
+                    equity += qty * px
             except Exception:
                 pass
 
-        # Pull fills + compute realized P&L
+        # Per-symbol cost-basis tracker — weighted-avg, drained on sells.
         f = api._request("GET", "/fills")
         fills = (f.get("payload") or {}).get("fills") or f.get("payload") or []
         if isinstance(fills, dict):
             fills = fills.get("data") or []
         total_fills = len(fills) if isinstance(fills, list) else 0
-        # Per-symbol cost-basis tracker — simple FIFO weighted-avg
-        cost: dict[str, dict] = {}     # asset → {qty, avg_cost}
+        cost: dict[str, dict] = {}     # asset → {qty, avg}
         realized = 0.0
         winning = 0
         for fil in (fills or []):
@@ -169,10 +257,41 @@ def compute_pnl_snapshot(api) -> dict:
             except (TypeError, ValueError):
                 continue
 
-        equity_delta = equity - _STARTING_EQUITY_USDT
-        unrealized = equity_delta - realized
+        # Audit fix: unrealized = M2M of STILL-HELD positions vs their
+        # cost basis. Only positions opened by THIS runner (via fills)
+        # contribute; pre-funded inventory not seen by /fills is absorbed
+        # into the baseline so we don't fake-attribute it.
+        unrealized = 0.0
+        for base, pos in cost.items():
+            held = pos.get("qty") or 0.0
+            avg = pos.get("avg") or 0.0
+            if held <= 0 or avg <= 0:
+                continue
+            px = prices.get(base)
+            if px is None:
+                continue
+            unrealized += (px - avg) * held
+
+        # Baseline resolution: prefer persisted first-observation; fall
+        # back to the static $100k only when no DB available (legacy /
+        # CLI dry-runs).
+        baseline = _FALLBACK_STARTING_EQUITY_USDT
+        baseline_meta: dict = {"source": "fallback_100k", "captured_at": None}
+        if conn is not None:
+            try:
+                seed = get_or_init_baseline(conn, equity)
+                baseline = float(seed["baseline_usdt"])
+                baseline_meta = {
+                    "source": "first_observation" if not seed.get("is_new") else "seeded_now",
+                    "captured_at": seed.get("captured_at"),
+                }
+            except Exception:
+                pass
+        equity_delta = equity - baseline
         return {
             "equity_usdt": round(equity, 2),
+            "baseline_usdt": round(baseline, 2),
+            "baseline_meta": baseline_meta,
             "equity_delta_usdt": round(equity_delta, 2),
             "realized_pnl_usdt": round(realized, 4),
             "unrealized_pnl_usdt": round(unrealized, 4),
@@ -181,7 +300,9 @@ def compute_pnl_snapshot(api) -> dict:
         }
     except Exception:
         return {
-            "equity_usdt": None, "equity_delta_usdt": None,
+            "equity_usdt": None, "baseline_usdt": None,
+            "baseline_meta": {"source": "error", "captured_at": None},
+            "equity_delta_usdt": None,
             "realized_pnl_usdt": None, "unrealized_pnl_usdt": None,
             "total_fills": 0, "winning_fills": 0,
         }
@@ -321,6 +442,10 @@ def record_tick(
     # attach P&L fields to record via attribute setting (dataclass extras)
     rec_extras = {
         "equity_usdt": pnl.get("equity_usdt"),
+        # Audit fix: surface baseline so dashboard sub-line doesn't
+        # silently fall back to $100k.
+        "baseline_usdt": pnl.get("baseline_usdt"),
+        "baseline_meta": pnl.get("baseline_meta") or {},
         "equity_delta_usdt": pnl.get("equity_delta_usdt"),
         "equity_tick_delta_usdt": equity_delta_tick,
         "realized_pnl_usdt": pnl.get("realized_pnl_usdt"),
@@ -510,6 +635,24 @@ def summarize_training_history(
     ).fetchone()
     if latest:
         d["latest"] = dict(latest)
+        # Audit fix: pull the persisted baseline so the dashboard sub-line
+        # can render "+X% 自 YYYY-MM-DD $244,920.00" instead of the
+        # fictitious "起始 $100,000".
+        try:
+            ensure_baseline_equity_schema(conn)
+            br = conn.execute(
+                "SELECT baseline_usdt, captured_at, note "
+                "FROM smc_baseline_equity WHERE id=1"
+            ).fetchone()
+            if br is not None:
+                d["latest"]["baseline_usdt"] = float(br[0])
+                d["latest"]["baseline_meta"] = {
+                    "source": "first_observation",
+                    "captured_at": str(br[1]),
+                    "note": (br[2] if len(br) > 2 else None),
+                }
+        except Exception:
+            pass
     # State distribution
     state_rows = conn.execute(
         f"SELECT state, COUNT(*) AS n FROM smc_training_history {where} GROUP BY state",

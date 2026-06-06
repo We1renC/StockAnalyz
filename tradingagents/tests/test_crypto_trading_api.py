@@ -914,7 +914,12 @@ def test_compute_pnl_snapshot_and_record_tick():
     assert pnl["equity_usdt"] == 103000.0
     assert pnl["equity_delta_usdt"] == 3000.0
     assert pnl["realized_pnl_usdt"] == 95.0
-    assert pnl["unrealized_pnl_usdt"] == 2905.0
+    # Audit fix: unrealized is now the M2M gain on STILL-HELD positions
+    # only — BTC 0.5 × (100000 − 98000) = $1000. The ETH round-trip is
+    # already in realized; pre-funded USDT cash is absorbed by baseline.
+    # Old code returned 2905 (= equity_delta − realized), which double-
+    # counted pre-funded cash as "unrealized PnL".
+    assert pnl["unrealized_pnl_usdt"] == 1000.0
     assert pnl["total_fills"] == 3
     assert pnl["winning_fills"] == 1
 
@@ -930,7 +935,7 @@ def test_compute_pnl_snapshot_and_record_tick():
         )
         assert getattr(rec, "equity_usdt") == 103000.0
         assert getattr(rec, "realized_pnl_usdt") == 95.0
-        assert getattr(rec, "unrealized_pnl_usdt") == 2905.0
+        assert getattr(rec, "unrealized_pnl_usdt") == 1000.0
         assert getattr(rec, "total_fills") == 3
         assert getattr(rec, "winning_fills") == 1
     finally:

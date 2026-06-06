@@ -10451,13 +10451,20 @@ async function cdeskRefreshHistory() {
     const fmtUSD = (v) => (v === null || v === undefined) ? '—'
       : '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
     const equityNow = latest.equity_usdt;
+    // Audit fix: baseline now comes from latest.baseline_usdt (first
+    // observed equity persisted in smc_baseline_equity). Fallback to
+    // 100k only when DB write failed.
+    const baseline = (latest.baseline_usdt !== null && latest.baseline_usdt !== undefined)
+      ? Number(latest.baseline_usdt) : 100000;
     $('cdesk-kpi-equity').textContent = fmtUSD(equityNow);
-    $('cdesk-kpi-equity').style.color = (equityNow > 100000) ? '#10b981'
-      : (equityNow < 100000 ? '#ef4444' : '#cbd5e1');
-    if (equityNow !== null && equityNow !== undefined) {
-      const pct = ((equityNow - 100000) / 100000) * 100;
+    $('cdesk-kpi-equity').style.color = (equityNow > baseline) ? '#10b981'
+      : (equityNow < baseline ? '#ef4444' : '#cbd5e1');
+    if (equityNow !== null && equityNow !== undefined && baseline > 0) {
+      const pct = ((equityNow - baseline) / baseline) * 100;
       const pctColor = pct > 0 ? '#10b981' : pct < 0 ? '#ef4444' : '#94a3b8';
-      $('cdesk-kpi-equity-sub').innerHTML = `<span style="color:${pctColor}">${pct >= 0 ? '+' : ''}${pct.toFixed(3)}%</span> 起始 $100,000`;
+      const meta = latest.baseline_meta || {};
+      const tag = meta.captured_at ? `自 ${String(meta.captured_at).slice(0,10)}` : '起始';
+      $('cdesk-kpi-equity-sub').innerHTML = `<span style="color:${pctColor}">${pct >= 0 ? '+' : ''}${pct.toFixed(3)}%</span> ${tag} ${fmtUSD(baseline)}`;
     }
     const totalPnl = latest.equity_delta_usdt;
     $('cdesk-kpi-pnl').textContent = (totalPnl === null || totalPnl === undefined) ? '—'

@@ -4242,6 +4242,38 @@ def api_smc_crypto_weekly_digest(symbol: Optional[str] = None,
         raise HTTPException(status_code=500, detail=f"weekly-digest failed: {e}")
 
 
+@app.post("/api/smc-crypto/baseline-equity/reset")
+def api_smc_crypto_baseline_equity_reset(payload: Optional[dict] = None):
+    """Audit fix: explicit reset of the equity baseline.
+
+    Body: ``{"baseline_usdt": <float>?, "note": "<str>"?}``
+    If ``baseline_usdt`` omitted, snapshots the CURRENT live equity
+    (so the next "+X%" math anchors here forward).
+    """
+    try:
+        from smc_training_history import (
+            compute_pnl_snapshot, reset_baseline_equity,
+        )
+        payload = payload or {}
+        api = _crypto_api_client()
+        if "baseline_usdt" in payload:
+            new_baseline = float(payload["baseline_usdt"])
+        else:
+            snap = compute_pnl_snapshot(api)        # no conn → don't auto-seed
+            new_baseline = float(snap.get("equity_usdt") or 0.0)
+        conn_h = get_db()
+        try:
+            out = reset_baseline_equity(
+                conn_h, new_baseline,
+                note=str(payload.get("note") or "manual_reset"),
+            )
+        finally:
+            conn_h.close()
+        return {"reset": True, **out}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"baseline-reset failed: {e}")
+
+
 @app.post("/api/smc-crypto/decommission-sweep")
 def api_smc_crypto_decommission_sweep(symbol: Optional[str] = None,
                                         window_size: int = 50,
@@ -4636,9 +4668,11 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
             from smc_training_history import record_tick, compute_pnl_snapshot
             from dataclasses import asdict as _asdict
             report_dict = _asdict(report)
-            pnl_snap = compute_pnl_snapshot(api)
-            tick_response["pnl"] = pnl_snap
+            # Audit fix: pass conn so baseline reads/seeds from
+            # smc_baseline_equity (no more fictitious $100k).
             conn_h = get_db()
+            pnl_snap = compute_pnl_snapshot(api, conn=conn_h)
+            tick_response["pnl"] = pnl_snap
             try:
                 rec = record_tick(
                     conn_h, symbol=symbol, state=state,

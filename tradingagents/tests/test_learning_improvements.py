@@ -191,6 +191,97 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_baseline_equity_seeds_on_first_observation():
+    """Audit fix: first compute_pnl_snapshot with conn seeds baseline
+    from CURRENT equity; subsequent reads return the seeded value."""
+    import sqlite3
+    from smc_training_history import (
+        get_or_init_baseline, ensure_baseline_equity_schema,
+    )
+    conn = sqlite3.connect(":memory:")
+    ensure_baseline_equity_schema(conn)
+    out1 = get_or_init_baseline(conn, current_equity=244_919.90)
+    assert out1["baseline_usdt"] == 244_919.90
+    assert out1["is_new"] is True
+    # Second call returns same baseline even if equity changed
+    out2 = get_or_init_baseline(conn, current_equity=300_000.0)
+    assert out2["baseline_usdt"] == 244_919.90
+    assert out2["is_new"] is False
+    conn.close()
+
+
+def test_reset_baseline_equity_overwrites():
+    import sqlite3
+    from smc_training_history import (
+        get_or_init_baseline, reset_baseline_equity,
+    )
+    conn = sqlite3.connect(":memory:")
+    get_or_init_baseline(conn, 100_000.0)
+    out = reset_baseline_equity(conn, 250_000.0, note="test")
+    assert out["baseline_usdt"] == 250_000.0
+    out2 = get_or_init_baseline(conn, current_equity=999_999.0)
+    assert out2["baseline_usdt"] == 250_000.0
+    conn.close()
+
+
+def test_compute_pnl_snapshot_uses_baseline_not_100k():
+    """Audit fix: equity_delta = equity − baseline, not equity − $100k.
+
+    With a $244,920 baseline = current → delta should be 0 (not +144,920).
+    """
+    import sqlite3
+    from smc_training_history import compute_pnl_snapshot, ensure_baseline_equity_schema
+    conn = sqlite3.connect(":memory:")
+    ensure_baseline_equity_schema(conn)
+
+    class _StubAPI:
+        def balances(self):
+            return {"payload": {"balances": [
+                {"asset": "USDT", "total": 0.0},
+                {"asset": "BTC", "total": 4.0},
+            ]}}
+        def ticker(self, symbol):
+            return {"payload": {"price": "61230.0"}}
+        def _request(self, method, path):
+            return {"payload": {"fills": []}}
+
+    snap = compute_pnl_snapshot(_StubAPI(), conn=conn)
+    assert abs(snap["equity_usdt"] - 244_920.0) < 1.0
+    assert abs(snap["equity_delta_usdt"]) < 1.0
+    assert snap["baseline_usdt"] == snap["equity_usdt"]
+    # Unrealized must be 0 — no fills → no cost basis.
+    assert snap["unrealized_pnl_usdt"] == 0.0
+    conn.close()
+
+
+def test_compute_pnl_snapshot_unrealized_from_fill_history():
+    """Audit fix: unrealized = (current_price − avg_cost) × held_qty
+    derived from /fills, NOT (equity − baseline − realized)."""
+    import sqlite3
+    from smc_training_history import compute_pnl_snapshot, ensure_baseline_equity_schema
+    conn = sqlite3.connect(":memory:")
+    ensure_baseline_equity_schema(conn)
+
+    class _StubAPI:
+        def balances(self):
+            return {"payload": {"balances": [
+                {"asset": "USDT", "total": 0.0},
+                {"asset": "BTC", "total": 1.0},
+            ]}}
+        def ticker(self, symbol):
+            return {"payload": {"price": "60000.0"}}
+        def _request(self, method, path):
+            return {"payload": {"fills": [
+                {"symbol": "BTC-USDT", "side": "buy",
+                 "quantity": "1.0", "price": "50000.0", "fee": "0"},
+            ]}}
+
+    snap = compute_pnl_snapshot(_StubAPI(), conn=conn)
+    # 1 BTC × (60000 − 50000) = +$10,000 unrealized
+    assert abs(snap["unrealized_pnl_usdt"] - 10_000.0) < 1.0
+    conn.close()
+
+
 def test_ensemble_vote_unanimous_returns_full_size():
     """D4: all qualified candidates point the same way → multiplier 1.0."""
     from learning.ensemble_vote import compute_ensemble_vote
