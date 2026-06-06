@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
+from learning.ledger_cache import cached_load_trade_records
 
 # Layer 1
 from smc_quant import (
@@ -39,7 +40,6 @@ from smc_quant import (
     sharpe_ratio,
     deflated_sharpe_ratio,
     bonferroni_threshold,
-    load_trade_records,
     monthly_edge_stability,
 )
 # Layer 2
@@ -88,7 +88,7 @@ from paper_acceptance_security import run_security_scan
 # ---------------------------------------------------------------------------
 
 def _load_records(ledger_path: str) -> list[dict]:
-    return load_trade_records(ledger_path)
+    return cached_load_trade_records(ledger_path)
 
 
 def _records_for(records: list[dict], symbol: Optional[str]) -> list[dict]:

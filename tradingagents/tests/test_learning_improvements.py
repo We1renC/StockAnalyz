@@ -478,6 +478,50 @@ def test_ledger_cache_invalidates_on_mtime_change(tmp_path):
     assert len(calls) == 2
 
 
+def test_ledger_cache_invalidates_when_content_changes_but_mtime_and_size_match(tmp_path):
+    """A3: same mtime/size but different payload still invalidates via fingerprint."""
+    import os
+    from learning.ledger_cache import _LedgerCache
+    cache = _LedgerCache(max_entries=4, ttl_sec=60.0)
+    f = tmp_path / "ledger.jsonl"
+    original = '{"a":1}\n'
+    rewritten = '{"b":2}\n'
+    assert len(original) == len(rewritten)
+    f.write_text(original, encoding="utf-8")
+    st = os.stat(f)
+
+    calls = []
+
+    def loader(path):
+        calls.append(path)
+        return [{"payload": Path(path).read_text(encoding="utf-8")}]
+
+    first = cache.get(str(f), loader)
+    f.write_text(rewritten, encoding="utf-8")
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns))
+    second = cache.get(str(f), loader)
+
+    assert len(calls) == 2
+    assert first != second
+    assert second[0]["payload"] == rewritten
+
+
+def test_learning_orchestrator_load_records_uses_shared_ledger_cache(monkeypatch):
+    """A3: the report builder path must use the same shared cache entry point."""
+    import smc_learning_orchestrator as orch
+
+    seen = []
+
+    def fake_cached_load(path):
+        seen.append(path)
+        return [{"symbol": "BTC-USDT", "outcome": "target", "r_multiple": 1.0}]
+
+    monkeypatch.setattr(orch, "cached_load_trade_records", fake_cached_load)
+    out = orch._load_records("tmp/test-ledger.jsonl")
+    assert seen == ["tmp/test-ledger.jsonl"]
+    assert out[0]["symbol"] == "BTC-USDT"
+
+
 def test_api_token_middleware_off_when_env_unset(monkeypatch):
     """A2: DASHBOARD_API_TOKEN unset → middleware is a no-op."""
     monkeypatch.delenv("DASHBOARD_API_TOKEN", raising=False)

@@ -8,8 +8,9 @@ sweep then runs 64 simulations over the same list. The dashboard
 polls these endpoints every few seconds → death by I/O.
 
 This cache:
-  • Keys on ``(abs_path, mtime_ns, size_bytes)`` — any append/rewrite
-    bumps mtime so we automatically invalidate.
+  • Keys on ``(abs_path, mtime_ns, size_bytes, content_fingerprint)``.
+    Most rewrites bump mtime/size; if a rewrite preserves both, the
+    fingerprint still invalidates the cached entry.
   • Returns the SAME ``list[dict]`` reference (read-only contract:
     callers must not mutate).
   • TTL safety net of 60s in case mtime granularity loses an update
@@ -24,6 +25,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+import hashlib
 from collections import OrderedDict
 from typing import Optional
 
@@ -42,7 +44,24 @@ class _LedgerCache:
             st = os.stat(path)
         except FileNotFoundError:
             return ("missing", 0, 0)
-        return ("ok", st.st_mtime_ns, st.st_size)
+        return ("ok", st.st_mtime_ns, st.st_size, self._fingerprint(path, st.st_size))
+
+    def _fingerprint(self, path: str, size: int, sample_bytes: int = 4096) -> str:
+        """Cheap content signature to catch same-size / same-mtime rewrites."""
+        if size <= 0:
+            return "empty"
+        h = hashlib.blake2b(digest_size=8)
+        try:
+            with open(path, "rb") as fh:
+                if size <= sample_bytes * 2:
+                    h.update(fh.read())
+                else:
+                    h.update(fh.read(sample_bytes))
+                    fh.seek(max(size - sample_bytes, 0))
+                    h.update(fh.read(sample_bytes))
+        except OSError:
+            return "io_error"
+        return h.hexdigest()
 
     def get(self, path: str, loader) -> list[dict]:
         abs_path = os.path.abspath(path)
