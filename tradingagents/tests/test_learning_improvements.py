@@ -191,6 +191,67 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_ensemble_vote_unanimous_returns_full_size():
+    """D4: all qualified candidates point the same way → multiplier 1.0."""
+    from learning.ensemble_vote import compute_ensemble_vote
+    cands = [
+        {"direction": 1, "confluence": {"score": 9}, "rr": 2.5, "model": "a"},
+        {"direction": 1, "confluence": {"score": 10}, "rr": 3.0, "model": "b"},
+    ]
+    v = compute_ensemble_vote(cands)
+    assert v["status"] == "unanimous"
+    assert v["size_multiplier"] == 1.0
+    assert v["confidence"] == 1.0
+
+
+def test_ensemble_vote_conflict_scales_down_size():
+    """D4: long-side weight 10 vs short-side 8 → confidence (10-8)/18 ≈ 0.11
+    → clamped to size_floor 0.3."""
+    from learning.ensemble_vote import compute_ensemble_vote
+    cands = [
+        {"direction": 1, "confluence": {"score": 10}, "rr": 2.0, "model": "a"},
+        {"direction": -1, "confluence": {"score": 8}, "rr": 2.0, "model": "b"},
+    ]
+    v = compute_ensemble_vote(cands, size_floor=0.3)
+    assert v["status"] == "conflict_adjusted"
+    assert v["winning_side"] == "long"
+    assert v["size_multiplier"] == 0.3  # floored
+    # Without floor, raw confidence ≈ 2/18 ≈ 0.111
+    v2 = compute_ensemble_vote(cands, size_floor=0.0)
+    assert abs(v2["size_multiplier"] - 0.1111) < 0.001
+
+
+def test_ensemble_vote_filters_below_threshold_candidates():
+    """D4: candidates failing min_score / min_rr don't get a vote."""
+    from learning.ensemble_vote import compute_ensemble_vote
+    cands = [
+        {"direction": 1, "confluence": {"score": 9}, "rr": 2.5},
+        {"direction": -1, "confluence": {"score": 5}, "rr": 1.0},  # below 8 / 1.5
+    ]
+    v = compute_ensemble_vote(cands)
+    assert v["status"] == "unanimous"  # below-threshold short dropped
+    assert v["n_short"] == 0
+
+
+def test_annotate_picked_entry_with_vote_composes_with_existing_size_mult():
+    """D4: ensemble multiplier composes with P2-14+ exploration multiplier."""
+    from learning.ensemble_vote import annotate_picked_entry_with_vote
+    analysis = {"concepts": {"entry_models": {
+        "sweep_reversal": {"entries": [
+            {"direction": 1, "confluence": {"score": 10}, "rr": 2.0, "model": "sweep_reversal"},
+        ]},
+        "ote_retracement": {"entries": [
+            {"direction": -1, "confluence": {"score": 8}, "rr": 2.0, "model": "ote_retracement"},
+        ]},
+    }}}
+    picked = {"model": "sweep_reversal", "direction": 1,
+                "exploration_size_multiplier": 0.5}
+    annotate_picked_entry_with_vote(picked, analysis, size_floor=0.3)
+    # ensemble alone = 0.3 (floored), composed with prev 0.5 = 0.15
+    assert picked["exploration_size_multiplier"] == 0.15
+    assert picked["ensemble_vote"]["status"] == "conflict_adjusted"
+
+
 def test_decommission_triggers_on_trailing_underwater(tmp_path):
     """D3: 25 consecutive -0.5R trailing trades → total_R = -12.5, well
     below default -5.0 floor → decommissioned."""

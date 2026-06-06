@@ -510,6 +510,14 @@ class SmcPaperRunner:
             pass
 
         entry = self._pick_best_entry(analysis)
+        # Audit fix D4: cross-model ensemble vote — if both sides have
+        # qualified candidates, scale size down by confidence.
+        if entry is not None:
+            try:
+                from learning.ensemble_vote import annotate_picked_entry_with_vote
+                annotate_picked_entry_with_vote(entry, analysis)
+            except Exception:
+                pass
         if entry is None:
             result.action = "skipped:no_qualified_entry"
             # P2-15 audit fix: record the BEST candidate (even if below threshold)

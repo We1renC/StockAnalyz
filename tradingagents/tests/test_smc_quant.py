@@ -950,7 +950,7 @@ def test_trade_record_schema_captures_features_and_outcome():
     }
     outcome = {"outcome": "target", "r_multiple": 10.0, "bars_held": 4, "mae": -0.4, "mfe": 10.2, "entry_index": 5}
     rec = build_trade_record(entry, trade_outcome=outcome, symbol="AAPL")
-    assert rec["schema_version"] == 1
+    assert rec["schema_version"] == 2
     assert rec["model"] == "sweep_reversal"
     assert rec["confluence_score"] == 11
     assert rec["dol_kind"] == "BSL"
