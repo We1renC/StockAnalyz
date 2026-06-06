@@ -51,6 +51,57 @@ def _min_interval() -> float:
         return 30.0
 
 
+def _maintenance_interval() -> float:
+    """How often (seconds) to run rotation + decommission. Default 6h."""
+    try:
+        return max(300.0, float(os.environ.get("SMC_MAINTENANCE_INTERVAL", "21600")))
+    except (TypeError, ValueError):
+        return 21600.0
+
+
+# Maintenance state for the ops endpoint.
+_maintenance: dict = {"last_run_at": None, "last_result": None, "runs": 0, "errors": 0}
+
+
+def maintenance_state() -> dict:
+    return dict(_maintenance)
+
+
+def _run_maintenance() -> dict:
+    """Audit fix (Round J): autonomous housekeeping so the headless loop
+    self-maintains — rotate the training ledger + run the decommission
+    sweep. Both are best-effort; failures are logged, never fatal.
+    """
+    out: dict = {}
+    try:
+        from smc_quant import LedgerPaths
+        from learning.ledger_rotation import rotate_ledger
+        keep = int(os.environ.get("SMC_LEDGER_KEEP_PER_SYMBOL", "1000"))
+        out["rotation"] = rotate_ledger(LedgerPaths.training_ledger(),
+                                          keep_per_symbol=keep)
+    except Exception as exc:
+        out["rotation"] = {"error": f"{type(exc).__name__}: {exc}"}
+    try:
+        import os as _os
+        from smc_quant import LedgerPaths
+        from learning.model_decommission import (
+            compute_per_model_health, decide_decommission, load_state, save_state,
+        )
+        from learning.ledger_cache import cached_load_trade_records
+        records = cached_load_trade_records(LedgerPaths.training_ledger())
+        decom_path = _os.path.join(
+            _os.path.dirname(LedgerPaths.training_ledger()), "decommissioned.json")
+        prev = load_state(decom_path)
+        health = compute_per_model_health(records)
+        dec = decide_decommission(health, prev)
+        if dec.get("actions"):
+            save_state(decom_path, dec["new_state"])
+        out["decommission"] = {"actions": dec.get("actions", [])}
+    except Exception as exc:
+        out["decommission"] = {"error": f"{type(exc).__name__}: {exc}"}
+    return out
+
+
 # Per-symbol "next eligible run" wallclock + last result, so the loop is
 # inspectable from an ops endpoint (G2).
 _state: dict[str, dict] = {}
@@ -62,6 +113,8 @@ def scheduler_state() -> dict:
         "enabled": is_enabled(),
         "symbols": configured_symbols(),
         "min_interval_seconds": _min_interval(),
+        "maintenance_interval_seconds": _maintenance_interval(),
+        "maintenance": dict(_maintenance),
         "per_symbol": dict(_state),
     }
 
@@ -85,16 +138,32 @@ async def autolearn_loop(
     sleep = sleep_fn or asyncio.sleep
     clock = now_fn or time.time
     floor = _min_interval()
+    maint_every = _maintenance_interval()
     symbols = configured_symbols()
-    print(f"[autolearn] server-side loop started for {symbols} (floor={floor}s)")
+    print(f"[autolearn] server-side loop started for {symbols} "
+          f"(floor={floor}s, maintenance every {maint_every}s)")
     # Initialize all symbols eligible immediately.
     for s in symbols:
         _state.setdefault(s, {"next_run_at": 0.0, "last_status": None,
                                "last_run_at": None, "errors": 0})
+    # First maintenance one interval out (don't rotate on the very first tick).
+    next_maint_at = clock() + maint_every
 
     while True:
         try:
             now = clock()
+            # Round J: autonomous housekeeping on its own cadence.
+            if now >= next_maint_at:
+                try:
+                    res = await asyncio.to_thread(_run_maintenance)
+                    _maintenance["last_result"] = res
+                    _maintenance["runs"] = int(_maintenance.get("runs", 0)) + 1
+                except Exception as exc:
+                    _maintenance["errors"] = int(_maintenance.get("errors", 0)) + 1
+                    log_event(_log, "maintenance_error", err=type(exc).__name__)
+                finally:
+                    _maintenance["last_run_at"] = clock()
+                    next_maint_at = clock() + maint_every
             due = [s for s in configured_symbols()
                      if _state.get(s, {}).get("next_run_at", 0.0) <= now]
             for sym in due:

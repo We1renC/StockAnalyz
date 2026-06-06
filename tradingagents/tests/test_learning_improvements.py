@@ -2239,3 +2239,53 @@ def test_g3_rotate_ledger_noop_under_cap(tmp_path):
     rep = rotate_ledger(str(p), keep_per_symbol=500, archive_dir=str(tmp_path / "arch"))
     assert rep["rotated"] is False
     assert rep["reason"] == "under_cap"
+
+
+def test_roundj_scheduler_runs_periodic_maintenance(monkeypatch):
+    """Round J: autolearn loop fires _run_maintenance on its own cadence;
+    failures in a tick or maintenance never kill the loop."""
+    import asyncio, importlib
+    monkeypatch.setenv("SMC_AUTOLEARN_ENABLED", "1")
+    monkeypatch.setenv("SMC_AUTOLEARN_SYMBOLS", "X-USDT")
+    monkeypatch.setenv("SMC_AUTOLEARN_MIN_INTERVAL", "30")
+    monkeypatch.setenv("SMC_MAINTENANCE_INTERVAL", "300")
+    import learning.autolearn_scheduler as sched
+    importlib.reload(sched)
+
+    maint_calls = []
+    monkeypatch.setattr(sched, "_run_maintenance",
+                        lambda: maint_calls.append(1) or {"rotation": {"rotated": False}})
+
+    ticks = []
+    def fake_tick(payload):
+        ticks.append(payload["symbol"])
+        if len(ticks) >= 20:
+            raise KeyboardInterrupt
+        return {"state": "READY", "history": {"next_interval_seconds": 30}}
+
+    clk = {"t": 0.0}
+    async def fake_sleep(d): clk["t"] += d
+    def now(): return clk["t"]
+
+    async def run():
+        try:
+            await sched.autolearn_loop(fake_tick, sleep_fn=fake_sleep, now_fn=now)
+        except KeyboardInterrupt:
+            pass
+    asyncio.run(run())
+    # virtual time advanced well past 300s of maintenance cadence → ran ≥1
+    assert len(maint_calls) >= 1
+    st = sched.maintenance_state()
+    assert st["runs"] >= 1
+
+
+def test_roundj_run_maintenance_is_resilient(tmp_path, monkeypatch):
+    """Round J: _run_maintenance returns a report even when ledger absent;
+    errors are captured per-section, never raised."""
+    monkeypatch.setenv("SMC_LEDGER_DIR", str(tmp_path))
+    import importlib
+    import learning.autolearn_scheduler as sched
+    importlib.reload(sched)
+    out = sched._run_maintenance()
+    assert "rotation" in out
+    assert "decommission" in out
