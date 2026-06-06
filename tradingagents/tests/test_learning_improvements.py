@@ -191,6 +191,44 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_sweep_walk_forward_emits_best_oos_cell():
+    """D2: walk-forward returns a best cell whose score is OOS-derived,
+    not in-sample. Picked cell must beat the loser pattern in test fixture."""
+    from learning.hyperparameter_sweep import sweep_walk_forward
+    records = []
+    base_day = 1
+    for i in range(60):
+        # winners: score=9, rr=2.5, +1R
+        records.append({
+            "entry_time": f"2026-01-{base_day + (i // 24):02d}T{i % 24:02d}:00:00+00:00",
+            "confluence_score": 9, "rr_planned": 2.5,
+            "outcome": "target", "r_multiple": 1.0 + (i % 5) * 0.1,
+        })
+    for i in range(60, 120):
+        # losers: score=6, rr=1.5, -1R
+        records.append({
+            "entry_time": f"2026-01-{base_day + (i // 24):02d}T{i % 24:02d}:00:00+00:00",
+            "confluence_score": 6, "rr_planned": 1.5,
+            "outcome": "stop" if i % 3 else "target",
+            "r_multiple": -1.0 if i % 3 else 0.3,
+        })
+    out = sweep_walk_forward(records, n_folds=3, min_trades_per_fold=10)
+    assert out["status"] == "ok"
+    assert out["best"] is not None
+    # The OOS-best should refuse the loser pool — either via min_score≥7 or
+    # via min_rr≥2.0 (both filters cut the noisy losers).
+    chosen = out["best"]
+    assert chosen["min_score"] >= 7 or chosen["min_rr"] >= 2.0
+
+
+def test_sweep_walk_forward_handles_sparse_ledger():
+    """D2: too few records → status=insufficient_data, best=None."""
+    from learning.hyperparameter_sweep import sweep_walk_forward
+    out = sweep_walk_forward([], n_folds=4, min_trades_per_fold=10)
+    assert out["best"] is None
+    assert out["status"] == "insufficient_data"
+
+
 def test_weekly_digest_builds_markdown_for_current_week(tmp_path):
     """C3: build digest for in-window trades and write to vault path."""
     from datetime import datetime, timezone, timedelta
