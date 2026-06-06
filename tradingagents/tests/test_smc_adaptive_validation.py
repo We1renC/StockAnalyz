@@ -262,7 +262,7 @@ def test_preflight_and_run_symbol_in_validating_probe_mode(tmp_path):
         )
         
         # 取得傳入 UnifiedTradingSession 的 config
-        cfg = MockSession.call_args[1]["config"]
+        cfg = MockSession.call_args[0][1]
         # 驗證 config 中的引數是否有成功套用 VALIDATING_PROBE 規則
         # 正常 major (BTC) 的 risk_pct 是 0.02
         # VALIDATING_PROBE 下 risk_pct = 0.02 * 0.03 = 0.0006
