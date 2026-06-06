@@ -4213,6 +4213,32 @@ def api_smc_crypto_score_calibration(symbol: Optional[str] = None):
         raise HTTPException(status_code=500, detail=f"calibration failed: {e}")
 
 
+@app.get("/api/smc-crypto/learning-curve")
+def api_smc_crypto_learning_curve(symbol: Optional[str] = None,
+                                    bin_size: int = 10,
+                                    target_sample_size: int = 30):
+    """Audit fix P3-20: cumulative learning curve + velocity + samples-to-ready ETA.
+
+    Lets the UI answer:
+      • how is cumulative E[R] / win_rate evolving?
+      • is the learning velocity positive, stagnant, or degrading?
+      • at the current trade rate, how many more trades / hours until
+        we have 30 resolved samples (LEARNING → READY threshold)?
+    """
+    try:
+        from learning.learning_curve import learning_curve_diagnostics
+        from smc_quant import load_trade_records
+        records = load_trade_records("tmp/smc_training_ledger.jsonl")
+        if symbol:
+            records = [r for r in records if r.get("symbol") == symbol]
+        return learning_curve_diagnostics(
+            records, bin_size=int(bin_size),
+            target_sample_size=int(target_sample_size),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"learning-curve failed: {e}")
+
+
 @app.post("/api/smc-crypto/reconcile-missed-signals")
 def api_smc_crypto_reconcile_missed_signals(payload: Optional[dict] = None):
     """Audit fix P2-15+: fill outcome_at_5/20_bars + MAE/MFE_R from real K.

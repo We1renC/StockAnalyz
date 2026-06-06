@@ -191,6 +191,84 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_learning_curve_bins_and_cumulates_correctly():
+    """P3-20: 25 resolved trades / bin_size=10 → 3 bins (10,10,5)."""
+    from learning.learning_curve import cumulative_curve
+    from datetime import datetime, timezone, timedelta
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    # 25 trades alternating ±1R
+    records = []
+    for i in range(25):
+        records.append({
+            "entry_time": (base + timedelta(hours=i)).isoformat(),
+            "outcome": "target" if i % 2 == 0 else "stop",
+            "r_multiple": 1.0 if i % 2 == 0 else -1.0,
+        })
+    curve = cumulative_curve(records, bin_size=10)
+    assert len(curve) == 3
+    assert curve[0]["n_in_bin"] == 10
+    assert curve[1]["n_in_bin"] == 10
+    assert curve[2]["n_in_bin"] == 5 and curve[2].get("is_partial") is True
+    # Cumulative count tracks correctly
+    assert curve[-1]["cumulative_n"] == 25
+    # Mean of alternating ±1 is ~0
+    assert abs(curve[-1]["cumulative_E_R"]) < 0.1
+
+
+def test_learning_velocity_detects_improving_trend():
+    """Bins with rising cumulative E[R] → slope > 0, interpretation=improving."""
+    from learning.learning_curve import learning_velocity
+    curve = [
+        {"bin_idx": 1, "cumulative_E_R": 0.10},
+        {"bin_idx": 2, "cumulative_E_R": 0.20},
+        {"bin_idx": 3, "cumulative_E_R": 0.30},
+        {"bin_idx": 4, "cumulative_E_R": 0.40},
+    ]
+    v = learning_velocity(curve, lookback_bins=3)
+    assert v["slope"] > 0
+    assert v["interpretation"] == "improving"
+
+
+def test_learning_velocity_detects_stagnant_trend():
+    from learning.learning_curve import learning_velocity
+    curve = [
+        {"bin_idx": 1, "cumulative_E_R": 0.5},
+        {"bin_idx": 2, "cumulative_E_R": 0.501},
+        {"bin_idx": 3, "cumulative_E_R": 0.499},
+    ]
+    v = learning_velocity(curve, lookback_bins=3)
+    assert v["interpretation"] == "stagnant"
+
+
+def test_samples_to_ready_extrapolates_from_recent_rate():
+    """P3-20: 10 trades in 24h, target=30 → need 20 more, ETA ≈ 48h."""
+    from learning.learning_curve import samples_to_ready
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    records = [
+        {"entry_time": (now - timedelta(hours=h)).isoformat(),
+         "outcome": "target", "r_multiple": 1.0}
+        for h in range(10)
+    ]
+    eta = samples_to_ready(records, target_sample_size=30,
+                             rate_lookback_hours=24.0)
+    assert eta["current"] == 10
+    assert eta["trades_needed"] == 20
+    assert eta["rate_per_hour"] > 0
+    # eta_hours = 20 / (10/24) = 48
+    assert eta["eta_hours"] >= 40 and eta["eta_hours"] <= 60
+
+
+def test_samples_to_ready_status_target_reached():
+    """≥ target → no work needed."""
+    from learning.learning_curve import samples_to_ready
+    records = [{"outcome": "target", "r_multiple": 1.0,
+                  "entry_time": "2026-01-01T00:00"} for _ in range(35)]
+    eta = samples_to_ready(records, target_sample_size=30)
+    assert eta["status"] == "target_reached"
+    assert eta["trades_needed"] == 0
+
+
 def test_missed_signals_reconciler_fills_outcome_when_target_hits(tmp_path):
     """P2-15+: future kline reaches target → outcome_at_5_bars='target'."""
     from smc_missed_signals_reconciler import reconcile_missed_signals
