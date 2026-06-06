@@ -630,6 +630,65 @@ def test_learning_health_critical_when_kill_switch_locked():
     assert out["components"]["edge_decay"]["kill_switch_state"] == "LOCKED"
 
 
+def test_connect_db_enables_wal(tmp_path):
+    """E3: connect_db sets WAL + busy_timeout on every connection."""
+    from smc_quant import connect_db
+    db = str(tmp_path / "t.db")
+    conn = connect_db(db, row_factory=True)
+    assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+    conn.close()
+
+
+def test_autolearn_scheduler_disabled_by_default(monkeypatch):
+    """E1: server-side loop is opt-in; off unless env set."""
+    monkeypatch.delenv("SMC_AUTOLEARN_ENABLED", raising=False)
+    from learning.autolearn_scheduler import is_enabled
+    assert is_enabled() is False
+
+
+def test_autolearn_scheduler_symbols_from_env(monkeypatch):
+    monkeypatch.setenv("SMC_AUTOLEARN_SYMBOLS", "AAA-USDT, BBB-USDT")
+    from learning.autolearn_scheduler import configured_symbols
+    assert configured_symbols() == ["AAA-USDT", "BBB-USDT"]
+    monkeypatch.delenv("SMC_AUTOLEARN_SYMBOLS")
+    assert configured_symbols() == ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+
+
+def test_autolearn_loop_runs_ticks_and_paces(monkeypatch):
+    """E1: loop calls tick_fn, honours next_interval_seconds, survives
+    a per-symbol error without dying."""
+    import asyncio, importlib
+    monkeypatch.setenv("SMC_AUTOLEARN_ENABLED", "1")
+    monkeypatch.setenv("SMC_AUTOLEARN_SYMBOLS", "X-USDT")
+    monkeypatch.setenv("SMC_AUTOLEARN_MIN_INTERVAL", "30")
+    import learning.autolearn_scheduler as sched
+    importlib.reload(sched)
+
+    calls = []
+    def fake_tick(payload):
+        calls.append(payload["symbol"])
+        if len(calls) == 2:
+            raise RuntimeError("boom")    # must NOT kill the loop
+        if len(calls) >= 4:
+            raise KeyboardInterrupt        # deterministic stop
+        return {"state": "READY", "history": {"next_interval_seconds": 30}}
+
+    clk = {"t": 0.0}
+    async def fake_sleep(d): clk["t"] += d
+    def now(): return clk["t"]
+
+    async def run():
+        try:
+            await sched.autolearn_loop(fake_tick, sleep_fn=fake_sleep, now_fn=now)
+        except KeyboardInterrupt:
+            pass
+    asyncio.run(run())
+    assert len(calls) >= 4            # survived the boom at call 2
+    st = sched.scheduler_state()
+    assert st["per_symbol"]["X-USDT"]["errors"] >= 1
+
+
 def test_ledger_paths_centralized_and_env_overridable(monkeypatch):
     """C2: LedgerPaths is the single source of truth, env-overridable."""
     from smc_quant import LedgerPaths

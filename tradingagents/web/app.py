@@ -2026,10 +2026,25 @@ async def lifespan(app: FastAPI):
         print(f"Failed to start matching engine: {e}")
         crypto_task = None
 
+    # Audit fix E1: server-side auto-learn loop so learning continues
+    # headless (no longer requires an open browser tab). Opt-in via
+    # SMC_AUTOLEARN_ENABLED=1.
+    autolearn_task = None
+    try:
+        from learning.autolearn_scheduler import autolearn_loop, is_enabled
+        if is_enabled():
+            autolearn_task = asyncio.create_task(
+                autolearn_loop(lambda payload: api_smc_crypto_auto_learn_tick(payload))
+            )
+    except Exception as e:
+        print(f"[startup] autolearn scheduler not started: {e}")
+
     yield
     task.cancel()
     if crypto_task:
         crypto_task.cancel()
+    if autolearn_task:
+        autolearn_task.cancel()
 
 app = FastAPI(title="TradingAgents Dashboard", lifespan=lifespan)
 
