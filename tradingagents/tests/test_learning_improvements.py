@@ -191,6 +191,72 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_bh_fdr_filter_picks_extreme_tail_only():
+    """D1: BH-FDR with 10 hypotheses, only the smallest two p-values should
+    pass at alpha=0.10."""
+    from learning.cluster_ensemble import bh_fdr_filter
+    # 10 p-values: two very small (0.001, 0.005) + eight scattered
+    ps = [0.001, 0.005, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.99]
+    sig = bh_fdr_filter(ps, alpha=0.10)
+    assert sig[0] is True
+    assert sig[1] is True
+    assert all(s is False for s in sig[2:])
+
+
+def test_bh_fdr_filter_empty_inputs():
+    """D1: empty p-value list → empty mask."""
+    from learning.cluster_ensemble import bh_fdr_filter
+    assert bh_fdr_filter([]) == []
+
+
+def test_cluster_table_fdr_significant_field_propagates():
+    """D1: build_cluster_weight_table stamps fdr_significant on each lift."""
+    from learning.cluster_ensemble import build_cluster_weight_table
+    # Build records where ote_zone clearly separates: active=+1R, inactive=-1R
+    recs = []
+    for _ in range(20):
+        recs.append({"model": "x", "symbol": "BTC", "interval": "1h",
+                       "regime": "trending",
+                       "outcome": "target", "r_multiple": 1.0,
+                       "factors_active": ["ote_zone"]})
+    for _ in range(20):
+        recs.append({"model": "x", "symbol": "BTC", "interval": "1h",
+                       "regime": "trending",
+                       "outcome": "stop", "r_multiple": -1.0,
+                       "factors_active": []})
+    table = build_cluster_weight_table(recs, factors=["ote_zone"],
+                                          min_samples=10, fdr_alpha=0.10)
+    k = ("x", "BTC", "1h", "trending")
+    assert k in table
+    stats = table[k]["factors"]["ote_zone"]
+    assert "fdr_significant" in stats
+    # Extreme lift (~2R) with n=40 → must clear FDR
+    assert stats["fdr_significant"] is True
+    assert stats["p_value"] < 0.05
+
+
+def test_resolve_cluster_weights_blocks_non_fdr_significant_nudge():
+    """D1: a non-significant factor is NOT nudged even with strong lift."""
+    from learning.cluster_ensemble import resolve_cluster_weights
+    k = ("x", "BTC", "1h", "trending")
+    # Strong lift but fdr_significant=False → no nudge
+    table = {k: {
+        "n_total": 100, "mean_R": 0.0,
+        "factors": {"ote_zone": {
+            "lift": 1.0, "n_active": 50, "n_inactive": 50,
+            "p_value": 0.40, "fdr_significant": False,
+        }},
+    }}
+    out = resolve_cluster_weights(table, cluster=k,
+                                     base_weights={"ote_zone": 1})
+    assert out["ote_zone"] == 1   # unchanged
+    # Same with significant=True → nudges
+    table[k]["factors"]["ote_zone"]["fdr_significant"] = True
+    out2 = resolve_cluster_weights(table, cluster=k,
+                                      base_weights={"ote_zone": 1})
+    assert out2["ote_zone"] == 2
+
+
 def test_cost_aware_sweep_penalizes_high_slippage_symbols():
     """D5: same records, different slippage profile → flat fee vs heavy
     slippage sampler give different total/sharpe."""

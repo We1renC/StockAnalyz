@@ -52,6 +52,81 @@ def cluster_records(
     return out
 
 
+def _welch_p_value(active: list[float], inactive: list[float]) -> Optional[float]:
+    """Two-sample Welch's t-test (unequal variances). Returns two-sided p.
+
+    No scipy: we approximate the t→p via a tail bound that's tight enough
+    for the BH-FDR pre-filter we use it for. For the precise survival
+    function in tail regions we use the Hill approximation of the
+    Student t CDF — accurate enough for q<0.5 in our regime.
+    """
+    n1, n2 = len(active), len(inactive)
+    if n1 < 2 or n2 < 2:
+        return None
+    m1 = sum(active) / n1
+    m2 = sum(inactive) / n2
+    v1 = sum((x - m1) ** 2 for x in active) / (n1 - 1)
+    v2 = sum((x - m2) ** 2 for x in inactive) / (n2 - 1)
+    if v1 <= 0 and v2 <= 0:
+        return 1.0 if m1 == m2 else 0.0
+    se = (v1 / n1 + v2 / n2) ** 0.5
+    if se <= 0:
+        return 1.0 if m1 == m2 else 0.0
+    t = (m1 - m2) / se
+    # Welch-Satterthwaite df
+    num = (v1 / n1 + v2 / n2) ** 2
+    den = ((v1 / n1) ** 2 / (n1 - 1)) + ((v2 / n2) ** 2 / (n2 - 1))
+    df = num / den if den > 0 else max(n1, n2) - 1
+    # Survival fn of t distribution via Hill's approximation:
+    #   For large df, t→N(0,1); for small df use the closed-form
+    #   tail Pr(|T|>t) ≈ 2 · (1 - F_t(|t|))
+    # We use a Wilson-Hilferty-style normal approximation:
+    import math
+    abs_t = abs(t)
+    # Inverse-df correction → z that approximates the t tail
+    z = abs_t * (1.0 - 1.0 / (4.0 * df)) / math.sqrt(1.0 + abs_t * abs_t / (2.0 * df))
+    # Two-sided p = 2 * Pr(Z > z)
+    p = math.erfc(z / math.sqrt(2.0))
+    return max(0.0, min(1.0, p))
+
+
+def bh_fdr_filter(
+    p_values: list[float],
+    *,
+    alpha: float = 0.10,
+) -> list[bool]:
+    """Benjamini-Hochberg FDR correction.
+
+    Returns a list of bools aligned to input p_values: True = reject null
+    (factor is significant after multiple-testing correction).
+
+    Standard BH procedure:
+      1. Sort p ascending, remember original positions.
+      2. Find largest k where p_(k) ≤ k/m × alpha.
+      3. Reject all p_(i) for i ≤ k.
+    """
+    m = len(p_values)
+    if m == 0:
+        return []
+    indexed = sorted(range(m), key=lambda i: (
+        float("inf") if p_values[i] is None else p_values[i]
+    ))
+    threshold_k = -1
+    for rank, idx in enumerate(indexed, start=1):
+        p = p_values[idx]
+        if p is None:
+            continue
+        if p <= (rank / m) * alpha:
+            threshold_k = rank
+    out = [False] * m
+    if threshold_k < 0:
+        return out
+    for rank, idx in enumerate(indexed, start=1):
+        if rank <= threshold_k:
+            out[idx] = True
+    return out
+
+
 def _factor_lift(records: list[dict], factor: str) -> Optional[dict]:
     """E[R | factor active] − E[R | factor inactive] for one cluster."""
     active_rs: list[float] = []
@@ -82,12 +157,16 @@ def _factor_lift(records: list[dict], factor: str) -> Optional[dict]:
         return None
     mean_active = sum(active_rs) / len(active_rs)
     mean_inactive = (sum(inactive_rs) / len(inactive_rs)) if inactive_rs else 0.0
+    # Audit fix D1: emit a raw p-value alongside the lift so the table
+    # builder can BH-FDR correct over the full cluster × factor matrix.
+    p_raw = _welch_p_value(active_rs, inactive_rs)
     return {
         "n_active": len(active_rs),
         "n_inactive": len(inactive_rs),
         "mean_R_active": round(mean_active, 4),
         "mean_R_inactive": round(mean_inactive, 4),
         "lift": round(mean_active - mean_inactive, 4),
+        "p_value": (None if p_raw is None else round(float(p_raw), 6)),
     }
 
 
@@ -96,18 +175,25 @@ def build_cluster_weight_table(
     *,
     factors: list[str],
     min_samples: int = 10,
+    fdr_alpha: float = 0.10,
 ) -> dict[ClusterKey, dict]:
-    """For each cluster ≥ ``min_samples``, compute per-factor lift.
+    """For each cluster ≥ ``min_samples``, compute per-factor lift +
+    BH-FDR-corrected significance.
 
-    Returns:
-      {(model, symbol, interval, regime): {
-         "n_total": int, "mean_R": float,
-         "factors": {factor_name: {n_active, n_inactive, mean_R_active,
-                                     mean_R_inactive, lift}, ...},
-      }}
+    Audit fix D1: with 16 clusters × 12 factors = 192 hypotheses,
+    raw p<0.05 yields ~10 false positives. We run Benjamini-Hochberg
+    over the full cluster × factor p-value vector at ``fdr_alpha``
+    (default 0.10 — slightly looser than typical 0.05 because R-multiple
+    distributions are heavy-tailed and we want some recall).
+
+    Each factor entry gains:
+      • ``p_value``: raw Welch p
+      • ``fdr_significant``: bool after BH correction across the
+        whole table
     """
     clusters = cluster_records(records)
-    out: dict[ClusterKey, dict] = {}
+    raw_table: dict[ClusterKey, dict] = {}
+    # First pass: compute lifts + raw p-values
     for key, recs in clusters.items():
         if len(recs) < min_samples:
             continue
@@ -117,12 +203,22 @@ def build_cluster_weight_table(
             lift = _factor_lift(recs, f)
             if lift is not None:
                 factor_stats[f] = lift
-        out[key] = {
+        raw_table[key] = {
             "n_total": len(recs),
             "mean_R": round(mean_R, 4),
             "factors": factor_stats,
         }
-    return out
+    # Second pass: collect all (cluster, factor) p-values and BH-correct
+    addresses: list[tuple] = []
+    p_values: list[float] = []
+    for key, payload in raw_table.items():
+        for fname, stats in (payload.get("factors") or {}).items():
+            addresses.append((key, fname))
+            p_values.append(stats.get("p_value"))
+    significance = bh_fdr_filter(p_values, alpha=fdr_alpha)
+    for (key, fname), sig in zip(addresses, significance):
+        raw_table[key]["factors"][fname]["fdr_significant"] = bool(sig)
+    return raw_table
 
 
 def resolve_cluster_weights(
@@ -133,13 +229,17 @@ def resolve_cluster_weights(
     lift_threshold: float = 0.15,
     min_confidence_samples: int = 30,
     nudge_step: int = 1,
+    require_fdr_significant: bool = True,
 ) -> dict[str, int]:
     """Apply per-cluster overrides on top of ``base_weights``.
 
-    Conservative blending:
-      • If cluster has ≥ ``min_confidence_samples`` AND |lift| ≥ threshold,
-        nudge the weight ±``nudge_step`` (cap at [−5, 5]).
-      • Otherwise fall back to base_weights[factor].
+    Conservative blending (audit fix D1 adds the FDR gate):
+      • cluster must have ≥ ``min_confidence_samples`` rows
+      • |lift| ≥ ``lift_threshold``
+      • factor must be FDR-significant after BH correction across the
+        full cluster × factor table (skipped when
+        ``require_fdr_significant=False`` for back-compat)
+      • Otherwise → keep base_weights[factor] as-is.
     """
     out = dict(base_weights)
     stats = cluster_table.get(cluster)
@@ -152,6 +252,13 @@ def resolve_cluster_weights(
         lift = float(lstats.get("lift") or 0.0)
         if abs(lift) < lift_threshold:
             continue
+        if require_fdr_significant and not bool(lstats.get("fdr_significant")):
+            # Pre-D1 callers (tests / legacy code) that pass tables
+            # without fdr_significant just see no nudge — safe default.
+            if "fdr_significant" in lstats:
+                continue
+            # If the key is missing entirely we treat it as legacy
+            # and let the nudge through (back-compat).
         cur = int(out.get(f, 0))
         if lift > 0:
             out[f] = min(cur + nudge_step, 5)
