@@ -2076,3 +2076,71 @@ def test_e4_apply_overrides_is_thread_safe():
     snap = snapshot_confluence_weights()
     snap["htf_bias_aligned"] = 999
     assert smc_quant.CONFLUENCE_WEIGHTS_DEFAULT["htf_bias_aligned"] != 999
+
+
+def test_e2_categorize_tables_buckets_correctly(tmp_path):
+    """E2: table classifier separates personal / exchange / learning."""
+    import sqlite3
+    from learning.db_split import categorize_tables
+    db = str(tmp_path / "mix.db")
+    c = sqlite3.connect(db)
+    for t in ["positions", "watchlist", "trades",
+              "crypto_api_keys", "crypto_orders",
+              "smc_training_history", "smc_baseline_equity",
+              "paper_acceptance_runs", "crypto_kill_switch",
+              "price_cache"]:
+        c.execute(f"CREATE TABLE {t} (id INTEGER)")
+    c.commit()
+    cats = categorize_tables(c)
+    assert "positions" in cats["personal"]
+    assert "crypto_api_keys" in cats["exchange"]
+    assert "crypto_orders" in cats["exchange"]
+    assert "smc_training_history" in cats["learning"]
+    assert "paper_acceptance_runs" in cats["learning"]
+    # crypto_kill_switch is learning despite crypto_ prefix
+    assert "crypto_kill_switch" in cats["learning"]
+    assert "price_cache" in cats["other"]
+    c.close()
+
+
+def test_e2_split_learning_db_dry_run_writes_nothing(tmp_path):
+    """E2: dry_run reports row counts but creates no dst file."""
+    import sqlite3, os
+    from learning.db_split import split_learning_db
+    src = str(tmp_path / "src.db")
+    dst = str(tmp_path / "dst.db")
+    c = sqlite3.connect(src)
+    c.execute("CREATE TABLE smc_training_history (id INTEGER)")
+    c.executemany("INSERT INTO smc_training_history VALUES (?)", [(1,), (2,), (3,)])
+    c.execute("CREATE TABLE positions (id INTEGER)")
+    c.commit(); c.close()
+    rep = split_learning_db(src, dst, dry_run=True)
+    assert rep["dry_run"] is True
+    assert rep["copied"]["smc_training_history"] == 3
+    assert not os.path.exists(dst)   # nothing written
+
+
+def test_e2_split_learning_db_copies_and_verifies(tmp_path):
+    """E2: real copy moves learning tables; verify_split confirms counts;
+    personal tables are NOT copied."""
+    import sqlite3
+    from learning.db_split import split_learning_db, verify_split
+    src = str(tmp_path / "src.db")
+    dst = str(tmp_path / "dst.db")
+    c = sqlite3.connect(src)
+    c.execute("CREATE TABLE smc_training_history (id INTEGER, v TEXT)")
+    c.executemany("INSERT INTO smc_training_history VALUES (?,?)",
+                  [(1, "a"), (2, "b")])
+    c.execute("CREATE TABLE positions (id INTEGER)")
+    c.execute("INSERT INTO positions VALUES (99)")
+    c.commit(); c.close()
+    rep = split_learning_db(src, dst, dry_run=False)
+    assert rep["copied"]["smc_training_history"] == 2
+    v = verify_split(src, dst)
+    assert v["ok"] is True
+    # personal table must not exist in dst
+    d = sqlite3.connect(dst)
+    tabs = [r[0] for r in d.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+    assert "smc_training_history" in tabs
+    assert "positions" not in tabs
+    d.close()
