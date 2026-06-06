@@ -282,6 +282,64 @@ def test_compute_pnl_snapshot_unrealized_from_fill_history():
     conn.close()
 
 
+def test_training_history_exposes_global_training_metadata():
+    import sqlite3
+    from smc_training_history import (
+        ensure_training_history_schema,
+        load_training_history,
+        record_tick,
+        summarize_training_history,
+    )
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_training_history_schema(conn)
+    record_tick(
+        conn,
+        symbol="ETH-USDT",
+        state="VALIDATING",
+        tick_payload={
+            "tick_time": "2026-06-06T22:28:12",
+            "progress": {
+                "ledger_size": 1519,
+                "validation_passed": 3,
+                "validation_total": 5,
+                "learning_indicator": "active",
+                "validation_blockers": ["quality_floor_not_met"],
+            },
+        },
+        learning_report={
+            "layer_1_statistics": {
+                "expectancy": {"expected_R": 10.5712, "win_rate": 0.0856},
+                "sharpe": {"sharpe": 0.989},
+            },
+        },
+        training_summary={
+            "trades_added": 2,
+            "scope": "global_ledger",
+            "symbol_report_sample_size": 1519,
+            "global_training_sample_size": 33455,
+            "global_training_adopted": False,
+            "global_training_verdict": {"reason": "adaptive_state_not_ready"},
+            "global_training_mode": "VALIDATING_PROBE",
+            "global_training_weights_changed_count": 0,
+            "global_audit_indicator": "active",
+            "global_audit_ledger_size": 33455,
+            "global_audit_delta_expected_R": 11.44,
+        },
+        elapsed=0.5,
+        pnl_snapshot={},
+    )
+    rows = load_training_history(conn, symbol="ETH-USDT", limit=5)
+    summary = summarize_training_history(conn, symbol="ETH-USDT")
+    assert rows[0]["global_training_sample_size"] == 33455
+    assert rows[0]["global_training_verdict_reason"] == "adaptive_state_not_ready"
+    assert rows[0]["validation_blockers"] == ["quality_floor_not_met"]
+    assert summary["latest_training"]["global_training_sample_size"] == 33455
+    assert summary["latest_training"]["symbol_report_sample_size"] == 1519
+    conn.close()
+
+
 def test_ensemble_vote_unanimous_returns_full_size():
     """D4: all qualified candidates point the same way → multiplier 1.0."""
     from learning.ensemble_vote import compute_ensemble_vote

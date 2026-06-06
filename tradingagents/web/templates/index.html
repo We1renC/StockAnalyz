@@ -1295,6 +1295,11 @@ body { background: var(--bg-base); color: var(--text-primary); }
           <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-throttle-sub">—</div>
         </div>
       </div>
+      <div class="p-3 mb-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #22c55e">
+        <div class="text-xs text-slate-500">學習狀態</div>
+        <div id="cdesk-kpi-learning-status" class="text-sm text-slate-100 mt-1">—</div>
+        <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-learning-sub">—</div>
+      </div>
       <!-- 每次 tick 的詳細表 -->
       <div style="max-height:280px;overflow:auto">
         <table class="w-full text-xs font-mono">
@@ -1306,17 +1311,18 @@ body { background: var(--bg-base); color: var(--text-primary); }
               <th class="text-right py-2 px-2">已實現</th>
               <th class="text-right py-2 px-2">未實現</th>
               <th class="text-right py-2 px-2">成交</th>
-              <th class="text-right py-2 px-2">ledger</th>
-              <th class="text-right py-2 px-2">Δ</th>
+              <th class="text-right py-2 px-2">評估</th>
+              <th class="text-right py-2 px-2">訓練</th>
+              <th class="text-right py-2 px-2">唯一新增</th>
+              <th class="text-right py-2 px-2">回測成交</th>
               <th class="text-right py-2 px-2">E[R]</th>
               <th class="text-right py-2 px-2">勝率</th>
-              <th class="text-left py-2 px-2">指標</th>
-              <th class="text-right py-2 px-2">下單</th>
+              <th class="text-left py-2 px-2">學習</th>
               <th class="text-right py-2 px-2">下次</th>
             </tr>
           </thead>
           <tbody id="cdesk-history-rows">
-            <tr><td colspan="13" class="py-3 text-center text-slate-500">尚無 tick 紀錄 — 開啟自動學習開始累積</td></tr>
+            <tr><td colspan="14" class="py-3 text-center text-slate-500">尚無 tick 紀錄 — 開啟自動學習開始累積</td></tr>
           </tbody>
         </table>
       </div>
@@ -10484,7 +10490,7 @@ async function cdeskRefreshHistory() {
     // ─── 次要 KPI ───
     $('cdesk-kpi-ticks').textContent = s.total_ticks || 0;
     $('cdesk-kpi-ticks-sub').textContent =
-      `下單 ${s.total_orders || 0} · 樣本 +${s.total_new_samples || 0}`;
+      `下單 ${s.total_orders || 0} · 唯一樣本 +${s.total_new_samples || 0}`;
     const er = s.avg_expected_R;
     const erTxt = er === null || er === undefined ? '—' : (er >= 0 ? '+' : '') + Number(er).toFixed(2);
     $('cdesk-kpi-er').textContent = erTxt;
@@ -10509,15 +10515,44 @@ async function cdeskRefreshHistory() {
     $('cdesk-kpi-throttle').style.color = throttleColor;
     $('cdesk-kpi-throttle-sub').textContent = '自適應節流';
 
+    const latestTraining = s.latest_training || {};
+    const globalTrainingSize = latestTraining.global_training_sample_size;
+    const symbolEvalSize = latestTraining.symbol_report_sample_size ?? latest.ledger_size;
+    const trainingModeRaw = latestTraining.global_training_mode || latest.state || '—';
+    const modeMap = {
+      READY: '可採用',
+      VALIDATING_PROBE: '驗證中',
+      DRY_RUN: '觀察中',
+      LOCKED: '鎖定',
+      LEARNING: '學習中',
+      VALIDATING: '驗證中',
+    };
+    const trainingMode = modeMap[trainingModeRaw] || trainingModeRaw;
+    const verdictReason = latestTraining.global_training_verdict_reason || '—';
+    const auditIndicator = latestTraining.global_audit_indicator || latest.learning_indicator || '—';
+    const auditDelta = latestTraining.global_audit_delta_expected_R;
+    $('cdesk-kpi-learning-status').innerHTML =
+      `評估樣本 <span class="font-mono text-slate-200">${symbolEvalSize ?? '—'}</span> · ` +
+      `全域訓練 <span class="font-mono text-emerald-300">${globalTrainingSize ?? '—'}</span> · ` +
+      `模式 <span class="font-mono text-amber-300">${trainingMode}</span>`;
+    $('cdesk-kpi-learning-sub').innerHTML =
+      `校正 ${latestTraining.global_training_adopted ? '<span style="color:#10b981">已採用</span>' : '<span style="color:#f59e0b">未採用</span>'}` +
+      ` · 原因 <span class="font-mono text-slate-400">${verdictReason}</span>` +
+      ` · 審計 <span class="font-mono text-slate-300">${auditIndicator}</span>` +
+      ` · ΔE[R] <span class="font-mono text-slate-300">${auditDelta === null || auditDelta === undefined ? '—' : Number(auditDelta).toFixed(2)}</span>`;
+
     const summarySpan = $('cdesk-history-summary');
     if (s.first_tick && s.last_tick) {
-      summarySpan.textContent = `${s.first_tick.slice(11,19)} → ${s.last_tick.slice(11,19)} · ${JSON.stringify(s.state_distribution || {})}`;
+      summarySpan.textContent =
+        `${s.first_tick.slice(11,19)} → ${s.last_tick.slice(11,19)} · ` +
+        `評估 ${symbolEvalSize ?? '—'} / 訓練 ${globalTrainingSize ?? '—'} · ` +
+        `${JSON.stringify(s.state_distribution || {})}`;
     }
 
     // Tick table
     const tbody = $('cdesk-history-rows');
     if (!ticks.length) {
-      tbody.innerHTML = '<tr><td colspan="13" class="py-3 text-center text-slate-500">尚無 tick 紀錄</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="14" class="py-3 text-center text-slate-500">尚無 tick 紀錄</td></tr>';
       return;
     }
     const fmt = (v, d=2) => (v === null || v === undefined) ? '—' : Number(v).toFixed(d);
@@ -10534,17 +10569,32 @@ async function cdeskRefreshHistory() {
       return n > 0 ? '#10b981' : (n < 0 ? '#ef4444' : '#cbd5e1');
     };
     const stateBg = {LEARNING:'#1e40af',VALIDATING:'#a16207',READY:'#047857',TRADING:'#16a34a',PAUSED:'#475569'};
-    const indCol = {active:'#10b981',stagnant:'#f59e0b',degrading:'#ef4444',insufficient_data:'#64748b'};
+    const learnCol = {learned:'#10b981',replayed:'#38bdf8',idle:'#94a3b8',blocked:'#f59e0b'};
+    const readableMode = (raw) => ({
+      READY: '可採用',
+      VALIDATING_PROBE: '驗證中',
+      DRY_RUN: '觀察中',
+      LOCKED: '鎖定',
+      LEARNING: '學習中',
+      VALIDATING: '驗證中',
+    }[raw] || raw || '—');
+    const learningBadge = (t) => {
+      const adopted = !!t.global_training_adopted;
+      const mode = readableMode(t.global_training_mode);
+      if (adopted) return {label: `已採用 · ${mode}`, color: learnCol.learned};
+      if ((t.global_training_weights_changed_count || 0) > 0 || (t.ledger_delta || 0) > 0) {
+        return {label: `有增量 · ${mode}`, color: learnCol.learned};
+      }
+      if ((t.trades_added || 0) > 0) return {label: `僅回測 · ${mode}`, color: learnCol.replayed};
+      if (t.global_training_verdict_reason) return {label: `未採用 · ${mode}`, color: learnCol.blocked};
+      return {label: `無增量 · ${mode}`, color: learnCol.idle};
+    };
     const html = ticks.map(t => {
       const bg = stateBg[t.state] || '#475569';
-      const ind = t.learning_indicator || '—';
-      const indC = indCol[ind] || '#94a3b8';
+      const learn = learningBadge(t);
       const intervalLabel = t.next_interval_seconds <= 30 ? '30s'
         : t.next_interval_seconds <= 120 ? (t.next_interval_seconds/60|0)+'m'
         : (t.next_interval_seconds/60|0)+'m';
-      const orderCell = t.order_placed
-        ? `<span style="color:#10b981">${(t.order_id || '').slice(0,10)}</span>`
-        : '—';
 
       const equityVal = t.equity_usdt !== null && t.equity_usdt !== undefined ? Number(t.equity_usdt) : 100000.0;
       const equityColor = equityVal > 100000.0 ? '#10b981' : (equityVal < 100000.0 ? '#ef4444' : '#cbd5e1');
@@ -10557,11 +10607,12 @@ async function cdeskRefreshHistory() {
         <td class="py-1.5 px-2 text-right font-mono" style="color:${pnlColor(t.unrealized_pnl_usdt)}">${t.unrealized_pnl_usdt > 0 ? '+' : ''}${fmt(t.unrealized_pnl_usdt, 2)}</td>
         <td class="py-1.5 px-2 text-right text-slate-300 font-mono">${t.total_fills || 0}</td>
         <td class="py-1.5 px-2 text-right text-slate-300">${t.ledger_size}</td>
+        <td class="py-1.5 px-2 text-right text-emerald-300">${t.global_training_sample_size ?? '—'}</td>
         <td class="py-1.5 px-2 text-right">${t.ledger_delta > 0 ? '<span style="color:#10b981">+'+t.ledger_delta+'</span>' : (t.ledger_delta < 0 ? '<span style="color:#ef4444">'+t.ledger_delta+'</span>' : '0')}</td>
+        <td class="py-1.5 px-2 text-right text-sky-300">${t.trades_added || 0}</td>
         <td class="py-1.5 px-2 text-right text-slate-300">${fmt(t.expected_R, 2)}</td>
         <td class="py-1.5 px-2 text-right text-slate-300">${t.win_rate !== null ? (Number(t.win_rate)*100).toFixed(0)+'%' : '—'}</td>
-        <td class="py-1.5 px-2"><span style="color:${indC}">${ind}</span></td>
-        <td class="py-1.5 px-2 text-right">${orderCell}</td>
+        <td class="py-1.5 px-2"><span style="color:${learn.color}">${learn.label}</span></td>
         <td class="py-1.5 px-2 text-right text-slate-500">${intervalLabel}</td>
       </tr>`;
     }).join('');

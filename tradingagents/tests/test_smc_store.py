@@ -318,6 +318,36 @@ def test_api_smc_scan_returns_ranked_results(tmp_path):
         app.DB = original
 
 
+def test_api_smc_scan_uses_runtime_cluster_weights(tmp_path):
+    original = _temp_db(tmp_path)
+    try:
+        conn = app.get_db()
+        conn.execute(
+            "INSERT INTO watchlist (symbol,name,category,currency) VALUES (?,?,?,?)",
+            ("AAPL", "Apple", "us", "USD"),
+        )
+        conn.commit()
+        conn.close()
+
+        seen = {}
+
+        def _fake_build(*args, **kwargs):
+            seen["cluster_weight_table"] = kwargs.get("cluster_weight_table")
+            seen["cluster_key_hint"] = kwargs.get("cluster_key_hint")
+            return {"signals": [], "market": "us", "summary": {}}
+
+        with patch.object(app, "fetch_history", return_value=(_sample_ohlcv(), "yfinance")):
+            with patch.object(app, "load_runtime_cluster_weight_table", return_value={"demo": {"w": 1.0}}):
+                with patch.object(app, "build_smc_analysis", side_effect=_fake_build):
+                    result = app.api_smc_scan(period="6mo", swing_length=2, internal_swing_length=2)
+
+        assert result["summary"]["symbol_count"] == 1
+        assert seen["cluster_weight_table"] == {"demo": {"w": 1.0}}
+        assert seen["cluster_key_hint"] == ("runtime", "AAPL", "6mo", None)
+    finally:
+        app.DB = original
+
+
 def test_api_smc_scan_report_html_returns_html(tmp_path):
     original = _temp_db(tmp_path)
     try:

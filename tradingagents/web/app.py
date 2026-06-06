@@ -34,7 +34,12 @@ from llm_providers import (
     call_llm, call_cli, workflow_role_sequence, build_workflow_prompt,
 )
 from technical_matrix import build_technical_matrix
-from smc_quant import SMCConfig, build_smc_analysis, LedgerPaths
+from smc_quant import (
+    SMCConfig,
+    build_smc_analysis,
+    LedgerPaths,
+    load_runtime_cluster_weight_table,
+)
 from smc_backtest import SMCBacktestConfig, run_smc_event_backtest
 from smc_store import persist_backtest_run, summarize_backtest_report
 from learning.adaptive_store import ensure_adaptive_calibration_schema
@@ -3574,7 +3579,15 @@ def api_smc_analysis(
             internal_swing_length=max(2, min(int(internal_swing_length), 20)),
             close_break=bool(close_break),
         )
-        payload = build_smc_analysis(h, symbol=symbol, timeframe=period, config=smc_cfg)
+        cluster_weight_table = load_runtime_cluster_weight_table(LedgerPaths.training_ledger())
+        payload = build_smc_analysis(
+            h,
+            symbol=symbol,
+            timeframe=period,
+            config=smc_cfg,
+            cluster_weight_table=cluster_weight_table,
+            cluster_key_hint=("runtime", symbol, period, None),
+        )
         payload["source"] = source
         payload["period"] = period
         return sanitize_float_values(payload)
@@ -3625,7 +3638,8 @@ def api_smc_scan(
             internal_swing_length=max(2, min(int(internal_swing_length), 20)),
             close_break=bool(close_break),
         )
-        
+        cluster_weight_table = load_runtime_cluster_weight_table(LedgerPaths.training_ledger())
+
         for symbol in symbols:
             try:
                 if interval == "1d":
@@ -3636,7 +3650,6 @@ def api_smc_scan(
                 
                 if h is None or len(h) == 0:
                     continue
-                    
                 analysis = build_smc_analysis(
                     h,
                     symbol=symbol,
@@ -3644,6 +3657,8 @@ def api_smc_scan(
                     config=smc_cfg,
                     account_equity=account_equity,
                     risk_pct=risk_pct,
+                    cluster_weight_table=cluster_weight_table,
+                    cluster_key_hint=("runtime", symbol, period, None),
                 )
                 
                 for sig in analysis.get("signals", []):
@@ -4362,6 +4377,9 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
             train_out = run_training_cycle(api, [symbol], db_path=db,
                                               interval=profile.interval,
                                               bars=min(profile.bars, 300))
+        training_meta = (train_out or {}).get("training") or {}
+        audit_meta = (train_out or {}).get("audit") or {}
+        training_weights_changed = list(training_meta.get("weights_changed") or [])
 
         report = build_learning_report(ledger_path=LedgerPaths.training_ledger(),
                                           db_path=db, symbol=symbol)
@@ -4421,6 +4439,19 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
                 "trades_added": sum(bt.get("trades_settled", 0)
                                       for bt in (train_out or {}).get("backtests", [])),
                 "elapsed": (train_out or {}).get("elapsed_seconds"),
+                "scope": "global_ledger",
+                "symbol_report_sample_size": report.sample_size,
+                "global_training_sample_size": training_meta.get("sample_size"),
+                "global_training_adopted": training_meta.get("adopted"),
+                "global_training_verdict": training_meta.get("verdict") or {},
+                "global_training_mode": (training_meta.get("adaptive_state") or {}).get("mode"),
+                "global_training_weights_changed": training_weights_changed,
+                "global_training_weights_changed_count": len(training_weights_changed),
+                "global_training_strategy_yaml_updated": training_meta.get("strategy_yaml_updated"),
+                "global_audit_indicator": audit_meta.get("learning_indicator"),
+                "global_audit_ledger_size": audit_meta.get("ledger_size"),
+                "global_audit_delta_expected_R": audit_meta.get("delta_expected_R"),
+                "global_audit_notes": audit_meta.get("notes") or [],
             } if train_out else None,
             "live_order": live_order,
             "last_action": last_action,
@@ -6813,7 +6844,13 @@ def _build_smc_snapshot_payload(symbol: str, analysis: Optional[dict] = None) ->
             h, _source = fetch_history(symbol, period="6mo")
             if h is None or len(h) == 0:
                 return {"available": False, "error": "無價格歷史"}
-            analysis = build_smc_analysis(h, symbol=symbol, timeframe="6mo")
+            analysis = build_smc_analysis(
+                h,
+                symbol=symbol,
+                timeframe="6mo",
+                cluster_weight_table=load_runtime_cluster_weight_table(LedgerPaths.training_ledger()),
+                cluster_key_hint=("runtime", symbol, "6mo", None),
+            )
         except Exception:
             return {"available": False, "error": "資料不足或抓取失敗"}
     if not analysis or analysis.get("error"):
@@ -7292,7 +7329,16 @@ def _build_context(symbol: str) -> dict:
     # SMC 結構 + 回測摘要（供 AI 與 17D / 基本面交叉比對）
     try:
         smc_h, _smc_source = fetch_history(symbol, period="6mo")
-        smc_analysis = build_smc_analysis(smc_h, symbol=symbol, timeframe="6mo") if smc_h is not None and len(smc_h) else None
+        smc_analysis = (
+            build_smc_analysis(
+                smc_h,
+                symbol=symbol,
+                timeframe="6mo",
+                cluster_weight_table=load_runtime_cluster_weight_table(LedgerPaths.training_ledger()),
+                cluster_key_hint=("runtime", symbol, "6mo", None),
+            )
+            if smc_h is not None and len(smc_h) else None
+        )
     except Exception:
         smc_analysis = None
     parts.append("")

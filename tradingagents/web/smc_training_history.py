@@ -575,7 +575,7 @@ def load_training_history(
         f"weights_changed_count, weights_changed, order_placed, order_id, "
         f"trades_added, tick_elapsed_seconds, next_interval_seconds, "
         f"equity_usdt, equity_delta_usdt, realized_pnl_usdt, "
-        f"unrealized_pnl_usdt, total_fills, winning_fills "
+        f"unrealized_pnl_usdt, total_fills, winning_fills, payload_json "
         f"FROM smc_training_history {where} ORDER BY id DESC LIMIT ?",
         params,
     ).fetchall()
@@ -586,6 +586,22 @@ def load_training_history(
             d["weights_changed"] = json.loads(d.get("weights_changed") or "[]")
         except Exception:
             d["weights_changed"] = []
+        try:
+            payload = json.loads(d.get("payload_json") or "{}")
+        except Exception:
+            payload = {}
+        training = (payload.get("training_summary") or {}) if isinstance(payload, dict) else {}
+        progress = ((payload.get("tick_payload") or {}).get("progress") or {}) if isinstance(payload, dict) else {}
+        d["global_training_sample_size"] = training.get("global_training_sample_size")
+        d["global_training_adopted"] = training.get("global_training_adopted")
+        d["global_training_mode"] = training.get("global_training_mode")
+        d["global_training_weights_changed_count"] = training.get("global_training_weights_changed_count", 0)
+        d["global_training_verdict_reason"] = (training.get("global_training_verdict") or {}).get("reason")
+        d["global_audit_indicator"] = training.get("global_audit_indicator")
+        d["global_audit_ledger_size"] = training.get("global_audit_ledger_size")
+        d["global_audit_delta_expected_R"] = training.get("global_audit_delta_expected_R")
+        d["validation_blockers"] = progress.get("validation_blockers") or []
+        d.pop("payload_json", None)
         out.append(d)
     return out
 
@@ -629,12 +645,38 @@ def summarize_training_history(
         f"SELECT state, ledger_size, learning_indicator, expected_R, win_rate, "
         f"sharpe, next_interval_seconds, tick_time, "
         f"equity_usdt, equity_delta_usdt, realized_pnl_usdt, "
-        f"unrealized_pnl_usdt, total_fills, winning_fills "
+        f"unrealized_pnl_usdt, total_fills, winning_fills, payload_json "
         f"FROM smc_training_history {where} ORDER BY id DESC LIMIT 1",
         params,
     ).fetchone()
     if latest:
         d["latest"] = dict(latest)
+        try:
+            latest_payload = json.loads(d["latest"].get("payload_json") or "{}")
+        except Exception:
+            latest_payload = {}
+        latest_training = (
+            (latest_payload.get("training_summary") or {})
+            if isinstance(latest_payload, dict)
+            else {}
+        )
+        d["latest_training"] = {
+            "scope": latest_training.get("scope"),
+            "symbol_report_sample_size": latest_training.get("symbol_report_sample_size"),
+            "global_training_sample_size": latest_training.get("global_training_sample_size"),
+            "global_training_adopted": latest_training.get("global_training_adopted"),
+            "global_training_verdict_reason": (
+                (latest_training.get("global_training_verdict") or {}).get("reason")
+            ),
+            "global_training_mode": latest_training.get("global_training_mode"),
+            "global_training_weights_changed_count": latest_training.get(
+                "global_training_weights_changed_count", 0
+            ),
+            "global_audit_indicator": latest_training.get("global_audit_indicator"),
+            "global_audit_ledger_size": latest_training.get("global_audit_ledger_size"),
+            "global_audit_delta_expected_R": latest_training.get("global_audit_delta_expected_R"),
+        }
+        d["latest"].pop("payload_json", None)
         # Audit fix: pull the persisted baseline so the dashboard sub-line
         # can render "+X% 自 YYYY-MM-DD $244,920.00" instead of the
         # fictitious "起始 $100,000".
