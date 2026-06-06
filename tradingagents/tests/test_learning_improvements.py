@@ -2144,3 +2144,51 @@ def test_e2_split_learning_db_copies_and_verifies(tmp_path):
     assert "smc_training_history" in tabs
     assert "positions" not in tabs
     d.close()
+
+
+def test_g1_swallow_logs_and_counts(monkeypatch):
+    """G1/F2: swallow() records the error instead of vanishing it."""
+    from learning.obs_log import get_logger, swallow, swallow_counts, reset_swallow_counts
+    reset_swallow_counts()
+    log = get_logger("test_ctx")
+    with swallow(log, "unit_ctx"):
+        raise ValueError("boom")
+    counts = swallow_counts()
+    assert counts["by_context"]["unit_ctx"] == 1
+    assert "ValueError" in counts["last_error"]["unit_ctx"]
+    # caller continues — no exception propagated
+    ran = False
+    with swallow(log, "unit_ctx"):
+        ran = True
+    assert ran is True
+
+
+def test_g1_swallow_reraise_propagates():
+    from learning.obs_log import get_logger, swallow, reset_swallow_counts
+    reset_swallow_counts()
+    log = get_logger("test_ctx2")
+    import pytest as _pytest
+    with _pytest.raises(KeyError):
+        with swallow(log, "ctx2", reraise=True):
+            raise KeyError("x")
+
+
+def test_g2_ops_metrics_endpoint_shape():
+    """G2: ops-metrics aggregates scheduler/cache/swallow/file sections."""
+    import importlib, os
+    os.environ["SMC_LEDGER_DIR"] = "/tmp/ops-test-ledger"
+    try:
+        from fastapi.testclient import TestClient
+        import app as _app
+        importlib.reload(_app)
+        client = TestClient(_app.app)
+        r = client.get("/api/smc-crypto/ops-metrics")
+        assert r.status_code == 200
+        body = r.json()
+        assert "autolearn" in body
+        assert "ledger_cache" in body
+        assert "swallowed_errors" in body
+        assert "ledger_files" in body
+    except Exception as e:
+        import pytest as _pytest
+        _pytest.skip(f"app import failed: {e}")

@@ -4312,6 +4312,47 @@ def api_smc_crypto_baseline_equity_reset(payload: Optional[dict] = None):
         raise HTTPException(status_code=500, detail=f"baseline-reset failed: {e}")
 
 
+@app.get("/api/smc-crypto/ops-metrics")
+def api_smc_crypto_ops_metrics():
+    """Audit fix G2: single ops surface — autolearn scheduler state,
+    ledger-cache hit rate, swallowed-error counts, ledger file sizes."""
+    import os as _os
+    out: dict = {}
+    try:
+        from learning.autolearn_scheduler import scheduler_state
+        out["autolearn"] = scheduler_state()
+    except Exception as e:
+        out["autolearn"] = {"error": str(e)}
+    try:
+        from learning.ledger_cache import cache_stats
+        out["ledger_cache"] = cache_stats()
+    except Exception as e:
+        out["ledger_cache"] = {"error": str(e)}
+    try:
+        from learning.obs_log import swallow_counts
+        out["swallowed_errors"] = swallow_counts()
+    except Exception as e:
+        out["swallowed_errors"] = {"error": str(e)}
+    try:
+        sizes = {}
+        for label, path in [
+            ("training_ledger", LedgerPaths.training_ledger()),
+            ("paper_journal", LedgerPaths.paper_journal()),
+            ("paper_trades", LedgerPaths.paper_trades()),
+        ]:
+            try:
+                sizes[label] = {
+                    "bytes": _os.path.getsize(path),
+                    "lines": sum(1 for _ in open(path, "rb")),
+                } if _os.path.exists(path) else {"bytes": 0, "lines": 0}
+            except Exception:
+                sizes[label] = {"error": "stat_failed"}
+        out["ledger_files"] = sizes
+    except Exception as e:
+        out["ledger_files"] = {"error": str(e)}
+    return out
+
+
 @app.post("/api/smc-crypto/decommission-sweep")
 def api_smc_crypto_decommission_sweep(symbol: Optional[str] = None,
                                         window_size: int = 50,

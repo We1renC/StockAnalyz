@@ -28,6 +28,10 @@ import os
 import time
 from typing import Callable, Optional
 
+from learning.obs_log import get_logger, log_event
+
+_log = get_logger(__name__)
+
 
 def is_enabled() -> bool:
     return os.environ.get("SMC_AUTOLEARN_ENABLED", "").strip() in ("1", "true", "True", "yes")
@@ -109,7 +113,8 @@ async def autolearn_loop(
                     st["last_status"] = f"error:{type(exc).__name__}"
                     st["last_run_at"] = clock()
                     st["next_run_at"] = clock() + floor
-                    print(f"[autolearn] {sym} tick error: {exc}")
+                    log_event(_log, "autolearn_tick_error", symbol=sym,
+                              err=type(exc).__name__, errors=st["errors"])
             # Sleep until the soonest next_run (bounded by floor) to avoid
             # busy-spinning.
             soonest = min((v.get("next_run_at", 0.0) for v in _state.values()),
