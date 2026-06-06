@@ -6983,6 +6983,7 @@ def build_smc_analysis(
     weights: Optional[dict[str, int]] = None,
     account_equity: Optional[float] = None,
     crypto_inputs: Optional[dict] = None,
+    mae_mfe_calibration: Optional[dict] = None,
 ) -> dict:
     cfg = config or SMCConfig()
     market = infer_market(symbol)
@@ -7170,6 +7171,20 @@ def build_smc_analysis(
     unicorn_entries = attach_partial_profit_plans(unicorn_entries)
     silver_bullet_entries = attach_partial_profit_plans(silver_bullet_entries)
     power_of_three_entries = attach_partial_profit_plans(power_of_three_entries)
+    # Audit fix P2-12+: apply per-model MAE/MFE calibration INSIDE the
+    # analysis so candidate RR (used by the picker) reflects calibrated
+    # stop/target. Previously the runner only calibrated AFTER picking,
+    # which meant entries with poor calibrated RR still got selected.
+    if mae_mfe_calibration:
+        try:
+            from learning.mae_mfe_calibration import apply_calibration_to_entry
+            for _entries in (sweep_reversal_entries, continuation_entries,
+                              ote_entries, unicorn_entries,
+                              silver_bullet_entries, power_of_three_entries):
+                for _e in _entries:
+                    apply_calibration_to_entry(_e, mae_mfe_calibration)
+        except Exception:
+            pass
     # §17.10 — when a crypto overlay is present, weave its factor map
     # into every entry's confluence score so e.g. perp_led_warning
     # actually debits points and oi_drop_at_sweep adds them.

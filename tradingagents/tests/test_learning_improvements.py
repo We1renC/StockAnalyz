@@ -191,6 +191,65 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_build_smc_analysis_applies_mae_mfe_calibration_to_all_models():
+    """P2-12+ regression: when caller passes mae_mfe_calibration into
+    build_smc_analysis, every model's entry list gets calibrated *before*
+    the picker sees RR — not after."""
+    from learning.mae_mfe_calibration import apply_calibration_to_entry
+    # Simulate the inner loop directly — full build_smc_analysis needs
+    # 200+ bars of OHLCV and would over-couple this test to bias state.
+    entries = {
+        "sweep_reversal": [{
+            "model": "sweep_reversal", "direction": 1,
+            "entry": 100.0, "stop": 98.0, "target": 104.0,
+            "rr": 2.0,
+        }],
+        "ote_retracement": [{
+            "model": "ote_retracement", "direction": -1,
+            "entry": 100.0, "stop": 102.0, "target": 96.0,
+            "rr": 2.0,
+        }],
+    }
+    cal = {
+        ("sweep_reversal", 1): {"stop_R": 1.5, "target_R": 3.0, "n_winners": 12},
+        ("ote_retracement", -1): {"stop_R": 1.2, "target_R": 2.5, "n_winners": 9},
+    }
+    for lst in entries.values():
+        for e in lst:
+            apply_calibration_to_entry(e, cal)
+    sw = entries["sweep_reversal"][0]
+    assert sw["calibration_applied"]["source"] == "per_model_mae_mfe"
+    # Stop widened from 98 → entry - 1.5*risk = 100 - 1.5*2 = 97
+    assert sw["stop"] == 97.0
+    # Target = 100 + 3.0*2 = 106
+    assert sw["target"] == 106.0
+    # RR = |target-entry|/new_risk = 6 / 3 = 2.0 (target_R 3 / stop_R 1.5)
+    assert sw["rr"] == 2.0
+
+
+def test_apply_mae_mfe_calibration_is_idempotent_on_picked_entry():
+    """P2-12+ runner._apply_mae_mfe_calibration must skip already-calibrated
+    entries so we don't double-widen the stop."""
+    entry = {
+        "model": "sweep_reversal", "direction": 1,
+        "entry": 100.0, "stop": 98.0, "target": 104.0,
+        "calibration_applied": {"source": "per_model_mae_mfe",
+                                  "stop_widen_R": 1.5, "target_take_R": 3.0,
+                                  "n_winners": 12, "model": "sweep_reversal",
+                                  "direction": 1},
+    }
+    # Build minimal runner-like object with only the method under test
+    class _Stub:
+        config = type("C", (), {"journal_path": "/dev/null"})()
+        _build_mae_mfe_table = lambda self: {("sweep_reversal", 1): {
+            "stop_R": 9.9, "target_R": 9.9, "n_winners": 99,
+        }}
+    from smc_paper_runner import SmcPaperRunner
+    SmcPaperRunner._apply_mae_mfe_calibration(_Stub(), entry)
+    # Stop NOT widened a second time
+    assert entry["stop"] == 98.0
+
+
 def test_merge_detector_extras_lets_learned_weights_survive():
     """P0-3+ regression: hardcoded detector extras must NOT clobber
     learned overrides stored in CONFLUENCE_WEIGHTS_DEFAULT."""

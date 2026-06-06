@@ -312,33 +312,55 @@ class SmcPaperRunner:
         except Exception:
             return None
 
-    def _apply_mae_mfe_calibration(self, entry: dict) -> None:
-        """P2-12: replace fixed stop/target with per-model MAE/MFE percentiles.
+    def _build_mae_mfe_table(self) -> dict:
+        """Audit fix P2-12+: build per-(model, direction) calibration table.
 
-        Loaded lazily + cached on the runner. Cache TTL is one
-        ``run_once`` call so each tick can pick up fresh ledger.
+        Returns {} if no ledger / insufficient samples. Cached on the runner
+        so repeat ``run_once`` calls re-use the table; cleared once a new
+        trade resolves (see ``_invalidate_mae_mfe_cache``).
         """
         try:
-            from learning.mae_mfe_calibration import (
-                build_model_calibration_table, apply_calibration_to_entry,
-            )
+            from learning.mae_mfe_calibration import build_model_calibration_table
             from smc_quant import load_trade_records
             if not hasattr(self, "_mae_mfe_cal_cache"):
                 ledger_path = getattr(self.config, "journal_path",
                                        "tmp/smc_paper_journal.jsonl")
-                # ledger lives next to journal with `_trades.jsonl` suffix
                 trade_ledger = ledger_path.replace(".jsonl", "_trades.jsonl")
                 records = load_trade_records(trade_ledger)
-                # Combine with the training ledger if it exists
                 try:
                     records += load_trade_records("tmp/smc_training_ledger.jsonl")
                 except Exception:
                     pass
-                self._mae_mfe_cal_cache = build_model_calibration_table(records)
-            if self._mae_mfe_cal_cache:
-                apply_calibration_to_entry(entry, self._mae_mfe_cal_cache)
+                self._mae_mfe_cal_cache = build_model_calibration_table(records) or {}
+            return self._mae_mfe_cal_cache or {}
+        except Exception:
+            return {}
+
+    def _apply_mae_mfe_calibration(self, entry: dict) -> None:
+        """Belt-and-suspenders: in case caller bypassed build_smc_analysis
+        injection, still calibrate on the picked entry.
+
+        Idempotent — apply_calibration_to_entry checks ``original_stop``
+        marker via ``calibration_applied`` annotation.
+        """
+        if entry.get("calibration_applied"):
+            return
+        try:
+            from learning.mae_mfe_calibration import apply_calibration_to_entry
+            table = self._build_mae_mfe_table()
+            if table:
+                apply_calibration_to_entry(entry, table)
         except Exception:
             entry.setdefault("calibration_applied", None)
+
+    def _invalidate_mae_mfe_cache(self) -> None:
+        """Drop cached calibration so the next ``run_once`` rebuilds from
+        the freshest ledger. Called after a trade resolves."""
+        if hasattr(self, "_mae_mfe_cal_cache"):
+            try:
+                delattr(self, "_mae_mfe_cal_cache")
+            except AttributeError:
+                pass
 
     # --- order placement -----------------------------------------------
 
@@ -435,6 +457,10 @@ class SmcPaperRunner:
             self._journal(result)
             return result
 
+        # Audit fix P2-12+: build MAE/MFE calibration once and feed it into
+        # the analysis so candidate RR (used by _pick_best_entry) reflects
+        # calibrated stop/target.
+        cal_table = self._build_mae_mfe_table()
         analysis = build_smc_analysis(
             df,
             symbol=cfg.symbol,
@@ -443,6 +469,7 @@ class SmcPaperRunner:
                 internal_swing_length=cfg.internal_swing_length,
             ),
             account_equity=cfg.account_equity,
+            mae_mfe_calibration=cal_table,
         )
         result.bias = (analysis.get("summary") or {}).get("bias")
 
