@@ -4308,25 +4308,51 @@ def api_smc_crypto_cluster_ensemble(symbol: Optional[str] = None,
 @app.get("/api/smc-crypto/hyperparameter-sweep")
 def api_smc_crypto_hyperparameter_sweep(symbol: Optional[str] = None,
                                           min_trades: int = 20,
+                                          min_trades_per_fold: Optional[int] = None,
                                           fee_per_trade: float = 0.001):
     """Audit fix P3-18: monthly Bayesian-lite sweep of min_score/min_rr/risk_pct.
 
-    Grid: 4 × 4 × 4 = 64 cells. Replays resolved ledger and picks the
-    knob combination with the best Sharpe-like ratio subject to
-    ``min_trades`` for statistical reliability.
+    Prefer purged walk-forward OOS sweep. Falls back to the legacy
+    in-sample grid only when the ledger is too small to sustain
+    expanding-window validation.
     """
     try:
         from learning.hyperparameter_sweep import (
-            sweep_hyperparameters, should_apply_recommendation,
+            sweep_hyperparameters, sweep_walk_forward, should_apply_recommendation,
         )
         from learning.ledger_cache import cached_load_trade_records as load_trade_records
         records = load_trade_records(LedgerPaths.training_ledger())
         if symbol:
             records = [r for r in records if r.get("symbol") == symbol]
-        sweep = sweep_hyperparameters(records, min_trades=int(min_trades),
-                                        fee_per_trade=float(fee_per_trade))
+        wf_min_trades = (
+            int(min_trades_per_fold)
+            if min_trades_per_fold is not None
+            else max(5, int(min_trades) // 2)
+        )
+        walk_forward = sweep_walk_forward(
+            records,
+            min_trades_per_fold=wf_min_trades,
+            fee_per_trade=float(fee_per_trade),
+        )
+        fallback_in_sample = None
+        mode = "walk_forward"
+        sweep = walk_forward
+        if walk_forward.get("status") != "ok":
+            fallback_in_sample = sweep_hyperparameters(
+                records,
+                min_trades=int(min_trades),
+                fee_per_trade=float(fee_per_trade),
+            )
+            sweep = fallback_in_sample
+            mode = "in_sample_fallback"
         recommendation = should_apply_recommendation(sweep, current={})
-        return {"sweep": sweep, "recommendation": recommendation}
+        return {
+            "mode": mode,
+            "sweep": sweep,
+            "walk_forward": walk_forward,
+            "fallback_in_sample": fallback_in_sample,
+            "recommendation": recommendation,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"hyperparameter-sweep failed: {e}")
 

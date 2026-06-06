@@ -9,7 +9,9 @@ This module:
   • Loads the current ``profile.yaml`` (or whatever path the caller
     points at) and reads the current ``min_score`` / ``min_rr`` /
     ``risk_pct`` as the comparison anchor.
-  • Runs ``sweep_hyperparameters`` + ``should_apply_recommendation``.
+  • Runs ``sweep_walk_forward`` first; falls back to
+    ``sweep_hyperparameters`` only when OOS data is too sparse.
+  • Applies ``should_apply_recommendation`` to the selected sweep mode.
   • If apply=True AND last-apply timestamp is older than
     ``min_days_since_last_apply`` (default 30), writes the new values
     back to profile.yaml and stamps a ``last_auto_apply`` audit field.
@@ -109,7 +111,7 @@ def auto_apply_sweep(
 ) -> dict:
     """Run sweep, decide, optionally write back. See module docstring."""
     from learning.hyperparameter_sweep import (
-        sweep_hyperparameters, should_apply_recommendation,
+        sweep_hyperparameters, sweep_walk_forward, should_apply_recommendation,
     )
     now = now or datetime.now(timezone.utc)
     ts = now.isoformat(timespec="seconds")
@@ -137,7 +139,9 @@ def auto_apply_sweep(
                                    sweep={"status": "skipped"}, ts=ts)
         return out
 
-    sweep = sweep_hyperparameters(records)
+    sweep = sweep_walk_forward(records)
+    if sweep.get("status") != "ok":
+        sweep = sweep_hyperparameters(records)
     rec = should_apply_recommendation(
         sweep, current=current,
         min_sharpe_improvement=min_sharpe_improvement,

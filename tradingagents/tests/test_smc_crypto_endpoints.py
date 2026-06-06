@@ -15,6 +15,7 @@ heavy deps).
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -70,13 +71,50 @@ def test_hyperparameter_sweep_endpoint_empty_ledger(client):
     assert r.status_code == 200
     body = r.json()
     assert "sweep" in body
+    assert "mode" in body
+    assert "walk_forward" in body
     assert body["sweep"]["status"] == "insufficient_data"
     # recommendation should still be present (not applied)
     assert "recommendation" in body
     assert body["recommendation"]["apply"] is False
 
 
+def test_hyperparameter_sweep_endpoint_prefers_walk_forward_when_ledger_ready(client):
+    ledger_dir = Path(os.environ["SMC_LEDGER_DIR"])
+    ledger = ledger_dir / "smc_training_ledger.jsonl"
+    rows = []
+    for i in range(36):
+        rows.append({
+            "entry_time": f"2026-01-{1 + (i // 24):02d}T{i % 24:02d}:00:00+00:00",
+            "confluence_score": 9,
+            "rr_planned": 2.5,
+            "outcome": "target",
+            "r_multiple": 1.2 + (i % 4) * 0.2,
+        })
+    for i in range(36, 72):
+        rows.append({
+            "entry_time": f"2026-01-{1 + (i // 24):02d}T{i % 24:02d}:00:00+00:00",
+            "confluence_score": 6,
+            "rr_planned": 1.5,
+            "outcome": "stop" if i % 3 else "target",
+            "r_multiple": -1.0 if i % 3 else 0.2,
+        })
+    ledger.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+    r = client.get("/api/smc-crypto/hyperparameter-sweep?min_trades=12&min_trades_per_fold=8")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "walk_forward"
+    assert body["sweep"]["status"] == "ok"
+    assert body["walk_forward"]["best"] is not None
+    chosen = body["recommendation"]["new"]
+    assert chosen["min_score"] >= 7 or chosen["min_rr"] >= 2.0
+    ledger.write_text("", encoding="utf-8")
+
+
 def test_cluster_ensemble_endpoint_empty_ledger(client):
+    ledger_dir = Path(os.environ["SMC_LEDGER_DIR"])
+    (ledger_dir / "smc_training_ledger.jsonl").write_text("", encoding="utf-8")
     r = client.get("/api/smc-crypto/cluster-ensemble")
     assert r.status_code == 200
     body = r.json()
