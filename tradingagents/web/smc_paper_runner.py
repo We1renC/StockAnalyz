@@ -489,6 +489,26 @@ class SmcPaperRunner:
         )
         result.bias = (analysis.get("summary") or {}).get("bias")
 
+        # Audit fix D3: apply per-(model, symbol, interval) decommission
+        # state so dead detectors don't even compete for the entry slot.
+        try:
+            from learning.model_decommission import (
+                apply_decommission_to_analysis, load_state,
+            )
+            import os as _os
+            decom_path = _os.path.join(
+                _os.path.dirname(LedgerPaths.training_ledger()),
+                "decommissioned.json",
+            )
+            state = load_state(decom_path)
+            if state:
+                apply_decommission_to_analysis(
+                    analysis, state,
+                    symbol=cfg.symbol, interval=cfg.interval,
+                )
+        except Exception:
+            pass
+
         entry = self._pick_best_entry(analysis)
         if entry is None:
             result.action = "skipped:no_qualified_entry"

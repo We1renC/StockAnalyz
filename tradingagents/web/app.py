@@ -4242,6 +4242,57 @@ def api_smc_crypto_weekly_digest(symbol: Optional[str] = None,
         raise HTTPException(status_code=500, detail=f"weekly-digest failed: {e}")
 
 
+@app.post("/api/smc-crypto/decommission-sweep")
+def api_smc_crypto_decommission_sweep(symbol: Optional[str] = None,
+                                        window_size: int = 50,
+                                        min_total_R: float = -5.0,
+                                        revive_total_R: float = 1.0,
+                                        cooldown_days: int = 7,
+                                        commit: bool = True):
+    """Audit fix D3: scan ledger, decommission per-(model, symbol, interval)
+    when trailing window goes too far underwater; revive after cooldown
+    once it recovers.
+
+    POST so cron-friendly (idempotent if state already up-to-date).
+    Set commit=False for a dry-run.
+    """
+    try:
+        from learning.model_decommission import (
+            compute_per_model_health, decide_decommission,
+            load_state, save_state,
+        )
+        from learning.ledger_cache import cached_load_trade_records as load_trade_records
+        import os as _os
+        records = load_trade_records(LedgerPaths.training_ledger())
+        if symbol:
+            records = [r for r in records if r.get("symbol") == symbol]
+        decom_path = _os.path.join(
+            _os.path.dirname(LedgerPaths.training_ledger()),
+            "decommissioned.json",
+        )
+        prev = load_state(decom_path)
+        health = compute_per_model_health(records, window_size=int(window_size))
+        out = decide_decommission(
+            health, prev,
+            min_total_R=float(min_total_R),
+            revive_total_R=float(revive_total_R),
+            cooldown_days=int(cooldown_days),
+        )
+        if commit and out.get("actions"):
+            save_state(decom_path, out["new_state"])
+        return {
+            "actions": out["actions"],
+            "n_models_active": sum(1 for v in out["new_state"].values()
+                                     if v.get("status") == "active"),
+            "n_models_decommissioned": sum(1 for v in out["new_state"].values()
+                                              if v.get("status") == "decommissioned"),
+            "committed": bool(commit and out.get("actions")),
+            "state_path": decom_path,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"decommission-sweep failed: {e}")
+
+
 @app.get("/api/smc-crypto/learning-health")
 def api_smc_crypto_learning_health(symbol: Optional[str] = None,
                                      target_sample_size: int = 30):

@@ -191,6 +191,64 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_decommission_triggers_on_trailing_underwater(tmp_path):
+    """D3: 25 consecutive -0.5R trailing trades → total_R = -12.5, well
+    below default -5.0 floor → decommissioned."""
+    from learning.model_decommission import (
+        compute_per_model_health, decide_decommission,
+    )
+    records = []
+    for i in range(25):
+        records.append({
+            "model": "sweep_reversal", "symbol": "BTC", "interval": "1h",
+            "entry_time": f"2026-01-{1 + i // 24:02d}T{i % 24:02d}:00:00",
+            "outcome": "stop", "r_multiple": -0.5,
+        })
+    health = compute_per_model_health(records, window_size=25, min_samples=20)
+    out = decide_decommission(health, state={})
+    assert any("decommissioned" in a for a in out["actions"])
+    key = "sweep_reversal|BTC|1h"
+    assert out["new_state"][key]["status"] == "decommissioned"
+
+
+def test_decommission_revive_after_cooldown_and_recovery():
+    """D3: previously decommissioned, cooldown passed, recovery total_R
+    above revive_total_R → revived."""
+    from datetime import datetime, timezone, timedelta
+    from learning.model_decommission import decide_decommission
+    now = datetime.now(timezone.utc)
+    past = (now - timedelta(days=10)).isoformat(timespec="seconds")
+    state = {"x|BTC|1h": {"status": "decommissioned", "ts": past, "total_R": -10}}
+    health = {("x", "BTC", "1h"): {
+        "n": 30, "n_in_window": 30, "total_R": 3.5,
+        "mean_R": 0.12, "win_rate": 0.6,
+        "first_in_window": "...", "last_in_window": "...",
+        "eligible": True,
+    }}
+    out = decide_decommission(health, state, cooldown_days=7,
+                                revive_total_R=1.0, now=now)
+    assert any("revived" in a for a in out["actions"])
+    assert out["new_state"]["x|BTC|1h"]["status"] == "active"
+
+
+def test_apply_decommission_to_analysis_clears_entries():
+    """D3: detector entries list is cleared + flagged when in dead state."""
+    from learning.model_decommission import apply_decommission_to_analysis
+    analysis = {"concepts": {"entry_models": {
+        "sweep_reversal": {"entries": [{"a": 1}], "label": "sweep"},
+        "ote_retracement": {"entries": [{"b": 1}], "label": "ote"},
+    }}}
+    state = {"sweep_reversal|BTC|1h": {"status": "decommissioned",
+                                          "reason": "trailing_total_R=-7"}}
+    out = apply_decommission_to_analysis(analysis, state,
+                                            symbol="BTC", interval="1h")
+    em = out["concepts"]["entry_models"]
+    assert em["sweep_reversal"]["entries"] == []
+    assert em["sweep_reversal"]["decommissioned"] is True
+    # Other model untouched
+    assert em["ote_retracement"]["entries"] == [{"b": 1}]
+
+
 def test_bh_fdr_filter_picks_extreme_tail_only():
     """D1: BH-FDR with 10 hypotheses, only the smallest two p-values should
     pass at alpha=0.10."""
