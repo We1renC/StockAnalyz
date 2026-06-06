@@ -269,7 +269,48 @@ class SmcPaperRunner:
             # calibration data is missing.
             self._apply_mae_mfe_calibration(picked)
             return picked
-        return None
+
+        # P2-14+ audit fix: NO standard candidate met the threshold. Try
+        # an ε-greedy boundary probe — only fires in READY state and pulls
+        # a candidate from [min_score - 2, min_score) at 20% normal size.
+        # If activated, the entry is tagged is_exploration=True so
+        # attribution can isolate exploration P&L.
+        return self._try_exploration_probe(all_entries)
+
+    def _try_exploration_probe(self, all_entries: list[dict]) -> Optional[dict]:
+        """P2-14+ ε-greedy: occasionally fire a sub-threshold boundary entry."""
+        try:
+            from learning.exploration import (
+                decide_exploration, count_exploration_trades,
+            )
+            from smc_quant import load_trade_records
+            # Only fire if state is READY (caller passes via _last_state cache)
+            state = getattr(self, "_last_state_hint", None) or "READY"
+            try:
+                all_recs = load_trade_records("tmp/smc_training_ledger.jsonl")
+            except Exception:
+                all_recs = []
+            boundary_n = count_exploration_trades(all_recs, symbol=self.config.symbol)
+            decision = decide_exploration(
+                all_entries=all_entries,
+                min_confluence_score=self.config.min_confluence_score,
+                state=state,
+                symbol=self.config.symbol,
+                boundary_sample_count=boundary_n,
+            )
+            if not decision.is_exploration:
+                return None
+            picked = decision.chosen_entry
+            if picked is None:
+                return None
+            picked["triggered"] = True
+            picked["source"] = "exploration"
+            # Apply MAE/MFE calibration to exploration probe too — keeps
+            # stop/target ratios consistent with normal trades.
+            self._apply_mae_mfe_calibration(picked)
+            return picked
+        except Exception:
+            return None
 
     def _apply_mae_mfe_calibration(self, entry: dict) -> None:
         """P2-12: replace fixed stop/target with per-model MAE/MFE percentiles.
@@ -348,8 +389,23 @@ class SmcPaperRunner:
         # Scale stop distance to current price regime so risk_amount sizes correctly
         scaled_stop = stop_distance * (limit_price / smc_entry) if smc_entry > 0 else stop_distance
         crypto_qty = risk_amount / scaled_stop if scaled_stop > 0 else 0.0
+        # P2-14+: exploration entries take 20% size by design — caps
+        # exploration risk budget regardless of the configured risk_pct.
+        exp_mult = entry.get("exploration_size_multiplier")
+        if exp_mult is not None:
+            try:
+                crypto_qty *= float(exp_mult)
+            except (TypeError, ValueError):
+                pass
         # Cap by max notional
         cap_qty = self.config.max_notional_usdt / limit_price
+        if exp_mult is not None:
+            # Also halve notional cap for exploration so it never blows
+            # the risk budget even if scaling math drifted.
+            try:
+                cap_qty *= float(exp_mult)
+            except (TypeError, ValueError):
+                pass
         crypto_qty = min(crypto_qty, cap_qty)
         if crypto_qty <= 0:
             return {}

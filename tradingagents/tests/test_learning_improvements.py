@@ -191,6 +191,34 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_exploration_size_multiplier_shrinks_crypto_qty(tmp_path):
+    """P2-14+: entry with exploration_size_multiplier=0.20 → qty × 0.20."""
+    from smc_paper_runner import SmcPaperRunner, PaperRunConfig
+    from unittest.mock import MagicMock
+
+    api = MagicMock()
+    api.ticker.return_value = {"status": 200, "payload": {"price": "100"}}
+    cfg = PaperRunConfig(
+        symbol="BTC-USDT",
+        journal_path=str(tmp_path / "j.jsonl"),
+        max_notional_usdt=1000.0,
+    )
+    runner = SmcPaperRunner(api, cfg)
+    # Normal entry: risk_amount=100 / stop_distance=1 → 100 qty before cap
+    normal_entry = {"direction": 1, "entry": 100.0, "stop": 99.0}
+    sizing = {"risk_amount": 100.0, "stop_distance": 1.0}
+    p_normal = runner._build_order_payload(normal_entry, sizing, "cid-normal")
+    q_normal = float(p_normal["quantity"])
+    # Exploration probe: same entry but 20% size
+    exp_entry = dict(normal_entry, exploration_size_multiplier=0.20)
+    p_exp = runner._build_order_payload(exp_entry, sizing, "cid-exp")
+    q_exp = float(p_exp["quantity"])
+    # The exploration quantity must be smaller (≤ 25% of normal — both qty
+    # and cap halved).
+    assert q_exp < q_normal
+    assert q_exp <= q_normal * 0.25 + 1e-6
+
+
 def test_time_decay_weights_decay_to_50pct_at_half_life():
     """P3-21: trade at exactly 1 half-life gets weight = 0.5."""
     from learning.time_decay import compute_decay_weights
