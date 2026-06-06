@@ -30,17 +30,25 @@ if str(WEB_DIR) not in sys.path:
 @pytest.fixture(scope="module")
 def client(tmp_path_factory):
     # Point ledger to an isolated empty dir so endpoints don't read
-    # production data or trip on missing files.
+    # production data or trip on missing files. Restore env after so
+    # SMC_LEDGER_DIR doesn't leak into other test files (was causing
+    # order-dependent failures).
     ledger_dir = tmp_path_factory.mktemp("ledger")
+    _prev = os.environ.get("SMC_LEDGER_DIR")
     os.environ["SMC_LEDGER_DIR"] = str(ledger_dir)
     try:
         from fastapi.testclient import TestClient
         import importlib
         import app as _app_mod  # noqa: F401
         importlib.reload(_app_mod)
-        return TestClient(_app_mod.app)
+        yield TestClient(_app_mod.app)
     except Exception as e:
         pytest.skip(f"app not importable: {e}")
+    finally:
+        if _prev is None:
+            os.environ.pop("SMC_LEDGER_DIR", None)
+        else:
+            os.environ["SMC_LEDGER_DIR"] = _prev
 
 
 def test_learning_curve_endpoint_empty_ledger(client):

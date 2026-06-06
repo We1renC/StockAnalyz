@@ -1,10 +1,10 @@
-"""SMC-crypto learning endpoints (audit fix F1).
+"""SMC-crypto learning endpoints (audit fix F1 / F1-cont).
 
-Extracted verbatim from app.py to start decomposing the 12k-line
-monolith (S5). These 7 endpoints are fully self-contained — they depend
-only on LedgerPaths + the learning.* package + smc_adaptive_store, with
-no app-internal helpers (get_db / _crypto_api_client), so they extract
-without any circular import.
+Extracted from app.py to decompose the 12k-line monolith (S5). 11
+endpoints total: 7 pure-learning (LedgerPaths + learning.* only) plus 4
+that need a loopback crypto client / DB — those obtain it via
+``deps.make_crypto_api_client(request.app)`` + ``deps.get_db()`` instead
+of an app-global, which is what kept them coupled to app.py before.
 
 Mounted via app.include_router(smc_learning.router).
 """
@@ -13,9 +13,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from smc_quant import LedgerPaths
+from deps import get_db, make_crypto_api_client
 
 router = APIRouter()
 
@@ -251,3 +252,107 @@ def api_smc_crypto_real_pnl_gates(symbol: Optional[str] = None,
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"real-pnl-gates failed: {e}")
 
+
+
+@router.post("/api/smc-crypto/weekly-digest")
+def api_smc_crypto_weekly_digest(request: Request, symbol: Optional[str] = None,
+                                   write_to_vault: bool = True):
+    """Audit fix C3: weekly Obsidian markdown digest of the learning loop.
+
+    POST so cron-friendly (idempotent rewrite of same-week file).
+    If write_to_vault=False, only returns the markdown body without
+    touching disk.
+    """
+    try:
+        from learning.weekly_digest import build_weekly_digest, write_weekly_digest
+        from smc_quant import read_trade_ledger
+        records = read_trade_ledger(LedgerPaths.training_ledger(), symbol=symbol)
+        import os as _os
+        if not write_to_vault:
+            return build_weekly_digest(records)
+        vault = _os.environ.get("OBSIDIAN_VAULT_PATH")
+        if not vault:
+            return {**build_weekly_digest(records), "wrote": False,
+                     "reason": "OBSIDIAN_VAULT_PATH not set"}
+        return {**write_weekly_digest(records, vault), "wrote": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"weekly-digest failed: {e}")
+
+
+@router.post("/api/smc-crypto/baseline-equity/reset")
+def api_smc_crypto_baseline_equity_reset(request: Request, payload: Optional[dict] = None):
+    """Audit fix: explicit reset of the equity baseline.
+
+    Body: ``{"baseline_usdt": <float>?, "note": "<str>"?}``
+    If ``baseline_usdt`` omitted, snapshots the CURRENT live equity
+    (so the next "+X%" math anchors here forward).
+    """
+    try:
+        from smc_training_history import (
+            compute_pnl_snapshot, reset_baseline_equity,
+        )
+        payload = payload or {}
+        api = make_crypto_api_client(request.app)
+        if "baseline_usdt" in payload:
+            new_baseline = float(payload["baseline_usdt"])
+        else:
+            snap = compute_pnl_snapshot(api)        # no conn → don't auto-seed
+            new_baseline = float(snap.get("equity_usdt") or 0.0)
+        conn_h = get_db()
+        try:
+            out = reset_baseline_equity(
+                conn_h, new_baseline,
+                note=str(payload.get("note") or "manual_reset"),
+            )
+        finally:
+            conn_h.close()
+        return {"reset": True, **out}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"baseline-reset failed: {e}")
+
+
+@router.get("/api/smc-crypto/learning-curve")
+def api_smc_crypto_learning_curve(request: Request, symbol: Optional[str] = None,
+                                    bin_size: int = 10,
+                                    target_sample_size: int = 30):
+    """Audit fix P3-20: cumulative learning curve + velocity + samples-to-ready ETA.
+
+    Lets the UI answer:
+      • how is cumulative E[R] / win_rate evolving?
+      • is the learning velocity positive, stagnant, or degrading?
+      • at the current trade rate, how many more trades / hours until
+        we have 30 resolved samples (LEARNING → READY threshold)?
+    """
+    try:
+        from learning.learning_curve import learning_curve_diagnostics
+        from smc_quant import read_trade_ledger
+        records = read_trade_ledger(LedgerPaths.training_ledger(), symbol=symbol)
+        return learning_curve_diagnostics(
+            records, bin_size=int(bin_size),
+            target_sample_size=int(target_sample_size),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"learning-curve failed: {e}")
+
+
+@router.post("/api/smc-crypto/reconcile-missed-signals")
+def api_smc_crypto_reconcile_missed_signals(request: Request, payload: Optional[dict] = None):
+    """Audit fix P2-15+: fill outcome_at_5/20_bars + MAE/MFE_R from real K.
+
+    Without this, the missed-signals jsonl never becomes a feedback
+    signal; we know runner rejected score=7 but never check what would
+    have happened.
+    """
+    try:
+        from smc_missed_signals_reconciler import reconcile_missed_signals
+        from dataclasses import asdict
+        from pathlib import Path
+        api = make_crypto_api_client(request.app)
+        payload = payload or {}
+        symbol = payload.get("symbol", "BTC-USDT")
+        interval = payload.get("interval", "15m")
+        path = Path("tmp") / f"missed_signals_{symbol.replace('/', '-')}.jsonl"
+        res = reconcile_missed_signals(api, str(path), interval=interval)
+        return asdict(res)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"reconcile-missed failed: {e}")

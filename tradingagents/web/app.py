@@ -131,33 +131,16 @@ SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 SSL_CONTEXT.verify_flags &= ~ssl.VERIFY_X509_STRICT
 
 # ─────────────── Database ───────────────
-# Audit fix E3: the async monitor_loop + matching-engine loop + UI tick
-# polling all hit this sqlite concurrently. Default journal_mode=delete
-# + per-request connections → random "database is locked". WAL lets
-# readers run concurrently with one writer; busy_timeout blocks briefly
-# instead of erroring; synchronous=NORMAL is durable enough for WAL.
-_DB_PRAGMAS_APPLIED = False
-
-
-def _apply_db_pragmas(conn: sqlite3.Connection) -> None:
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-    except Exception:
-        pass
-
-
-def get_db():
-    # check_same_thread=False: connections are short-lived and never
-    # shared across threads, but FastAPI's threadpool may hand a request
-    # to a different worker thread than the one that opened the loop's
-    # connection; WAL + busy_timeout make this safe.
-    conn = sqlite3.connect(DB, check_same_thread=False, timeout=5.0)
-    conn.row_factory = sqlite3.Row
-    _apply_db_pragmas(conn)
-    return conn
+# Audit fix E3/F1-cont: get_db + portfolio path live in deps.py (shared
+# with routers/). Re-exported here so app.py's ~130 get_db() call-sites
+# and existing `_portfolio_db_path` references keep working unchanged.
+# WAL + busy_timeout applied in deps._apply_db_pragmas.
+from deps import (  # noqa: E402
+    get_db,
+    _apply_db_pragmas,
+    portfolio_db_path as _portfolio_db_path,
+    make_crypto_api_client,
+)
 
 def init_db():
     conn = get_db()
@@ -4063,10 +4046,12 @@ def _build_smc_learning_health_payload(conn, symbol: Optional[str] = None, decay
 # ─────────────── SMC × crypto-api half-auto trading desk ───────────────
 
 def _crypto_api_client():
-    """Build an in-process CryptoApiClient wrapping the local FastAPI app."""
-    from fastapi.testclient import TestClient
-    from smc_paper_runner import CryptoApiClient
-    return CryptoApiClient(TestClient(app))
+    """Build an in-process CryptoApiClient wrapping the local FastAPI app.
+
+    Delegates to deps.make_crypto_api_client; kept as a thin alias so the
+    ~20 existing app.py call-sites stay unchanged.
+    """
+    return make_crypto_api_client(app)
 
 
 @app.get("/api/smc-crypto/scan")
@@ -4139,10 +4124,7 @@ def api_smc_crypto_execute(payload: dict):
         raise HTTPException(status_code=500, detail=f"execute failed: {e}")
 
 
-def _portfolio_db_path() -> str:
-    import os
-    base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, "portfolio.db")
+# _portfolio_db_path now imported from deps (F1-cont).
 
 
 @app.post("/api/smc-crypto/auto-run")
@@ -4261,110 +4243,6 @@ def api_smc_crypto_score_calibration(symbol: Optional[str] = None):
         return calibration_diagnostics(records)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"calibration failed: {e}")
-
-
-@app.post("/api/smc-crypto/weekly-digest")
-def api_smc_crypto_weekly_digest(symbol: Optional[str] = None,
-                                   write_to_vault: bool = True):
-    """Audit fix C3: weekly Obsidian markdown digest of the learning loop.
-
-    POST so cron-friendly (idempotent rewrite of same-week file).
-    If write_to_vault=False, only returns the markdown body without
-    touching disk.
-    """
-    try:
-        from learning.weekly_digest import build_weekly_digest, write_weekly_digest
-        from smc_quant import read_trade_ledger
-        records = read_trade_ledger(LedgerPaths.training_ledger(), symbol=symbol)
-        import os as _os
-        if not write_to_vault:
-            return build_weekly_digest(records)
-        vault = _os.environ.get("OBSIDIAN_VAULT_PATH")
-        if not vault:
-            return {**build_weekly_digest(records), "wrote": False,
-                     "reason": "OBSIDIAN_VAULT_PATH not set"}
-        return {**write_weekly_digest(records, vault), "wrote": True}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"weekly-digest failed: {e}")
-
-
-@app.post("/api/smc-crypto/baseline-equity/reset")
-def api_smc_crypto_baseline_equity_reset(payload: Optional[dict] = None):
-    """Audit fix: explicit reset of the equity baseline.
-
-    Body: ``{"baseline_usdt": <float>?, "note": "<str>"?}``
-    If ``baseline_usdt`` omitted, snapshots the CURRENT live equity
-    (so the next "+X%" math anchors here forward).
-    """
-    try:
-        from smc_training_history import (
-            compute_pnl_snapshot, reset_baseline_equity,
-        )
-        payload = payload or {}
-        api = _crypto_api_client()
-        if "baseline_usdt" in payload:
-            new_baseline = float(payload["baseline_usdt"])
-        else:
-            snap = compute_pnl_snapshot(api)        # no conn → don't auto-seed
-            new_baseline = float(snap.get("equity_usdt") or 0.0)
-        conn_h = get_db()
-        try:
-            out = reset_baseline_equity(
-                conn_h, new_baseline,
-                note=str(payload.get("note") or "manual_reset"),
-            )
-        finally:
-            conn_h.close()
-        return {"reset": True, **out}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"baseline-reset failed: {e}")
-
-
-@app.get("/api/smc-crypto/learning-curve")
-def api_smc_crypto_learning_curve(symbol: Optional[str] = None,
-                                    bin_size: int = 10,
-                                    target_sample_size: int = 30):
-    """Audit fix P3-20: cumulative learning curve + velocity + samples-to-ready ETA.
-
-    Lets the UI answer:
-      • how is cumulative E[R] / win_rate evolving?
-      • is the learning velocity positive, stagnant, or degrading?
-      • at the current trade rate, how many more trades / hours until
-        we have 30 resolved samples (LEARNING → READY threshold)?
-    """
-    try:
-        from learning.learning_curve import learning_curve_diagnostics
-        from smc_quant import read_trade_ledger
-        records = read_trade_ledger(LedgerPaths.training_ledger(), symbol=symbol)
-        return learning_curve_diagnostics(
-            records, bin_size=int(bin_size),
-            target_sample_size=int(target_sample_size),
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"learning-curve failed: {e}")
-
-
-@app.post("/api/smc-crypto/reconcile-missed-signals")
-def api_smc_crypto_reconcile_missed_signals(payload: Optional[dict] = None):
-    """Audit fix P2-15+: fill outcome_at_5/20_bars + MAE/MFE_R from real K.
-
-    Without this, the missed-signals jsonl never becomes a feedback
-    signal; we know runner rejected score=7 but never check what would
-    have happened.
-    """
-    try:
-        from smc_missed_signals_reconciler import reconcile_missed_signals
-        from dataclasses import asdict
-        from pathlib import Path
-        api = _crypto_api_client()
-        payload = payload or {}
-        symbol = payload.get("symbol", "BTC-USDT")
-        interval = payload.get("interval", "15m")
-        path = Path("tmp") / f"missed_signals_{symbol.replace('/', '-')}.jsonl"
-        res = reconcile_missed_signals(api, str(path), interval=interval)
-        return asdict(res)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"reconcile-missed failed: {e}")
 
 
 @app.get("/api/smc-crypto/missed-signals")
