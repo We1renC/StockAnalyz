@@ -6677,6 +6677,41 @@ def _trade_dedup_key(rec: dict) -> str:
 TRADE_LEDGER_SCHEMA_VERSION = 2
 
 
+# Audit fix C2: hardcoded paths were repeated 17× across app.py / runner /
+# training_loop / tests. Centralize so a single edit retargets the whole
+# system (e.g. to switch the prod ledger to /var/lib/smc/ or to parquet).
+class LedgerPaths:
+    """Single source of truth for ledger jsonl paths.
+
+    Override via env var ``SMC_LEDGER_DIR`` (defaults to ``tmp/``).
+    """
+
+    @staticmethod
+    def _dir() -> str:
+        import os
+        return os.environ.get("SMC_LEDGER_DIR", "tmp")
+
+    @classmethod
+    def training_ledger(cls) -> str:
+        import os
+        return os.path.join(cls._dir(), "smc_training_ledger.jsonl")
+
+    @classmethod
+    def paper_journal(cls) -> str:
+        import os
+        return os.path.join(cls._dir(), "smc_paper_journal.jsonl")
+
+    @classmethod
+    def paper_trades(cls) -> str:
+        import os
+        return os.path.join(cls._dir(), "smc_paper_journal_trades.jsonl")
+
+    @classmethod
+    def missed_signals(cls) -> str:
+        import os
+        return os.path.join(cls._dir(), "smc_missed_signals.jsonl")
+
+
 def _stamp_schema_version(record: dict) -> dict:
     """Set ``schema_version`` if missing. Idempotent."""
     if "schema_version" not in record:

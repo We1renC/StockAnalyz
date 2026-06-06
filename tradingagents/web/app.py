@@ -34,7 +34,7 @@ from llm_providers import (
     call_llm, call_cli, workflow_role_sequence, build_workflow_prompt,
 )
 from technical_matrix import build_technical_matrix
-from smc_quant import SMCConfig, build_smc_analysis
+from smc_quant import SMCConfig, build_smc_analysis, LedgerPaths
 from smc_backtest import SMCBacktestConfig, run_smc_event_backtest
 from smc_store import persist_backtest_run, summarize_backtest_report
 from learning.adaptive_store import ensure_adaptive_calibration_schema
@@ -4190,7 +4190,7 @@ def api_smc_crypto_mae_mfe_calibration(symbol: Optional[str] = None):
             build_model_calibration_table, calibration_summary,
         )
         from learning.ledger_cache import cached_load_trade_records as load_trade_records
-        records = load_trade_records("tmp/smc_training_ledger.jsonl")
+        records = load_trade_records(LedgerPaths.training_ledger())
         if symbol:
             records = [r for r in records if r.get("symbol") == symbol]
         table = build_model_calibration_table(records)
@@ -4213,7 +4213,7 @@ def api_smc_crypto_score_calibration(symbol: Optional[str] = None):
     try:
         from learning.score_calibration import calibration_diagnostics
         from learning.ledger_cache import cached_load_trade_records as load_trade_records
-        records = load_trade_records("tmp/smc_training_ledger.jsonl")
+        records = load_trade_records(LedgerPaths.training_ledger())
         if symbol:
             records = [r for r in records if r.get("symbol") == symbol]
         return calibration_diagnostics(records)
@@ -4236,7 +4236,7 @@ def api_smc_crypto_cluster_ensemble(symbol: Optional[str] = None,
         )
         from smc_quant import CONFLUENCE_WEIGHTS_DEFAULT
         from learning.ledger_cache import cached_load_trade_records as load_trade_records
-        records = load_trade_records("tmp/smc_training_ledger.jsonl")
+        records = load_trade_records(LedgerPaths.training_ledger())
         if symbol:
             records = [r for r in records if r.get("symbol") == symbol]
         factors = list(CONFLUENCE_WEIGHTS_DEFAULT.keys())
@@ -4266,7 +4266,7 @@ def api_smc_crypto_hyperparameter_sweep(symbol: Optional[str] = None,
             sweep_hyperparameters, should_apply_recommendation,
         )
         from learning.ledger_cache import cached_load_trade_records as load_trade_records
-        records = load_trade_records("tmp/smc_training_ledger.jsonl")
+        records = load_trade_records(LedgerPaths.training_ledger())
         if symbol:
             records = [r for r in records if r.get("symbol") == symbol]
         sweep = sweep_hyperparameters(records, min_trades=int(min_trades),
@@ -4292,7 +4292,7 @@ def api_smc_crypto_real_pnl_gates(symbol: Optional[str] = None,
     try:
         from learning.real_pnl_gates import run_real_pnl_gates
         from learning.ledger_cache import cached_load_trade_records as load_trade_records
-        records = load_trade_records("tmp/smc_training_ledger.jsonl")
+        records = load_trade_records(LedgerPaths.training_ledger())
         if symbol:
             records = [r for r in records if r.get("symbol") == symbol]
         return run_real_pnl_gates(
@@ -4320,7 +4320,7 @@ def api_smc_crypto_learning_curve(symbol: Optional[str] = None,
     try:
         from learning.learning_curve import learning_curve_diagnostics
         from learning.ledger_cache import cached_load_trade_records as load_trade_records
-        records = load_trade_records("tmp/smc_training_ledger.jsonl")
+        records = load_trade_records(LedgerPaths.training_ledger())
         if symbol:
             records = [r for r in records if r.get("symbol") == symbol]
         return learning_curve_diagnostics(
@@ -4395,7 +4395,7 @@ def api_smc_crypto_reconcile(payload: Optional[dict] = None):
         payload = payload or {}
         symbols = payload.get("symbols")
         stale_minutes = int(payload.get("stale_minutes", 720))
-        ledger = payload.get("ledger_path") or "tmp/smc_paper_journal_trades.jsonl"
+        ledger = payload.get("ledger_path") or LedgerPaths.paper_trades()
         res = reconcile_paper_trades(
             api, ledger, symbols=symbols, stale_minutes=stale_minutes,
         )
@@ -4455,7 +4455,7 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
                                               interval=profile.interval,
                                               bars=min(profile.bars, 300))
 
-        report = build_learning_report(ledger_path="tmp/smc_training_ledger.jsonl",
+        report = build_learning_report(ledger_path=LedgerPaths.training_ledger(),
                                           db_path=db, symbol=symbol)
         crit = report.promotion_decision.get("criteria", {})
         passed_gates = sum(1 for v in crit.values() if v)
@@ -4575,7 +4575,7 @@ def api_smc_crypto_train(payload: dict):
         api = _crypto_api_client()
         return run_training_cycle(api, symbols, db_path=_portfolio_db_path(),
                                     interval=interval, bars=bars,
-                                    ledger_path="tmp/smc_training_ledger.jsonl")
+                                    ledger_path=LedgerPaths.training_ledger())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"train failed: {e}")
 
@@ -4593,7 +4593,7 @@ def api_smc_crypto_learning_report(symbol: Optional[str] = None):
         from smc_learning_orchestrator import build_learning_report
         from dataclasses import asdict
         report = build_learning_report(
-            ledger_path="tmp/smc_training_ledger.jsonl",
+            ledger_path=LedgerPaths.training_ledger(),
             db_path=_portfolio_db_path(),
             symbol=symbol,
         )
@@ -4609,7 +4609,7 @@ def api_smc_crypto_learning_apply(payload: dict):
         from smc_learning_orchestrator import build_learning_report, apply_proposed_changes
         symbol = (payload or {}).get("symbol")
         report = build_learning_report(
-            ledger_path="tmp/smc_training_ledger.jsonl",
+            ledger_path=LedgerPaths.training_ledger(),
             db_path=_portfolio_db_path(),
             symbol=symbol,
         )
@@ -4685,7 +4685,7 @@ def api_smc_crypto_obsidian_sync(payload: Optional[dict] = None):
         from smc_learning_orchestrator import build_learning_report
         from dataclasses import asdict
         lr = build_learning_report(
-            ledger_path="tmp/smc_training_ledger.jsonl",
+            ledger_path=LedgerPaths.training_ledger(),
             db_path=_portfolio_db_path(),
             symbol=payload.get("symbol"),
         )

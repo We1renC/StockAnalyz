@@ -191,6 +191,18 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_ledger_paths_centralized_and_env_overridable(monkeypatch):
+    """C2: LedgerPaths is the single source of truth, env-overridable."""
+    from smc_quant import LedgerPaths
+    monkeypatch.setenv("SMC_LEDGER_DIR", "/tmp/test-ledger")
+    assert LedgerPaths.training_ledger() == "/tmp/test-ledger/smc_training_ledger.jsonl"
+    assert LedgerPaths.paper_journal() == "/tmp/test-ledger/smc_paper_journal.jsonl"
+    assert LedgerPaths.paper_trades() == "/tmp/test-ledger/smc_paper_journal_trades.jsonl"
+    assert LedgerPaths.missed_signals() == "/tmp/test-ledger/smc_missed_signals.jsonl"
+    monkeypatch.delenv("SMC_LEDGER_DIR")
+    assert LedgerPaths.training_ledger() == "tmp/smc_training_ledger.jsonl"
+
+
 def test_auto_apply_sweep_writes_to_profile_when_improvement_clears(tmp_path):
     """B1: when sweep beats cooldown + improvement threshold, profile.yaml
     is updated and last_auto_apply audit field is stamped."""
