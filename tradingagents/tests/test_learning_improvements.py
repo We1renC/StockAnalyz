@@ -2415,3 +2415,18 @@ def test_roundp_selfcheck_warns_when_token_and_autolearn_unset(monkeypatch, tmp_
     by = {c["name"]: c["status"] for c in out["checks"]}
     assert by["api_token"] == "warn"
     assert by["autolearn_scheduler"] == "warn"
+
+
+def test_historical_seeder_fetch_klines_window():
+    """Historical seeder pages multiple chunks from Binance public data."""
+    from learning.historical_seeder import fetch_klines_window
+    from datetime import datetime, timezone, timedelta
+    end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    start_ms = int((datetime.now(timezone.utc) - timedelta(days=10)).timestamp() * 1000)
+    rows = fetch_klines_window("BTC-USDT", interval="1h",
+                                 start_ms=start_ms, end_ms=end_ms,
+                                 chunk=1000, sleep_between_ms=0)
+    # 10 days × 24h ≈ 240 bars (give it a wide range to accommodate
+    # weekend gaps / partial bars / clock drift)
+    assert 100 <= len(rows) <= 300, f"expected ~240 bars, got {len(rows)}"
+    assert "open" in rows[0] and "close" in rows[0]
