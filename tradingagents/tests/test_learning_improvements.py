@@ -2173,10 +2173,10 @@ def test_g1_swallow_reraise_propagates():
             raise KeyError("x")
 
 
-def test_g2_ops_metrics_endpoint_shape():
+def test_g2_ops_metrics_endpoint_shape(monkeypatch):
     """G2: ops-metrics aggregates scheduler/cache/swallow/file sections."""
-    import importlib, os
-    os.environ["SMC_LEDGER_DIR"] = "/tmp/ops-test-ledger"
+    import importlib
+    monkeypatch.setenv("SMC_LEDGER_DIR", "/tmp/ops-test-ledger")
     try:
         from fastapi.testclient import TestClient
         import app as _app
