@@ -191,6 +191,45 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_api_token_middleware_off_when_env_unset(monkeypatch):
+    """A2: DASHBOARD_API_TOKEN unset → middleware is a no-op."""
+    monkeypatch.delenv("DASHBOARD_API_TOKEN", raising=False)
+    from learning.api_auth import _token
+    assert _token() == ""
+
+
+def test_api_token_middleware_protects_smc_endpoints(monkeypatch):
+    """A2: when token set, protected prefix without X-API-Token → 401."""
+    import asyncio
+    from learning.api_auth import api_token_middleware
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "secret123")
+
+    class _Req:
+        def __init__(self, path, token=None):
+            self.url = type("U", (), {"path": path})()
+            self.headers = {"x-api-token": token} if token else {}
+
+    async def _call_next(req):
+        from starlette.responses import JSONResponse
+        return JSONResponse({"ok": True})
+
+    # Wrong token → 401
+    resp = asyncio.new_event_loop().run_until_complete(
+        api_token_middleware(_Req("/api/smc-crypto/learning-curve", "wrong"), _call_next)
+    )
+    assert resp.status_code == 401
+    # Correct token → passes through
+    resp2 = asyncio.new_event_loop().run_until_complete(
+        api_token_middleware(_Req("/api/smc-crypto/learning-curve", "secret123"), _call_next)
+    )
+    assert resp2.status_code == 200
+    # Open path (no protected prefix) → passes through even without token
+    resp3 = asyncio.new_event_loop().run_until_complete(
+        api_token_middleware(_Req("/health"), _call_next)
+    )
+    assert resp3.status_code == 200
+
+
 def test_file_lock_serializes_concurrent_appenders(tmp_path):
     """A1: two threads appending under locked_append must not interleave."""
     from learning.file_lock import locked_append

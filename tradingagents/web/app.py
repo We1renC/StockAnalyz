@@ -2010,6 +2010,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="TradingAgents Dashboard", lifespan=lifespan)
 
+# Audit fix A2: opt-in API token gate. Off by default (preserves dev
+# ergonomics); flip on by exporting DASHBOARD_API_TOKEN=<secret>.
+try:
+    from learning.api_auth import api_token_middleware
+    app.middleware("http")(api_token_middleware)
+except Exception as _e:
+    print(f"[startup] api_token_middleware not installed: {_e}")
+
 try:
     from crypto_api.router import router as crypto_router, binance_router
     from crypto_api.ws import ws_manager
