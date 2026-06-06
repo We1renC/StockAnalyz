@@ -4372,10 +4372,19 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
         db = _portfolio_db_path()
         profile = profile_for_symbol(symbol)
 
+        from smc_auto_workflow import load_latest_adaptive_runtime_patch
+        conn = get_db()
+        try:
+            patch = load_latest_adaptive_runtime_patch(conn, symbol)
+        finally:
+            conn.close()
+        optimal_interval = (patch.get("strategy") or {}).get("optimal_interval")
+        interval = optimal_interval if optimal_interval else profile.interval
+
         train_out = None
         if do_train:
             train_out = run_training_cycle(api, [symbol], db_path=db,
-                                              interval=profile.interval,
+                                              interval=interval,
                                               bars=min(profile.bars, 300))
         training_meta = (train_out or {}).get("training") or {}
         audit_meta = (train_out or {}).get("audit") or {}
@@ -4391,12 +4400,6 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
         live_order = None
         cd = cooldown_remaining(symbol, db, profile)
 
-        from smc_auto_workflow import load_latest_adaptive_runtime_patch
-        conn = get_db()
-        try:
-            patch = load_latest_adaptive_runtime_patch(conn, symbol)
-        finally:
-            conn.close()
         global_mode = (patch.get("state") or {}).get("mode", "DRY_RUN")
 
         if cd and cd > 0:

@@ -226,7 +226,7 @@ def test_train_from_ledger_applies_strategy_patch_when_adaptive_state_ready(tmp_
         encoding="utf-8",
     )
 
-    def fake_adaptive_metrics(records, calib):
+    def fake_adaptive_metrics(records, calib, **kwargs):
         return {
             "n_eff": 80.0,
             "uniqueness_mean": 1.0,

@@ -2695,3 +2695,99 @@ def test_soft_adoption_in_validating_probe_mode(tmp_path):
         updated_yaml = yaml.safe_load(fh)
     assert updated_yaml["confluence"]["weights"]["htf_bias_aligned"] == 3
 
+
+def test_adaptive_feature_shrinkage_mdl(tmp_path):
+    from learning.uniqueness_weighted_lr import fit_uniqueness_weighted_lr
+    import numpy as np
+
+    # 1. 測試 NumPy 梯度下的 L1 收縮
+    X = np.array([[1.0, 0.01], [1.0, -0.02], [-1.0, 0.01], [-1.0, -0.01]])
+    y = np.array([1, 1, 0, 0])
+    w = np.ones(4, dtype=float)
+
+    # 無 L1：特徵 2 權重應該保留小數值
+    fit_no_l1 = fit_uniqueness_weighted_lr(X, y, w, l2_penalty=0.0, l1_penalty=0.0, feature_cols=["x0", "x1"])
+    # 有 L1 且設零閾值收縮：不顯著的特徵 2 應該被縮小至小於 0.15 進而被收縮成 0
+    fit_l1 = fit_uniqueness_weighted_lr(X, y, w, l2_penalty=0.0, l1_penalty=0.5, feature_cols=["x0", "x1"])
+
+    assert fit_l1["proposal"]["x1"] == 0.0
+
+    # 2. 測試自適應 PBO 歷史載入
+    from smc_training_loop import train_from_ledger
+    from learning.adaptive_store import ensure_adaptive_calibration_schema, create_config_patch
+    import sqlite3
+    import json
+
+    db_path = tmp_path / "adaptive.db"
+    conn = sqlite3.connect(db_path)
+    ensure_adaptive_calibration_schema(conn)
+    # 寫入一個 PBO >= 0.5 的歷史 runtime patch
+    create_config_patch(
+        conn,
+        patch={
+            "state": {"mode": "READY"},
+            "diagnostics": {"pbo": 0.6}
+        },
+        symbol="BTC-USDT",
+        reason="unit_test",
+        strategy_yaml_path="/tmp/fake.yaml",
+        patch_type="adaptive_runtime"
+    )
+    conn.commit()
+    conn.close()
+
+    ledger_path = tmp_path / "ledger.jsonl"
+    records = []
+    for idx in range(20):
+        records.append({
+            "trade_id": f"t-{idx}", "symbol": "BTC-USDT",
+            "entry_time": f"2026-06-06T00:{idx:02d}:00Z", "exit_time": f"2026-06-06T01:{idx:02d}:00Z",
+            "r_multiple": 2.0, "outcome": "target", "htf_bias_aligned": 1, "unmitigated_ob": 1,
+        })
+    with open(ledger_path, "w", encoding="utf-8") as fh:
+        for r in records:
+            fh.write(json.dumps(r) + "\n")
+
+    res = train_from_ledger(
+        ledger_path=str(ledger_path),
+        strategy_yaml_path=str(tmp_path / "strategy.yaml"),
+        db_path=str(db_path),
+        symbol="BTC-USDT",
+        apply_strategy_patch=False,
+    )
+    assert any("Adaptive Feature Shrinkage active" in note for note in res.notes)
+
+
+def test_adaptive_window_embargo_drift(tmp_path):
+    from smc_training_loop import train_from_ledger
+    import json
+
+    ledger_path = tmp_path / "ledger.jsonl"
+    records = []
+    # 前半段全是贏單 (+2R)，後半段全是輸單 (-2R) ── 創造劇烈體制漂移
+    for idx in range(20):
+        records.append({
+            "trade_id": f"t-{idx}", "symbol": "BTC-USDT",
+            "entry_time": f"2026-06-06T00:{idx:02d}:00Z", "exit_time": f"2026-06-06T01:{idx:02d}:00Z",
+            "r_multiple": 2.0, "outcome": "target", "htf_bias_aligned": 1, "unmitigated_ob": 1,
+        })
+    for idx in range(20, 40):
+        records.append({
+            "trade_id": f"t-{idx}", "symbol": "BTC-USDT",
+            "entry_time": f"2026-06-06T00:{idx:02d}:00Z", "exit_time": f"2026-06-06T01:{idx:02d}:00Z",
+            "r_multiple": -2.0, "outcome": "stop", "htf_bias_aligned": 1, "unmitigated_ob": 1,
+        })
+    with open(ledger_path, "w", encoding="utf-8") as fh:
+        for r in records:
+            fh.write(json.dumps(r) + "\n")
+
+    res = train_from_ledger(
+        ledger_path=str(ledger_path),
+        strategy_yaml_path=str(tmp_path / "strategy.yaml"),
+        db_path=str(tmp_path / "adaptive.db"),
+        symbol="BTC-USDT",
+        apply_strategy_patch=False,
+    )
+    assert any("Regime drift detected" in note for note in res.notes)
+
+

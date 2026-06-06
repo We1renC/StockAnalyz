@@ -644,7 +644,7 @@ def _sanitize_records_for_learning(
     }
 
 
-def _adaptive_metrics_from_records(records: list[dict], calib: dict) -> dict:
+def _adaptive_metrics_from_records(records: list[dict], calib: dict, l1_penalty: float = 0.0) -> dict:
     frame = pd.DataFrame(records)
     fatal_reasons: list[str] = []
     if frame.empty or "entry_time" not in frame or "exit_time" not in frame:
@@ -780,6 +780,7 @@ def _adaptive_metrics_from_records(records: list[dict], calib: dict) -> dict:
             y,
             sample_weights,
             feature_cols=feature_block["feature_cols"],
+            l1_penalty=l1_penalty,
         )
         model_baseline["trained"] = True
         model_baseline["sample_weight_summary"] = {
@@ -839,7 +840,10 @@ def train_from_ledger(
     config_snapshot = strategy_config_snapshot(strategy_yaml_path)
 
     ledger_path = ledger_path or LedgerPaths.training_ledger()
-    raw_records: list[dict] = read_trade_ledger(ledger_path)
+    raw_records: list[dict] = read_trade_ledger(
+        ledger_path,
+        symbol=symbol if symbol != "ALL" else None,
+    )
     if not raw_records:
         if db_path:
             conn = connect_db(db_path)
@@ -869,6 +873,33 @@ def train_from_ledger(
         )
 
     records, learning_clip = _sanitize_records_for_learning(raw_records)
+    pbo_last = 0.0
+    embargo_dynamic = 1
+
+    # 模組二：基於動態資訊漂移的自適應視窗與隔離
+    if len(records) >= 30:
+        n_half = len(records) // 2
+        older_recs = records[:n_half]
+        recent_recs = records[n_half:]
+        u_dist = np.array([float(r.get("r_multiple") or r.get("pnl_R") or 0.0) for r in older_recs])
+        v_dist = np.array([float(r.get("r_multiple") or r.get("pnl_R") or 0.0) for r in recent_recs])
+        
+        # 簡單計算一維 Wasserstein 距離
+        u_sorted, v_sorted = np.sort(u_dist), np.sort(v_dist)
+        u_interp = np.interp(np.linspace(0, 1, 100), np.linspace(0, 1, len(u_sorted)), u_sorted)
+        v_interp = np.interp(np.linspace(0, 1, 100), np.linspace(0, 1, len(v_sorted)), v_sorted)
+        drift_distance = float(np.mean(np.abs(u_interp - v_interp)))
+        
+        if drift_distance > 0.15:
+            embargo_dynamic = min(15, 1 + int(30 * (drift_distance - 0.15)))
+            old_len = len(records)
+            records = records[int(old_len * 0.3):]
+            notes.append(
+                f"Regime drift detected (Wasserstein distance={drift_distance:.4f} > 0.15): "
+                f"shortened training window from {old_len} to {len(records)} samples, "
+                f"and expanded walk-forward embargo from 1 to {embargo_dynamic}."
+            )
+
     adaptive_conn: Optional[sqlite3.Connection] = None
     if db_path:
         adaptive_conn = connect_db(db_path)
@@ -881,6 +912,18 @@ def train_from_ledger(
             model_version=model_version,
             source="training_ledger",
         )
+        
+        # 模組一：載入上一期的歷史 PBO
+        try:
+            row = adaptive_conn.execute(
+                "SELECT patch_payload FROM smc_adaptive_config_patches WHERE patch_type='adaptive_runtime' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if row:
+                payload = json.loads(row["patch_payload"])
+                pbo_last = float(payload.get("diagnostics", {}).get("pbo") or 0.0)
+        except Exception:
+            pass
+
         kill_state = get_kill_switch_state(adaptive_conn)
         if kill_state.get("state") == "LOCKED":
             record_adaptive_audit_event(
@@ -907,8 +950,15 @@ def train_from_ledger(
                 notes=["adaptive kill switch locked — calibration write blocked"],
             )
 
+    l1_penalty = 0.0
+    if pbo_last >= 0.5 and len(records) > 8:
+        l1_0 = 0.05
+        alpha_shrink = 0.5
+        l1_penalty = l1_0 * (1.0 + alpha_shrink * pbo_last * math.log(max(len(records), 2)))
+        notes.append(f"Adaptive Feature Shrinkage active (PBO_last={pbo_last:.4f} >= 0.5): l1_penalty scaled to {l1_penalty:.6f}")
+
     calib = run_closed_loop_calibration(records, base_weights=base_weights)
-    adaptive_metrics = _adaptive_metrics_from_records(records, calib)
+    adaptive_metrics = _adaptive_metrics_from_records(records, calib, l1_penalty=l1_penalty)
     verdict = calib.get("verdict") or {}
     proposed = (calib.get("proposed_calibration") or {}).get("weights") or {}
     adaptive_state = {
@@ -959,7 +1009,7 @@ def train_from_ledger(
     # *purged* walk-forward OOS comparison — not on the same training set.
     # We compute the OOS comparison here; if there isn't enough data for a
     # valid split the challenger is NOT adopted (default-deny).
-    fm_oos = _purged_walk_forward_fm_vs_lr(records) if fm_trained else {
+    fm_oos = _purged_walk_forward_fm_vs_lr(records, embargo=embargo_dynamic) if fm_trained else {
         "verdict": "no_fm_to_compare",
         "fm_oos_accuracy": None,
         "lr_oos_accuracy": None,
@@ -1465,7 +1515,11 @@ def run_training_cycle(
             bs = auto_backtest_window(api, sym, interval=interval, bars=bars,
                                        ledger_path=ledger_path, db_path=db_path)
             backtest_summaries.append(asdict(bs))
-        training = train_from_ledger(ledger_path=ledger_path, db_path=db_path)
+        training = train_from_ledger(
+            ledger_path=ledger_path,
+            db_path=db_path,
+            symbol="ALL" if len(symbols) > 1 else symbols[0],
+        )
         audit = audit_learning_capability(ledger_path=ledger_path)
         scenarios = {sym: run_scenarios_for_symbol(conn, sym) for sym in symbols}
         return {

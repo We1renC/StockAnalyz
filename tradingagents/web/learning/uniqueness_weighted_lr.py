@@ -58,6 +58,7 @@ def fit_uniqueness_weighted_lr(
     sample_weight,
     *,
     l2_penalty: float = 0.1,
+    l1_penalty: float = 0.0,
     learning_rate: float = 0.15,
     epochs: int = 1200,
     max_delta: float = 0.12,
@@ -89,7 +90,7 @@ def fit_uniqueness_weighted_lr(
         error = p - y_arr
         weighted_error = w * error
 
-        grad_theta = (Xz.T @ weighted_error) / max(np.sum(w), 1e-8) + l2_penalty * theta
+        grad_theta = (Xz.T @ weighted_error) / max(np.sum(w), 1e-8) + l2_penalty * theta + l1_penalty * np.sign(theta)
         grad_bias = float(np.sum(weighted_error) / max(np.sum(w), 1e-8))
 
         delta_theta = np.clip(learning_rate * grad_theta, -max_delta, max_delta)
@@ -102,6 +103,7 @@ def fit_uniqueness_weighted_lr(
             np.sum(w * (-(y_arr * np.log(p_clip) + (1 - y_arr) * np.log(1 - p_clip))))
             / max(np.sum(w), 1e-8)
             + 0.5 * l2_penalty * np.sum(theta ** 2)
+            + l1_penalty * np.sum(np.abs(theta))
         )
         if prev_loss is not None and abs(prev_loss - loss) < 1e-8:
             break
@@ -113,7 +115,11 @@ def fit_uniqueness_weighted_lr(
     coefficients = {col: float(theta[idx]) for idx, col in enumerate(cols)}
     proposal = {}
     for idx, col in enumerate(cols):
-        proposal[col] = float(np.clip(theta[idx], -1.5, 1.5))
+        val = float(np.clip(theta[idx], -1.5, 1.5))
+        if abs(val) < 0.15:
+            proposal[col] = 0.0
+        else:
+            proposal[col] = val
 
     def predict_proba_fn(X_test):
         X_test_arr = np.asarray(X_test, dtype=float)
