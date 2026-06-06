@@ -363,6 +363,32 @@ def test_decommission_triggers_on_trailing_underwater(tmp_path):
     assert out["new_state"][key]["status"] == "decommissioned"
 
 
+def test_decommission_triggers_on_quality_floor_without_tail_support():
+    """Low win-rate + non-positive clipped expectancy should be disabled even
+    if raw total_R is inflated by one oversized tail trade."""
+    from learning.model_decommission import (
+        compute_per_model_health, decide_decommission,
+    )
+    records = []
+    for i in range(19):
+        records.append({
+            "model": "unicorn", "symbol": "ETH", "interval": "1h",
+            "entry_time": f"2026-02-{1 + i // 24:02d}T{i % 24:02d}:00:00",
+            "outcome": "stop", "r_multiple": -1.0,
+        })
+    records.append({
+        "model": "unicorn", "symbol": "ETH", "interval": "1h",
+        "entry_time": "2026-02-20T00:00:00",
+        "outcome": "target", "r_multiple": 25.0,
+    })
+    health = compute_per_model_health(records, window_size=20, min_samples=20)
+    out = decide_decommission(health, state={})
+    key = "unicorn|ETH|1h"
+    assert any("decommissioned" in a for a in out["actions"])
+    assert out["new_state"][key]["status"] == "decommissioned"
+    assert "quality_floor" in out["new_state"][key]["reason"]
+
+
 def test_decommission_revive_after_cooldown_and_recovery():
     """D3: previously decommissioned, cooldown passed, recovery total_R
     above revive_total_R → revived."""

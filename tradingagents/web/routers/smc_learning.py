@@ -107,6 +107,8 @@ def api_smc_crypto_wal_checkpoint():
 def api_smc_crypto_decommission_sweep(symbol: Optional[str] = None,
                                         window_size: int = 50,
                                         min_total_R: float = -5.0,
+                                        min_win_rate: float = 0.05,
+                                        min_clipped_mean_R: float = 0.0,
                                         revive_total_R: float = 1.0,
                                         cooldown_days: int = 7,
                                         commit: bool = True):
@@ -122,11 +124,9 @@ def api_smc_crypto_decommission_sweep(symbol: Optional[str] = None,
             compute_per_model_health, decide_decommission,
             load_state, save_state,
         )
-        from learning.ledger_cache import cached_load_trade_records as load_trade_records
+        from smc_quant import read_trade_ledger
         import os as _os
-        records = load_trade_records(LedgerPaths.training_ledger())
-        if symbol:
-            records = [r for r in records if r.get("symbol") == symbol]
+        records = read_trade_ledger(LedgerPaths.training_ledger(), symbol=symbol)
         decom_path = _os.path.join(
             _os.path.dirname(LedgerPaths.training_ledger()),
             "decommissioned.json",
@@ -136,6 +136,8 @@ def api_smc_crypto_decommission_sweep(symbol: Optional[str] = None,
         out = decide_decommission(
             health, prev,
             min_total_R=float(min_total_R),
+            min_win_rate=float(min_win_rate),
+            min_clipped_mean_R=float(min_clipped_mean_R),
             revive_total_R=float(revive_total_R),
             cooldown_days=int(cooldown_days),
         )
@@ -152,6 +154,69 @@ def api_smc_crypto_decommission_sweep(symbol: Optional[str] = None,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"decommission-sweep failed: {e}")
+
+
+@router.get("/api/smc-crypto/model-health")
+def api_smc_crypto_model_health(symbol: Optional[str] = None,
+                                  window_size: int = 50,
+                                  min_samples: int = 20,
+                                  min_win_rate: float = 0.05,
+                                  min_clipped_mean_R: float = 0.0,
+                                  limit: int = 50):
+    """Per-(model, symbol, interval) learning-quality diagnostics.
+
+    Surfaces clusters whose trailing window is statistically unhealthy even
+    when raw total_R still looks acceptable because of extreme-tail trades.
+    """
+    try:
+        from learning.model_decommission import compute_per_model_health
+        from smc_quant import read_trade_ledger
+
+        records = read_trade_ledger(LedgerPaths.training_ledger(), symbol=symbol)
+        health = compute_per_model_health(
+            records,
+            window_size=int(window_size),
+            min_samples=int(min_samples),
+        )
+        rows = []
+        for key, stats in health.items():
+            model, cluster_symbol, interval = key
+            quality_breach = (
+                bool(stats.get("eligible"))
+                and float(stats.get("win_rate") or 0.0) <= float(min_win_rate)
+                and float(stats.get("clipped_mean_R") or 0.0) <= float(min_clipped_mean_R)
+            )
+            rows.append(
+                {
+                    "model": model,
+                    "symbol": cluster_symbol,
+                    "interval": interval,
+                    **stats,
+                    "quality_breach": quality_breach,
+                }
+            )
+        rows.sort(
+            key=lambda row: (
+                not row["quality_breach"],
+                -int(row.get("eligible", False)),
+                float(row.get("clipped_mean_R") or 0.0),
+                float(row.get("win_rate") or 0.0),
+            )
+        )
+        limited = rows[: max(1, int(limit))]
+        return {
+            "n_clusters": len(rows),
+            "n_quality_breach": sum(1 for row in rows if row["quality_breach"]),
+            "window_size": int(window_size),
+            "min_samples": int(min_samples),
+            "thresholds": {
+                "min_win_rate": float(min_win_rate),
+                "min_clipped_mean_R": float(min_clipped_mean_R),
+            },
+            "clusters": limited,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"model-health failed: {e}")
 
 
 @router.get("/api/smc-crypto/learning-health")

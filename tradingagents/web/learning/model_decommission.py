@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import statistics
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -53,6 +54,7 @@ def compute_per_model_health(
     window_size: int = 50,
     min_samples: int = 20,
     cluster_keys: tuple[str, ...] = ("model", "symbol", "interval"),
+    r_clip_cap: float = 10.0,
 ) -> dict[tuple, dict]:
     """Return per-cluster trailing window stats.
 
@@ -73,13 +75,24 @@ def compute_per_model_health(
     for key, recs in buckets.items():
         window = _trailing_window(recs, window_size)
         rs = [float(r["r_multiple"]) for r in window]
+        clipped_rs = [max(-float(r_clip_cap), min(float(r_clip_cap), x)) for x in rs]
         wins = sum(1 for x in rs if x > 0)
+        gt_10 = sum(1 for x in rs if abs(x) > 10.0)
+        gt_20 = sum(1 for x in rs if abs(x) > 20.0)
+        max_abs_r = max((abs(x) for x in rs), default=0.0)
         out[key] = {
             "n": len(recs),
             "n_in_window": len(window),
             "total_R": round(sum(rs), 4),
             "mean_R": round((sum(rs) / len(rs)) if rs else 0.0, 4),
+            "clipped_total_R": round(sum(clipped_rs), 4),
+            "clipped_mean_R": round((sum(clipped_rs) / len(clipped_rs)) if clipped_rs else 0.0, 4),
+            "median_R": round(statistics.median(rs), 4) if rs else 0.0,
             "win_rate": round(wins / len(rs), 4) if rs else 0.0,
+            "max_abs_R": round(max_abs_r, 4),
+            "gt_10R_count": gt_10,
+            "gt_20R_count": gt_20,
+            "tail_share_20R": round((gt_20 / len(rs)) if rs else 0.0, 4),
             "first_in_window": (str(window[0].get("entry_time")) if window else None),
             "last_in_window": (str(window[-1].get("entry_time")) if window else None),
             "eligible": len(window) >= min_samples,
@@ -92,6 +105,8 @@ def decide_decommission(
     state: dict,
     *,
     min_total_R: float = -5.0,
+    min_win_rate: float = 0.05,
+    min_clipped_mean_R: float = 0.0,
     revive_total_R: float = 1.0,
     cooldown_days: int = 7,
     now: Optional[datetime] = None,
@@ -113,16 +128,31 @@ def decide_decommission(
         prev = new_state.get(skey) or {}
         prev_status = prev.get("status", "active")
         total_R = float(stats.get("total_R") or 0.0)
+        win_rate = float(stats.get("win_rate") or 0.0)
+        clipped_mean_R = float(stats.get("clipped_mean_R") or 0.0)
         if prev_status == "active":
+            reason = None
             if total_R <= min_total_R:
+                reason = f"trailing_total_R={total_R}<={min_total_R}"
+            elif win_rate <= min_win_rate and clipped_mean_R <= min_clipped_mean_R:
+                reason = (
+                    f"quality_floor(win_rate={win_rate}<={min_win_rate},"
+                    f" clipped_mean_R={clipped_mean_R}<={min_clipped_mean_R})"
+                )
+            if reason:
                 new_state[skey] = {
                     "status": "decommissioned",
                     "ts": now.isoformat(timespec="seconds"),
                     "total_R": total_R,
+                    "win_rate": win_rate,
+                    "clipped_mean_R": clipped_mean_R,
                     "n_in_window": stats["n_in_window"],
-                    "reason": f"trailing_total_R={total_R}<={min_total_R}",
+                    "reason": reason,
                 }
-                actions.append(f"decommissioned {skey} (total_R={total_R})")
+                actions.append(
+                    f"decommissioned {skey} "
+                    f"(total_R={total_R}, win_rate={win_rate}, clipped_mean_R={clipped_mean_R})"
+                )
         else:
             # Currently decommissioned — check cooldown + revive criterion
             ts = prev.get("ts")
@@ -140,6 +170,8 @@ def decide_decommission(
                     "status": "active",
                     "ts": now.isoformat(timespec="seconds"),
                     "total_R": total_R,
+                    "win_rate": win_rate,
+                    "clipped_mean_R": clipped_mean_R,
                     "n_in_window": stats["n_in_window"],
                     "reason": f"recovered_total_R={total_R}>={revive_total_R}",
                 }

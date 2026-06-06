@@ -83,17 +83,23 @@ def _run_maintenance() -> dict:
         out["rotation"] = {"error": f"{type(exc).__name__}: {exc}"}
     try:
         import os as _os
-        from smc_quant import LedgerPaths
+        from smc_quant import LedgerPaths, read_trade_ledger
         from learning.model_decommission import (
             compute_per_model_health, decide_decommission, load_state, save_state,
         )
-        from learning.ledger_cache import cached_load_trade_records
-        records = cached_load_trade_records(LedgerPaths.training_ledger())
+        records = read_trade_ledger(LedgerPaths.training_ledger())
         decom_path = _os.path.join(
             _os.path.dirname(LedgerPaths.training_ledger()), "decommissioned.json")
         prev = load_state(decom_path)
         health = compute_per_model_health(records)
-        dec = decide_decommission(health, prev)
+        dec = decide_decommission(
+            health,
+            prev,
+            min_win_rate=float(os.environ.get("SMC_DECOMMISSION_MIN_WIN_RATE", "0.05")),
+            min_clipped_mean_R=float(
+                os.environ.get("SMC_DECOMMISSION_MIN_CLIPPED_MEAN_R", "0.0")
+            ),
+        )
         if dec.get("actions"):
             save_state(decom_path, dec["new_state"])
         out["decommission"] = {"actions": dec.get("actions", [])}

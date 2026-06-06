@@ -132,6 +132,42 @@ def test_cluster_ensemble_endpoint_empty_ledger(client):
     assert isinstance(body["factors_tracked"], list)
 
 
+def test_model_health_endpoint_flags_tail_distorted_cluster(client):
+    ledger_dir = Path(os.environ["SMC_LEDGER_DIR"])
+    ledger = ledger_dir / "smc_training_ledger.jsonl"
+    rows = []
+    for i in range(19):
+        rows.append({
+            "model": "unicorn",
+            "symbol": "ETH-USDT",
+            "interval": "1h",
+            "entry_time": f"2026-02-{1 + i // 24:02d}T{i % 24:02d}:00:00+00:00",
+            "outcome": "stop",
+            "r_multiple": -1.0,
+        })
+    rows.append({
+        "model": "unicorn",
+        "symbol": "ETH-USDT",
+        "interval": "1h",
+        "entry_time": "2026-02-20T00:00:00+00:00",
+        "outcome": "target",
+        "r_multiple": 25.0,
+    })
+    ledger.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+    r = client.get("/api/smc-crypto/model-health?window_size=20&min_samples=20&limit=5")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["n_clusters"] == 1
+    assert body["n_quality_breach"] == 1
+    cluster = body["clusters"][0]
+    assert cluster["model"] == "unicorn"
+    assert cluster["quality_breach"] is True
+    assert cluster["clipped_mean_R"] <= 0.0
+    assert cluster["gt_20R_count"] == 1
+    ledger.write_text("", encoding="utf-8")
+
+
 def test_api_token_blocks_protected_when_env_set(client, monkeypatch):
     """A2 + C4: with token env set, missing X-API-Token → 401."""
     monkeypatch.setenv("DASHBOARD_API_TOKEN", "topsecret")
@@ -178,6 +214,7 @@ def test_extracted_router_endpoints_still_reachable(client):
         "/api/smc-crypto/ops-metrics",
         "/api/smc-crypto/real-pnl-gates",
         "/api/smc-crypto/cluster-ensemble",
+        "/api/smc-crypto/model-health",
         "/api/smc-crypto/learning-health",
     ]:
         r = client.get(route)
