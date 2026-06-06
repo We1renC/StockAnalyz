@@ -191,6 +191,34 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_schema_version_stamped_on_persist(tmp_path):
+    """A4: persist_trade_records stamps schema_version=2 on every record."""
+    from smc_quant import persist_trade_records, load_trade_records
+    p = tmp_path / "ledger.jsonl"
+    persist_trade_records([
+        {"symbol": "BTC", "outcome": "target", "r_multiple": 1.0,
+         "entry_time": "2025-01-01T00:00:00", "model": "x"},
+    ], str(p))
+    rec = load_trade_records(str(p))[0]
+    assert rec["schema_version"] == 2
+
+
+def test_load_trade_records_normalizes_v1_legacy(tmp_path):
+    """A4: legacy records without schema_version get backfilled to v2."""
+    from smc_quant import load_trade_records
+    p = tmp_path / "legacy.jsonl"
+    # Hand-write a v1 record (no schema_version, no source/interval/regime)
+    p.write_text(
+        '{"symbol": "BTC", "outcome": "target", "r_multiple": 1.0}\n',
+        encoding="utf-8",
+    )
+    rec = load_trade_records(str(p))[0]
+    assert rec["schema_version"] == 2
+    assert rec["source"] == "legacy"
+    assert rec["interval"] is None
+    assert rec["regime"] is None
+
+
 def test_ledger_cache_hits_on_unchanged_mtime(tmp_path):
     """A3: second call with same mtime → cache hit, no re-read."""
     from learning.ledger_cache import _LedgerCache

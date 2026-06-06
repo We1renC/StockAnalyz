@@ -6653,6 +6653,39 @@ def _trade_dedup_key(rec: dict) -> str:
     ])
 
 
+# Audit fix A4: every trade record gets stamped with the schema version
+# at persist time so future migrations can route by version (instead of
+# silently breaking when a field is renamed).
+TRADE_LEDGER_SCHEMA_VERSION = 2
+
+
+def _stamp_schema_version(record: dict) -> dict:
+    """Set ``schema_version`` if missing. Idempotent."""
+    if "schema_version" not in record:
+        record["schema_version"] = TRADE_LEDGER_SCHEMA_VERSION
+    return record
+
+
+def _normalize_record_by_version(record: dict) -> dict:
+    """Map older-version records to current schema.
+
+    v1 (pre-A4): no ``schema_version`` field. Treated as v1.
+    v2: ``schema_version`` stamped at write time; ``source`` / ``interval``
+         / ``regime`` may be present from B-layer fixes.
+
+    Currently a passthrough since v1 → v2 is field-additive only. Future
+    breaking changes route here.
+    """
+    v = int(record.get("schema_version") or 1)
+    if v == 1:
+        # v1 → v2: add the new fields as ``None`` (legacy marker)
+        record.setdefault("source", "legacy")
+        record.setdefault("interval", None)
+        record.setdefault("regime", None)
+        record["schema_version"] = 2
+    return record
+
+
 def persist_trade_records(records: list[dict], path: str, *, dedup: bool = True) -> int:
     """Append-write trade records as JSONL (one row per line).
 
@@ -6679,6 +6712,8 @@ def persist_trade_records(records: list[dict], path: str, *, dedup: bool = True)
         @contextmanager
         def _locked_append(_p):  # type: ignore[no-redef]
             yield
+    # Audit fix A4: stamp schema version on every record before write.
+    records = [_stamp_schema_version(dict(r)) for r in records]
     with _locked_append(path):
         if dedup:
             existing_keys: set[str] = set()
@@ -6738,7 +6773,9 @@ def load_trade_records(path: str) -> list[dict]:
             if not line:
                 continue
             try:
-                records.append(json.loads(line))
+                # Audit fix A4: route through version normalizer so v1
+                # records get backfilled fields and a v2 stamp.
+                records.append(_normalize_record_by_version(json.loads(line)))
             except Exception:
                 continue
     return records
