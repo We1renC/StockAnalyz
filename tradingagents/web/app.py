@@ -4213,6 +4213,32 @@ def api_smc_crypto_score_calibration(symbol: Optional[str] = None):
         raise HTTPException(status_code=500, detail=f"calibration failed: {e}")
 
 
+@app.get("/api/smc-crypto/hyperparameter-sweep")
+def api_smc_crypto_hyperparameter_sweep(symbol: Optional[str] = None,
+                                          min_trades: int = 20,
+                                          fee_per_trade: float = 0.001):
+    """Audit fix P3-18: monthly Bayesian-lite sweep of min_score/min_rr/risk_pct.
+
+    Grid: 4 × 4 × 4 = 64 cells. Replays resolved ledger and picks the
+    knob combination with the best Sharpe-like ratio subject to
+    ``min_trades`` for statistical reliability.
+    """
+    try:
+        from learning.hyperparameter_sweep import (
+            sweep_hyperparameters, should_apply_recommendation,
+        )
+        from smc_quant import load_trade_records
+        records = load_trade_records("tmp/smc_training_ledger.jsonl")
+        if symbol:
+            records = [r for r in records if r.get("symbol") == symbol]
+        sweep = sweep_hyperparameters(records, min_trades=int(min_trades),
+                                        fee_per_trade=float(fee_per_trade))
+        recommendation = should_apply_recommendation(sweep, current={})
+        return {"sweep": sweep, "recommendation": recommendation}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"hyperparameter-sweep failed: {e}")
+
+
 @app.get("/api/smc-crypto/real-pnl-gates")
 def api_smc_crypto_real_pnl_gates(symbol: Optional[str] = None,
                                     min_total_R: float = 0.5,

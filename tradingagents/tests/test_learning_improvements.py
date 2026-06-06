@@ -191,6 +191,67 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_hyperparameter_sweep_picks_best_sharpe_cell():
+    """P3-18 sweep: when one cell clearly dominates, sweep picks it."""
+    from learning.hyperparameter_sweep import sweep_hyperparameters
+    records = []
+    # High-score winners: varied positive r → real Sharpe > 0
+    for r in (1.5, 2.0, 1.0, 1.2, 0.8, 1.7, 1.3) * 5:
+        records.append({"confluence_score": 9, "rr": 2.5, "r_multiple": r})
+    # Low-score losers: alternating big losses and small wins (mean negative)
+    for r in (-1.0, -1.2, 0.3, -0.8, -1.5, 0.2, -1.0) * 5:
+        records.append({"confluence_score": 6, "rr": 1.5, "r_multiple": r})
+    sweep = sweep_hyperparameters(records, min_trades=10)
+    assert sweep["status"] == "ok"
+    best = sweep["best"]
+    # Best should filter out the losers either via min_score or min_rr.
+    # The loser group has score=6, rr=1.5 — at least one of these must
+    # be above its respective floor in the picked cell.
+    excludes_losers = best["min_score"] >= 7 or best["min_rr"] >= 2.0
+    assert excludes_losers
+    assert best["score"]["mean"] > 0
+    assert best["score"]["sharpe"] > 0.5
+
+
+def test_hyperparameter_sweep_returns_insufficient_data():
+    """Below min_trades → no recommendation."""
+    from learning.hyperparameter_sweep import sweep_hyperparameters
+    sweep = sweep_hyperparameters([], min_trades=20)
+    assert sweep["status"] == "insufficient_data"
+    assert sweep["best"] is None
+
+
+def test_should_apply_recommendation_requires_sharpe_improvement():
+    """Conservative gate: only apply when Sharpe improves by ≥ threshold."""
+    from learning.hyperparameter_sweep import should_apply_recommendation
+    sweep_ok = {
+        "status": "ok",
+        "best": {"min_score": 8, "min_rr": 2.0, "risk_pct": 1.0,
+                  "score": {"sharpe": 0.25, "n_trades": 30}},
+    }
+    # Current Sharpe 0.22 → delta 0.03, below 0.1 threshold → not applied
+    rec = should_apply_recommendation(sweep_ok, current={"sharpe": 0.22})
+    assert rec["apply"] is False
+    assert rec["reason"] == "improvement_below_threshold"
+    # Current 0.0 → delta 0.25 → applied
+    rec2 = should_apply_recommendation(sweep_ok, current={"sharpe": 0.0})
+    assert rec2["apply"] is True
+
+
+def test_should_apply_recommendation_rejects_negative_absolute_sharpe():
+    """Even with big improvement, refuse to apply if absolute Sharpe < floor."""
+    from learning.hyperparameter_sweep import should_apply_recommendation
+    sweep = {
+        "status": "ok",
+        "best": {"min_score": 8, "min_rr": 2.0, "risk_pct": 1.0,
+                  "score": {"sharpe": 0.05, "n_trades": 30}},
+    }
+    # Improvement is 0.05 - (-1.0) = 1.05 (huge) but absolute Sharpe is 0.05 < 0.2
+    rec = should_apply_recommendation(sweep, current={"sharpe": -1.0})
+    assert rec["apply"] is False
+    assert rec["reason"] == "best_sharpe_below_absolute_floor"
+
+
 def test_build_smc_analysis_applies_mae_mfe_calibration_to_all_models():
     """P2-12+ regression: when caller passes mae_mfe_calibration into
     build_smc_analysis, every model's entry list gets calibrated *before*
