@@ -191,6 +191,34 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_file_lock_serializes_concurrent_appenders(tmp_path):
+    """A1: two threads appending under locked_append must not interleave."""
+    from learning.file_lock import locked_append
+    import threading
+    target = tmp_path / "ledger.jsonl"
+
+    def writer(tag: str):
+        for i in range(50):
+            with locked_append(str(target)):
+                # Each "logical record" spans 2 writes; without lock these
+                # would interleave between threads.
+                with open(target, "a", encoding="utf-8") as fh:
+                    fh.write(f"{tag}-{i}-start\n")
+                    fh.write(f"{tag}-{i}-end\n")
+
+    t1 = threading.Thread(target=writer, args=("A",))
+    t2 = threading.Thread(target=writer, args=("B",))
+    t1.start(); t2.start(); t1.join(); t2.join()
+
+    lines = target.read_text().splitlines()
+    # Every "start" line must be immediately followed by its "end" line.
+    for i in range(0, len(lines), 2):
+        assert lines[i].endswith("start"), f"interleaved at line {i}: {lines[i]}"
+        assert lines[i + 1].endswith("end"), f"interleaved at line {i + 1}"
+        # Same tag and same i within the pair
+        assert lines[i].split("-")[:2] == lines[i + 1].split("-")[:2]
+
+
 def test_cluster_ensemble_buckets_records_correctly():
     """P3-19: clustering by (model, symbol, interval, regime) creates
     distinct buckets."""

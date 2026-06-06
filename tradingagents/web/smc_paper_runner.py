@@ -603,16 +603,23 @@ class SmcPaperRunner:
                 "max_favorable_R": None,
                 "max_adverse_R": None,
             }
-            with open(base, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(payload, default=str, ensure_ascii=False) + "\n")
+            # Audit fix A1: lock around append to prevent interleave with
+            # reconciler / concurrent runner.
+            from learning.file_lock import locked_append
+            with locked_append(base):
+                with open(base, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(payload, default=str, ensure_ascii=False) + "\n")
         except Exception:
             pass
 
     def _journal(self, result: PaperRunResult) -> None:
         path = Path(self.config.journal_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(result.to_dict(), default=str, ensure_ascii=False) + "\n")
+        # Audit fix A1: lock around append.
+        from learning.file_lock import locked_append
+        with locked_append(str(path)):
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(result.to_dict(), default=str, ensure_ascii=False) + "\n")
         if result.trade_record:
             persist_trade_records([result.trade_record], str(path).replace(".jsonl", "_trades.jsonl"))
 

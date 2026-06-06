@@ -6670,45 +6670,55 @@ def persist_trade_records(records: list[dict], path: str, *, dedup: bool = True)
     if parent and not os.path.exists(parent):
         os.makedirs(parent, exist_ok=True)
 
-    if dedup:
-        existing_keys: set[str] = set()
+    # Audit fix A1: serialize dedup-read + append under a single
+    # exclusive lock so concurrent runners can't race the dedup window.
+    try:
+        from learning.file_lock import locked_append as _locked_append
+    except Exception:
+        from contextlib import contextmanager
+        @contextmanager
+        def _locked_append(_p):  # type: ignore[no-redef]
+            yield
+    with _locked_append(path):
+        if dedup:
+            existing_keys: set[str] = set()
+            if path.endswith(".parquet"):
+                try:
+                    import pyarrow  # noqa: F401
+                    if os.path.exists(path):
+                        for row in pd.read_parquet(path).to_dict(orient="records"):
+                            existing_keys.add(_trade_dedup_key(row))
+                except Exception:
+                    pass
+            else:
+                if os.path.exists(path):
+                    with open(path, "r", encoding="utf-8") as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                existing_keys.add(_trade_dedup_key(json.loads(line)))
+                            except Exception:
+                                continue
+            records = [r for r in records if _trade_dedup_key(r) not in existing_keys]
+            if not records:
+                return 0
+
         if path.endswith(".parquet"):
             try:
                 import pyarrow  # noqa: F401
+                existing = []
                 if os.path.exists(path):
-                    for row in pd.read_parquet(path).to_dict(orient="records"):
-                        existing_keys.add(_trade_dedup_key(row))
+                    existing = pd.read_parquet(path).to_dict(orient="records")
+                pd.DataFrame(existing + list(records)).to_parquet(path, index=False)
+                return len(records)
             except Exception:
-                pass
-        else:
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            existing_keys.add(_trade_dedup_key(json.loads(line)))
-                        except Exception:
-                            continue
-        records = [r for r in records if _trade_dedup_key(r) not in existing_keys]
-        if not records:
-            return 0
-
-    if path.endswith(".parquet"):
-        try:
-            import pyarrow  # noqa: F401
-            existing = []
-            if os.path.exists(path):
-                existing = pd.read_parquet(path).to_dict(orient="records")
-            pd.DataFrame(existing + list(records)).to_parquet(path, index=False)
-            return len(records)
-        except Exception:
-            path = path[:-len(".parquet")] + ".jsonl"
-    with open(path, "a", encoding="utf-8") as fh:
-        for r in records:
-            fh.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
-    return len(records)
+                path = path[:-len(".parquet")] + ".jsonl"
+        with open(path, "a", encoding="utf-8") as fh:
+            for r in records:
+                fh.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
+        return len(records)
 
 
 def load_trade_records(path: str) -> list[dict]:

@@ -72,10 +72,14 @@ def _read_jsonl(path: Path) -> list[dict]:
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
-    path.write_text(
-        "\n".join(json.dumps(r, default=str, ensure_ascii=False) for r in rows) + "\n",
-        encoding="utf-8",
-    )
+    # Audit fix A1: hold exclusive lock around read-modify-write rewrite
+    # so concurrent appenders can't interleave half a line.
+    from learning.file_lock import locked_rewrite
+    with locked_rewrite(str(path)):
+        path.write_text(
+            "\n".join(json.dumps(r, default=str, ensure_ascii=False) for r in rows) + "\n",
+            encoding="utf-8",
+        )
 
 
 def _is_resolved(row: dict) -> bool:
