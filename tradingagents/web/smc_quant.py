@@ -6707,6 +6707,28 @@ class LedgerPaths:
         return os.path.join(cls._dir(), "smc_missed_signals.jsonl")
 
 
+def connect_db(db_path: str, *, row_factory: bool = False):
+    """Audit fix E3: shared SQLite connect with WAL + busy_timeout.
+
+    All writer paths (training_loop / auto_workflow / orchestrator) used
+    to call ``sqlite3.connect(db_path)`` with default journal_mode=delete
+    → random "database is locked" under the concurrent async loops + UI
+    ticks. Route them through here so every connection gets WAL +
+    busy_timeout + NORMAL sync.
+    """
+    import sqlite3
+    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=5.0)
+    if row_factory:
+        conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except Exception:
+        pass
+    return conn
+
+
 def _stamp_schema_version(record: dict) -> dict:
     """Upgrade persisted records to the current schema version."""
     try:

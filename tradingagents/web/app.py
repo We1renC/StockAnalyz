@@ -131,9 +131,32 @@ SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 SSL_CONTEXT.verify_flags &= ~ssl.VERIFY_X509_STRICT
 
 # ─────────────── Database ───────────────
+# Audit fix E3: the async monitor_loop + matching-engine loop + UI tick
+# polling all hit this sqlite concurrently. Default journal_mode=delete
+# + per-request connections → random "database is locked". WAL lets
+# readers run concurrently with one writer; busy_timeout blocks briefly
+# instead of erroring; synchronous=NORMAL is durable enough for WAL.
+_DB_PRAGMAS_APPLIED = False
+
+
+def _apply_db_pragmas(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+    except Exception:
+        pass
+
+
 def get_db():
-    conn = sqlite3.connect(DB)
+    # check_same_thread=False: connections are short-lived and never
+    # shared across threads, but FastAPI's threadpool may hand a request
+    # to a different worker thread than the one that opened the loop's
+    # connection; WAL + busy_timeout make this safe.
+    conn = sqlite3.connect(DB, check_same_thread=False, timeout=5.0)
     conn.row_factory = sqlite3.Row
+    _apply_db_pragmas(conn)
     return conn
 
 def init_db():

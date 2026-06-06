@@ -372,7 +372,8 @@ def build_learning_report(
     l_adapt = layer_adaptive(df_sample)
     l7: dict = {}
     if db_path:
-        conn = sqlite3.connect(db_path); conn.row_factory = sqlite3.Row
+        from smc_quant import connect_db
+        conn = connect_db(db_path, row_factory=True)
         try:
             l7 = layer_acceptance(conn, symbol)
         finally:

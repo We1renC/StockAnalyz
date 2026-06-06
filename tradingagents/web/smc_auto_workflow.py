@@ -286,9 +286,9 @@ def run_symbol(
     # Cooldown guard
     cd = cooldown_remaining(symbol, db_path, profile) if not ignore_cooldown else None
 
-    # Phase B — pre-flight
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    # Phase B — pre-flight (E3: WAL-enabled shared connect)
+    from smc_quant import connect_db
+    conn = connect_db(db_path, row_factory=True)
     try:
         verdict = preflight(conn, symbol)
     finally:

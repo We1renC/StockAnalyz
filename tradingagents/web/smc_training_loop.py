@@ -59,6 +59,7 @@ import pandas as pd
 
 from smc_quant import (
     LedgerPaths,
+    connect_db,
     SMCConfig,
     CONFLUENCE_WEIGHTS_DEFAULT,
     CONFLUENCE_THRESHOLD_DEFAULT,
@@ -473,7 +474,7 @@ def auto_backtest_window(
     # dedup is enabled so duplicates won't accumulate.
     persist_trade_records(trade_records, ledger_path, dedup=True)
     if db_path and trade_records:
-        conn = sqlite3.connect(db_path)
+        conn = connect_db(db_path)
         conn.row_factory = sqlite3.Row
         try:
             ensure_adaptive_calibration_schema(conn)
@@ -786,7 +787,7 @@ def train_from_ledger(
     records: list[dict] = read_trade_ledger(ledger_path)
     if not records:
         if db_path:
-            conn = sqlite3.connect(db_path)
+            conn = connect_db(db_path)
             conn.row_factory = sqlite3.Row
             try:
                 ensure_adaptive_calibration_schema(conn)
@@ -814,7 +815,7 @@ def train_from_ledger(
 
     adaptive_conn: Optional[sqlite3.Connection] = None
     if db_path:
-        adaptive_conn = sqlite3.connect(db_path)
+        adaptive_conn = connect_db(db_path)
         adaptive_conn.row_factory = sqlite3.Row
         ensure_adaptive_calibration_schema(adaptive_conn)
         upsert_trade_ledger_records(
@@ -1371,7 +1372,7 @@ def run_training_cycle(
     started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     t0 = time.time()
     ledger_path = ledger_path or LedgerPaths.training_ledger()
-    conn = sqlite3.connect(db_path); conn.row_factory = sqlite3.Row
+    conn = connect_db(db_path, row_factory=True)
     backtest_summaries: list[dict] = []
     try:
         for sym in symbols:
