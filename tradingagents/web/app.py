@@ -4221,6 +4221,33 @@ def api_smc_crypto_score_calibration(symbol: Optional[str] = None):
         raise HTTPException(status_code=500, detail=f"calibration failed: {e}")
 
 
+@app.post("/api/smc-crypto/weekly-digest")
+def api_smc_crypto_weekly_digest(symbol: Optional[str] = None,
+                                   write_to_vault: bool = True):
+    """Audit fix C3: weekly Obsidian markdown digest of the learning loop.
+
+    POST so cron-friendly (idempotent rewrite of same-week file).
+    If write_to_vault=False, only returns the markdown body without
+    touching disk.
+    """
+    try:
+        from learning.weekly_digest import build_weekly_digest, write_weekly_digest
+        from learning.ledger_cache import cached_load_trade_records as load_trade_records
+        records = load_trade_records(LedgerPaths.training_ledger())
+        if symbol:
+            records = [r for r in records if r.get("symbol") == symbol]
+        import os as _os
+        if not write_to_vault:
+            return build_weekly_digest(records)
+        vault = _os.environ.get("OBSIDIAN_VAULT_PATH")
+        if not vault:
+            return {**build_weekly_digest(records), "wrote": False,
+                     "reason": "OBSIDIAN_VAULT_PATH not set"}
+        return {**write_weekly_digest(records, vault), "wrote": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"weekly-digest failed: {e}")
+
+
 @app.get("/api/smc-crypto/learning-health")
 def api_smc_crypto_learning_health(symbol: Optional[str] = None,
                                      target_sample_size: int = 30):

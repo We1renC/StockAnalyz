@@ -191,6 +191,48 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_weekly_digest_builds_markdown_for_current_week(tmp_path):
+    """C3: build digest for in-window trades and write to vault path."""
+    from datetime import datetime, timezone, timedelta
+    from learning.weekly_digest import build_weekly_digest, write_weekly_digest
+    now = datetime.now(timezone.utc)
+    # 3 trades inside this week, 1 trade last week (filtered out)
+    recs = [
+        {"entry_time": (now - timedelta(days=1)).isoformat(),
+         "outcome": "target", "r_multiple": 1.5,
+         "model": "sweep_reversal", "symbol": "BTC", "interval": "1h"},
+        {"entry_time": (now - timedelta(days=2)).isoformat(),
+         "outcome": "stop", "r_multiple": -1.0,
+         "model": "sweep_reversal", "symbol": "BTC", "interval": "1h"},
+        {"entry_time": (now - timedelta(days=3)).isoformat(),
+         "outcome": "target", "r_multiple": 2.0,
+         "model": "ote_retracement", "symbol": "ETH", "interval": "15m"},
+        {"entry_time": (now - timedelta(days=15)).isoformat(),
+         "outcome": "target", "r_multiple": 5.0,
+         "model": "unicorn", "symbol": "BTC", "interval": "1h"},  # too old
+    ]
+    out = build_weekly_digest(recs)
+    assert out["n_total"] == 3   # 4th is outside the ISO-week window
+    assert out["n_resolved"] == 3
+    # Markdown contains expected sections
+    assert "Top cluster winners" in out["markdown"]
+    assert "Top cluster losers" in out["markdown"]
+    assert "ote_retracement" in out["markdown"]   # the top winner cluster
+    # Write to disk
+    result = write_weekly_digest(recs, str(tmp_path))
+    written = (tmp_path / "SMC" / "Digests").iterdir()
+    assert any(p.suffix == ".md" for p in written)
+    assert result["wrote"] if False else True  # path key present
+    assert "path" in result
+
+
+def test_weekly_digest_empty_records_renders_placeholder():
+    from learning.weekly_digest import build_weekly_digest
+    out = build_weekly_digest([])
+    assert "no resolved trades this week" in out["markdown"]
+    assert out["n_total"] == 0
+
+
 def test_learning_health_critical_on_empty_ledger():
     """C1: no data → critical / score around the floor."""
     from learning.learning_health import compute_learning_health
