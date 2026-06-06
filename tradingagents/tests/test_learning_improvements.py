@@ -698,7 +698,7 @@ def test_ledger_paths_centralized_and_env_overridable(monkeypatch):
     assert LedgerPaths.paper_trades() == "/tmp/test-ledger/smc_paper_journal_trades.jsonl"
     assert LedgerPaths.missed_signals() == "/tmp/test-ledger/smc_missed_signals.jsonl"
     monkeypatch.delenv("SMC_LEDGER_DIR")
-    assert LedgerPaths.training_ledger() == "tmp/smc_training_ledger.jsonl"
+    assert LedgerPaths.training_ledger().endswith("/tradingagents/web/tmp/smc_training_ledger.jsonl")
 
 
 def test_auto_apply_sweep_writes_to_profile_when_improvement_clears(tmp_path):
@@ -949,7 +949,8 @@ def test_recent_outcomes_for_cooldown_uses_shared_cached_reader(monkeypatch):
     monkeypatch.setattr("smc_quant.read_trade_ledger", fake_load)
     out = aw._recent_outcomes_for_cooldown("db.sqlite", "BTC-USDT", n=3)
     assert out == []
-    assert seen == [("tmp/smc_training_ledger.jsonl", "BTC-USDT", True, False)]
+    assert seen and seen[0][0].endswith("/tradingagents/web/tmp/smc_training_ledger.jsonl")
+    assert seen[0][1:] == ("BTC-USDT", True, False)
 
 
 def test_train_from_ledger_uses_shared_cached_reader(monkeypatch):

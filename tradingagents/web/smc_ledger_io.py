@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Optional
 
 import pandas as pd
+from pathlib import Path
 
 
 # Audit fix A4: schema version stamped on every trade record so future
@@ -45,13 +46,18 @@ def _trade_dedup_key(rec: dict) -> str:
 class LedgerPaths:
     """Single source of truth for ledger jsonl paths.
 
-    Override via env var ``SMC_LEDGER_DIR`` (defaults to ``tmp/``).
+    Override via env var ``SMC_LEDGER_DIR``. Without override, resolve to the
+    module-local ``web/tmp`` so CLI calls from the repo root and the running
+    web app both hit the same ledger directory.
     """
 
     @staticmethod
     def _dir() -> str:
         import os
-        return os.environ.get("SMC_LEDGER_DIR", "tmp")
+        env_dir = os.environ.get("SMC_LEDGER_DIR")
+        if env_dir:
+            return env_dir
+        return str((Path(__file__).resolve().parent / "tmp").resolve())
 
     @classmethod
     def training_ledger(cls) -> str:
