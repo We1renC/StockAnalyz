@@ -18,12 +18,23 @@ else
   echo "    如需重置請刪除後重跑：rm $DIR/portfolio.db"
 fi
 
+# ── SMC 學習子系統 runtime 設定（詳見 web/SMC_OPS.md）──────────────
+# 用 := 預設，但尊重外部已設的值（export VAR=... ./start.sh 可覆寫）。
+: "${SMC_AUTOLEARN_ENABLED:=1}"          # server-side headless 學習（預設開）
+export SMC_AUTOLEARN_ENABLED
+# 以下為選用旋鈕；要啟用就取消註解或在呼叫前 export：
+# export SMC_AUTOLEARN_SYMBOLS="BTC-USDT,ETH-USDT,SOL-USDT"
+# export SMC_MAINTENANCE_INTERVAL=21600   # 自動維護週期（秒，預設 6h）
+# export LOG_LEVEL=INFO
+# export DASHBOARD_API_TOKEN=...          # 設定後 API 需帶 X-API-Token（敏感，勿入版控）
+
 # 啟動服務
 echo ""
 echo "🚀 啟動 TradingAgents Dashboard"
 echo "─────────────────────────────────────"
 echo "  網址：http://localhost:6500"
 echo "  停止：Ctrl+C"
+echo "  自動學習 (SMC_AUTOLEARN_ENABLED)：$SMC_AUTOLEARN_ENABLED"
 echo "─────────────────────────────────────"
 echo ""
 
