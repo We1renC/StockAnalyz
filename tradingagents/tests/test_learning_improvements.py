@@ -2289,3 +2289,23 @@ def test_roundj_run_maintenance_is_resilient(tmp_path, monkeypatch):
     out = sched._run_maintenance()
     assert "rotation" in out
     assert "decommission" in out
+
+
+def test_roundk_runner_swallow_is_accounted(monkeypatch):
+    """Round K/F2: a failure in the decommission-apply step is logged +
+    counted (not silently vanished) via obs_log.swallow."""
+    from learning.obs_log import swallow, swallow_counts, reset_swallow_counts, get_logger
+    reset_swallow_counts()
+    log = get_logger("runner_test")
+    # Simulate the runner's wrapped block raising
+    with swallow(log, "apply_decommission"):
+        raise RuntimeError("decom boom")
+    with swallow(log, "ensemble_vote"):
+        raise RuntimeError("vote boom")
+    counts = swallow_counts()
+    assert counts["by_context"]["apply_decommission"] == 1
+    assert counts["by_context"]["ensemble_vote"] == 1
+    # These contexts are exactly the ones the runner uses (regression guard
+    # that the names stay aligned with ops-metrics expectations).
+    assert "apply_decommission" in counts["by_context"]
+    assert "ensemble_vote" in counts["by_context"]

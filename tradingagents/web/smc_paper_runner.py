@@ -49,6 +49,21 @@ from smc_quant import (
 
 _logger = logging.getLogger(__name__)
 
+# Round K (F2): structured swallow accounting for the learning-integration
+# steps so "learning didn't affect this decision" is observable, not silent.
+try:
+    from learning.obs_log import get_logger as _get_obs_logger, swallow as _obs_swallow
+    _obs_log = _get_obs_logger(__name__)
+except Exception:  # pragma: no cover - obs_log always present
+    from contextlib import contextmanager as _cm
+    _obs_log = None
+    @_cm
+    def _obs_swallow(_logger, _ctx, **_kw):
+        try:
+            yield
+        except Exception:
+            pass
+
 
 # ---------------------------------------------------------------------------
 # Crypto API client (HMAC-SHA256 signing aligned with web/crypto_api/auth.py)
@@ -491,7 +506,7 @@ class SmcPaperRunner:
 
         # Audit fix D3: apply per-(model, symbol, interval) decommission
         # state so dead detectors don't even compete for the entry slot.
-        try:
+        with _obs_swallow(_obs_log, "apply_decommission"):
             from learning.model_decommission import (
                 apply_decommission_to_analysis, load_state,
             )
@@ -506,18 +521,14 @@ class SmcPaperRunner:
                     analysis, state,
                     symbol=cfg.symbol, interval=cfg.interval,
                 )
-        except Exception:
-            pass
 
         entry = self._pick_best_entry(analysis)
         # Audit fix D4: cross-model ensemble vote — if both sides have
         # qualified candidates, scale size down by confidence.
         if entry is not None:
-            try:
+            with _obs_swallow(_obs_log, "ensemble_vote"):
                 from learning.ensemble_vote import annotate_picked_entry_with_vote
                 annotate_picked_entry_with_vote(entry, analysis)
-            except Exception:
-                pass
         if entry is None:
             result.action = "skipped:no_qualified_entry"
             # P2-15 audit fix: record the BEST candidate (even if below threshold)
