@@ -309,20 +309,26 @@ def _decide_promotion(stats: dict, validation: dict, proposal: dict) -> dict:
     decay = (validation or {}).get("edge_decay") or {}
     dsr = (stats or {}).get("deflated_sharpe") or {}
     closed = (proposal or {}).get("closed_loop") or {}
+    expectancy = (stats or {}).get("expectancy") or {}
 
     walk_pass = bool(wf.get("passes"))
     pbo_ok = (pbo.get("pbo") is None) or (pbo.get("pbo", 1) < 0.5)
     decay_ok = not bool(decay.get("review_required"))
     dsr_ok = bool(dsr.get("passes")) or dsr.get("deflated") is None
     closed_adopt = bool((closed.get("verdict") or {}).get("adopt"))
+    quality_ok = (
+        float(expectancy.get("expected_R") or 0.0) >= 0.05
+        and float(expectancy.get("win_rate") or 0.0) >= 0.40
+    )
 
     if not walk_pass: reasons.append("walk_forward_failed")
     if not pbo_ok:    reasons.append(f"pbo_high:{pbo.get('pbo')}")
     if not decay_ok:  reasons.append("edge_decay_detected")
     if not dsr_ok:    reasons.append("deflated_sharpe_below_threshold")
     if not closed_adopt: reasons.append("closed_loop_rejected")
+    if not quality_ok: reasons.append("quality_floor_not_met")
 
-    can_promote = walk_pass and pbo_ok and decay_ok and dsr_ok and closed_adopt
+    can_promote = walk_pass and pbo_ok and decay_ok and dsr_ok and closed_adopt and quality_ok
     return {
         "can_promote": can_promote,
         "reasons": reasons,
@@ -332,6 +338,7 @@ def _decide_promotion(stats: dict, validation: dict, proposal: dict) -> dict:
             "edge_decay_ok": decay_ok,
             "deflated_sharpe_ok": dsr_ok,
             "closed_loop_adopt": closed_adopt,
+            "quality_ok": quality_ok,
         },
     }
 

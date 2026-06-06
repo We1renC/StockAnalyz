@@ -4367,6 +4367,7 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
                                           db_path=db, symbol=symbol)
         crit = report.promotion_decision.get("criteria", {})
         passed_gates = sum(1 for v in crit.values() if v)
+        total_gates = len(crit)
 
         last_action = None
         live_order = None
@@ -4381,7 +4382,7 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
                 next_action = f"累積樣本中 {report.sample_size}/30"
             else:
                 state = "VALIDATING"
-                next_action = f"通過 {passed_gates}/5 驗證閘"
+                next_action = f"通過 {passed_gates}/{total_gates} 驗證閘"
         else:
             # All 5 gates green → run actual auto-workflow
             wf = run_symbol(api, symbol, db_path=db, journal_dir="tmp/smc_auto")
@@ -4410,7 +4411,7 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
                 "ledger_size": report.sample_size,
                 "ledger_target": 30,
                 "validation_passed": passed_gates,
-                "validation_total": 5,
+                "validation_total": total_gates,
                 "validation_criteria": crit,
                 "validation_blockers": report.promotion_decision.get("reasons", []),
                 "learning_indicator": report.learning_indicator,
@@ -9037,6 +9038,7 @@ tags: [smc, learning, audit]
 | edge_decay_ok | {"✅" if promo.get('criteria',{}).get('edge_decay_ok') else "❌"} |
 | deflated_sharpe_ok | {"✅" if promo.get('criteria',{}).get('deflated_sharpe_ok') else "❌"} |
 | closed_loop_adopt | {"✅" if promo.get('criteria',{}).get('closed_loop_adopt') else "❌"} |
+| quality_ok | {"✅" if promo.get('criteria',{}).get('quality_ok') else "❌"} |
 
 ## 阻擋原因
 

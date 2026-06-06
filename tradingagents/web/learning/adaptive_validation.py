@@ -173,6 +173,27 @@ def severity_calibration(new_score: float, old_score: float) -> float:
     return float(np.clip((old_score - new_score) / denom, 0.0, 1.0))
 
 
+def severity_quality(
+    overall_expectancy: float,
+    recent_expectancy: float,
+    overall_win_rate: float,
+    recent_win_rate: float,
+    min_expectancy: float = 0.05,
+    min_overall_win_rate: float = 0.40,
+    min_recent_win_rate: float = 0.35,
+) -> float:
+    deficits = []
+    if overall_expectancy < min_expectancy:
+        deficits.append((min_expectancy - overall_expectancy) / max(min_expectancy, 1e-6))
+    if recent_expectancy < min_expectancy:
+        deficits.append((min_expectancy - recent_expectancy) / max(min_expectancy, 1e-6))
+    if overall_win_rate < min_overall_win_rate:
+        deficits.append((min_overall_win_rate - overall_win_rate) / max(min_overall_win_rate, 1e-6))
+    if recent_win_rate < min_recent_win_rate:
+        deficits.append((min_recent_win_rate - recent_win_rate) / max(min_recent_win_rate, 1e-6))
+    return float(np.clip(max(deficits) if deficits else 0.0, 0.0, 1.0))
+
+
 def build_gate_results(
     *,
     walk_forward_pass_ratio: float,
@@ -181,8 +202,14 @@ def build_gate_results(
     pbo_threshold: float = 0.50,
     dsr_probability: float,
     dsr_threshold: float = 0.95,
+    overall_expectancy: float = 0.0,
     recent_expectancy: float,
     historical_expectancy: float,
+    overall_win_rate: float = 1.0,
+    recent_win_rate: float = 1.0,
+    min_expectancy: float = 0.05,
+    min_overall_win_rate: float = 0.40,
+    min_recent_win_rate: float = 0.35,
     edge_decay_floor_ratio: float = 0.50,
     calibration_new_score: float,
     calibration_old_score: float,
@@ -216,12 +243,27 @@ def build_gate_results(
     calib_sev = severity_calibration(
         float(calibration_new_score), float(calibration_old_score),
     )
+    quality_sev = severity_quality(
+        float(overall_expectancy),
+        float(recent_expectancy),
+        float(overall_win_rate),
+        float(recent_win_rate),
+        float(min_expectancy),
+        float(min_overall_win_rate),
+        float(min_recent_win_rate),
+    )
 
     wf_passed = walk_forward_pass_ratio >= walk_forward_threshold
     pbo_passed = float(pbo) <= float(pbo_threshold)
     dsr_passed = float(dsr_probability) >= float(dsr_threshold)
     decay_passed = decay_sev == 0.0
     calib_passed = float(calibration_new_score) > float(calibration_old_score)
+    quality_passed = (
+        float(overall_expectancy) >= float(min_expectancy)
+        and float(recent_expectancy) >= float(min_expectancy)
+        and float(overall_win_rate) >= float(min_overall_win_rate)
+        and float(recent_win_rate) >= float(min_recent_win_rate)
+    )
 
     out = {
         "walk_forward": GateResult(
@@ -256,6 +298,13 @@ def build_gate_results(
             threshold=float(calibration_threshold),
             severity=calib_sev, fatal=False,
             reason="calibration_regression" if not calib_passed else "",
+        ),
+        "quality": GateResult(
+            name="quality", passed=quality_passed,
+            metric=float(recent_win_rate),
+            threshold=float(min_recent_win_rate),
+            severity=quality_sev, fatal=False,
+            reason="quality_below_absolute_floor" if not quality_passed else "",
         ),
     }
     result = {key: value.to_dict() for key, value in out.items()}

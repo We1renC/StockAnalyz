@@ -230,12 +230,18 @@ def test_train_from_ledger_applies_strategy_patch_when_adaptive_state_ready(tmp_
                 "dsr": {"pass": True, "severity": 0.0, "fatal": False},
                 "edge_decay": {"pass": True, "severity": 0.0, "fatal": False},
                 "closed_loop_calibration": {"pass": True, "severity": 0.0, "fatal": False},
+                "quality": {"pass": True, "severity": 0.0, "fatal": False},
             },
             "validation": {"state_hint": "READY", "risk_multiplier": 1.0, "entropy": 0.0, "amplitude": 0.0},
             "pbo": {"pbo": 0.1},
             "dsr": {"threshold_sharpe": 0.5, "p_value_proxy": 0.01, "passes": True},
             "sharpe": {"sharpe": 2.0},
             "edge_decay": {"status": "stable"},
+            "overall_expectancy": 0.7,
+            "historical_expectancy": 0.8,
+            "recent_expectancy": 0.6,
+            "overall_win_rate": 0.58,
+            "recent_win_rate": 0.52,
             "feature_denoising": {"lambda_plus": 1.8},
             "weighted_lr": {"diagnostics": {"accuracy": 0.7, "log_loss": 0.4}},
             "fm_challenger": {"trained": True, "diagnostics": {"accuracy": 0.75, "log_loss": 0.35}},
@@ -268,6 +274,34 @@ def test_train_from_ledger_applies_strategy_patch_when_adaptive_state_ready(tmp_
     assert strategy_patch["applied"] == 1
     assert any(row["event_type"] == "config_patch_applied" for row in audit_rows)
     assert updated_yaml["data"]["confluence"]["weights"]["htf_bias_aligned"] > 2
+
+
+def test_train_from_ledger_clips_extreme_r_multiples_for_learning_only(tmp_path):
+    ledger_path = tmp_path / "ledger.jsonl"
+    strategy_yaml = tmp_path / "strategy.yaml"
+    db_path = tmp_path / "adaptive.db"
+    _write_strategy_yaml(strategy_yaml)
+
+    records = []
+    for i in range(30):
+        records.append(_sample_record(i, factor_on=True, r_multiple=(25.0 if i == 0 else 2.0)))
+    for i in range(30, 60):
+        records.append(_sample_record(i, factor_on=False, r_multiple=-1.0))
+    ledger_path.write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in records) + "\n",
+        encoding="utf-8",
+    )
+
+    result = train_from_ledger(
+        ledger_path=str(ledger_path),
+        strategy_yaml_path=str(strategy_yaml),
+        db_path=str(db_path),
+        symbol="BTC-USDT",
+    )
+
+    assert result.adaptive_state["learning_r_clip"]["clipped_count"] >= 1
+    assert result.adaptive_state["learning_r_clip"]["max_abs_r_cap"] == 10.0
+    assert any("learning R clipped" in note for note in result.notes)
 
 
 def test_train_from_ledger_respects_locked_kill_switch(tmp_path):

@@ -122,6 +122,7 @@ _FM_OOS_MIN_FOLDS = 3
 _FM_OOS_MIN_TRAIN = 16            # need ≥16 rows in each train fold for FM to be meaningful
 _FM_OOS_MIN_TEST = 4              # each test fold must have ≥4 rows
 _FM_OOS_ACC_MARGIN = 0.02         # FM must beat LR by ≥2pp OOS to be adopted
+_LEARNING_R_MULTIPLE_CAP = 10.0
 
 
 def _emit_edge_decay_trail(
@@ -607,6 +608,42 @@ class TrainingResult:
     notes: list[str] = field(default_factory=list)
 
 
+def _sanitize_records_for_learning(
+    records: list[dict],
+    *,
+    max_abs_r: float = _LEARNING_R_MULTIPLE_CAP,
+) -> tuple[list[dict], dict]:
+    """Return a caller-owned learning set with clipped R tails."""
+    sanitized: list[dict] = []
+    clipped = 0
+    max_seen = 0.0
+    for record in records or []:
+        item = dict(record)
+        rm = item.get("r_multiple")
+        try:
+            raw = float(rm)
+        except (TypeError, ValueError):
+            sanitized.append(item)
+            continue
+        if not math.isfinite(raw):
+            sanitized.append(item)
+            continue
+        max_seen = max(max_seen, abs(raw))
+        clipped_rm = float(np.clip(raw, -float(max_abs_r), float(max_abs_r)))
+        if abs(clipped_rm - raw) > 1e-9:
+            clipped += 1
+            item["r_multiple_raw"] = raw
+        item["r_multiple"] = clipped_rm
+        if item.get("pnl_R") is not None:
+            item["pnl_R"] = clipped_rm
+        sanitized.append(item)
+    return sanitized, {
+        "max_abs_r_cap": float(max_abs_r),
+        "clipped_count": int(clipped),
+        "max_abs_r_seen": round(float(max_seen), 4),
+    }
+
+
 def _adaptive_metrics_from_records(records: list[dict], calib: dict) -> dict:
     frame = pd.DataFrame(records)
     fatal_reasons: list[str] = []
@@ -620,8 +657,11 @@ def _adaptive_metrics_from_records(records: list[dict], calib: dict) -> dict:
                 walk_forward_pass_ratio=0.0,
                 pbo=1.0,
                 dsr_probability=0.0,
+                overall_expectancy=-1.0,
                 recent_expectancy=-1.0,
                 historical_expectancy=1.0,
+                overall_win_rate=0.0,
+                recent_win_rate=0.0,
                 calibration_new_score=0.0,
                 calibration_old_score=1.0,
                 fatal_reasons=fatal_reasons,
@@ -681,8 +721,14 @@ def _adaptive_metrics_from_records(records: list[dict], calib: dict) -> dict:
     else:
         historical = records
         recent = records
-    historical_expectancy = float(compute_expectancy(historical).get("expected_R") or 0.0)
-    recent_expectancy = float(compute_expectancy(recent).get("expected_R") or 0.0)
+    overall_stats = compute_expectancy(records)
+    historical_stats = compute_expectancy(historical)
+    recent_stats = compute_expectancy(recent)
+    overall_expectancy = float(overall_stats.get("expected_R") or 0.0)
+    historical_expectancy = float(historical_stats.get("expected_R") or 0.0)
+    recent_expectancy = float(recent_stats.get("expected_R") or 0.0)
+    overall_win_rate = float(overall_stats.get("win_rate") or 0.0)
+    recent_win_rate = float(recent_stats.get("win_rate") or 0.0)
     decay = edge_decay_check(historical, recent, min_live_samples=min(10, max(1, len(recent))))
     calibration_new = float(np.mean(oos_r)) if oos_r else 0.0
     calibration_old = float(np.mean(in_sample_r)) if in_sample_r else max(calibration_new, 1e-6)
@@ -691,8 +737,11 @@ def _adaptive_metrics_from_records(records: list[dict], calib: dict) -> dict:
         walk_forward_pass_ratio=wf_pass_ratio,
         pbo=pbo_value,
         dsr_probability=dsr_probability,
+        overall_expectancy=overall_expectancy,
         recent_expectancy=recent_expectancy,
         historical_expectancy=historical_expectancy,
+        overall_win_rate=overall_win_rate,
+        recent_win_rate=recent_win_rate,
         calibration_new_score=calibration_new,
         calibration_old_score=calibration_old,
         fatal_reasons=fatal_reasons,
@@ -757,6 +806,11 @@ def _adaptive_metrics_from_records(records: list[dict], calib: dict) -> dict:
         "dsr": dsr,
         "sharpe": sr,
         "edge_decay": decay,
+        "overall_expectancy": round(overall_expectancy, 4),
+        "historical_expectancy": round(historical_expectancy, 4),
+        "recent_expectancy": round(recent_expectancy, 4),
+        "overall_win_rate": round(overall_win_rate, 4),
+        "recent_win_rate": round(recent_win_rate, 4),
         "feature_denoising": feature_diagnostics,
         "weighted_lr": model_baseline,
         "fm_challenger": fm_challenger,
@@ -784,8 +838,8 @@ def train_from_ledger(
     config_snapshot = strategy_config_snapshot(strategy_yaml_path)
 
     ledger_path = ledger_path or LedgerPaths.training_ledger()
-    records: list[dict] = read_trade_ledger(ledger_path)
-    if not records:
+    raw_records: list[dict] = read_trade_ledger(ledger_path)
+    if not raw_records:
         if db_path:
             conn = connect_db(db_path)
             conn.row_factory = sqlite3.Row
@@ -813,6 +867,7 @@ def train_from_ledger(
             notes=["ledger empty — run auto_backtest_window first"],
         )
 
+    records, learning_clip = _sanitize_records_for_learning(raw_records)
     adaptive_conn: Optional[sqlite3.Connection] = None
     if db_path:
         adaptive_conn = connect_db(db_path)
@@ -820,7 +875,7 @@ def train_from_ledger(
         ensure_adaptive_calibration_schema(adaptive_conn)
         upsert_trade_ledger_records(
             adaptive_conn,
-            records,
+            raw_records,
             config_hash=config_snapshot["hash"],
             model_version=model_version,
             source="training_ledger",
@@ -841,7 +896,7 @@ def train_from_ledger(
             return TrainingResult(
                 started_at=started_at,
                 elapsed_seconds=round(time.time() - t0, 3),
-                sample_size=len(records),
+                sample_size=len(raw_records),
                 verdict={"adopt": False, "reason": "kill_switch_locked"},
                 weights_before=weights_before,
                 weights_after=weights_before,
@@ -865,6 +920,11 @@ def train_from_ledger(
         "current_sr": adaptive_metrics["sharpe"].get("sharpe"),
         "required_sr_for_dsr": adaptive_metrics["dsr"].get("threshold_sharpe"),
         "pbo": adaptive_metrics["pbo"].get("pbo"),
+        "overall_win_rate": adaptive_metrics.get("overall_win_rate"),
+        "recent_win_rate": adaptive_metrics.get("recent_win_rate"),
+        "overall_expectancy": adaptive_metrics.get("overall_expectancy"),
+        "recent_expectancy": adaptive_metrics.get("recent_expectancy"),
+        "learning_r_clip": learning_clip,
     }
     probe_plan: dict = {}
     adaptive_patch_key: Optional[str] = None
@@ -1043,6 +1103,7 @@ def train_from_ledger(
                 "probe_plan": probe_plan,
                 "weighted_lr": weighted_lr_diag,
                 "fm_challenger": fm_diag,
+                "learning_r_clip": learning_clip,
             },
         )
         if abs(dynamic_threshold - current_threshold) > 1e-9:
@@ -1215,13 +1276,19 @@ def train_from_ledger(
             )
             adaptive_conn.commit()
 
+    if learning_clip.get("clipped_count"):
+        notes.append(
+            f"learning R clipped: {learning_clip['clipped_count']} trade(s) capped at "
+            f"+/-{learning_clip['max_abs_r_cap']}R (max seen {learning_clip['max_abs_r_seen']}R)"
+        )
+
     if adaptive_conn is not None:
         adaptive_conn.close()
 
     return TrainingResult(
         started_at=started_at,
         elapsed_seconds=round(time.time() - t0, 3),
-        sample_size=len(records),
+        sample_size=len(raw_records),
         verdict=verdict,
         weights_before=weights_before, weights_after=weights_after,
         weights_changed=changed,

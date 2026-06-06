@@ -55,8 +55,11 @@ def test_validation_entropy_sizing_yields_probe_and_ready_states():
         walk_forward_pass_ratio=0.75,
         pbo=0.55,
         dsr_probability=0.70,
+        overall_expectancy=0.20,
         recent_expectancy=0.15,
         historical_expectancy=0.50,
+        overall_win_rate=0.45,
+        recent_win_rate=0.38,
         calibration_new_score=0.20,
         calibration_old_score=0.30,
     )
@@ -68,8 +71,11 @@ def test_validation_entropy_sizing_yields_probe_and_ready_states():
         walk_forward_pass_ratio=1.0,
         pbo=0.10,
         dsr_probability=0.99,
+        overall_expectancy=0.70,
         recent_expectancy=0.60,
         historical_expectancy=0.80,
+        overall_win_rate=0.58,
+        recent_win_rate=0.52,
         calibration_new_score=0.50,
         calibration_old_score=0.20,
     )
@@ -83,8 +89,11 @@ def test_validation_entropy_sizing_locks_on_fatal_gate():
         walk_forward_pass_ratio=0.0,
         pbo=1.0,
         dsr_probability=0.0,
+        overall_expectancy=-1.0,
         recent_expectancy=-1.0,
         historical_expectancy=1.0,
+        overall_win_rate=0.1,
+        recent_win_rate=0.0,
         calibration_new_score=0.0,
         calibration_old_score=1.0,
         fatal_reasons=["data_gap"],
@@ -92,6 +101,24 @@ def test_validation_entropy_sizing_locks_on_fatal_gate():
     locked = validation_entropy_sizing(gates, n_eff=100.0)
     assert locked["state_hint"] == "LOCKED"
     assert locked["risk_multiplier"] == 0.0
+
+
+def test_build_gate_results_blocks_ready_when_quality_floor_not_met():
+    gates = build_gate_results(
+        walk_forward_pass_ratio=1.0,
+        pbo=0.10,
+        dsr_probability=0.99,
+        overall_expectancy=0.08,
+        recent_expectancy=0.07,
+        historical_expectancy=0.10,
+        overall_win_rate=0.32,
+        recent_win_rate=0.28,
+        calibration_new_score=0.50,
+        calibration_old_score=0.20,
+    )
+    assert gates["quality"]["pass"] is False
+    out = validation_entropy_sizing(gates, n_eff=90.0)
+    assert out["state_hint"] != "READY"
 
 
 def test_probe_controller_caps_notional_and_enforces_daily_limits(tmp_path):
