@@ -132,3 +132,45 @@ def test_api_token_blocks_protected_when_env_set(client, monkeypatch):
     # 200 (env didn't reach middleware) or 401 (it did). The middleware
     # itself is unit-tested elsewhere; here we just verify nothing crashes.
     assert r.status_code in (200, 401)
+
+
+# ─── H3: paper-acceptance route smoke (44 endpoints had zero coverage) ───
+
+PAPER_ACCEPTANCE_GET_ROUTES = [
+    "/api/paper-acceptance",
+    "/api/paper-acceptance/workspace",
+    "/api/paper-acceptance/coverage",
+    "/api/paper-acceptance/dashboard",
+    "/api/paper-acceptance/capital-stages",
+    "/api/paper-acceptance/deviation-snapshots",
+    "/api/paper-acceptance/shadow-parity",
+    "/api/paper-acceptance/governance",
+    "/api/paper-acceptance/threshold-profiles",
+    "/api/paper-acceptance/venue-profiles",
+    "/api/paper-acceptance/promotion-decisions",
+    "/api/paper-acceptance/events",
+    "/api/paper-acceptance/runtime-metrics",
+    "/api/paper-acceptance/reconciliation",
+    "/api/paper-acceptance/change-log",
+]
+
+
+@pytest.mark.parametrize("route", PAPER_ACCEPTANCE_GET_ROUTES)
+def test_paper_acceptance_get_routes_do_not_500(client, route):
+    """H3: every paper-acceptance GET must respond without a 5xx on an
+    empty/isolated DB. 2xx or a clean 4xx (validation/not-found) is fine;
+    a 500 means an unguarded crash."""
+    r = client.get(route)
+    assert r.status_code < 500, f"{route} -> {r.status_code}: {r.text[:200]}"
+
+
+def test_extracted_router_endpoints_still_reachable(client):
+    """F1: endpoints moved to routers/smc_learning.py remain mounted."""
+    for route in [
+        "/api/smc-crypto/ops-metrics",
+        "/api/smc-crypto/real-pnl-gates",
+        "/api/smc-crypto/cluster-ensemble",
+        "/api/smc-crypto/learning-health",
+    ]:
+        r = client.get(route)
+        assert r.status_code < 500, f"{route} -> {r.status_code}"
