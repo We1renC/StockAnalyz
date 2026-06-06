@@ -2830,6 +2830,32 @@ def merge_crypto_factors(
     return merged_factors, merged_weights
 
 
+def _merge_detector_extras(
+    weights: Optional[dict[str, int]],
+    extras: dict[str, int],
+) -> dict[str, int]:
+    """Audit fix P0-3+ — extras are FALLBACKS, not overrides.
+
+    Detectors historically did ``{**(weights or {}), **extras}`` which
+    silently clobbered learned overrides for ``killzone_premium`` /
+    ``pd_extreme`` / ``nearest_poi_within`` (the three detector-internal
+    factors) every time strategy.yaml tried to retune them.
+
+    Correct precedence (lowest → highest):
+      extras < CONFLUENCE_WEIGHTS_DEFAULT (learned) < caller weights
+    """
+    out: dict[str, int] = dict(extras)
+    # Learned default (strategy.yaml) overrides extras for keys extras owns.
+    for k in extras:
+        if k in CONFLUENCE_WEIGHTS_DEFAULT:
+            out[k] = int(CONFLUENCE_WEIGHTS_DEFAULT[k])
+    # Caller-supplied weights win for any key (last word).
+    if weights:
+        for k, v in weights.items():
+            out[k] = int(v)
+    return out
+
+
 def score_confluence(
     factors: dict[str, bool],
     weights: Optional[dict[str, int]] = None,
@@ -3003,15 +3029,15 @@ def detect_sweep_reversal_entries(
         }
         # §3.11 + §3.9 + §3.6 + §3.4 + §3.10 — extreme displacement / killzone /
         # PD extreme / BPR / IFVG / nearest-POI (+1 each).
-        local_weights = {
-            **(weights or {}),
+        # Audit fix P0-3+: extras are fallbacks; learned/explicit weights win.
+        local_weights = _merge_detector_extras(weights, {
             "displacement_extreme": 1,
             "killzone_premium": 1,
             "pd_extreme": 1,
             "bpr_overlap": 1,
             "ifvg_overlap": 1,
             "nearest_poi_within": 1,
-        }
+        })
         scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
             {
@@ -3150,7 +3176,10 @@ def detect_continuation_entries(
                 nearest_poi_proximity(pd_array_matrix or {}, direction=direction).get("has_poi_within")
             ),
         }
-        local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1, "nearest_poi_within": 1}
+        # Audit fix P0-3+: extras are fallbacks; learned/explicit weights win.
+        local_weights = _merge_detector_extras(weights, {
+            "killzone_premium": 1, "pd_extreme": 1, "nearest_poi_within": 1,
+        })
         scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
             {
@@ -3282,7 +3311,10 @@ def detect_ote_entries(
             nearest_poi_proximity(pd_array_matrix or {}, direction=direction).get("has_poi_within")
         ),
     }
-    local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1, "nearest_poi_within": 1}
+    # Audit fix P0-3+: extras are fallbacks; learned/explicit weights win.
+    local_weights = _merge_detector_extras(weights, {
+        "killzone_premium": 1, "pd_extreme": 1, "nearest_poi_within": 1,
+    })
     scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
     out.append(
         {
@@ -3392,7 +3424,10 @@ def detect_unicorn_entries(
                     nearest_poi_proximity(pd_array_matrix or {}, direction=direction).get("has_poi_within")
                 ),
             }
-            local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1, "nearest_poi_within": 1}
+            # Audit fix P0-3+: extras are fallbacks; learned/explicit weights win.
+            local_weights = _merge_detector_extras(weights, {
+                "killzone_premium": 1, "pd_extreme": 1, "nearest_poi_within": 1,
+            })
             scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
             out.append(
                 {
@@ -3540,7 +3575,10 @@ def detect_silver_bullet_entries(
                 nearest_poi_proximity(pd_array_matrix or {}, direction=direction).get("has_poi_within")
             ),
         }
-        local_weights = {**(weights or {}), "killzone_premium": 1, "pd_extreme": 1, "nearest_poi_within": 1}
+        # Audit fix P0-3+: extras are fallbacks; learned/explicit weights win.
+        local_weights = _merge_detector_extras(weights, {
+            "killzone_premium": 1, "pd_extreme": 1, "nearest_poi_within": 1,
+        })
         scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
             {
@@ -3692,13 +3730,13 @@ def detect_power_of_three_entries(
         }
         # §3.11 + §3.9 + §3.6 + §3.10 — credit extreme displacement / killzone /
         # PD extreme / nearest POI (+1 each).
-        local_weights = {
-            **(weights or {}),
+        # Audit fix P0-3+: extras are fallbacks; learned/explicit weights win.
+        local_weights = _merge_detector_extras(weights, {
             "displacement_extreme": 1,
             "killzone_premium": 1,
             "nearest_poi_within": 1,
             "pd_extreme": 1,
-        }
+        })
         scoring = score_confluence(factors, weights=local_weights, threshold=threshold)
         out.append(
             {

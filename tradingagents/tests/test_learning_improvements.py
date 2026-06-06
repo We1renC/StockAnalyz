@@ -191,6 +191,47 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_merge_detector_extras_lets_learned_weights_survive():
+    """P0-3+ regression: hardcoded detector extras must NOT clobber
+    learned overrides stored in CONFLUENCE_WEIGHTS_DEFAULT."""
+    from smc_quant import _merge_detector_extras
+    import smc_quant
+    saved = dict(smc_quant.CONFLUENCE_WEIGHTS_DEFAULT)
+    smc_quant.CONFLUENCE_WEIGHTS_DEFAULT["killzone_premium"] = 3
+    try:
+        merged = _merge_detector_extras(None, {
+            "killzone_premium": 1,
+            "pd_extreme": 1,
+            "nearest_poi_within": 1,
+        })
+        # Learned value (3) MUST survive — old code would force back to 1.
+        assert merged["killzone_premium"] == 3
+        # Untouched extras still default to 1.
+        assert merged["pd_extreme"] == 1
+        assert merged["nearest_poi_within"] == 1
+    finally:
+        smc_quant.CONFLUENCE_WEIGHTS_DEFAULT.clear()
+        smc_quant.CONFLUENCE_WEIGHTS_DEFAULT.update(saved)
+
+
+def test_merge_detector_extras_caller_weights_win_over_learned():
+    """Caller-supplied weights override even learned defaults."""
+    from smc_quant import _merge_detector_extras
+    import smc_quant
+    saved = dict(smc_quant.CONFLUENCE_WEIGHTS_DEFAULT)
+    smc_quant.CONFLUENCE_WEIGHTS_DEFAULT["killzone_premium"] = 3
+    try:
+        merged = _merge_detector_extras(
+            {"killzone_premium": 5},
+            {"killzone_premium": 1, "pd_extreme": 1, "nearest_poi_within": 1},
+        )
+        # Caller's 5 beats learned 3 beats extras 1.
+        assert merged["killzone_premium"] == 5
+    finally:
+        smc_quant.CONFLUENCE_WEIGHTS_DEFAULT.clear()
+        smc_quant.CONFLUENCE_WEIGHTS_DEFAULT.update(saved)
+
+
 def test_recent_30d_pnl_gate_passes_when_total_R_above_threshold():
     """P3-17 Gate 1: net 30d R-multiple ≥ min → pass."""
     from learning.real_pnl_gates import recent_30d_real_pnl_gate
