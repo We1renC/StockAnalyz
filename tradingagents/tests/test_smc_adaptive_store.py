@@ -176,7 +176,7 @@ def test_train_from_ledger_records_patch_and_audit_rows(tmp_path):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     patch_row = conn.execute(
-        "SELECT patch_key, patch_type, applied, patch_payload FROM smc_adaptive_config_patches ORDER BY id DESC LIMIT 1"
+        "SELECT patch_key, patch_type, applied, patch_payload FROM smc_adaptive_config_patches WHERE patch_type='adaptive_runtime' ORDER BY id DESC LIMIT 1"
     ).fetchone()
     ledger_count = conn.execute(
         "SELECT COUNT(*) FROM smc_adaptive_trade_ledger"
@@ -187,7 +187,8 @@ def test_train_from_ledger_records_patch_and_audit_rows(tmp_path):
     updated_yaml = strategy_config_snapshot(str(strategy_yaml))
 
     assert result.adopted is False
-    assert result.strategy_yaml_updated is False
+    is_probe_mode = (result.adaptive_state["mode"] == "VALIDATING_PROBE")
+    assert result.strategy_yaml_updated is is_probe_mode
     assert patch_row is not None
     assert patch_row["patch_type"] == "adaptive_runtime"
     assert patch_row["applied"] == 0
@@ -199,7 +200,14 @@ def test_train_from_ledger_records_patch_and_audit_rows(tmp_path):
     assert runtime_patch["model"]["active_model"] == "uniqueness_weighted_lr"
     assert "weighted_lr_accuracy" in runtime_patch["diagnostics"]
     assert "mp_lambda_plus" in runtime_patch["diagnostics"]
-    assert updated_yaml["data"]["confluence"]["weights"]["htf_bias_aligned"] == 2
+    if is_probe_mode:
+        assert result.verdict.get("soft_adopted") is True
+        assert len(result.weights_changed) > 0
+        assert updated_yaml["data"]["confluence"]["weights"] == result.weights_after
+    else:
+        assert result.verdict.get("soft_adopted") is not True
+        assert len(result.weights_changed) == 0
+        assert updated_yaml["data"]["confluence"]["weights"]["htf_bias_aligned"] == 2
 
 
 def test_train_from_ledger_applies_strategy_patch_when_adaptive_state_ready(tmp_path, monkeypatch):

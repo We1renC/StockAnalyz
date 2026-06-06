@@ -2688,7 +2688,8 @@ def test_soft_adoption_in_validating_probe_mode(tmp_path):
             )
 
     # 驗證軟採用更新
-    assert res.adopted is True
+    assert res.verdict.get("soft_adopted") is True
+    assert res.adopted is False
     assert res.strategy_yaml_updated is True
     with open(yaml_path, "r", encoding="utf-8") as fh:
         updated_yaml = yaml.safe_load(fh)

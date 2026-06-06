@@ -1027,19 +1027,18 @@ def train_from_ledger(
                 before_v = weights_before.get(k, proposed_v)
                 soft_proposed[k] = int(round((1.0 - alpha) * before_v + alpha * proposed_v))
             proposed = soft_proposed
-            adopted = True
             is_soft_adopted = True
             notes.append("soft_adoption active: updating weights incrementally by step 0.3 in VALIDATING_PROBE mode")
             verdict = {**verdict, "adopt": True, "soft_adopted": True}
 
-    if bool(verdict.get("adopt")) and not adopted:
+    if bool(verdict.get("adopt")) and not (adopted or is_soft_adopted):
         verdict = {**verdict, "adopt": False, "reason": "adaptive_state_not_ready"}
 
 
     runtime_patch = {
         "state": {
             "mode": adaptive_state["mode"],
-            "adopt_weights": adopted,
+            "adopt_weights": adopted or is_soft_adopted,
             "n_eff": adaptive_state["n_eff"],
             "validation_entropy": adaptive_state["validation_entropy"],
             "validation_amplitude": adaptive_state["validation_amplitude"],
@@ -1139,11 +1138,15 @@ def train_from_ledger(
             )
         adaptive_conn.commit()
 
+    yaml_path = Path(strategy_yaml_path)
+    if not yaml_path.is_absolute():
+        yaml_path = Path(__file__).parent.parent / strategy_yaml_path
+
     weights_after = dict(weights_before)
     changed: list[str] = []
     yaml_written = False
 
-    if adopted and proposed:
+    if (adopted or is_soft_adopted) and proposed:
         # diff
         for k, v in proposed.items():
             if weights_before.get(k) != v:
@@ -1195,9 +1198,6 @@ def train_from_ledger(
                         )
                     adaptive_conn.commit()
                 else:
-                    yaml_path = Path(strategy_yaml_path)
-                    if not yaml_path.is_absolute():
-                        yaml_path = Path(__file__).parent.parent / strategy_yaml_path
                     import yaml  # type: ignore
 
                     existing = {}
