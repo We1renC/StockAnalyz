@@ -191,6 +191,105 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_recent_30d_pnl_gate_passes_when_total_R_above_threshold():
+    """P3-17 Gate 1: net 30d R-multiple ≥ min → pass."""
+    from learning.real_pnl_gates import recent_30d_real_pnl_gate
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    records = [
+        {"entry_time": (now - timedelta(days=15)).isoformat(),
+         "outcome": "target", "r_multiple": 1.0} for _ in range(5)
+    ] + [
+        {"entry_time": (now - timedelta(days=10)).isoformat(),
+         "outcome": "stop", "r_multiple": -1.0} for _ in range(3)
+    ]
+    # Net = 5*1 - 3*1 = 2.0 R > 0.5
+    g = recent_30d_real_pnl_gate(records, min_total_R=0.5)
+    assert g["passed"] is True
+    assert g["metric"] == 2.0
+
+
+def test_recent_30d_pnl_gate_fails_on_starvation():
+    """30d flat-line / fee-bleed (net ≈ 0) → fails."""
+    from learning.real_pnl_gates import recent_30d_real_pnl_gate
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    records = [
+        {"entry_time": (now - timedelta(days=2)).isoformat(),
+         "outcome": "target", "r_multiple": 0.05} for _ in range(3)
+    ]
+    g = recent_30d_real_pnl_gate(records, min_total_R=0.5)
+    assert g["passed"] is False
+    assert g["metric"] == 0.15
+
+
+def test_max_drawdown_gate_catches_consecutive_losses():
+    """5 consecutive -1R losses → DD=5; threshold 4 → fail."""
+    from learning.real_pnl_gates import max_drawdown_30d_gate
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    records = []
+    # Climb +5R
+    for i in range(5):
+        records.append({
+            "entry_time": (now - timedelta(days=20 - i)).isoformat(),
+            "outcome": "target", "r_multiple": 1.0,
+        })
+    # Then drop -5R
+    for i in range(5):
+        records.append({
+            "entry_time": (now - timedelta(days=15 - i)).isoformat(),
+            "outcome": "stop", "r_multiple": -1.0,
+        })
+    g = max_drawdown_30d_gate(records, max_drawdown_R=4.0)
+    assert g["passed"] is False
+    assert g["metric"] == 5.0
+
+
+def test_live_vs_backtest_correlation_passes_on_aligned_pools():
+    """Bt and live agree per-cluster → high correlation."""
+    from learning.real_pnl_gates import live_vs_backtest_correlation_gate
+    records = []
+    # Three models, each has consistent E[R] in both pools
+    for m, er in [("sweep_reversal", 1.5), ("ote_retracement", 0.5), ("unicorn", -0.5)]:
+        for _ in range(5):
+            records.append({"source": "backtest", "model": m, "symbol": "BTC-USDT",
+                              "outcome": "x", "r_multiple": er})
+            records.append({"source": "paper", "model": m, "symbol": "BTC-USDT",
+                              "outcome": "x", "r_multiple": er * 0.9})
+    g = live_vs_backtest_correlation_gate(records, min_correlation=0.5)
+    assert g["passed"] is True
+    assert g["metric"] >= 0.5
+
+
+def test_live_vs_backtest_correlation_fails_when_pools_disagree():
+    """Backtest says X is best but live says X is worst → low correlation."""
+    from learning.real_pnl_gates import live_vs_backtest_correlation_gate
+    records = []
+    # Backtest: a=2, b=1, c=0; Live: a=0, b=1, c=2 (perfectly negative correlation)
+    for er_bt, er_live, m in [(2.0, 0.0, "a"), (1.0, 1.0, "b"), (0.0, 2.0, "c")]:
+        for _ in range(5):
+            records.append({"source": "backtest", "model": m, "symbol": "X",
+                              "outcome": "x", "r_multiple": er_bt})
+            records.append({"source": "paper", "model": m, "symbol": "X",
+                              "outcome": "x", "r_multiple": er_live})
+    g = live_vs_backtest_correlation_gate(records, min_correlation=0.3)
+    assert g["passed"] is False
+    assert g["metric"] < 0.3
+
+
+def test_run_real_pnl_gates_aggregates_all_three():
+    """Convenience helper returns flat dict + overall pass + failures list."""
+    from learning.real_pnl_gates import run_real_pnl_gates
+    out = run_real_pnl_gates([])
+    assert "all_passed" in out
+    assert set(out["gates"].keys()) == {
+        "recent_30d_real_pnl",
+        "live_vs_backtest_correlation",
+        "max_drawdown_30d",
+    }
+
+
 def test_edge_decay_trail_writes_alert_to_sqlite(tmp_path, monkeypatch):
     """P1-8+: edge decay emit a record_alert_delivery row."""
     import sqlite3 as _sqlite3

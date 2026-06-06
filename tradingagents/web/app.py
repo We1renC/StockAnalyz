@@ -4213,6 +4213,34 @@ def api_smc_crypto_score_calibration(symbol: Optional[str] = None):
         raise HTTPException(status_code=500, detail=f"calibration failed: {e}")
 
 
+@app.get("/api/smc-crypto/real-pnl-gates")
+def api_smc_crypto_real_pnl_gates(symbol: Optional[str] = None,
+                                    min_total_R: float = 0.5,
+                                    min_correlation: float = 0.3,
+                                    max_drawdown_R: float = 8.0):
+    """Audit fix P3-17: hard gates from real ledger PnL (not synthetic scenarios).
+
+    Returns three gates:
+      • recent_30d_real_pnl       net R-multiple ≥ min_total_R
+      • live_vs_backtest_correlation Pearson(bt, live) ≥ min_correlation
+      • max_drawdown_30d           peak-to-trough DD ≤ max_drawdown_R
+    """
+    try:
+        from learning.real_pnl_gates import run_real_pnl_gates
+        from smc_quant import load_trade_records
+        records = load_trade_records("tmp/smc_training_ledger.jsonl")
+        if symbol:
+            records = [r for r in records if r.get("symbol") == symbol]
+        return run_real_pnl_gates(
+            records,
+            min_total_R=float(min_total_R),
+            min_correlation=float(min_correlation),
+            max_drawdown_R=float(max_drawdown_R),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"real-pnl-gates failed: {e}")
+
+
 @app.get("/api/smc-crypto/learning-curve")
 def api_smc_crypto_learning_curve(symbol: Optional[str] = None,
                                     bin_size: int = 10,
