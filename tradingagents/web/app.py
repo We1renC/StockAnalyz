@@ -4391,9 +4391,33 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
         live_order = None
         cd = cooldown_remaining(symbol, db, profile)
 
+        from smc_auto_workflow import load_latest_adaptive_runtime_patch
+        conn = get_db()
+        try:
+            patch = load_latest_adaptive_runtime_patch(conn, symbol)
+        finally:
+            conn.close()
+        global_mode = (patch.get("state") or {}).get("mode", "DRY_RUN")
+
         if cd and cd > 0:
             state = "PAUSED"
             next_action = f"cooldown 剩 {cd}s"
+        elif global_mode == "VALIDATING_PROBE":
+            # VALIDATING_PROBE 狀態下，依然要跑 auto-workflow 進行前向探索單
+            wf = run_symbol(api, symbol, db_path=db, journal_dir="tmp/smc_auto")
+            wf_d = asdict(wf)
+            last_action = wf_d
+            unified = wf_d.get("unified") or {}
+            dec = (unified.get("decisions") or [{}])[0]
+            if dec.get("action") == "placed":
+                state = "TRADING"
+                next_action = "VALIDATING_PROBE 已送探索單"
+                lo = dec.get("live_order") or {}
+                if lo.get("status") in (200, 201):
+                    live_order = lo.get("payload")
+            else:
+                state = "VALIDATING_PROBE"
+                next_action = f"探索中 ({passed_gates}/{total_gates} 驗證閘)"
         elif not report.promotion_decision.get("can_promote"):
             if report.sample_size < 30:
                 state = "LEARNING"

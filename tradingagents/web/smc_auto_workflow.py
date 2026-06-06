@@ -111,6 +111,21 @@ def profile_for_symbol(symbol: str) -> SmcAutoProfile:
 # Pre-flight: consult paper-acceptance history
 # ---------------------------------------------------------------------------
 
+def load_latest_adaptive_runtime_patch(conn: sqlite3.Connection, symbol: str) -> dict:
+    row = conn.execute(
+        """SELECT patch_payload FROM smc_adaptive_config_patches 
+            WHERE symbol=? AND patch_type='adaptive_runtime'
+         ORDER BY id DESC LIMIT 1""",
+        (symbol.upper(),),
+    ).fetchone()
+    if row:
+        try:
+            return json.loads(row["patch_payload"])
+        except Exception:
+            pass
+    return {}
+
+
 @dataclass
 class PreflightVerdict:
     """Outcome of looking at recent acceptance history."""
@@ -125,31 +140,47 @@ def preflight(conn: sqlite3.Connection, symbol: str) -> PreflightVerdict:
     """Read paper-acceptance history for the symbol and decide.
 
     Rules:
+      • VALIDATING_PROBE mode        → allow live (scaled down exploration)
       • strategy_invalidated         → block live (force dry-run only)
       • failed_repeat_paper          → block live
       • passed / conditionally_passed → allow live
       • no history                   → allow dry-run only (need 1 baseline run first)
     """
+    patch = load_latest_adaptive_runtime_patch(conn, symbol)
+    mode = (patch.get("state") or {}).get("mode", "DRY_RUN")
+
     reports = load_acceptance_reports(conn, symbol=symbol, limit=1)
+    last_conclusion = reports[0].get("conclusion") if reports else None
+    last_run_at = reports[0].get("created_at") if reports else None
+
+    if mode == "VALIDATING_PROBE":
+        return PreflightVerdict(
+            allowed_live=True,
+            reason="validating_probe_mode",
+            last_conclusion=last_conclusion,
+            last_run_at=last_run_at,
+        )
+
     if not reports:
         return PreflightVerdict(
             allowed_live=False,
             reason="no_acceptance_history_yet_run_dry_first",
+            last_conclusion=last_conclusion,
+            last_run_at=last_run_at,
         )
-    last = reports[0]
-    conclusion = last.get("conclusion")
+    conclusion = last_conclusion
     if conclusion in {"passed", "conditionally_passed"}:
         return PreflightVerdict(
             allowed_live=True,
             reason=f"last_acceptance={conclusion}",
             last_conclusion=conclusion,
-            last_run_at=last.get("created_at"),
+            last_run_at=last_run_at,
         )
     return PreflightVerdict(
         allowed_live=False,
         reason=f"last_acceptance={conclusion}",
         last_conclusion=conclusion,
-        last_run_at=last.get("created_at"),
+        last_run_at=last_run_at,
     )
 
 
@@ -291,6 +322,7 @@ def run_symbol(
     conn = connect_db(db_path, row_factory=True)
     try:
         verdict = preflight(conn, symbol)
+        patch = load_latest_adaptive_runtime_patch(conn, symbol)
     finally:
         conn.close()
     place_live = (verdict.allowed_live or force_live)
@@ -318,19 +350,39 @@ def run_symbol(
         return result
 
     # Phase C — unified pipeline
+    mode = (patch.get("state") or {}).get("mode", "DRY_RUN")
+    risk_multiplier = float((patch.get("risk") or {}).get("risk_multiplier", 1.0))
+    probe_cap = float((patch.get("risk") or {}).get("probe_notional_cap_usdt", 5.0))
+    min_score = (patch.get("strategy") or {}).get("confluence_min_score")
+
+    risk_pct = profile.risk_pct
+    max_notional = profile.max_notional_usdt
+    min_confluence_score = profile.min_confluence_score
+    probe_active = False
+
+    if mode == "VALIDATING_PROBE":
+        risk_pct = float(profile.risk_pct) * risk_multiplier
+        max_notional = min(float(profile.max_notional_usdt), probe_cap)
+        probe_active = True
+        notes.append(f"VALIDATING_PROBE active: scaling risk_pct by {risk_multiplier} to {risk_pct:.5f}, cap notional by {max_notional}")
+
+    if min_score is not None:
+        min_confluence_score = int(min_score)
+
     cfg = UnifiedSessionConfig(
         symbols=[symbol],
         interval=profile.interval, bars=profile.bars,
         swing_length=profile.swing_length,
         internal_swing_length=profile.internal_swing_length,
-        min_confluence_score=profile.min_confluence_score,
+        min_confluence_score=min_confluence_score,
         min_rr=profile.min_rr,
-        risk_pct=profile.risk_pct,
-        max_notional_usdt=profile.max_notional_usdt,
+        risk_pct=risk_pct,
+        max_notional_usdt=max_notional,
         price_deviation_pct=profile.price_deviation_pct,
         strategy_id=f"smc.v2.auto.{profile.tier}",
         journal_dir=journal_dir,
         paper_db_path=db_path,
+        probe=probe_active,
     )
     session = UnifiedTradingSession(api, cfg)
     try:

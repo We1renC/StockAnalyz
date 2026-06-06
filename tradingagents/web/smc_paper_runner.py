@@ -180,6 +180,8 @@ class PaperRunConfig:
     max_notional_usdt: float = 5_000.0      # honour seeded max_single_order_notional
     price_deviation_pct: float = 0.02       # keep limit within ±2% of ticker mid
     use_live_ticker_price: bool = True      # override SMC entry with live mid for paper fills
+    probe: bool = False
+
 
 
 @dataclass
@@ -614,6 +616,10 @@ class SmcPaperRunner:
             # P0-2: identity fields so reconcile_paper_trades can match later
             trade_id=f"{cfg.symbol}:{client_order_id}",
         )
+        if getattr(cfg, "probe", False):
+            result.trade_record["probe"] = 1
+        else:
+            result.trade_record["probe"] = 0
         # Attach broker identifiers + planning prices for reconciliation
         result.trade_record["broker_order_id"] = order_id
         result.trade_record["client_order_id"] = client_order_id

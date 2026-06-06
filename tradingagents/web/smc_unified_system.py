@@ -88,6 +88,8 @@ class UnifiedSessionConfig:
     # Persistence
     journal_dir: str = "tmp/smc_unified"
     paper_db_path: Optional[str] = None      # if None → in-memory
+    probe: bool = False
+
 
 
 @dataclass
@@ -267,6 +269,7 @@ class UnifiedTradingSession:
                     swing_length=cfg.swing_length,
                     internal_swing_length=cfg.internal_swing_length,
                     journal_path=str(Path(cfg.journal_dir) / f"{dec.symbol}_live.jsonl"),
+                    probe=cfg.probe,
                 ),
             )
             result = runner.run_once()

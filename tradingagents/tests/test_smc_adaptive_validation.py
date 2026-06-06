@@ -168,3 +168,106 @@ def test_probe_controller_caps_notional_and_enforces_daily_limits(tmp_path):
     assert blocked["allow_order"] is False
     assert blocked["order_mode"] == "DRY_RUN"
     assert blocked["reason"] == "probe_daily_order_cap_reached"
+
+
+def test_preflight_and_run_symbol_in_validating_probe_mode(tmp_path):
+    from smc_auto_workflow import preflight, run_symbol, load_latest_adaptive_runtime_patch
+    from learning.adaptive_store import create_config_patch
+    from smc_paper_runner import CryptoApiClient
+    import json
+    from unittest.mock import MagicMock
+
+    db_path = str(tmp_path / "portfolio.db")
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    ensure_adaptive_calibration_schema(conn)
+
+    # 1. 建立一個 VALIDATING_PROBE 的 runtime patch
+    patch_data = {
+        "state": {
+            "mode": "VALIDATING_PROBE",
+            "adopt_weights": False,
+            "n_eff": 15.0,
+            "validation_entropy": 0.8,
+            "validation_amplitude": 1.0,
+        },
+        "risk": {
+            "risk_multiplier": 0.03,
+            "probe_notional_cap_usdt": 5.0,
+        },
+        "strategy": {
+            "confluence_min_score": 10.0,
+        },
+        "model": {},
+        "diagnostics": {}
+    }
+    create_config_patch(
+        conn,
+        patch=patch_data,
+        symbol="BTC-USDT",
+        reason="test_probe",
+        strategy_yaml_path="config/strategy.yaml",
+        patch_type="adaptive_runtime",
+        apply=False,
+    )
+    conn.commit()
+
+    # 2. 驗證 preflight 在沒有歷史的情況下依然返回 allowed_live=True
+    verdict = preflight(conn, "BTC-USDT")
+    assert verdict.allowed_live is True
+    assert verdict.reason == "validating_probe_mode"
+
+    conn.close()
+
+    # 3. 測試 run_symbol 呼叫時，帶入 patch 參數
+    api = MagicMock()
+    # 模擬 klines 回傳
+    api.klines.return_value = {
+        "status": 200,
+        "payload": {
+            "data": [
+                {
+                    "open_time": f"2026-06-06T00:{idx:02d}:00Z",
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.0,
+                    "volume": 10.0,
+                }
+                for idx in range(35)
+            ]
+        }
+    }
+    # 模擬 ticker
+    api.ticker.return_value = {"status": 200, "payload": {"price": "100.0"}}
+    api.create_order.return_value = {"status": 200, "payload": {"id": "order-123"}}
+
+    # 我們可以使用 patch 來監控 UnifiedTradingSession 的初始化或 UnifiedSessionConfig 的生成
+    from unittest.mock import patch as mock_patch
+
+    # 跑 run_symbol 看看
+    # 因為 run_symbol 會寫 journal，我們可以把 journal_dir 指向 tmp_path
+    journal_dir = str(tmp_path / "smc_auto_test")
+
+    with mock_patch("smc_auto_workflow.UnifiedTradingSession") as MockSession:
+        mock_sess_inst = MockSession.return_value
+        mock_sess_inst.run.return_value = {"decisions": []}
+        
+        run_symbol(
+            api,
+            "BTC-USDT",
+            db_path=db_path,
+            journal_dir=journal_dir,
+            ignore_cooldown=True,
+        )
+        
+        # 取得傳入 UnifiedTradingSession 的 config
+        cfg = MockSession.call_args[1]["config"]
+        # 驗證 config 中的引數是否有成功套用 VALIDATING_PROBE 規則
+        # 正常 major (BTC) 的 risk_pct 是 0.02
+        # VALIDATING_PROBE 下 risk_pct = 0.02 * 0.03 = 0.0006
+        assert abs(cfg.risk_pct - 0.0006) < 1e-9
+        assert cfg.max_notional_usdt == 5.0
+        assert cfg.min_confluence_score == 10
+        assert cfg.probe is True
+
