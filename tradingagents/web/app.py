@@ -2011,6 +2011,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[startup] autolearn scheduler not started: {e}")
 
+    # Round Q: surface the deployment self-check at boot so config
+    # warnings (no API token, learning off, big WAL, rejected weights)
+    # are visible immediately instead of needing a manual probe.
+    try:
+        from learning.selfcheck import run_selfcheck
+        from learning.obs_log import get_logger, log_event
+        _sclog = get_logger("startup")
+        sc = run_selfcheck()
+        log_event(_sclog, "selfcheck", overall=sc["overall"], **sc["summary"])
+        for c in sc["checks"]:
+            if c["status"] != "pass":
+                log_event(_sclog, "selfcheck_issue",
+                          status=c["status"], check=c["name"])
+    except Exception as e:
+        print(f"[startup] selfcheck failed: {e}")
+
     yield
     task.cancel()
     if crypto_task:
