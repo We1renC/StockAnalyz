@@ -71,7 +71,25 @@ def api_smc_crypto_ops_metrics():
         out["ledger_files"] = sizes
     except Exception as e:
         out["ledger_files"] = {"error": str(e)}
+    # Round N: WAL sidecar size (grows if checkpoints get held back).
+    try:
+        from deps import portfolio_db_path
+        wal = portfolio_db_path() + "-wal"
+        out["wal"] = {"bytes": _os.path.getsize(wal) if _os.path.exists(wal) else 0}
+    except Exception as e:
+        out["wal"] = {"error": str(e)}
     return out
+
+
+@router.post("/api/smc-crypto/wal-checkpoint")
+def api_smc_crypto_wal_checkpoint():
+    """Round N: manually force a WAL TRUNCATE checkpoint (also runs
+    automatically each maintenance cycle)."""
+    try:
+        from learning.autolearn_scheduler import checkpoint_wal
+        return checkpoint_wal()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"wal-checkpoint failed: {e}")
 
 
 @router.post("/api/smc-crypto/decommission-sweep")

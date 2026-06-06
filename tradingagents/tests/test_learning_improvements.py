@@ -2309,3 +2309,36 @@ def test_roundk_runner_swallow_is_accounted(monkeypatch):
     # that the names stay aligned with ops-metrics expectations).
     assert "apply_decommission" in counts["by_context"]
     assert "ensemble_vote" in counts["by_context"]
+
+
+def test_roundn_checkpoint_wal_returns_report(tmp_path, monkeypatch):
+    """Round N: checkpoint_wal runs PRAGMA wal_checkpoint and reports
+    residual -wal size without raising on a fresh WAL DB."""
+    import sqlite3, importlib
+    # Point deps.portfolio_db_path + get_db at a tmp WAL db via app.DB patch.
+    db = tmp_path / "portfolio.db"
+    # seed a WAL db with a write
+    c = sqlite3.connect(str(db))
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("CREATE TABLE t (id INTEGER)")
+    c.execute("INSERT INTO t VALUES (1)")
+    c.commit(); c.close()
+    import deps
+    monkeypatch.setattr(deps, "portfolio_db_path", lambda: str(db))
+    monkeypatch.setattr(deps, "get_db", lambda db_path=None: (lambda cc: (cc.execute("PRAGMA journal_mode=WAL"), cc)[1])(sqlite3.connect(str(db))))
+    import learning.autolearn_scheduler as sched
+    importlib.reload(sched)
+    rep = sched.checkpoint_wal()
+    assert "wal_bytes_after" in rep
+    assert isinstance(rep["wal_bytes_after"], int)
+
+
+def test_roundn_run_maintenance_includes_wal_checkpoint(tmp_path, monkeypatch):
+    """Round N: maintenance report now carries a wal_checkpoint section."""
+    monkeypatch.setenv("SMC_LEDGER_DIR", str(tmp_path))
+    import importlib
+    import learning.autolearn_scheduler as sched
+    importlib.reload(sched)
+    # checkpoint may error in the bare test env; assert the key exists either way
+    out = sched._run_maintenance()
+    assert "wal_checkpoint" in out

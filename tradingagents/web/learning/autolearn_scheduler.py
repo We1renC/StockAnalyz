@@ -99,7 +99,36 @@ def _run_maintenance() -> dict:
         out["decommission"] = {"actions": dec.get("actions", [])}
     except Exception as exc:
         out["decommission"] = {"error": f"{type(exc).__name__}: {exc}"}
+    # Round N: WAL checkpoint. With E3's WAL mode, the -wal sidecar grows
+    # under sustained writes if a long-running reader holds back the
+    # auto-checkpoint. A periodic TRUNCATE checkpoint keeps it bounded.
+    try:
+        out["wal_checkpoint"] = checkpoint_wal()
+    except Exception as exc:
+        out["wal_checkpoint"] = {"error": f"{type(exc).__name__}: {exc}"}
     return out
+
+
+def checkpoint_wal() -> dict:
+    """Run PRAGMA wal_checkpoint(TRUNCATE) on the portfolio DB.
+
+    Returns the checkpoint result {busy, log_pages, checkpointed_pages}
+    plus the residual -wal byte size so ops-metrics can chart it.
+    """
+    import os as _os
+    from deps import portfolio_db_path, get_db
+    conn = get_db()
+    try:
+        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    finally:
+        conn.close()
+    busy, log_pages, ckpt_pages = (list(row) + [None, None, None])[:3] if row else (None, None, None)
+    wal_path = portfolio_db_path() + "-wal"
+    wal_bytes = _os.path.getsize(wal_path) if _os.path.exists(wal_path) else 0
+    return {
+        "busy": busy, "log_pages": log_pages,
+        "checkpointed_pages": ckpt_pages, "wal_bytes_after": wal_bytes,
+    }
 
 
 # Per-symbol "next eligible run" wallclock + last result, so the loop is
