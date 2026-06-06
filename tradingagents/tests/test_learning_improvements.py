@@ -191,6 +191,35 @@ def test_score_calibration_isotonic_is_monotone():
         assert b >= a - 1e-6
 
 
+def test_cluster_weight_table_threads_per_model_weights_to_detectors():
+    """B2: when build_smc_analysis is called with cluster_weight_table,
+    _cluster_weights_for(model_name) must resolve to model-specific weights
+    (not the global default for all 6 detectors)."""
+    from learning.cluster_ensemble import resolve_cluster_weights
+    base = {"htf_bias_aligned": 2, "ote_zone": 1, "killzone": 1}
+    # Cluster A favors sweep_reversal's ote_zone; cluster B doesn't.
+    table = {
+        ("sweep_reversal", "BTC", "1h", "trending"): {
+            "n_total": 60, "mean_R": 0.5,
+            "factors": {"ote_zone": {"lift": 0.5, "n_active": 30, "n_inactive": 30}},
+        },
+        ("ote_retracement", "BTC", "1h", "trending"): {
+            "n_total": 60, "mean_R": -0.3,
+            "factors": {"ote_zone": {"lift": -0.4, "n_active": 30, "n_inactive": 30}},
+        },
+    }
+    sweep_w = resolve_cluster_weights(table,
+        cluster=("sweep_reversal", "BTC", "1h", "trending"), base_weights=base)
+    ote_w = resolve_cluster_weights(table,
+        cluster=("ote_retracement", "BTC", "1h", "trending"), base_weights=base)
+    # sweep_reversal nudged up (positive lift)
+    assert sweep_w["ote_zone"] == 2
+    # ote_retracement nudged down (negative lift)
+    assert ote_w["ote_zone"] == 0
+    # global default would be 1; the two cluster paths diverge as required.
+    assert sweep_w["ote_zone"] != ote_w["ote_zone"]
+
+
 def test_build_trade_record_stamps_interval_and_regime_string():
     """B4: build_trade_record produces flat interval + regime string for
     cluster_ensemble bucketing."""

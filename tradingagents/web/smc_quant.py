@@ -7049,6 +7049,8 @@ def build_smc_analysis(
     account_equity: Optional[float] = None,
     crypto_inputs: Optional[dict] = None,
     mae_mfe_calibration: Optional[dict] = None,
+    cluster_weight_table: Optional[dict] = None,
+    cluster_key_hint: Optional[tuple] = None,
 ) -> dict:
     cfg = config or SMCConfig()
     market = infer_market(symbol)
@@ -7149,9 +7151,33 @@ def build_smc_analysis(
     session = {**session, **killzone_detail}
     judas_events = detect_judas_swings(h, structure, liquidity, displacements, symbol)
     smt_events = detect_smt_divergence(h, correlated, swings)
+
+    # Audit fix B2: when a cluster_weight_table is supplied, derive
+    # per-detector weights that fold the cluster lift into the global
+    # weights. Each detector gets its own resolved view because cluster
+    # key includes ``model``.
+    def _cluster_weights_for(model_name: str) -> Optional[dict]:
+        if not cluster_weight_table:
+            return weights
+        try:
+            from learning.cluster_ensemble import resolve_cluster_weights
+        except Exception:
+            return weights
+        regime = (adaptive_info or {}).get("bucket") or "unknown"
+        key_interval = (cluster_key_hint[2] if cluster_key_hint
+                         and len(cluster_key_hint) >= 3 else timeframe)
+        key_regime = (cluster_key_hint[3] if cluster_key_hint
+                       and len(cluster_key_hint) >= 4 else regime)
+        cluster = (model_name, symbol, str(key_interval), str(key_regime))
+        base = dict(CONFLUENCE_WEIGHTS_DEFAULT)
+        if weights:
+            base.update(weights)
+        return resolve_cluster_weights(cluster_weight_table,
+                                         cluster=cluster, base_weights=base)
+
     sweep_reversal_entries = detect_sweep_reversal_entries(
         h, judas_events, obs, fvgs, pd_zone, bias, session,
-        weights=weights,
+        weights=_cluster_weights_for("sweep_reversal"),
         balanced_price_ranges=balanced_price_ranges,
         inverse_fvgs=inverse_fvgs,
         atr_value=(adaptive_info or {}).get("atr"),
@@ -7159,7 +7185,8 @@ def build_smc_analysis(
         pd_array_matrix=pd_array_matrix,
     )
     continuation_entries = detect_continuation_entries(
-        h, structure, obs, fvgs, pd_zone, bias, session, weights=weights,
+        h, structure, obs, fvgs, pd_zone, bias, session,
+        weights=_cluster_weights_for("ob_fvg_continuation"),
         atr_value=(adaptive_info or {}).get("atr"),
         vol_bucket=(adaptive_info or {}).get("bucket"),
         pd_array_matrix=pd_array_matrix,
@@ -7167,7 +7194,8 @@ def build_smc_analysis(
     _atr = (adaptive_info or {}).get("atr")
     _bucket = (adaptive_info or {}).get("bucket")
     ote_entries = detect_ote_entries(
-        h, ote, obs, fvgs, pd_zone, bias, session, weights=weights,
+        h, ote, obs, fvgs, pd_zone, bias, session,
+        weights=_cluster_weights_for("ote_retracement"),
         atr_value=_atr, vol_bucket=_bucket,
         pd_array_matrix=pd_array_matrix,
     )
@@ -7177,17 +7205,20 @@ def build_smc_analysis(
         {**i, "mitigated": False} for i in (inverse_fvgs or [])
     ]
     unicorn_entries = detect_unicorn_entries(
-        h, breaker_blocks, _unicorn_fvg_pool, smt_events, pd_zone, bias, session, weights=weights,
+        h, breaker_blocks, _unicorn_fvg_pool, smt_events, pd_zone, bias, session,
+        weights=_cluster_weights_for("unicorn"),
         atr_value=_atr, vol_bucket=_bucket,
         pd_array_matrix=pd_array_matrix,
     )
     silver_bullet_entries = detect_silver_bullet_entries(
-        h, liquidity, fvgs, symbol, pd_zone, bias, session, weights=weights,
+        h, liquidity, fvgs, symbol, pd_zone, bias, session,
+        weights=_cluster_weights_for("silver_bullet"),
         atr_value=_atr, vol_bucket=_bucket,
         pd_array_matrix=pd_array_matrix,
     )
     power_of_three_entries = detect_power_of_three_entries(
-        h, judas_events, obs, fvgs, pd_zone, bias, session, weights=weights,
+        h, judas_events, obs, fvgs, pd_zone, bias, session,
+        weights=_cluster_weights_for("power_of_three"),
         atr_value=_atr, vol_bucket=_bucket,
         pd_array_matrix=pd_array_matrix,
     )
