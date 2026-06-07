@@ -79,7 +79,7 @@ def profile_for_symbol(symbol: str) -> SmcAutoProfile:
     """Pick a default profile based on the symbol's volatility tier."""
     sym = symbol.upper()
     if sym in _MAJOR:
-        return SmcAutoProfile(
+        profile = SmcAutoProfile(
             tier="major",
             interval="1h", bars=500,
             swing_length=5, internal_swing_length=3,
@@ -87,8 +87,8 @@ def profile_for_symbol(symbol: str) -> SmcAutoProfile:
             risk_pct=0.02, max_notional_usdt=5_000.0,
             price_deviation_pct=0.02, cooldown_minutes=60,
         )
-    if sym in _ALTCOIN:
-        return SmcAutoProfile(
+    elif sym in _ALTCOIN:
+        profile = SmcAutoProfile(
             tier="altcoin",
             interval="15m", bars=500,
             swing_length=4, internal_swing_length=2,
@@ -96,15 +96,35 @@ def profile_for_symbol(symbol: str) -> SmcAutoProfile:
             risk_pct=0.01, max_notional_usdt=2_000.0,
             price_deviation_pct=0.025, cooldown_minutes=30,
         )
-    # smallcap / unknown — most conservative defaults
-    return SmcAutoProfile(
-        tier="smallcap",
-        interval="15m", bars=500,
-        swing_length=3, internal_swing_length=2,
-        min_confluence_score=10, min_rr=2.0,
-        risk_pct=0.005, max_notional_usdt=500.0,
-        price_deviation_pct=0.03, cooldown_minutes=120,
-    )
+    else:
+        # smallcap / unknown — most conservative defaults
+        profile = SmcAutoProfile(
+            tier="smallcap",
+            interval="15m", bars=500,
+            swing_length=3, internal_swing_length=2,
+            min_confluence_score=10, min_rr=2.0,
+            risk_pct=0.005, max_notional_usdt=500.0,
+            price_deviation_pct=0.03, cooldown_minutes=120,
+        )
+
+    # Check for custom overrides in config/strategy.yaml
+    try:
+        import yaml
+        yaml_path = Path(__file__).resolve().parent.parent / "config/strategy.yaml"
+        if yaml_path.exists():
+            with open(yaml_path, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+            # Allow override under either adaptive or risk section
+            custom_cooldown = data.get("adaptive", {}).get("cooldown_minutes")
+            if custom_cooldown is None:
+                custom_cooldown = data.get("risk", {}).get("cooldown_minutes")
+            if custom_cooldown is not None:
+                from dataclasses import replace
+                profile = replace(profile, cooldown_minutes=int(custom_cooldown))
+    except Exception:
+        pass
+
+    return profile
 
 
 # ---------------------------------------------------------------------------
