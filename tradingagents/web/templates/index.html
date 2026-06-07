@@ -4312,8 +4312,9 @@ function renderPaperAcceptanceCatalog(workspace) {
   }
   const sourceFilter = _smcPaperAcceptanceFilters.source || 'all';
   const blockersOnly = !!_smcPaperAcceptanceFilters.blockersOnly;
-  catalogEl.innerHTML = (section.gates || []).map(gate => {
-    if (blockersOnly && !gate.blocking) return '';
+
+  // Local helper to render a single gate card
+  const renderSingleGate = (gate) => {
     const missingLabels = (gate.missing_evidence || [])
       .map(key => {
         const found = (gate.checks || []).find(item => item.key === key);
@@ -4325,6 +4326,7 @@ function renderPaperAcceptanceCatalog(workspace) {
       if (sourceFilter === 'all') return true;
       return (check.source || 'framework') === sourceFilter;
     });
+
     return `
       <div class="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 mb-3 last:mb-0">
         <div class="flex items-start justify-between gap-3">
@@ -4372,7 +4374,53 @@ function renderPaperAcceptanceCatalog(workspace) {
         </div>
       </div>
     `;
-  }).join('');
+  };
+
+  const filteredGates = (section.gates || []).filter(gate => {
+    if (blockersOnly && !gate.blocking) return false;
+    return true;
+  });
+
+  const passedGates = [];
+  const failedGates = [];
+
+  filteredGates.forEach(gate => {
+    if (gate.status === 'pass' || gate.status === 'not_applicable') {
+      passedGates.push(gate);
+    } else {
+      failedGates.push(gate);
+    }
+  });
+
+  let htmlContent = '';
+
+  // 1. 未通過 / 缺口項目 (Failed Gates)
+  htmlContent += `
+    <div class="mb-4 rounded-lg border border-red-900/30 bg-red-950/10 p-3">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="inline-block w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+        <span class="text-xs font-semibold text-red-300">未通過 / 缺口項目 (${failedGates.length})</span>
+      </div>
+      <div class="space-y-3">
+        ${failedGates.length ? failedGates.map(renderSingleGate).join('') : '<div class="text-[11px] text-slate-500 py-3 text-center bg-slate-950/20 rounded-md border border-slate-900/50">無未通過或缺口項目</div>'}
+      </div>
+    </div>
+  `;
+
+  // 2. 已通過 / 適用項目 (Passed Gates)
+  htmlContent += `
+    <div class="rounded-lg border border-emerald-900/30 bg-emerald-950/10 p-3">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="inline-block w-2 h-2 rounded-full bg-emerald-500"></span>
+        <span class="text-xs font-semibold text-emerald-300">已通過 / 適用項目 (${passedGates.length})</span>
+      </div>
+      <div class="space-y-3">
+        ${passedGates.length ? passedGates.map(renderSingleGate).join('') : '<div class="text-[11px] text-slate-500 py-3 text-center bg-slate-950/20 rounded-md border border-slate-900/50">無已通過或適用項目</div>'}
+      </div>
+    </div>
+  `;
+
+  catalogEl.innerHTML = htmlContent;
 }
 
 function hydratePaperAcceptanceWorkspaceEditors(workspace) {
