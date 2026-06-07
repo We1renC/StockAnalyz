@@ -11197,12 +11197,50 @@ async function cdeskRefreshAcceptance() {
       $('cdesk-acceptance').innerHTML = '<span class="text-slate-500">無驗收紀錄 — 執行交易後會自動產生</span>';
       return;
     }
-    let h = '<table class="w-full text-xs"><thead><tr class="text-slate-500"><th class="text-left">run</th><th>symbol</th><th>conclusion</th><th class="text-right">gates</th><th class="text-right">blocking</th><th>at</th></tr></thead><tbody>';
+    
+    let h = `
+      <table class="w-full text-xs font-mono">
+        <thead>
+          <tr class="text-slate-500" style="border-bottom:1px solid #334155">
+            <th class="text-left py-2 px-1">驗收編號 (Run ID)</th>
+            <th class="text-left py-2 px-1">幣種</th>
+            <th class="text-left py-2 px-1">驗收結論</th>
+            <th class="text-right py-2 px-1">指標通過率</th>
+            <th class="text-right py-2 px-1">阻擋項目</th>
+            <th class="text-right py-2 px-1">驗收時間</th>
+          </tr>
+        </thead>
+        <tbody>
+    `;
+    
     for (const r of reps) {
       const c = r.conclusion;
-      const color = c === 'passed' ? '#10b981' : c === 'conditionally_passed' ? '#f59e0b' : '#ef4444';
-      h += `<tr><td><code>${(r.run_key || '').substring(0, 24)}</code></td><td>${r.symbol || ''}</td><td><span style="color:${color};font-weight:600">${c}</span></td><td class="text-right">${r.gate_count}</td><td class="text-right">${r.blocking_issue_count}</td><td>${(r.created_at || '').substring(0, 16)}</td></tr>`;
+      const friendlyConclusion = paperAcceptanceConclusionLabel(c);
+      
+      let conclusionColor = '#94a3b8'; // gray
+      if (c === 'passed') conclusionColor = '#10b981'; // green
+      else if (c === 'conditionally_passed') conclusionColor = '#f59e0b'; // orange
+      else if (c === 'failed_repeat_paper' || c === 'strategy_invalidated') conclusionColor = '#ef4444'; // red
+      
+      const shortRunKey = (r.run_key || '').replace('paper-acceptance-', '');
+      const symbolLabel = r.symbol === 'ALL' ? 'ALL (全幣種)' : r.symbol;
+      const passedGates = r.gate_count - r.blocking_issue_count;
+      
+      const blockingColor = r.blocking_issue_count > 0 ? '#ef4444' : '#10b981';
+      const timeStr = r.created_at ? new Date(r.created_at).toLocaleString('zh-TW', {hour12: false}) : '—';
+      
+      h += `
+        <tr class="hover:bg-slate-800/40" style="border-bottom:1px solid #1e293b">
+          <td class="py-2 px-1 text-slate-400 font-mono"><code>${shortRunKey}</code></td>
+          <td class="py-2 px-1 text-slate-200 font-bold">${symbolLabel}</td>
+          <td class="py-2 px-1 font-semibold" style="color:${conclusionColor}">${friendlyConclusion}</td>
+          <td class="py-2 px-1 text-right font-mono text-slate-300">${passedGates} / ${r.gate_count}</td>
+          <td class="py-2 px-1 text-right font-mono font-bold" style="color:${blockingColor}">${r.blocking_issue_count} 項</td>
+          <td class="py-2 px-1 text-right text-slate-500">${timeStr}</td>
+        </tr>
+      `;
     }
+    
     h += '</tbody></table>';
     $('cdesk-acceptance').innerHTML = h;
   } catch (err) {
