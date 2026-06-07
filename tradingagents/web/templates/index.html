@@ -2749,11 +2749,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       loadBacktest();
     }
     if (tabName === 'crypto-desk') {
-      cdeskRefreshState();
-      cdeskRefreshAcceptance();
-      cdeskRefreshHistory();
-      cdeskOnSymbolChange();
-      cdeskRefreshOverview();
+      cdeskRefreshAll();
     }
     if (tabName === 'portfolio') {
       if (_twTrendChart && $('tw-portfolio-trend-chart')) {

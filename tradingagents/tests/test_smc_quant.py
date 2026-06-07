@@ -2553,8 +2553,13 @@ def test_sweep_reversal_falls_through_without_bpr_ifvg():
     assert f["ifvg_overlap"] is False
 
 
-def test_suggest_weights_seeds_bpr_and_ifvg_overlap():
+def test_suggest_weights_seeds_bpr_and_ifvg_overlap(monkeypatch):
     """§3.4: suggest_confluence_weights now seeds bpr_overlap + ifvg_overlap."""
+    import smc_quant
+    orig = dict(smc_quant.CONFLUENCE_WEIGHTS_DEFAULT)
+    clean = {k: v for k, v in orig.items() if k not in ("bpr_overlap", "ifvg_overlap")}
+    monkeypatch.setattr(smc_quant, "CONFLUENCE_WEIGHTS_DEFAULT", clean)
+    
     from smc_quant import suggest_confluence_weights
     out = suggest_confluence_weights({"factors": {}})
     assert out["bpr_overlap"] == 1
