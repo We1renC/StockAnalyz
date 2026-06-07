@@ -5059,12 +5059,13 @@ def api_smc_crypto_acceptance_evidence(symbol: Optional[str] = None):
 
 @app.get("/api/smc-crypto/state")
 def api_smc_crypto_state(symbol: Optional[str] = None):
-    """Snapshot of crypto account state: balances + open orders + recent fills."""
+    """Snapshot of crypto account state: balances + open orders + historical orders + recent fills."""
     try:
         api = _crypto_api_client()
         b = api.balances()
         oo = api.open_orders(symbol)
         fills = api._request("GET", "/fills", params={"symbol": symbol} if symbol else None)
+        ho = api._request("GET", "/orders", params={"symbol": symbol} if symbol else None)
         def _extract(payload, *keys):
             if not isinstance(payload, dict):
                 return payload or []
@@ -5079,6 +5080,7 @@ def api_smc_crypto_state(symbol: Optional[str] = None):
         return {
             "balances": _extract(b.get("payload"), "balances"),
             "open_orders": _extract(oo.get("payload"), "orders"),
+            "historical_orders": _extract(ho.get("payload"), "orders")[:50],
             "recent_fills": _extract(fills.get("payload"), "fills")[:20],
             "generated_at": datetime.now().isoformat(timespec="seconds"),
         }

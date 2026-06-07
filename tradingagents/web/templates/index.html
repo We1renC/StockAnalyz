@@ -1251,18 +1251,33 @@ body { background: var(--bg-base); color: var(--text-primary); }
       <div id="cdesk-proposal" class="text-sm">尚未掃描</div>
     </div>
 
-    <!-- 帳戶 + 訂單 + 成交 -->
-    <div class="grid grid-cols-3 gap-3 mb-3">
-      <div class="glass-card-sm p-4">
-        <div class="text-sm text-slate-200 font-semibold mb-3">帳戶持倉</div>
+    <!-- 統合的帳戶持倉與交易歷史控制台 -->
+    <div class="glass-card-sm p-4 mb-3">
+      <div class="flex items-center justify-between border-b border-slate-700 pb-3 mb-3">
+        <div class="flex items-center gap-4">
+          <span class="text-sm text-slate-200 font-semibold">資產與交易控制台</span>
+          <!-- Sub-Tab 按鈕 -->
+          <div class="flex gap-2 text-xs">
+            <button onclick="cdeskSwitchSubTab('holdings')" id="cdesk-tab-holdings-btn" class="px-3 py-1.5 rounded bg-slate-700 text-white font-semibold transition-colors">帳戶持倉</button>
+            <button onclick="cdeskSwitchSubTab('open-orders')" id="cdesk-tab-open-orders-btn" class="px-3 py-1.5 rounded bg-slate-800 text-slate-400 hover:bg-slate-700 transition-colors">未成交委託</button>
+            <button onclick="cdeskSwitchSubTab('history-orders')" id="cdesk-tab-history-orders-btn" class="px-3 py-1.5 rounded bg-slate-800 text-slate-400 hover:bg-slate-700 transition-colors">歷史委託</button>
+            <button onclick="cdeskSwitchSubTab('fills')" id="cdesk-tab-fills-btn" class="px-3 py-1.5 rounded bg-slate-800 text-slate-400 hover:bg-slate-700 transition-colors">近期成交 (歷史)</button>
+          </div>
+        </div>
+        <button onclick="cdeskRefreshState()" class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">↺ 刷新狀態</button>
+      </div>
+
+      <!-- 內容展示區 -->
+      <div id="cdesk-subtab-holdings" class="cdesk-subtab-content text-xs">
         <div id="cdesk-state" class="text-xs">—</div>
       </div>
-      <div class="glass-card-sm p-4">
-        <div class="text-sm text-slate-200 font-semibold mb-3">未成交委託</div>
+      <div id="cdesk-subtab-open-orders" class="cdesk-subtab-content text-xs hidden">
         <div id="cdesk-orders" class="text-xs">—</div>
       </div>
-      <div class="glass-card-sm p-4">
-        <div class="text-sm text-slate-200 font-semibold mb-3">近期成交</div>
+      <div id="cdesk-subtab-history-orders" class="cdesk-subtab-content text-xs hidden">
+        <div id="cdesk-history-orders-list" class="text-xs">—</div>
+      </div>
+      <div id="cdesk-subtab-fills" class="cdesk-subtab-content text-xs hidden">
         <div id="cdesk-fills" class="text-xs">—</div>
       </div>
     </div>
@@ -1298,17 +1313,22 @@ body { background: var(--bg-base); color: var(--text-primary); }
         <span class="text-sm text-slate-200 font-semibold">學習歷史與績效</span>
         <span class="text-xs text-slate-500" id="cdesk-history-summary">—</span>
       </div>
-      <!-- 摘要區：6 個關鍵 KPI 純色塊（前 2 大塊強調實際收益） -->
-      <div class="grid grid-cols-3 gap-3 mb-3">
+      <!-- 摘要區：4 個關鍵 KPI 純色塊（分開交易損益與價格浮動，維持美觀排版） -->
+      <div class="grid grid-cols-4 gap-3 mb-3">
         <div class="p-4" style="background:#0f172a;border-radius:3px;border-left:4px solid #10b981">
           <div class="text-xs text-slate-500">模擬帳戶淨值 (USDT)</div>
           <div id="cdesk-kpi-equity" class="text-2xl font-mono text-slate-100 mt-1">—</div>
           <div class="text-xs mt-1" id="cdesk-kpi-equity-sub">起始 $100,000.00</div>
         </div>
         <div class="p-4" style="background:#0f172a;border-radius:3px;border-left:4px solid #16a34a">
-          <div class="text-xs text-slate-500">總收益 (USDT)</div>
-          <div id="cdesk-kpi-pnl" class="text-2xl font-mono text-slate-100 mt-1">—</div>
-          <div class="text-xs mt-1" id="cdesk-kpi-pnl-sub">已實現 / 未實現</div>
+          <div class="text-xs text-slate-500">交易損益 (已實現) (USDT)</div>
+          <div id="cdesk-kpi-realized-pnl" class="text-2xl font-mono text-slate-100 mt-1">—</div>
+          <div class="text-xs mt-1" id="cdesk-kpi-realized-pnl-sub">已結算交易淨損益</div>
+        </div>
+        <div class="p-4" style="background:#0f172a;border-radius:3px;border-left:4px solid #0ea5e9">
+          <div class="text-xs text-slate-500">價格浮動 (未實現) (USDT)</div>
+          <div id="cdesk-kpi-unrealized-pnl" class="text-2xl font-mono text-slate-100 mt-1">—</div>
+          <div class="text-xs mt-1" id="cdesk-kpi-unrealized-pnl-sub">當前持倉浮動盈虧</div>
         </div>
         <div class="p-4" style="background:#0f172a;border-radius:3px;border-left:4px solid #f59e0b">
           <div class="text-xs text-slate-500">成交數 / 勝率</div>
@@ -10670,14 +10690,21 @@ async function cdeskRefreshHistory() {
       const tag = meta.captured_at ? `自 ${String(meta.captured_at).slice(0,10)}` : '起始';
       $('cdesk-kpi-equity-sub').innerHTML = `<span style="color:${pctColor}">${pct >= 0 ? '+' : ''}${pct.toFixed(3)}%</span> ${tag} ${fmtUSD(baseline)}`;
     }
-    const totalPnl = latest.equity_delta_usdt;
-    $('cdesk-kpi-pnl').textContent = (totalPnl === null || totalPnl === undefined) ? '—'
-      : (totalPnl >= 0 ? '+' : '') + fmtUSD(totalPnl).replace('$', '$');
-    $('cdesk-kpi-pnl').style.color = (totalPnl > 0) ? '#10b981'
-      : (totalPnl < 0 ? '#ef4444' : '#cbd5e1');
-    const rPnl = latest.realized_pnl_usdt, uPnl = latest.unrealized_pnl_usdt;
-    $('cdesk-kpi-pnl-sub').innerHTML =
-      `已實現 <span style="color:${rPnl>0?'#10b981':rPnl<0?'#ef4444':'#94a3b8'}">${fmtUSD(rPnl)}</span> · 未實現 <span style="color:${uPnl>0?'#10b981':uPnl<0?'#ef4444':'#94a3b8'}">${fmtUSD(uPnl)}</span>`;
+    const rPnl = latest.realized_pnl_usdt;
+    const uPnl = latest.unrealized_pnl_usdt;
+    
+    if ($('cdesk-kpi-realized-pnl')) {
+      $('cdesk-kpi-realized-pnl').textContent = (rPnl === null || rPnl === undefined) ? '—'
+        : (rPnl >= 0 ? '+' : '') + fmtUSD(rPnl).replace('$', '$');
+      $('cdesk-kpi-realized-pnl').style.color = (rPnl > 0) ? '#10b981'
+        : (rPnl < 0 ? '#ef4444' : '#cbd5e1');
+    }
+    if ($('cdesk-kpi-unrealized-pnl')) {
+      $('cdesk-kpi-unrealized-pnl').textContent = (uPnl === null || uPnl === undefined) ? '—'
+        : (uPnl >= 0 ? '+' : '') + fmtUSD(uPnl).replace('$', '$');
+      $('cdesk-kpi-unrealized-pnl').style.color = (uPnl > 0) ? '#10b981'
+        : (uPnl < 0 ? '#ef4444' : '#cbd5e1');
+    }
     const totFills = latest.total_fills || 0;
     const winFills = latest.winning_fills || 0;
     $('cdesk-kpi-fills').textContent = totFills;
@@ -11112,43 +11139,139 @@ async function cdeskExecute() {
   }
 }
 
+function cdeskSwitchSubTab(tabName) {
+  const tabs = ['holdings', 'open-orders', 'history-orders', 'fills'];
+  tabs.forEach(t => {
+    const contentEl = $('cdesk-subtab-' + t);
+    const btnEl = $('cdesk-tab-' + t + '-btn');
+    if (contentEl) {
+      if (t === tabName) {
+        contentEl.classList.remove('hidden');
+      } else {
+        contentEl.classList.add('hidden');
+      }
+    }
+    if (btnEl) {
+      if (t === tabName) {
+        btnEl.classList.add('bg-slate-700', 'text-white');
+        btnEl.classList.remove('bg-slate-800', 'text-slate-400');
+      } else {
+        btnEl.classList.remove('bg-slate-700', 'text-white');
+        btnEl.classList.add('bg-slate-800', 'text-slate-400');
+      }
+    }
+  });
+}
+
+async function cdeskCancelOrder(orderId) {
+  if (!confirm(`確定要撤銷此未成交委託 (${orderId}) 嗎？`)) return;
+  try {
+    const r = await fetch(`/v1/orders/${orderId}/cancel`, { method: 'POST' });
+    const d = await r.json();
+    if (d.success) {
+      alert('已成功發送撤單請求');
+      cdeskRefreshState();
+    } else {
+      alert('撤單失敗: ' + (d.error?.message || JSON.stringify(d)));
+    }
+  } catch (err) {
+    alert('撤單失敗: ' + err.message);
+  }
+}
+
 async function cdeskRefreshState() {
   const symbol = $('cdesk-symbol') ? $('cdesk-symbol').value : null;
   try {
     const r = await fetch(`/api/smc-crypto/state${symbol ? '?symbol='+symbol : ''}`);
     const data = await r.json();
-    // Balances
-    let bh = '';
+    
+    // 1. Balances (帳戶持倉)
+    let bh = '<table class="w-full text-xs"><thead><tr class="text-slate-500 border-b border-slate-700"><th class="text-left py-2">資產</th><th class="text-right py-2">可用餘額</th><th class="text-right py-2">鎖定餘額</th><th class="text-right py-2">總餘額</th></tr></thead><tbody>';
+    let hasBal = false;
     for (const b of (data.balances || [])) {
       const total = parseFloat(b.total || b.available || 0);
       if (total > 0.0001) {
-        bh += `<div class="flex justify-between"><span class="font-semibold">${b.asset}</span><span>avail: <code>${b.available}</code> · locked: <code>${b.locked}</code></span></div>`;
+        hasBal = true;
+        bh += `<tr class="hover:bg-slate-800/40 border-b border-slate-800/60"><td class="py-2 font-semibold text-slate-200">${b.asset}</td><td class="py-2 text-right font-mono text-emerald-400">${b.available}</td><td class="py-2 text-right font-mono text-slate-400">${b.locked}</td><td class="py-2 text-right font-mono text-slate-100 font-bold">${b.total}</td></tr>`;
       }
     }
-    $('cdesk-state').innerHTML = bh || '<span class="text-slate-500">無持倉</span>';
-    // Orders
+    bh += '</tbody></table>';
+    $('cdesk-state').innerHTML = hasBal ? bh : '<div class="py-4 text-center text-slate-500">無持倉資產</div>';
+
+    // 2. Open Orders (未成交委託)
     const oo = data.open_orders || [];
     if (oo.length) {
-      let oh = '<table class="w-full text-xs"><thead><tr class="text-slate-500"><th class="text-left">id</th><th class="text-left">side</th><th class="text-right">qty</th><th class="text-right">price</th><th>status</th></tr></thead><tbody>';
-      for (const o of oo.slice(0, 10)) {
-        oh += `<tr><td class="text-xs"><code>${(o.id || '').substring(0,16)}</code></td><td>${o.side}</td><td class="text-right">${o.quantity}</td><td class="text-right">${o.price}</td><td>${o.status}</td></tr>`;
+      let oh = '<table class="w-full text-xs"><thead><tr class="text-slate-500 border-b border-slate-700"><th class="text-left py-2">委託 ID</th><th class="text-left py-2">方向</th><th class="text-right py-2">數量</th><th class="text-right py-2">價格</th><th class="text-center py-2">狀態</th><th class="text-right py-2">操作</th></tr></thead><tbody>';
+      for (const o of oo) {
+        const sideColor = o.side === 'buy' ? 'text-emerald-400' : 'text-rose-400';
+        const sideLabel = o.side === 'buy' ? '買入 (BUY)' : '賣出 (SELL)';
+        oh += `<tr class="hover:bg-slate-800/40 border-b border-slate-800/60">
+          <td class="py-2 text-slate-400 font-mono"><code>${o.id.substring(0,14)}...</code></td>
+          <td class="py-2 font-semibold ${sideColor}">${sideLabel}</td>
+          <td class="py-2 text-right font-mono text-slate-200">${o.quantity}</td>
+          <td class="py-2 text-right font-mono text-slate-200">${o.price || '市價'}</td>
+          <td class="py-2 text-center"><span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px]">${o.status}</span></td>
+          <td class="py-2 text-right"><button onclick="cdeskCancelOrder('${o.id}')" class="px-2 py-1 bg-red-900/40 hover:bg-red-950 text-red-300 rounded text-[10px] transition-colors">撤單</button></td>
+        </tr>`;
       }
       oh += '</tbody></table>';
       $('cdesk-orders').innerHTML = oh;
     } else {
-      $('cdesk-orders').innerHTML = '<span class="text-slate-500">無未成交委託</span>';
+      $('cdesk-orders').innerHTML = '<div class="py-4 text-center text-slate-500">無未成交委託</div>';
     }
-    // Fills
+
+    // 3. Historical Orders (歷史委託)
+    const ho = data.historical_orders || [];
+    if (ho.length) {
+      let hh = '<table class="w-full text-xs"><thead><tr class="text-slate-500 border-b border-slate-700"><th class="text-left py-2">時間</th><th class="text-left py-2">委託 ID</th><th class="text-left py-2">方向</th><th class="text-right py-2">委託數量</th><th class="text-right py-2">價格</th><th class="text-right py-2">已成交</th><th class="text-center py-2">狀態</th></tr></thead><tbody>';
+      for (const o of ho) {
+        const sideColor = o.side === 'buy' ? 'text-emerald-400' : 'text-rose-400';
+        const sideLabel = o.side === 'buy' ? '買入 (BUY)' : '賣出 (SELL)';
+        let statusColor = 'text-amber-400';
+        if (o.status === 'filled') statusColor = 'text-emerald-400';
+        else if (o.status === 'cancelled') statusColor = 'text-slate-500';
+        const timeStr = o.created_at ? o.created_at.substring(11, 19) : '—';
+        hh += `<tr class="hover:bg-slate-800/40 border-b border-slate-800/60">
+          <td class="py-2 text-slate-400 font-mono">${timeStr}</td>
+          <td class="py-2 text-slate-400 font-mono"><code>${o.id.substring(0,14)}...</code></td>
+          <td class="py-2 font-semibold ${sideColor}">${sideLabel}</td>
+          <td class="py-2 text-right font-mono text-slate-200">${o.quantity}</td>
+          <td class="py-2 text-right font-mono text-slate-200">${o.price || '市價'}</td>
+          <td class="py-2 text-right font-mono text-slate-200">${o.filled_quantity || '0'}</td>
+          <td class="py-2 text-center"><span class="px-1.5 py-0.5 rounded text-[10px] ${statusColor}">${o.status}</span></td>
+        </tr>`;
+      }
+      hh += '</tbody></table>';
+      $('cdesk-history-orders-list').innerHTML = hh;
+    } else {
+      $('cdesk-history-orders-list').innerHTML = '<div class="py-4 text-center text-slate-500">無歷史委託記錄</div>';
+    }
+
+    // 4. Recent Fills (成交歷史)
     const fl = data.recent_fills || [];
     if (fl.length) {
-      let fh = '<table class="w-full text-xs"><thead><tr class="text-slate-500"><th class="text-left">id</th><th class="text-left">side</th><th class="text-right">qty</th><th class="text-right">price</th><th>at</th></tr></thead><tbody>';
-      for (const f of fl.slice(0, 10)) {
-        fh += `<tr><td class="text-xs"><code>${(f.id || '').substring(0,12)}</code></td><td>${f.side || ''}</td><td class="text-right">${f.quantity || ''}</td><td class="text-right">${f.price || ''}</td><td>${(f.executed_at || '').substring(11, 19)}</td></tr>`;
+      let fh = '<table class="w-full text-xs"><thead><tr class="text-slate-500 border-b border-slate-700"><th class="text-left py-2">成交時間</th><th class="text-left py-2">委託 ID</th><th class="text-left py-2">方向</th><th class="text-right py-2">成交數量</th><th class="text-right py-2">成交價格</th><th class="text-right py-2">成交金額 (USDT)</th><th class="text-right py-2">手續費</th></tr></thead><tbody>';
+      for (const f of fl) {
+        const sideColor = f.side === 'buy' ? 'text-emerald-400' : 'text-rose-400';
+        const sideLabel = f.side === 'buy' ? '買入 (BUY)' : '賣出 (SELL)';
+        const timeStr = f.executed_at ? f.executed_at.substring(11, 19) : '—';
+        const qty = parseFloat(f.quantity || 0);
+        const px = parseFloat(f.price || 0);
+        const amt = (qty * px).toFixed(4);
+        fh += `<tr class="hover:bg-slate-800/40 border-b border-slate-800/60">
+          <td class="py-2 text-slate-400 font-mono">${timeStr}</td>
+          <td class="py-2 text-slate-400 font-mono"><code>${f.order_id ? f.order_id.substring(0,14) : '—'}...</code></td>
+          <td class="py-2 font-semibold ${sideColor}">${sideLabel}</td>
+          <td class="py-2 text-right font-mono text-slate-200">${f.quantity || ''}</td>
+          <td class="py-2 text-right font-mono text-slate-200">${f.price || ''}</td>
+          <td class="py-2 text-right font-mono text-slate-100 font-bold">${amt}</td>
+          <td class="py-2 text-right font-mono text-slate-400">${f.fee || '0'} ${f.fee_asset || ''}</td>
+        </tr>`;
       }
       fh += '</tbody></table>';
       $('cdesk-fills').innerHTML = fh;
     } else {
-      $('cdesk-fills').innerHTML = '<span class="text-slate-500">無近期成交</span>';
+      $('cdesk-fills').innerHTML = '<div class="py-4 text-center text-slate-500">無近期成交記錄</div>';
     }
   } catch (err) {
     $('cdesk-state').innerHTML = `<span class="text-red-400">載入失敗: ${err.message}</span>`;
