@@ -55,3 +55,5 @@ adaptive:
   k_range_percent: 0.6
   m_stop_atr: 1.5
   atr_window: 14
+  sweep_cooldown_days: 7
+

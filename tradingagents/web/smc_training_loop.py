@@ -1286,9 +1286,14 @@ def train_from_ledger(
                             os.path.join(os.path.dirname(yaml_path),
                                           "profile.yaml"),
                         )
+                        cooldown_days = 7
+                        if config_snapshot and isinstance(config_snapshot.get("data"), dict):
+                            cooldown_days = config_snapshot["data"].get("adaptive", {}).get("sweep_cooldown_days", 7)
+
                         sweep_out = auto_apply_sweep(
                             records=records,
                             profile_path=profile_path,
+                            min_days_since_last_apply=cooldown_days,
                             obsidian_vault=os.environ.get("OBSIDIAN_VAULT_PATH"),
                         )
                         if sweep_out.get("applied"):

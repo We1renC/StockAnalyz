@@ -13,7 +13,7 @@ This module:
     ``sweep_hyperparameters`` only when OOS data is too sparse.
   • Applies ``should_apply_recommendation`` to the selected sweep mode.
   • If apply=True AND last-apply timestamp is older than
-    ``min_days_since_last_apply`` (default 30), writes the new values
+    ``min_days_since_last_apply`` (default 7), writes the new values
     back to profile.yaml and stamps a ``last_auto_apply`` audit field.
   • Always emits an Obsidian markdown audit note regardless of whether
     we applied — so users see WHY we didn't apply (delta too small,
@@ -103,7 +103,7 @@ def auto_apply_sweep(
     *,
     records: list[dict],
     profile_path: str,
-    min_days_since_last_apply: int = 30,
+    min_days_since_last_apply: int = 7,
     min_sharpe_improvement: float = 0.1,
     min_sharpe_absolute: float = 0.2,
     obsidian_vault: Optional[str] = None,
