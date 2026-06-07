@@ -4398,13 +4398,17 @@ def api_smc_crypto_all_symbols_overview():
                     patch = load_latest_adaptive_runtime_patch(conn, sym)
                     strategy_patch = patch.get("strategy") or {}
                     state_patch = patch.get("state") or {}
+                    risk_patch = patch.get("risk") or {}
+                    probe_cap = float(risk_patch.get("probe_notional_cap_usdt") or 11.0)
+                    if probe_cap < 5.5:
+                        probe_cap = 11.0
                     item["adaptive_patch"] = {
                         "optimal_interval": strategy_patch.get("optimal_interval"),
                         "min_confluence_score": strategy_patch.get("min_confluence_score"),
                         "min_rr": strategy_patch.get("min_rr"),
                         "risk_pct": strategy_patch.get("risk_pct"),
-                        "risk_multiplier": strategy_patch.get("risk_multiplier"),
-                        "probe_notional_cap_usdt": strategy_patch.get("probe_notional_cap_usdt"),
+                        "risk_multiplier": risk_patch.get("risk_multiplier"),
+                        "probe_notional_cap_usdt": probe_cap,
                         "mode": state_patch.get("mode"),
                     }
                 except Exception as e:

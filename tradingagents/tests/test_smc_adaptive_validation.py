@@ -193,7 +193,7 @@ def test_preflight_and_run_symbol_in_validating_probe_mode(tmp_path):
         },
         "risk": {
             "risk_multiplier": 0.03,
-            "probe_notional_cap_usdt": 5.0,
+            "probe_notional_cap_usdt": 11.0,
         },
         "strategy": {
             "confluence_min_score": 10.0,
@@ -267,7 +267,7 @@ def test_preflight_and_run_symbol_in_validating_probe_mode(tmp_path):
         # 正常 major (BTC) 的 risk_pct 是 0.02
         # VALIDATING_PROBE 下 risk_pct = 0.02 * 0.03 = 0.0006
         assert abs(cfg.risk_pct - 0.0006) < 1e-9
-        assert cfg.max_notional_usdt == 5.0
+        assert cfg.max_notional_usdt == 11.0
         assert cfg.min_confluence_score == 10
         assert cfg.probe is True
 
