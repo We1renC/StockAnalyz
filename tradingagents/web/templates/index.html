@@ -1154,251 +1154,300 @@ body { background: var(--bg-base); color: var(--text-primary); }
   <!-- SMC Quantitative Analysis Tab -->
   <!-- ─────────────── Crypto Auto Desk (symbol-only) ─────────────── -->
   <div id="tab-crypto-desk" class="tab-content hidden">
-    <!-- Header: 交易對 + 自動學習開關 + 動作按鈕 -->
+    <!-- Header: 全幣種控制 + 自動學習開關 + 全域動作按鈕 -->
     <div class="mb-3 glass-card-sm p-4 flex items-center justify-between flex-wrap gap-3">
       <div class="flex items-center gap-3">
-        <span class="text-sm text-slate-300">交易對</span>
-        <select id="cdesk-symbol" onchange="cdeskOnSymbolChange()" class="text-base font-semibold" style="width:150px; padding:7px 12px; background:#0f172a; color:#fff; border-radius:4px; border:1px solid #334155;">
-          <option value="BTC-USDT">BTC-USDT</option>
-          <option value="ETH-USDT">ETH-USDT</option>
-          <option value="SOL-USDT">SOL-USDT</option>
-          <option value="BNB-USDT">BNB-USDT</option>
-          <option value="XRP-USDT">XRP-USDT</option>
-        </select>
-        <span id="cdesk-tier-badge" class="text-xs px-2 py-1" style="background:#1e293b;color:#94a3b8;border-radius:3px;letter-spacing:0.05em">TIER —</span>
+        <span class="text-base font-bold text-slate-100 flex items-center gap-2">
+          <svg style="width:20px;height:20px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-sky-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 002 2h2a2 2 0 002-2z"></path></svg>
+          SMC 加密半自動量化控制終端
+        </span>
+        <input type="hidden" id="cdesk-symbol" value="BTC-USDT">
+        <span class="text-xs text-slate-500 bg-slate-900/60 px-2.5 py-1 rounded border border-slate-800 font-mono">5 CHANNELS ACTIVE</span>
       </div>
       <div class="flex items-center gap-2">
-        <span class="text-xs text-slate-400 mr-2">自動學習</span>
+        <span class="text-xs text-slate-400 mr-2 font-medium">全域自動學習</span>
         <label class="relative inline-block" style="width:42px;height:22px">
           <input type="checkbox" id="cdesk-autolearn-toggle" onchange="cdeskToggleAutoLearn()" style="opacity:0;width:0;height:0">
           <span id="cdesk-autolearn-slider" style="position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#334155;border-radius:22px;transition:.2s">
             <span style="position:absolute;height:16px;width:16px;left:3px;bottom:3px;background:#94a3b8;border-radius:50%;transition:.2s" id="cdesk-autolearn-knob"></span>
           </span>
         </label>
-        <span class="text-xs text-slate-500 ml-3">|</span>
-        <button id="cdesk-auto-btn" onclick="cdeskAutoRun()" class="text-sm px-4 py-2 font-semibold" style="background:#0ea5e9;color:#fff;border-radius:4px">自動執行</button>
-        <button id="cdesk-force-btn" onclick="cdeskForceLive()" class="text-sm px-4 py-2 font-semibold" style="background:#b91c1c;color:#fff;border-radius:4px" title="降匯流門檻並強制 live — 測試演示">強制送單</button>
-        <button onclick="cdeskScan()" class="text-xs px-3 py-2" style="background:#334155;color:#fff;border-radius:4px">僅掃描</button>
-        <button onclick="cdeskRefreshAll()" class="text-xs px-3 py-2" style="background:#334155;color:#fff;border-radius:4px">刷新</button>
+        <span class="text-slate-700 mx-2">|</span>
+        <button id="cdesk-auto-btn" onclick="cdeskAutoRun()" class="text-xs px-4 py-2 font-semibold hover:opacity-90 transition-opacity" style="background:#0ea5e9;color:#fff;border-radius:4px;">全幣種自動執行</button>
+        <button onclick="cdeskRefreshAll()" class="text-xs px-3 py-2 hover:bg-slate-700 transition-colors" style="background:#1e293b;color:#cbd5e1;border-radius:4px;border:1px solid #334155">全域刷新</button>
       </div>
     </div>
 
-    <!-- 全幣種即時交易概覽 -->
-    <div class="mb-3 glass-card-sm p-4">
-      <div class="flex items-center justify-between mb-3">
-        <span class="text-sm text-slate-200 font-semibold">全幣種即時交易概覽</span>
-        <div class="flex items-center gap-2">
-          <span id="cdesk-overview-updated" class="text-xs text-slate-500">—</span>
-          <button onclick="cdeskRefreshOverview()" class="text-xs px-2 py-1" style="background:#1e293b;color:#94a3b8;border-radius:3px">↺ 刷新</button>
+    <!-- 主雙欄佈局 (左右雙欄 6-6 對分) -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-3 mb-3">
+      
+      <!-- 左欄: 全幣種 SMC 策略與決策矩陣 (占 6 格) -->
+      <div class="lg:col-span-6 space-y-3">
+        <div class="glass-card-sm p-4" style="border-top: 3px solid #10b981;">
+          <div class="flex items-center justify-between mb-3 pb-2 border-b border-slate-800/80">
+            <span class="text-sm text-slate-200 font-semibold flex items-center gap-1.5">
+              <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-emerald-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+              SMC 實時策略與決策矩陣 (Multi-Symbol Grid)
+            </span>
+            <span id="cdesk-proposal-time" class="text-xs text-slate-500">—</span>
+          </div>
+          
+          <!-- 多幣種卡片網格容器 -->
+          <div id="cdesk-symbols-container" class="space-y-3">
+            <div class="text-xs text-slate-500 text-center py-8">正在加載全幣種策略與決策矩陣…</div>
+          </div>
         </div>
       </div>
-      <div id="cdesk-all-symbols-grid" class="grid gap-2" style="grid-template-columns:repeat(5,1fr)">
-        <!-- 由 cdeskRefreshOverview() 動態渲染 -->
-        <div class="text-xs text-slate-500 text-center py-4" style="grid-column:1/-1">載入中…</div>
+      
+      <!-- 右欄: 資產、損益與統合控制台 (占 6 格) -->
+      <div class="lg:col-span-6 space-y-3">
+        <!-- 核心統計損益卡片 (4卡片緊湊併排) -->
+        <div class="grid grid-cols-4 gap-2">
+          <div class="p-3 rounded border-l-4 border-emerald-500" style="background:#0f172a">
+            <div class="text-[10px] text-slate-500 font-semibold">帳戶淨值 (USDT)</div>
+            <div id="cdesk-kpi-equity" class="text-sm font-mono text-slate-100 font-bold mt-1">—</div>
+            <div id="cdesk-kpi-equity-sub" class="text-[9px] text-slate-500 mt-0.5 truncate">—</div>
+          </div>
+          <div class="p-3 rounded border-l-4 border-emerald-400" style="background:#0f172a">
+            <div class="text-[10px] text-slate-500 font-semibold">交易損益 (已實現)</div>
+            <div id="cdesk-kpi-realized-pnl" class="text-sm font-mono text-slate-100 font-bold mt-1">—</div>
+            <div id="cdesk-kpi-realized-pnl-sub" class="text-[9px] text-slate-500 mt-0.5 truncate">—</div>
+          </div>
+          <div class="p-3 rounded border-l-4 border-sky-500" style="background:#0f172a">
+            <div class="text-[10px] text-slate-500 font-semibold">價格浮動 (未實現)</div>
+            <div id="cdesk-kpi-unrealized-pnl" class="text-sm font-mono text-slate-100 font-bold mt-1">—</div>
+            <div id="cdesk-kpi-unrealized-pnl-sub" class="text-[9px] text-slate-500 mt-0.5 truncate">—</div>
+          </div>
+          <div class="p-3 rounded border-l-4 border-amber-500" style="background:#0f172a">
+            <div class="text-[10px] text-slate-500 font-semibold">總成交與勝率</div>
+            <div id="cdesk-kpi-fills" class="text-sm font-mono text-slate-100 font-bold mt-1">—</div>
+            <div id="cdesk-kpi-fills-sub" class="text-[9px] text-slate-500 mt-0.5 truncate">—</div>
+          </div>
+        </div>
+
+        <!-- 統合的帳戶持倉與交易歷史控制台 -->
+        <div class="glass-card-sm p-4">
+          <div class="flex items-center justify-between border-b border-slate-700/80 pb-3 mb-3 flex-wrap gap-2">
+            <div class="flex items-center gap-3 flex-wrap">
+              <span class="text-xs text-slate-200 font-semibold">資產與交易控制台</span>
+              <div class="flex gap-1.5 text-[11px]">
+                <button onclick="cdeskSwitchSubTab('holdings')" id="cdesk-tab-holdings-btn" class="px-2.5 py-1 rounded bg-slate-700 text-white font-semibold transition-colors">帳戶持倉</button>
+                <button onclick="cdeskSwitchSubTab('open-orders')" id="cdesk-tab-open-orders-btn" class="px-2.5 py-1 rounded bg-slate-800 text-slate-400 hover:bg-slate-700 transition-colors">未成交委託</button>
+                <button onclick="cdeskSwitchSubTab('history-orders')" id="cdesk-tab-history-orders-btn" class="px-2.5 py-1 rounded bg-slate-800 text-slate-400 hover:bg-slate-700 transition-colors">歷史委託</button>
+                <button onclick="cdeskSwitchSubTab('fills')" id="cdesk-tab-fills-btn" class="px-2.5 py-1 rounded bg-slate-800 text-slate-400 hover:bg-slate-700 transition-colors">近期成交</button>
+              </div>
+            </div>
+            <button onclick="cdeskRefreshState()" class="text-[10px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">↺ 刷新狀態</button>
+          </div>
+
+          <!-- 內容展示區 -->
+          <div id="cdesk-subtab-holdings" class="cdesk-subtab-content text-xs">
+            <div id="cdesk-state" class="text-xs">—</div>
+          </div>
+          <div id="cdesk-subtab-open-orders" class="cdesk-subtab-content text-xs hidden">
+            <div id="cdesk-orders" class="text-xs">—</div>
+          </div>
+          <div id="cdesk-subtab-history-orders" class="cdesk-subtab-content text-xs hidden">
+            <div id="cdesk-history-orders-list" class="text-xs">—</div>
+          </div>
+          <div id="cdesk-subtab-fills" class="cdesk-subtab-content text-xs hidden">
+            <div id="cdesk-fills" class="text-xs">—</div>
+          </div>
+        </div>
       </div>
     </div>
 
-    <!-- 主視覺：系統狀態大區塊 -->
-    <div class="mb-3 glass-card-sm p-5">
-      <div class="flex items-stretch gap-5 flex-wrap">
-        <!-- 左：狀態色塊 + 下次動作 -->
-        <div style="min-width:240px">
-          <div class="text-xs text-slate-500 mb-2" style="letter-spacing:0.1em">系統狀態</div>
-          <div id="cdesk-state-block" class="px-5 py-4 mb-3 font-bold text-xl text-center" style="background:#334155;color:#cbd5e1;border-radius:4px;letter-spacing:0.05em">—</div>
-          <div class="text-xs text-slate-500">下一動作</div>
-          <div id="cdesk-next-action" class="text-sm text-slate-200 mt-1">—</div>
-          <div class="text-xs text-slate-500 mt-3">上次 tick</div>
-          <div id="cdesk-tick-time" class="text-xs text-slate-300 mt-1">—</div>
-        </div>
-        <!-- 中：進度三條 -->
-        <div class="flex-1" style="min-width:280px">
-          <div class="text-xs text-slate-500 mb-2" style="letter-spacing:0.1em">學習進度</div>
-          <!-- ledger -->
-          <div class="mb-3">
-            <div class="flex justify-between text-xs mb-1"><span class="text-slate-400">樣本累積</span><span id="cdesk-ledger-label" class="text-slate-300 font-mono">0/30</span></div>
-            <div style="height:8px;background:#1e293b;border-radius:2px;overflow:hidden"><div id="cdesk-ledger-bar" style="height:100%;background:#0ea5e9;width:0%;transition:.3s"></div></div>
+
+    <!-- 進階日誌與細節終端 (全部折疊收納，保持介面極致簡潔) -->
+    <div class="mt-4 space-y-3">
+      
+      <!-- CLI 執行進度折疊面版 -->
+      <details class="glass-card-sm p-4 border border-slate-800/80">
+        <summary class="text-sm text-slate-300 font-semibold cursor-pointer select-none flex items-center justify-between outline-none">
+          <span class="flex items-center gap-2">
+            <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-indigo-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+            一鍵歷史數據學習與自適應調優 (CLI 進度)
+          </span>
+          <div class="flex items-center gap-2 text-xs mr-4">
+            <span id="cdesk-relearn-status-dot" class="inline-block w-2.5 h-2.5 rounded-full" style="background:#64748b"></span>
+            <span id="cdesk-relearn-status-text" class="text-slate-400 font-normal">閒置</span>
           </div>
-          <!-- validation -->
-          <div class="mb-3">
-            <div class="flex justify-between text-xs mb-1"><span class="text-slate-400">驗證閘 (5)</span><span id="cdesk-validation-label" class="text-slate-300 font-mono">0/5</span></div>
-            <div style="height:8px;background:#1e293b;border-radius:2px;overflow:hidden"><div id="cdesk-validation-bar" style="height:100%;background:#10b981;width:0%;transition:.3s"></div></div>
-            <div id="cdesk-validation-detail" class="text-xs text-slate-500 mt-1">—</div>
-          </div>
-          <!-- indicator -->
+        </summary>
+        <div class="mt-3 text-xs text-slate-400 leading-relaxed space-y-3">
           <div>
-            <div class="flex justify-between text-xs mb-1"><span class="text-slate-400">學習指標</span><span id="cdesk-indicator-label" class="text-slate-300 font-mono">—</span></div>
-            <div id="cdesk-indicator-block" class="text-xs px-2 py-1 inline-block" style="background:#1e293b;color:#94a3b8;border-radius:3px">—</div>
+            適用於新部署或需要重新初始化模型時，自動執行背景重置、拉取歷史 K 線、評估 1m~30m 多時框期望值、決定最佳時框並重新訓練自適應特徵 Confluence 權重的完整工作流。
           </div>
-        </div>
-        <!-- 右：profile 摘要（含學習成果覆寫） -->
-        <div style="min-width:220px">
-          <div class="text-xs text-slate-500 mb-2" style="letter-spacing:0.1em">策略參數 (自動)</div>
-          <div id="cdesk-profile-summary" class="text-xs space-y-1">—</div>
-          <div class="mt-3">
-            <div class="text-xs text-slate-500 mb-1" style="letter-spacing:0.1em">學習覆寫參數 <span class="text-emerald-400">★</span></div>
-            <div id="cdesk-adaptive-params" class="text-xs space-y-1 p-2" style="background:#0f2a1a;border-radius:3px;border:1px solid #166534">—</div>
+          <div class="flex items-center gap-3 flex-wrap">
+            <span class="text-xs text-slate-300">目標幣種：</span>
+            <input type="text" id="cdesk-relearn-symbols" value="BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT,XRP-USDT" 
+                   class="text-xs px-2 py-1.5 font-mono" 
+                   style="background:#0f172a; color:#fff; border:1px solid #334155; border-radius:4px; width:360px;" />
+            <button id="cdesk-relearn-start-btn" onclick="cdeskStartHistoricalRelearn()" class="text-xs px-4 py-2 font-semibold" style="background:#10b981; color:#fff; border-radius:4px">開始一鍵學習</button>
+            <button id="cdesk-relearn-stop-btn" onclick="cdeskStopHistoricalRelearn()" class="text-xs px-4 py-2 font-semibold" style="background:#ef4444; color:#fff; border-radius:4px" disabled>終止工作流</button>
           </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- SMC 提案 -->
-    <div class="mb-3 glass-card-sm p-4">
-      <div class="flex items-center justify-between mb-3">
-        <span class="text-sm text-slate-200 font-semibold">當前 SMC 提案</span>
-        <span id="cdesk-proposal-time" class="text-xs text-slate-500">—</span>
-      </div>
-      <div id="cdesk-proposal" class="text-sm">尚未掃描</div>
-    </div>
-
-    <!-- 統合的帳戶持倉與交易歷史控制台 -->
-    <div class="glass-card-sm p-4 mb-3">
-      <div class="flex items-center justify-between border-b border-slate-700 pb-3 mb-3">
-        <div class="flex items-center gap-4">
-          <span class="text-sm text-slate-200 font-semibold">資產與交易控制台</span>
-          <!-- Sub-Tab 按鈕 -->
-          <div class="flex gap-2 text-xs">
-            <button onclick="cdeskSwitchSubTab('holdings')" id="cdesk-tab-holdings-btn" class="px-3 py-1.5 rounded bg-slate-700 text-white font-semibold transition-colors">帳戶持倉</button>
-            <button onclick="cdeskSwitchSubTab('open-orders')" id="cdesk-tab-open-orders-btn" class="px-3 py-1.5 rounded bg-slate-800 text-slate-400 hover:bg-slate-700 transition-colors">未成交委託</button>
-            <button onclick="cdeskSwitchSubTab('history-orders')" id="cdesk-tab-history-orders-btn" class="px-3 py-1.5 rounded bg-slate-800 text-slate-400 hover:bg-slate-700 transition-colors">歷史委託</button>
-            <button onclick="cdeskSwitchSubTab('fills')" id="cdesk-tab-fills-btn" class="px-3 py-1.5 rounded bg-slate-800 text-slate-400 hover:bg-slate-700 transition-colors">近期成交 (歷史)</button>
-          </div>
-        </div>
-        <button onclick="cdeskRefreshState()" class="text-xs px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">↺ 刷新狀態</button>
-      </div>
-
-      <!-- 內容展示區 -->
-      <div id="cdesk-subtab-holdings" class="cdesk-subtab-content text-xs">
-        <div id="cdesk-state" class="text-xs">—</div>
-      </div>
-      <div id="cdesk-subtab-open-orders" class="cdesk-subtab-content text-xs hidden">
-        <div id="cdesk-orders" class="text-xs">—</div>
-      </div>
-      <div id="cdesk-subtab-history-orders" class="cdesk-subtab-content text-xs hidden">
-        <div id="cdesk-history-orders-list" class="text-xs">—</div>
-      </div>
-      <div id="cdesk-subtab-fills" class="cdesk-subtab-content text-xs hidden">
-        <div id="cdesk-fills" class="text-xs">—</div>
-      </div>
-    </div>
-
-    <!-- 一鍵歷史數據學習與自適應調優 (CLI 進度) -->
-    <div class="glass-card-sm p-4 mb-3">
-      <div class="flex items-center justify-between mb-3">
-        <span class="text-sm text-slate-200 font-semibold">一鍵歷史數據學習與自適應調優 (CLI 進度)</span>
-        <div class="flex items-center gap-2">
-          <span id="cdesk-relearn-status-dot" class="inline-block w-2.5 h-2.5 rounded-full" style="background:#64748b"></span>
-          <span id="cdesk-relearn-status-text" class="text-xs text-slate-400">閒置</span>
-        </div>
-      </div>
-      <div class="text-xs text-slate-400 mb-3 leading-relaxed">
-        適用於新部署或需要重新初始化模型時，自動執行背景重置、拉取歷史 K 線、評估 1m~30m 多時框期望值、決定最佳時框並重新訓練自適應特徵 Confluence 權重的完整工作流。
-      </div>
-      <div class="flex items-center gap-3 mb-3 flex-wrap">
-        <span class="text-xs text-slate-300">目標幣種：</span>
-        <input type="text" id="cdesk-relearn-symbols" value="BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT,XRP-USDT" 
-               class="text-xs px-2 py-1.5 font-mono" 
-               style="background:#0f172a; color:#fff; border:1px solid #334155; border-radius:4px; width:360px;" />
-        <button id="cdesk-relearn-start-btn" onclick="cdeskStartHistoricalRelearn()" class="text-xs px-4 py-2 font-semibold" style="background:#10b981; color:#fff; border-radius:4px">開始一鍵學習</button>
-        <button id="cdesk-relearn-stop-btn" onclick="cdeskStopHistoricalRelearn()" class="text-xs px-4 py-2 font-semibold" style="background:#ef4444; color:#fff; border-radius:4px" disabled>終止工作流</button>
-      </div>
-      <pre id="cdesk-relearn-terminal" class="font-mono text-xs" 
-           style="background:#020617; color:#10b981; height:240px; overflow-y:auto; padding:12px; border-radius:4px; border:1px solid #1e293b; line-height:1.6; white-space:pre-wrap; word-break:break-all;">點擊【開始一鍵學習】後，此處將實時顯示 CLI 執行進度日誌...
+          <pre id="cdesk-relearn-terminal" class="font-mono text-xs" 
+               style="background:#020617; color:#10b981; height:240px; overflow-y:auto; padding:12px; border-radius:4px; border:1px solid #1e293b; line-height:1.6; white-space:pre-wrap; word-break:break-all;">點擊【開始一鍵學習】後，此處將實時顯示 CLI 執行進度日誌...
 目前無執行任務。</pre>
-    </div>
+        </div>
+      </details>
 
-    <!-- 學習歷史 + 績效 -->
-    <div class="glass-card-sm p-4 mb-3">
-      <div class="flex items-center justify-between mb-3">
-        <span class="text-sm text-slate-200 font-semibold">學習歷史與績效</span>
-        <span class="text-xs text-slate-500" id="cdesk-history-summary">—</span>
-      </div>
-      <!-- 摘要區：4 個關鍵 KPI 純色塊（分開交易損益與價格浮動，維持美觀排版） -->
-      <div class="grid grid-cols-4 gap-3 mb-3">
-        <div class="p-4" style="background:#0f172a;border-radius:3px;border-left:4px solid #10b981">
-          <div class="text-xs text-slate-500">模擬帳戶淨值 (USDT)</div>
-          <div id="cdesk-kpi-equity" class="text-2xl font-mono text-slate-100 mt-1">—</div>
-          <div class="text-xs mt-1" id="cdesk-kpi-equity-sub">起始 $100,000.00</div>
+      <!-- 學習歷史與績效 (Tick 歷史表) 折疊面版 -->
+      <details class="glass-card-sm p-4 border border-slate-800/80">
+        <summary class="text-sm text-slate-300 font-semibold cursor-pointer select-none flex items-center justify-between outline-none">
+          <span class="flex items-center gap-2">
+            <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-emerald-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+            自適應學習歷史與績效日誌 (Tick History)
+          </span>
+          <span class="text-xs text-slate-500 font-normal mr-4" id="cdesk-history-summary">—</span>
+        </summary>
+        <div class="mt-3 space-y-3">
+          <!-- 次要指標 -->
+          <div class="grid grid-cols-4 gap-3">
+            <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #0ea5e9">
+              <div class="text-xs text-slate-500">總 tick</div>
+              <div id="cdesk-kpi-ticks" class="text-lg font-mono text-slate-100 mt-1">0</div>
+              <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-ticks-sub">—</div>
+            </div>
+            <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #6366f1">
+              <div class="text-xs text-slate-500">回測 E[R]</div>
+              <div id="cdesk-kpi-er" class="text-lg font-mono text-slate-100 mt-1">—</div>
+              <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-er-sub">—</div>
+            </div>
+            <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #94a3b8">
+              <div class="text-xs text-slate-500">回測勝率/Sharpe</div>
+              <div id="cdesk-kpi-win" class="text-lg font-mono text-slate-100 mt-1">—</div>
+              <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-win-sub">—</div>
+            </div>
+            <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #a855f7">
+              <div class="text-xs text-slate-500">節流間隔</div>
+              <div id="cdesk-kpi-throttle" class="text-lg font-mono text-slate-100 mt-1">—</div>
+              <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-throttle-sub">—</div>
+            </div>
+          </div>
+          <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #22c55e">
+            <div class="text-xs text-slate-500">學習狀態</div>
+            <div id="cdesk-kpi-learning-status" class="text-sm text-slate-100 mt-1">—</div>
+            <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-learning-sub">—</div>
+          </div>
+          <!-- 每次 tick 的詳細表 -->
+          <div style="max-height:280px;overflow:auto">
+            <table class="w-full text-xs font-mono">
+              <thead style="position:sticky;top:0;background:#0f172a">
+                <tr class="text-slate-500" style="border-bottom:1px solid #334155">
+                  <th class="text-left py-2 px-2">時間</th>
+                  <th class="text-left py-2 px-2">狀態</th>
+                  <th class="text-right py-2 px-2">淨值 (USDT)</th>
+                  <th class="text-right py-2 px-2">已實現</th>
+                  <th class="text-right py-2 px-2">未實現</th>
+                  <th class="text-right py-2 px-2">成交</th>
+                  <th class="text-right py-2 px-2">評估</th>
+                  <th class="text-right py-2 px-2">訓練</th>
+                  <th class="text-right py-2 px-2">唯一新增</th>
+                  <th class="text-right py-2 px-2">回測成交</th>
+                  <th class="text-right py-2 px-2">E[R]</th>
+                  <th class="text-right py-2 px-2">勝率</th>
+                  <th class="text-left py-2 px-2">學習</th>
+                  <th class="text-right py-2 px-2">下次</th>
+                </tr>
+              </thead>
+              <tbody id="cdesk-history-rows">
+                <tr><td colspan="14" class="py-3 text-center text-slate-500">尚無 tick 紀錄 — 開啟自動學習開始累積</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
-        <div class="p-4" style="background:#0f172a;border-radius:3px;border-left:4px solid #16a34a">
-          <div class="text-xs text-slate-500">交易損益 (已實現) (USDT)</div>
-          <div id="cdesk-kpi-realized-pnl" class="text-2xl font-mono text-slate-100 mt-1">—</div>
-          <div class="text-xs mt-1" id="cdesk-kpi-realized-pnl-sub">已結算交易淨損益</div>
-        </div>
-        <div class="p-4" style="background:#0f172a;border-radius:3px;border-left:4px solid #0ea5e9">
-          <div class="text-xs text-slate-500">價格浮動 (未實現) (USDT)</div>
-          <div id="cdesk-kpi-unrealized-pnl" class="text-2xl font-mono text-slate-100 mt-1">—</div>
-          <div class="text-xs mt-1" id="cdesk-kpi-unrealized-pnl-sub">當前持倉浮動盈虧</div>
-        </div>
-        <div class="p-4" style="background:#0f172a;border-radius:3px;border-left:4px solid #f59e0b">
-          <div class="text-xs text-slate-500">成交數 / 勝率</div>
-          <div id="cdesk-kpi-fills" class="text-2xl font-mono text-slate-100 mt-1">—</div>
-          <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-fills-sub">—</div>
-        </div>
-      </div>
-      <!-- 次要指標 -->
-      <div class="grid grid-cols-4 gap-3 mb-3">
-        <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #0ea5e9">
-          <div class="text-xs text-slate-500">總 tick</div>
-          <div id="cdesk-kpi-ticks" class="text-lg font-mono text-slate-100 mt-1">0</div>
-          <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-ticks-sub">—</div>
-        </div>
-        <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #6366f1">
-          <div class="text-xs text-slate-500">回測 E[R]</div>
-          <div id="cdesk-kpi-er" class="text-lg font-mono text-slate-100 mt-1">—</div>
-          <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-er-sub">—</div>
-        </div>
-        <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #94a3b8">
-          <div class="text-xs text-slate-500">回測勝率/Sharpe</div>
-          <div id="cdesk-kpi-win" class="text-lg font-mono text-slate-100 mt-1">—</div>
-          <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-win-sub">—</div>
-        </div>
-        <div class="p-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #a855f7">
-          <div class="text-xs text-slate-500">節流間隔</div>
-          <div id="cdesk-kpi-throttle" class="text-lg font-mono text-slate-100 mt-1">—</div>
-          <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-throttle-sub">—</div>
-        </div>
-      </div>
-      <div class="p-3 mb-3" style="background:#0f172a;border-radius:3px;border-left:3px solid #22c55e">
-        <div class="text-xs text-slate-500">學習狀態</div>
-        <div id="cdesk-kpi-learning-status" class="text-sm text-slate-100 mt-1">—</div>
-        <div class="text-xs text-slate-500 mt-1" id="cdesk-kpi-learning-sub">—</div>
-      </div>
-      <!-- 每次 tick 的詳細表 -->
-      <div style="max-height:280px;overflow:auto">
-        <table class="w-full text-xs font-mono">
-          <thead style="position:sticky;top:0;background:#0f172a">
-            <tr class="text-slate-500" style="border-bottom:1px solid #334155">
-              <th class="text-left py-2 px-2">時間</th>
-              <th class="text-left py-2 px-2">狀態</th>
-              <th class="text-right py-2 px-2">淨值 (USDT)</th>
-              <th class="text-right py-2 px-2">已實現</th>
-              <th class="text-right py-2 px-2">未實現</th>
-              <th class="text-right py-2 px-2">成交</th>
-              <th class="text-right py-2 px-2">評估</th>
-              <th class="text-right py-2 px-2">訓練</th>
-              <th class="text-right py-2 px-2">唯一新增</th>
-              <th class="text-right py-2 px-2">回測成交</th>
-              <th class="text-right py-2 px-2">E[R]</th>
-              <th class="text-right py-2 px-2">勝率</th>
-              <th class="text-left py-2 px-2">學習</th>
-              <th class="text-right py-2 px-2">下次</th>
-            </tr>
-          </thead>
-          <tbody id="cdesk-history-rows">
-            <tr><td colspan="14" class="py-3 text-center text-slate-500">尚無 tick 紀錄 — 開啟自動學習開始累積</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
+      </details>
 
-    <!-- 驗收紀錄 -->
-    <div class="glass-card-sm p-4">
-      <div class="flex items-center justify-between mb-3">
-        <span class="text-sm text-slate-200 font-semibold">驗收紀錄</span>
-        <span class="text-xs text-slate-500">paper-acceptance, 21 gate</span>
-      </div>
-      <div id="cdesk-acceptance" class="text-xs">—</div>
+      <!-- 21 Gates 驗收紀錄折疊面版 -->
+      <details class="glass-card-sm p-4 border border-slate-800/80">
+        <summary class="text-sm text-slate-300 font-semibold cursor-pointer select-none flex items-center justify-between outline-none">
+          <span class="flex items-center gap-2">
+            <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-amber-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+            SMC 21 Gates 歷史驗收結論
+          </span>
+          <span class="text-xs text-slate-500 font-normal mr-4">paper-acceptance, 21 gate</span>
+        </summary>
+        <div class="mt-3">
+          <div id="cdesk-acceptance" class="text-xs">—</div>
+        </div>
+      </details>
+
+      <!-- 全幣種成交紀錄與策略盈虧折疊面板 -->
+      <details class="glass-card-sm p-4 border border-slate-800/80">
+        <summary class="text-sm text-slate-300 font-semibold cursor-pointer select-none flex items-center justify-between outline-none">
+          <span class="flex items-center gap-2">
+            <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-sky-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
+            全幣種歷史成交明細與策略期望值分析
+          </span>
+          <span class="text-xs text-slate-500 font-normal mr-4">Fills & Strategy PnL</span>
+        </summary>
+        <div class="mt-3">
+          <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <!-- 左：全幣種成交紀錄 -->
+            <div class="bg-slate-900/10 p-2 rounded border border-slate-800/40">
+              <div class="flex items-center justify-between mb-3 border-b border-slate-800/60 pb-2">
+                <span class="text-xs text-slate-300 font-semibold">成交明細 (Mock Broker)</span>
+                <div class="flex items-center gap-2">
+                  <select id="cdesk-fills-symbol-filter" onchange="cdeskRenderFillsTable()" class="text-xs px-2 py-1" style="background:#0f172a; color:#fff; border-radius:4px; border:1px solid #334155;">
+                    <option value="ALL">全部幣種</option>
+                    <option value="BTC-USDT">BTC-USDT</option>
+                    <option value="ETH-USDT">ETH-USDT</option>
+                    <option value="SOL-USDT">SOL-USDT</option>
+                    <option value="BNB-USDT">BNB-USDT</option>
+                    <option value="XRP-USDT">XRP-USDT</option>
+                  </select>
+                  <button onclick="cdeskLoadFillsAndStrategyPnl()" class="text-[10px] px-2 py-0.5 bg-slate-800 text-slate-400 rounded">↺ 刷新</button>
+                </div>
+              </div>
+              <div style="max-height:280px; overflow-y:auto;">
+                <table class="w-full text-xs font-mono">
+                  <thead style="position:sticky; top:0; background:#0f172a; z-index:1">
+                    <tr class="text-slate-500" style="border-bottom:1px solid #334155">
+                      <th class="text-left py-2 px-1">時間</th>
+                      <th class="text-left py-2 px-1">幣種</th>
+                      <th class="text-left py-2 px-1">方向</th>
+                      <th class="text-right py-2 px-1">價格</th>
+                      <th class="text-right py-2 px-1">數量</th>
+                      <th class="text-right py-2 px-1">名義價值</th>
+                      <th class="text-right py-2 px-1">手續費</th>
+                    </tr>
+                  </thead>
+                  <tbody id="cdesk-all-fills-rows">
+                    <tr><td colspan="7" class="py-4 text-center text-slate-500">載入中...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- 右：策略績效與盈虧 -->
+            <div class="bg-slate-900/10 p-2 rounded border border-slate-800/40">
+              <div class="flex items-center justify-between mb-3 border-b border-slate-800/60 pb-2">
+                <span class="text-xs text-slate-300 font-semibold flex items-center gap-1.5">
+                  SMC 策略盈虧與績效 (Ledger)
+                </span>
+                <span id="cdesk-strategy-pnl-updated" class="text-xs text-slate-500">—</span>
+              </div>
+              <div style="max-height:280px; overflow-y:auto;">
+                <table class="w-full text-xs font-mono">
+                  <thead style="position:sticky; top:0; background:#0f172a; z-index:1">
+                    <tr class="text-slate-500" style="border-bottom:1px solid #334155">
+                      <th class="text-left py-2 px-1">策略 (Model)</th>
+                      <th class="text-right py-2 px-1">成交筆數</th>
+                      <th class="text-right py-2 px-1">勝率</th>
+                      <th class="text-right py-2 px-1">總盈虧 (R)</th>
+                      <th class="text-right py-2 px-1">平均 R</th>
+                      <th class="text-right py-2 px-1">勝/敗/平</th>
+                    </tr>
+                  </thead>
+                  <tbody id="cdesk-strategy-pnl-rows">
+                    <tr><td colspan="6" class="py-4 text-center text-slate-500">載入中...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </details>
     </div>
 
     <!-- 自動執行結果 / hidden compat fields -->
@@ -1409,76 +1458,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
     <input type="hidden" id="cdesk-interval" value="auto">
     <input type="hidden" id="cdesk-min-score" value="auto">
     <input type="hidden" id="cdesk-max-notional" value="auto">
-
-    <!-- 全幣種成交紀錄與策略盈虧 -->
-    <div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-3">
-      <!-- 左：全幣種成交紀錄 -->
-      <div class="glass-card-sm p-4">
-        <div class="flex items-center justify-between mb-3 border-b border-slate-800/60 pb-2">
-          <span class="text-sm text-slate-200 font-semibold flex items-center gap-1.5">
-            <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-emerald-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
-            全幣種成交明細 (Mock Broker)
-          </span>
-          <div class="flex items-center gap-2">
-            <select id="cdesk-fills-symbol-filter" onchange="cdeskRenderFillsTable()" class="text-xs px-2 py-1" style="background:#0f172a; color:#fff; border-radius:4px; border:1px solid #334155;">
-              <option value="ALL">全部幣種</option>
-              <option value="BTC-USDT">BTC-USDT</option>
-              <option value="ETH-USDT">ETH-USDT</option>
-              <option value="SOL-USDT">SOL-USDT</option>
-              <option value="BNB-USDT">BNB-USDT</option>
-              <option value="XRP-USDT">XRP-USDT</option>
-            </select>
-            <button onclick="cdeskLoadFillsAndStrategyPnl()" class="text-xs px-2 py-1" style="background:#1e293b;color:#94a3b8;border-radius:3px">↺ 刷新</button>
-          </div>
-        </div>
-        <div style="max-height:350px; overflow-y:auto;">
-          <table class="w-full text-xs font-mono">
-            <thead style="position:sticky; top:0; background:#0f172a; z-index:1">
-              <tr class="text-slate-500" style="border-bottom:1px solid #334155">
-                <th class="text-left py-2 px-1">時間</th>
-                <th class="text-left py-2 px-1">幣種</th>
-                <th class="text-left py-2 px-1">方向</th>
-                <th class="text-right py-2 px-1">價格</th>
-                <th class="text-right py-2 px-1">數量</th>
-                <th class="text-right py-2 px-1">名義價值</th>
-                <th class="text-right py-2 px-1">手續費</th>
-              </tr>
-            </thead>
-            <tbody id="cdesk-all-fills-rows">
-              <tr><td colspan="7" class="py-4 text-center text-slate-500">載入中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- 右：策略績效與盈虧 -->
-      <div class="glass-card-sm p-4">
-        <div class="flex items-center justify-between mb-3 border-b border-slate-800/60 pb-2">
-          <span class="text-sm text-slate-200 font-semibold flex items-center gap-1.5">
-            <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-sky-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 3.055A9.003 9.003 0 1020.945 13H11V3.055z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z"></path></svg>
-            SMC 策略盈虧與績效 (Ledger)
-          </span>
-          <span id="cdesk-strategy-pnl-updated" class="text-xs text-slate-500">—</span>
-        </div>
-        <div style="max-height:350px; overflow-y:auto;">
-          <table class="w-full text-xs font-mono">
-            <thead style="position:sticky; top:0; background:#0f172a; z-index:1">
-              <tr class="text-slate-500" style="border-bottom:1px solid #334155">
-                <th class="text-left py-2 px-1">策略 (Model)</th>
-                <th class="text-right py-2 px-1">成交筆數</th>
-                <th class="text-right py-2 px-1">勝率</th>
-                <th class="text-right py-2 px-1">總盈虧 (R)</th>
-                <th class="text-right py-2 px-1">平均 R</th>
-                <th class="text-right py-2 px-1">勝/敗/平</th>
-              </tr>
-            </thead>
-            <tbody id="cdesk-strategy-pnl-rows">
-              <tr><td colspan="6" class="py-4 text-center text-slate-500">載入中...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+  </div>
   </div>
 
   <div id="tab-smc-analysis" class="tab-content hidden">
@@ -10500,10 +10480,65 @@ if (savedInterval !== null) {
 setupAutoRefresh();
 
 // ─────────────── Crypto auto desk (v2 redesign) ───────────────
-let _cdeskLastScan = null;
-let _cdeskProfile = null;
+const CDESK_SYMBOLS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT"];
+let _cdeskLastScanMap = {};
+let _cdeskProfileMap = {};
+let _cdeskCooldowns = {
+  "BTC-USDT": 0,
+  "ETH-USDT": 0,
+  "SOL-USDT": 0,
+  "BNB-USDT": 0,
+  "XRP-USDT": 0
+};
+let _cdeskGlobalCooldownTimer = null;
 let _cdeskAutoLearnTimer = null;
 let _cdeskAutoLearnRunning = false;
+
+function startCdeskGlobalCooldownTimer() {
+  if (_cdeskGlobalCooldownTimer) return;
+  
+  _cdeskGlobalCooldownTimer = setInterval(() => {
+    let hasActiveCooldown = false;
+    CDESK_SYMBOLS.forEach(symbol => {
+      if (_cdeskCooldowns[symbol] > 0) {
+        _cdeskCooldowns[symbol]--;
+        hasActiveCooldown = true;
+        
+        const secSpan = $('cdesk-cooldown-seconds-' + symbol);
+        const badge = $('cdesk-cooldown-badge-' + symbol);
+        if (secSpan) secSpan.textContent = _cdeskCooldowns[symbol];
+        if (badge && badge.classList.contains('hidden')) {
+          badge.classList.remove('hidden');
+        }
+        
+        if (_cdeskCooldowns[symbol] <= 0) {
+          if (badge) badge.classList.add('hidden');
+          cdeskSingleScan(symbol);
+        }
+      }
+    });
+    
+    if (!hasActiveCooldown) {
+      clearInterval(_cdeskGlobalCooldownTimer);
+      _cdeskGlobalCooldownTimer = null;
+    }
+  }, 1000);
+}
+
+function updateCooldownUI() {
+  CDESK_SYMBOLS.forEach(symbol => {
+    const badge = $('cdesk-cooldown-badge-' + symbol);
+    const secSpan = $('cdesk-cooldown-seconds-' + symbol);
+    if (!badge || !secSpan) return;
+    
+    if (_cdeskCooldowns[symbol] > 0) {
+      secSpan.textContent = _cdeskCooldowns[symbol];
+      badge.classList.remove('hidden');
+    } else {
+      badge.classList.add('hidden');
+    }
+  });
+}
 
 const CDESK_STATE_STYLES = {
   LEARNING:   { bg: '#1e40af', fg: '#dbeafe', label: 'LEARNING' },
@@ -10516,130 +10551,411 @@ const CDESK_STATE_STYLES = {
 function cdeskRenderState(stateData) {
   const cfg = CDESK_STATE_STYLES[stateData.state] || CDESK_STATE_STYLES.LEARNING;
   const blk = $('cdesk-state-block');
-  blk.style.background = cfg.bg;
-  blk.style.color = cfg.fg;
-  blk.textContent = cfg.label;
-  $('cdesk-next-action').textContent = stateData.next_action || '—';
-  $('cdesk-tick-time').textContent = stateData.tick_time || '—';
+  if (blk) {
+    blk.style.background = cfg.bg;
+    blk.style.color = cfg.fg;
+    blk.textContent = cfg.label;
+  }
+  const nextAct = $('cdesk-next-action');
+  if (nextAct) nextAct.textContent = stateData.next_action || '—';
+  
+  const tickTime = $('cdesk-tick-time');
+  if (tickTime) tickTime.textContent = stateData.tick_time || '—';
 
   const p = stateData.progress || {};
-  // ledger bar
-  const lpct = Math.min(100, ((p.ledger_size || 0) / (p.ledger_target || 30)) * 100);
-  $('cdesk-ledger-label').textContent = `${p.ledger_size || 0}/${p.ledger_target || 30}`;
-  $('cdesk-ledger-bar').style.width = lpct + '%';
-  // validation bar
-  const vpct = ((p.validation_passed || 0) / (p.validation_total || 5)) * 100;
-  $('cdesk-validation-label').textContent = `${p.validation_passed || 0}/${p.validation_total || 5}`;
-  $('cdesk-validation-bar').style.width = vpct + '%';
-  const crit = p.validation_criteria || {};
-  const failed = Object.entries(crit).filter(([_, v]) => !v).map(([k]) => k);
-  $('cdesk-validation-detail').textContent = failed.length ? '未通過: ' + failed.join(' · ') : '全部通過';
-  // indicator
+  
+  // 防禦性渲染 ledger
+  const lblLedger = $('cdesk-ledger-label');
+  const barLedger = $('cdesk-ledger-bar');
+  if (lblLedger || barLedger) {
+    const lpct = Math.min(100, ((p.ledger_size || 0) / (p.ledger_target || 30)) * 100);
+    if (lblLedger) lblLedger.textContent = `${p.ledger_size || 0}/${p.ledger_target || 30}`;
+    if (barLedger) barLedger.style.width = lpct + '%';
+  }
+  
+  // 防禦性渲染 validation
+  const lblVal = $('cdesk-validation-label');
+  const barVal = $('cdesk-validation-bar');
+  const valDetail = $('cdesk-validation-detail');
+  if (lblVal || barVal || valDetail) {
+    const vpct = ((p.validation_passed || 0) / (p.validation_total || 5)) * 100;
+    if (lblVal) lblVal.textContent = `${p.validation_passed || 0}/${p.validation_total || 5}`;
+    if (barVal) barVal.style.width = vpct + '%';
+    const crit = p.validation_criteria || {};
+    const failed = Object.entries(crit).filter(([_, v]) => !v).map(([k]) => k);
+    if (valDetail) valDetail.textContent = failed.length ? '未通過: ' + failed.join(' · ') : '全部通過';
+  }
+  
+  // 防禦性渲染 indicator
   const ind = p.learning_indicator || '—';
   const indColor = {active:'#10b981', stagnant:'#f59e0b', degrading:'#ef4444', insufficient_data:'#64748b'}[ind] || '#64748b';
-  $('cdesk-indicator-label').textContent = ind;
+  const indLbl = $('cdesk-indicator-label');
+  if (indLbl) indLbl.textContent = ind;
   const indBlk = $('cdesk-indicator-block');
-  indBlk.style.background = indColor;
-  indBlk.style.color = '#fff';
-  indBlk.textContent = ind;
+  if (indBlk) {
+    indBlk.style.background = indColor;
+    indBlk.style.color = '#fff';
+    indBlk.textContent = ind;
+  }
 }
 
-async function cdeskOnSymbolChange() {
-  const symbol = $('cdesk-symbol').value;
-  const summary = $('cdesk-profile-summary');
-  const badge = $('cdesk-tier-badge');
-  const adaptiveEl = $('cdesk-adaptive-params');
-  summary.innerHTML = `<span class="text-slate-500">⏳ 查詢 ${symbol} 自動策略檔…</span>`;
-  if (adaptiveEl) adaptiveEl.innerHTML = `<span class="text-slate-500">載入中…</span>`;
-  try {
-    const r = await fetch(`/api/smc-crypto/profile?symbol=${encodeURIComponent(symbol)}`);
-    const data = await r.json();
-    _cdeskProfile = data;
-    const p = data.profile || {};
-    const pf = data.preflight || {};
-    const tier = p.tier || '—';
-    badge.textContent = `TIER ${tier.toUpperCase()}`;
-    badge.style.background = tier === 'major' ? '#065f46' : tier === 'altcoin' ? '#854d0e' : '#7f1d1d';
-    badge.style.color = '#fff';
-    summary.innerHTML = `
-      <div><span class="text-slate-500">interval</span> <span class="text-slate-200 font-mono">${p.interval}</span> <span class="text-xs text-slate-600">(預設)</span></div>
-      <div><span class="text-slate-500">bars</span> <span class="text-slate-200 font-mono">${p.bars}</span></div>
-      <div><span class="text-slate-500">min score</span> <span class="text-slate-200 font-mono">${p.min_confluence_score}</span></div>
-      <div><span class="text-slate-500">min RR</span> <span class="text-slate-200 font-mono">${p.min_rr}</span></div>
-      <div><span class="text-slate-500">risk%</span> <span class="text-slate-200 font-mono">${(p.risk_pct * 100).toFixed(1)}%</span></div>
-      <div><span class="text-slate-500">max notional</span> <span class="text-slate-200 font-mono">$${p.max_notional_usdt}</span></div>
-      <div><span class="text-slate-500">cooldown</span> <span class="text-slate-200 font-mono">${p.cooldown_minutes}min</span></div>
-    `;
+function renderSymbolCard(symbol, profileData, scanData, overviewData) {
+  const p = profileData.profile || {};
+  const pf = profileData.preflight || {};
+  const tier = p.tier || '—';
+  
+  const ap = overviewData?.adaptive_patch || {};
+  const mode = ap.mode || overviewData?.kpi?.global_training_mode || '—';
+  const modeMap = {VALIDATING_PROBE:'驗證探索中',READY:'可採用',DRY_RUN:'觀察中',LEARNING:'學習中',LOCKED:'鎖定'};
+  const modeLabel = modeMap[mode] || mode || '未知';
+  const modeColor = mode === 'READY' ? '#10b981' : mode === 'VALIDATING_PROBE' ? '#0ea5e9' : '#f59e0b';
+  
+  // 自適應覆寫與原始參數
+  const optInt = ap.optimal_interval;
+  const minScore = ap.min_confluence_score;
+  const minRR = ap.min_rr;
+  const riskMult = ap.risk_multiplier;
+  const probeNotional = ap.probe_notional_cap_usdt;
+  const hasOverride = optInt || minScore || minRR || riskMult || probeNotional;
+  
+  let adaptiveHtml = '';
+  if (!hasOverride) {
+    adaptiveHtml = `<span class="text-slate-500">使用預設靜態參數</span>`;
+  } else {
+    const rows = [];
+    if (optInt) rows.push(`<div>最優時框 <span class="font-mono font-bold text-emerald-400">${optInt}</span> ★</div>`);
+    if (minScore !== undefined && minScore !== null) rows.push(`<div>min score <span class="font-mono font-bold text-emerald-400">${minScore}</span></div>`);
+    if (minRR !== undefined && minRR !== null) rows.push(`<div>min RR <span class="font-mono font-bold text-emerald-400">${Number(minRR).toFixed(2)}</span></div>`);
+    if (riskMult !== undefined && riskMult !== null) rows.push(`<div>risk×<span class="font-mono font-bold text-amber-400">${riskMult}</span> <span class="text-slate-500">(探索)</span></div>`);
+    if (probeNotional !== undefined && probeNotional !== null) rows.push(`<div>probe cap <span class="font-mono text-amber-400">$${probeNotional}</span></div>`);
+    adaptiveHtml = rows.join('');
+  }
 
-    // 載入學習覆寫參數（從 all-symbols-overview 取單幣種 patch）
-    if (adaptiveEl) {
-      try {
-        const ovr = await fetch('/api/smc-crypto/all-symbols-overview');
-        const ovrData = await ovr.json();
-        const symData = (ovrData.symbols || []).find(s => s.symbol === symbol);
-        const ap = symData ? (symData.adaptive_patch || {}) : {};
-        const mode = ap.mode;
-        const modeMap = {VALIDATING_PROBE:'驗證探索中',READY:'可採用',DRY_RUN:'觀察中',LEARNING:'學習中',LOCKED:'鎖定'};
-        const modeLabel = modeMap[mode] || mode || '未知';
-        const modeColor = mode === 'READY' ? '#10b981' : mode === 'VALIDATING_PROBE' ? '#0ea5e9' : '#f59e0b';
-
-        const optInt = ap.optimal_interval;
-        const minScore = ap.min_confluence_score;
-        const minRR = ap.min_rr;
-        const riskMult = ap.risk_multiplier;
-        const probeNotional = ap.probe_notional_cap_usdt;
-
-        const hasOverride = optInt || minScore || minRR || riskMult || probeNotional;
-        if (!hasOverride) {
-          adaptiveEl.innerHTML = `<span class="text-slate-500">尚無學習覆寫記錄，模型仍使用預設靜態參數。</span>`;
-        } else {
-          const rows = [];
-          if (optInt) rows.push(`<div>最優時框 <span class="font-mono font-bold" style="color:#10b981">${optInt}</span> <span class="text-xs px-1" style="background:#064e3b;color:#6ee7b7;border-radius:2px">學習輸出</span></div>`);
-          if (minScore !== undefined && minScore !== null) rows.push(`<div>min score <span class="font-mono font-bold" style="color:#10b981">${minScore}</span></div>`);
-          if (minRR !== undefined && minRR !== null) rows.push(`<div>min RR <span class="font-mono font-bold" style="color:#10b981">${Number(minRR).toFixed(2)}</span></div>`);
-          if (riskMult !== undefined && riskMult !== null) rows.push(`<div>risk×<span class="font-mono font-bold" style="color:#f59e0b">${riskMult}</span> <span class="text-xs text-slate-500">(探索縮放)</span></div>`);
-          if (probeNotional !== undefined && probeNotional !== null) rows.push(`<div>probe cap <span class="font-mono" style="color:#f59e0b">$${probeNotional}</span></div>`);
-          rows.push(`<div class="mt-1 pt-1" style="border-top:1px solid #166534">模式 <span class="font-mono font-bold" style="color:${modeColor}">${modeLabel}</span></div>`);
-          adaptiveEl.innerHTML = rows.join('');
-        }
-      } catch (e) {
-        if (adaptiveEl) adaptiveEl.innerHTML = `<span class="text-slate-500">覆寫參數載入失敗</span>`;
+  // 學習與驗收進度
+  const kpi = overviewData?.kpi || {};
+  const lpct = Math.min(100, ((kpi.ledger_size || 0) / 30) * 100);
+  const vpct = ((kpi.validation_passed || 0) / 5) * 100;
+  
+  // SMC 決策提案渲染
+  const dec = scanData.decision || {};
+  let proposalHtml = '';
+  let borderStyle = 'border: 1px solid #1e293b;';
+  
+  if (dec && dec.entry) {
+    const e = dec.entry;
+    const dir = e.direction === 1 ? 'LONG' : 'SHORT';
+    const dirBg = e.direction === 1 ? '#065f46' : '#7f1d1d';
+    const score = (e.confluence || {}).score;
+    const threshold = (e.confluence || {}).threshold;
+    const meets = score >= threshold;
+    const dol = e.dol_target || {};
+    
+    borderStyle = dir === 'LONG' 
+      ? 'border: 1px solid rgba(16,185,129,0.5); box-shadow: 0 0 10px rgba(16,185,129,0.1);'
+      : 'border: 1px solid rgba(244,63,94,0.5); box-shadow: 0 0 10px rgba(244,63,94,0.1);';
+      
+    let factorsHtml = '';
+    if (e.factors) {
+      let factorsList = [];
+      if (typeof e.factors === 'object' && !Array.isArray(e.factors)) {
+        factorsList = Object.entries(e.factors).map(([id, active]) => ({ id, active }));
+      } else if (Array.isArray(e.factors)) {
+        factorsList = e.factors.map(f => typeof f === 'string' ? { id: f, active: true } : f);
+      }
+      
+      if (factorsList.length > 0) {
+        const activeColor = dir === 'LONG' ? '#10b981' : '#f43f5e';
+        const activeBg = dir === 'LONG' ? 'rgba(16,185,129,0.12)' : 'rgba(244,63,94,0.12)';
+        const activeBorder = dir === 'LONG' ? 'rgba(16,185,129,0.25)' : 'rgba(244,63,94,0.25)';
+        
+        factorsHtml = `<div class="mt-2 mb-2 flex flex-wrap gap-1">`;
+        factorsList.forEach(f => {
+          const name = f.id.replace(/_/g, ' ');
+          if (f.active) {
+            factorsHtml += `<span class="px-1.5 py-0.5 text-[9px] font-medium font-mono rounded" style="background:${activeBg}; color:${activeColor}; border:1px solid ${activeBorder}">${name}</span>`;
+          } else {
+            factorsHtml += `<span class="px-1.5 py-0.5 text-[9px] font-medium font-mono rounded bg-slate-900/40 text-slate-600 border border-slate-800/80 line-through decoration-slate-700/60">${name}</span>`;
+          }
+        });
+        factorsHtml += `</div>`;
       }
     }
 
-    // Run an immediate tick (no training) to populate the status block
-    await cdeskAutoLearnTick(false);
+    let liveHtml = '';
+    if (dec.live_order) {
+      const lo = dec.live_order;
+      if (lo.status >= 200 && lo.status < 300) {
+        const op = lo.payload || {};
+        liveHtml = `<div class="mt-2 p-1.5 px-2 text-[10px] font-semibold rounded" style="background:#064e3b;color:#d1fae5;border:1px solid rgba(16,185,129,0.3)">已送單: ${op.id} (${(op.side||'').toUpperCase()} ${op.quantity}@${op.price})</div>`;
+      } else {
+        const err = ((lo.payload || {}).detail || {}).error || {};
+        liveHtml = `<div class="mt-2 p-1.5 px-2 text-[10px] rounded" style="background:#7f1d1d;color:#fecaca;border:1px solid rgba(244,63,94,0.3)">送單失敗 ${lo.status}: ${err.code || ''}</div>`;
+      }
+    }
+
+    proposalHtml = `
+      <div class="p-2.5 rounded bg-slate-950/40 border border-slate-800/60 space-y-1.5">
+        <div class="flex items-center gap-2 text-xs flex-wrap">
+          <span class="px-2 py-0.5 text-[10px] font-bold rounded" style="background:${dirBg};color:#fff">${dir}</span>
+          <span class="font-mono text-slate-300 font-bold">${e.model}</span>
+          <span class="text-slate-600">|</span>
+          <span>score <strong class="${meets ? 'text-emerald-400' : 'text-amber-400'}">${score}/${threshold}</strong></span>
+          <span class="text-slate-600">|</span>
+          <span>RR <strong class="text-slate-300">${e.rr}</strong></span>
+        </div>
+        ${factorsHtml}
+        <div class="text-[11px] text-slate-400 font-mono">
+          entry: $${e.entry} &nbsp; stop: $${e.stop} &nbsp; target: $${e.target}
+        </div>
+        ${dec.dry_run ? `<div class="text-[10px] text-slate-500 mt-1">模擬成交: ${dec.dry_run.state} · 均價 $${dec.dry_run.avg_price} · 數量 ${dec.dry_run.filled_qty}</div>` : ''}
+        ${liveHtml}
+      </div>
+    `;
+  } else {
+    const reason = dec ? (dec.action || '—') : (pf.reason || 'no_decision');
+    proposalHtml = `<div class="p-4 text-center rounded bg-slate-950/20 border border-slate-900/60 text-[11px] text-slate-500">無合格 SMC 提案 (原因: <span class="font-mono text-amber-600">${reason}</span>)</div>`;
+  }
+
+  const tierColor = tier === 'major' ? '#10b981' : tier === 'altcoin' ? '#f59e0b' : '#ef4444';
+  const cdSec = _cdeskCooldowns[symbol] || 0;
+  const isCooldownHidden = cdSec <= 0 ? 'hidden' : '';
+
+  return `
+    <div id="cdesk-card-${symbol}" class="glass-card-sm p-4 transition-all" style="${borderStyle}">
+      <div class="flex items-center justify-between mb-3 flex-wrap gap-2 pb-2 border-b border-slate-800/40">
+        <div class="flex items-center gap-2">
+          <span class="text-sm font-bold text-slate-100 font-mono">${symbol}</span>
+          <span class="text-[9px] px-1.5 py-0.5 rounded font-mono font-bold text-white" style="background:${tierColor}">${tier.toUpperCase()}</span>
+          <span id="cdesk-cooldown-badge-${symbol}" class="text-[10px] px-1.5 py-0.5 font-mono font-bold rounded bg-red-950/40 text-red-400 border border-red-900/40 ${isCooldownHidden}">
+            COOLDOWN: <span id="cdesk-cooldown-seconds-${symbol}">${cdSec}</span>s
+          </span>
+        </div>
+        
+        <div class="flex items-center gap-1.5">
+          <span class="text-[10px] px-1.5 py-0.5 rounded font-mono font-semibold" style="background:${modeColor}22; color:${modeColor}; border:1px solid ${modeColor}44">${modeLabel}</span>
+          <button onclick="cdeskSingleScan('${symbol}')" class="text-[10px] px-2 py-0.5 hover:bg-slate-700 bg-slate-800 text-slate-300 rounded border border-slate-700 transition-colors">僅掃描</button>
+          <button onclick="cdeskSingleForceLive('${symbol}')" class="text-[10px] px-2 py-0.5 hover:bg-red-800 bg-red-950 text-red-300 rounded border border-red-900/60 transition-colors">強制送單</button>
+        </div>
+      </div>
+      
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+        <div class="space-y-1">
+          <div class="text-[10px] text-slate-500 font-semibold mb-1">當前決策提案</div>
+          <div id="cdesk-card-proposal-${symbol}">${proposalHtml}</div>
+        </div>
+        
+        <div class="space-y-2.5">
+          <div class="grid grid-cols-2 gap-2 text-[10px]">
+            <div>
+              <div class="text-slate-500 mb-0.5">自適應覆寫</div>
+              <div class="font-mono text-slate-300 bg-slate-900/30 p-1.5 rounded border border-slate-800/60 min-h-[46px] leading-relaxed">${adaptiveHtml}</div>
+            </div>
+            <div>
+              <div class="text-slate-500 mb-0.5">預設參數檔</div>
+              <div class="font-mono text-[9px] text-slate-400 bg-slate-900/30 p-1.5 rounded border border-slate-800/40 min-h-[46px] leading-relaxed">
+                <div>時框 <span class="text-slate-300">${p.interval}</span></div>
+                <div>RR <span class="text-slate-300">${p.min_rr}</span></div>
+                <div>score <span class="text-slate-300">${p.min_confluence_score}</span></div>
+              </div>
+            </div>
+          </div>
+          
+          <div class="bg-slate-900/30 p-2 rounded border border-slate-800/40 text-[10px] space-y-1.5">
+            <div>
+              <div class="flex justify-between mb-0.5"><span class="text-slate-500">樣本累積</span><span class="text-slate-300 font-mono">${kpi.ledger_size || 0}/30</span></div>
+              <div style="height:4px;background:#111827;border-radius:2px;overflow:hidden"><div style="height:100%;background:#0ea5e9;width:${lpct}%"></div></div>
+            </div>
+            <div>
+              <div class="flex justify-between mb-0.5"><span class="text-slate-500">驗證閘通過</span><span class="text-slate-300 font-mono">${kpi.validation_passed || 0}/5</span></div>
+              <div style="height:4px;background:#111827;border-radius:2px;overflow:hidden"><div style="height:100%;background:#10b981;width:${vpct}%"></div></div>
+            </div>
+            <div class="flex items-center justify-between text-[10px] pt-0.5 border-t border-slate-800/40">
+              <span class="text-slate-500">學習指標: <strong class="font-mono" style="color:${kpi.learning_indicator === 'active' ? '#10b981' : '#f59e0b'}">${kpi.learning_indicator || '—'}</strong></span>
+              <span class="text-slate-500">E[R]: <strong class="font-mono text-slate-300">${kpi.expected_R !== undefined ? Number(kpi.expected_R).toFixed(2) : '—'}</strong></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function cdeskRefreshAll() {
+  const container = $('cdesk-symbols-container');
+  if (container) {
+    container.innerHTML = '<div class="text-xs text-slate-500 text-center py-8">正在加載全幣種策略與決策矩陣…</div>';
+  }
+  
+  try {
+    const [stateData, acceptanceData, historyData, pnlData, overviewData] = await Promise.all([
+      cdeskRefreshState(),
+      cdeskRefreshAcceptance(),
+      cdeskRefreshHistory(),
+      cdeskLoadFillsAndStrategyPnl(),
+      fetch('/api/smc-crypto/all-symbols-overview').then(r => r.json()).catch(() => ({}))
+    ]);
+
+    const detailPromises = CDESK_SYMBOLS.map(async (symbol) => {
+      try {
+        const [profileRes, scanRes] = await Promise.all([
+          fetch(`/api/smc-crypto/profile?symbol=${symbol}`).then(r => r.json()),
+          fetch(`/api/smc-crypto/scan?symbol=${symbol}`).then(r => r.json()).catch(() => ({}))
+        ]);
+        return { symbol, profile: profileRes, scan: scanRes };
+      } catch (err) {
+        console.error(`Failed to fetch details for ${symbol}:`, err);
+        return { symbol, profile: {}, scan: {} };
+      }
+    });
+    
+    const details = await Promise.all(detailPromises);
+    
+    let hasCooldown = false;
+    details.forEach(d => {
+      const remaining = d.profile?.cooldown_seconds_remaining || 0;
+      _cdeskCooldowns[d.symbol] = Math.max(0, remaining);
+      if (remaining > 0) hasCooldown = true;
+    });
+    
+    if (container) {
+      const cardsHtml = details.map(d => {
+        const overviewSym = (overviewData.symbols || []).find(s => s.symbol === d.symbol) || {};
+        return renderSymbolCard(d.symbol, d.profile, d.scan, overviewSym);
+      }).join('');
+      container.innerHTML = cardsHtml;
+    }
+    
+    if (hasCooldown) {
+      startCdeskGlobalCooldownTimer();
+    }
+    
+  } catch (err) {
+    console.error('cdeskRefreshAll error:', err);
+    if (container) {
+      container.innerHTML = `<div class="text-xs text-red-400 text-center py-8">加載失敗: ${err.message}</div>`;
+    }
+  }
+}
+
+async function cdeskAutoRun() {
+  if (!confirm(`確認對所有幣種執行自動工作流？\n系統會自動: 策略掃描 → dry-run → 風控 → 送單與否由驗收歷史決定`)) return;
+  const btn = $('cdesk-auto-btn'); btn.disabled = true; btn.textContent = '執行中…';
+  try {
+    const r = await fetch('/api/smc-crypto/auto-run', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({symbol: 'ALL'}),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    await cdeskRefreshAll();
+  } catch (err) {
+    alert('執行失敗: ' + err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '全幣種自動執行';
+  }
+}
+
+// Obsolete single-symbol functions removed. Functionality handled by cdeskSingleScan and cdeskSingleForceLive.
+
+async function cdeskSingleScan(symbol) {
+  const cardProposal = $('cdesk-card-proposal-' + symbol);
+  if (cardProposal) {
+    cardProposal.innerHTML = '<span class="text-amber-400">⏳ 掃描中…</span>';
+  }
+  try {
+    const profileRes = await fetch(`/api/smc-crypto/profile?symbol=${symbol}`).then(r => r.json());
+    _cdeskProfileMap[symbol] = profileRes;
+    
+    const profile = profileRes.profile || {};
+    const interval = profile.interval || '15m';
+    const minScore = profile.min_confluence_score || 8;
+    const maxNotional = profile.max_notional_usdt || 2000;
+    
+    const url = `/api/smc-crypto/scan?symbol=${encodeURIComponent(symbol)}&interval=${interval}&min_confluence_score=${minScore}&max_notional_usdt=${maxNotional}&risk_pct=0.05`;
+    const r = await fetch(url);
+    const data = await r.json();
+    
+    _cdeskLastScanMap[symbol] = data;
+    
+    const ovr = await fetch('/api/smc-crypto/all-symbols-overview');
+    const ovrData = await ovr.json();
+    const symData = (ovrData.symbols || []).find(s => s.symbol === symbol);
+    
+    const cardEl = $('cdesk-card-' + symbol);
+    if (cardEl) {
+      const parent = cardEl.parentElement;
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = renderSymbolCard(symbol, profileRes, data, symData);
+      parent.replaceChild(tempDiv.firstElementChild, cardEl);
+    }
+  } catch (err) {
+    if (cardProposal) {
+      cardProposal.innerHTML = `<span class="text-red-400">掃描失敗: ${err.message}</span>`;
+    }
+  }
+}
+
+async function cdeskSingleForceLive(symbol) {
+  if (!confirm(`強制送單 (測試 / 演示用)\n\n對 ${symbol} 跳過驗收歷史檢查，把匯流門檻降到 5、單筆 notional 上限 $1000、interval=15m，直接送單到模擬市場。\n\n注意：此按鈕繞過了 production 紀律閘 — 僅用於試跑系統流程。`)) return;
+  
+  const cardProposal = $('cdesk-card-proposal-' + symbol);
+  if (cardProposal) {
+    cardProposal.innerHTML = '<span class="text-amber-400">強制 live 送單中 (min_score=5, notional=$1000)…</span>';
+  }
+  
+  try {
+    const r = await fetch('/api/smc-crypto/execute', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        symbol, interval: '15m',
+        min_confluence_score: 5, min_rr: 1.5,
+        risk_pct: 0.05, max_notional_usdt: 1000,
+      }),
+    });
+    const data = await r.json();
+    cdeskSingleScan(symbol);
+    cdeskRefreshState();
+    cdeskRefreshAcceptance();
   } catch (e) {
-    summary.innerHTML = `<span class="text-red-400">profile 失敗: ${e.message}</span>`;
+    if (cardProposal) {
+      cardProposal.innerHTML = `<span class="text-red-400">強制送單失敗: ${e.message}</span>`;
+    }
   }
 }
 
 async function cdeskAutoLearnTick(doTrain = true) {
-  const symbol = $('cdesk-symbol').value;
   try {
-    const r = await fetch('/api/smc-crypto/auto-learn-tick', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({symbol, train: doTrain}),
-    });
-    if (!r.ok) { console.warn('tick failed', r.status); return null; }
-    const data = await r.json();
-    cdeskRenderState(data);
-    if (data.live_order) cdeskRefreshState();
-    // Adaptive re-schedule: backend tells us next interval
+    const results = await Promise.all(CDESK_SYMBOLS.map(async (symbol) => {
+      try {
+        const r = await fetch('/api/smc-crypto/auto-learn-tick', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({symbol, train: doTrain}),
+        });
+        if (!r.ok) return null;
+        return await r.json();
+      } catch (e) {
+        return null;
+      }
+    }));
+    
+    const valid = results.find(x => x !== null);
+    if (valid) {
+      cdeskRenderState(valid);
+      if (valid.live_order) cdeskRefreshState();
+    }
+    
     if (_cdeskAutoLearnRunning) {
-      const nextSec = (data.history && data.history.next_interval_seconds) || 30;
+      const nextSec = (valid && valid.history && valid.history.next_interval_seconds) || 30;
       if (_cdeskAutoLearnTimer) clearTimeout(_cdeskAutoLearnTimer);
       _cdeskAutoLearnTimer = setTimeout(() => cdeskAutoLearnTick(true), nextSec * 1000);
     }
-    // Refresh history table after each tick
+    
     cdeskRefreshHistory();
-    return data;
   } catch (e) {
-    console.error('cdeskAutoLearnTick', e);
+    console.error('cdeskAutoLearnTick error:', e);
     if (_cdeskAutoLearnRunning) {
       _cdeskAutoLearnTimer = setTimeout(() => cdeskAutoLearnTick(true), 60000);
     }
-    return null;
   }
 }
 
@@ -10663,7 +10979,7 @@ function cdeskToggleAutoLearn() {
 }
 
 async function cdeskRefreshHistory() {
-  const symbol = $('cdesk-symbol').value;
+  const symbol = ($('cdesk-symbol') && $('cdesk-symbol').value) || 'BTC-USDT';
   try {
     const r = await fetch(`/api/smc-crypto/training-history?symbol=${encodeURIComponent(symbol)}&limit=30`);
     const data = await r.json();
@@ -10847,297 +11163,7 @@ async function cdeskRefreshHistory() {
   }
 }
 
-async function cdeskRefreshAll() {
-  await Promise.all([
-    cdeskRefreshState(),
-    cdeskRefreshAcceptance(),
-    cdeskRefreshHistory(),
-    cdeskOnSymbolChange(),
-    cdeskRefreshOverview(),
-    cdeskLoadFillsAndStrategyPnl(),
-  ]);
-}
-
-async function cdeskAutoRun() {
-  if (!confirm(`確認對所有幣種執行自動工作流？\n系統會自動: 策略掃描 → dry-run → 風控 → 送單與否由驗收歷史決定`)) return;
-  const btn = $('cdesk-auto-btn'); btn.disabled = true; btn.textContent = '執行中…';
-  try {
-    const r = await fetch('/api/smc-crypto/auto-run', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({symbol: 'ALL'}),
-    });
-    const data = await r.json();
-    if (data.is_all) {
-      cdeskRenderAllProposals(data.results, data);
-    } else {
-      const u = data.unified || {};
-      const decs = u.decisions || [];
-      const dec = decs[0] || {};
-      cdeskRenderProposal(dec, data);
-    }
-    await Promise.all([
-      cdeskRefreshState(),
-      cdeskRefreshAcceptance(),
-      cdeskOnSymbolChange(),
-      cdeskLoadFillsAndStrategyPnl(),
-    ]);
-  } catch (err) {
-    $('cdesk-proposal').innerHTML = `<span class="text-red-400">執行失敗: ${err.message}</span>`;
-  } finally {
-    btn.disabled = false; btn.textContent = '自動執行';
-  }
-}
-
-function cdeskRenderAllProposals(results, meta) {
-  const el = $('cdesk-proposal');
-  $('cdesk-proposal-time').textContent = (meta && meta.started_at) || new Date().toISOString().slice(0,19);
-  
-  if (!results || results.length === 0) {
-    el.innerHTML = `<div class="text-slate-400">無執行結果</div>`;
-    return;
-  }
-  
-  const htmls = results.map(res => {
-    const sym = res.symbol;
-    const action = res.workflow_action;
-    
-    let badgeColor = '#64748b'; // gray default
-    let actionLabel = action;
-    if (action === 'executed') {
-      badgeColor = '#10b981';
-      actionLabel = '已送單 (LIVE)';
-    } else if (action === 'dry_run_only') {
-      badgeColor = '#0284c7';
-      actionLabel = '僅模擬 (DRY-RUN)';
-    } else if (action === 'blocked') {
-      badgeColor = '#d97706';
-      actionLabel = '已阻擋 (BLOCKED)';
-    } else if (action === 'cooldown') {
-      badgeColor = '#475569';
-      actionLabel = '冷卻中 (COOLDOWN)';
-    }
-    
-    const u = res.unified || {};
-    const decs = u.decisions || [];
-    const dec = decs[0];
-    
-    let detailHtml = '';
-    if (action === 'cooldown') {
-      const remaining = res.cooldown_seconds_remaining != null ? res.cooldown_seconds_remaining + '秒' : '未知';
-      detailHtml = `<div class="text-xs text-slate-500 mt-1">冷卻剩餘時間: <span class="font-mono text-slate-300 font-semibold">${remaining}</span></div>`;
-    } else if (dec && dec.entry) {
-      const e = dec.entry;
-      const dir = e.direction === 1 ? 'LONG' : 'SHORT';
-      const dirBg = e.direction === 1 ? '#065f46' : '#7f1d1d';
-      const score = (e.confluence || {}).score;
-      const threshold = (e.confluence || {}).threshold;
-      const meets = score >= threshold;
-      const dol = e.dol_target || {};
-      
-      let liveHtml = '';
-      if (dec.live_order) {
-        const lo = dec.live_order;
-        if (lo.status >= 200 && lo.status < 300) {
-          const op = lo.payload || {};
-          liveHtml = `<div class="mt-1.5 p-1 px-2 text-[11px] font-semibold inline-block rounded" style="background:#064e3b;color:#d1fae5;">已送單: ${op.id} (${(op.side||'').toUpperCase()} ${op.quantity} @ ${op.price})</div>`;
-        } else {
-          const err = ((lo.payload || {}).detail || {}).error || {};
-          liveHtml = `<div class="mt-1.5 p-1 px-2 text-[11px] inline-block rounded" style="background:#7f1d1d;color:#fecaca;">送單失敗 ${lo.status}: ${err.code || ''}</div>`;
-        }
-      }
-      
-      let dryHtml = '';
-      if (dec.dry_run) {
-        dryHtml = `<div class="text-[10px] text-slate-500 mt-1">模擬撮合: 狀態 <span class="text-slate-300">${dec.dry_run.state}</span> · 均價 $${dec.dry_run.avg_price} · 數量 ${dec.dry_run.filled_qty}</div>`;
-      }
-      
-      detailHtml = `
-        <div class="mt-2 pl-3 border-l-2 border-slate-700 space-y-1">
-          <div class="flex items-center gap-2 text-xs flex-wrap">
-            <span class="px-1.5 py-0.5 text-[10px] font-bold rounded" style="background:${dirBg};color:#fff">${dir}</span>
-            <span class="font-mono text-slate-300">${e.model}</span>
-            <span class="text-slate-600">|</span>
-            <span>score <strong class="${meets ? 'text-emerald-400' : 'text-amber-400'}">${score}/${threshold}</strong></span>
-            <span class="text-slate-600">|</span>
-            <span>RR <strong class="text-slate-300">${e.rr}</strong></span>
-            ${dol.target_price ? `<span class="text-slate-600">|</span><span>DOL ${dol.target_kind} @ ${dol.target_price}</span>` : ''}
-          </div>
-          <div class="text-[11px] text-slate-400 font-mono mt-1">
-            entry: $${e.entry} &nbsp;&nbsp; stop: $${e.stop} &nbsp;&nbsp; target: $${e.target}
-          </div>
-          ${dryHtml}
-          ${liveHtml}
-        </div>
-      `;
-    } else {
-      const reason = dec ? (dec.action || '—') : (res.preflight && res.preflight.reason ? res.preflight.reason : 'no_decision');
-      detailHtml = `<div class="text-[11px] text-slate-500 mt-1">無合適提案 (原因: <span class="font-mono text-amber-500">${reason}</span>)</div>`;
-    }
-    
-    let notesHtml = '';
-    if (res.notes && res.notes.length > 0) {
-      notesHtml = `<div class="text-[10px] text-slate-500 mt-1 flex flex-wrap gap-1">${res.notes.map(n => `<span class="bg-slate-800/60 px-1.5 py-0.5 rounded text-slate-400">${n}</span>`).join('')}</div>`;
-    }
-    
-    return `
-      <div class="p-3 mb-2 rounded bg-slate-900/40 border border-slate-800/80">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-bold text-slate-200">${sym}</span>
-          <span class="text-[10px] px-2 py-0.5 font-semibold font-mono rounded-full" style="background:${badgeColor}22;color:${badgeColor};border:1px solid ${badgeColor}44">${actionLabel}</span>
-        </div>
-        ${detailHtml}
-        ${notesHtml}
-      </div>
-    `;
-  }).join('');
-  
-  el.innerHTML = `<div class="space-y-1">${htmls}</div>`;
-}
-
-function cdeskRenderProposal(dec, meta) {
-  const el = $('cdesk-proposal');
-  $('cdesk-proposal-time').textContent = (meta && meta.started_at) || new Date().toISOString().slice(0,19);
-  if (!dec || !dec.entry) {
-    const reason = dec ? (dec.action || '—') : 'no_decision';
-    const bias = dec ? (dec.bias || '—') : '—';
-    el.innerHTML = `<div class="text-slate-400">無合格 SMC 提案<div class="text-xs text-slate-500 mt-1">原因 <span class="font-mono text-amber-300">${reason}</span> · bias <span class="font-mono">${bias}</span></div></div>`;
-    return;
-  }
-  const e = dec.entry;
-  const dir = e.direction === 1 ? 'LONG' : 'SHORT';
-  const dirBg = e.direction === 1 ? '#065f46' : '#7f1d1d';
-  const score = (e.confluence || {}).score;
-  const threshold = (e.confluence || {}).threshold;
-  const meets = score >= threshold;
-  const dol = e.dol_target || {};
-  let live_html = '';
-  if (dec.live_order) {
-    const lo = dec.live_order;
-    if (lo.status >= 200 && lo.status < 300) {
-      const op = lo.payload || {};
-      live_html = `<div class="mt-3 p-2" style="background:#064e3b;color:#d1fae5;border-radius:3px"><div class="font-semibold text-sm">已送單: ${op.id}</div><div class="text-xs">${(op.side||'').toUpperCase()} ${op.quantity} @ ${op.price} · notional $${(parseFloat(op.quantity||0)*parseFloat(op.price||0)).toFixed(2)}</div></div>`;
-    } else {
-      const err = ((lo.payload || {}).detail || {}).error || {};
-      live_html = `<div class="mt-3 p-2" style="background:#7f1d1d;color:#fecaca;border-radius:3px"><div class="text-xs">送單失敗 ${lo.status}: ${err.code || ''}</div></div>`;
-    }
-  }
-  el.innerHTML = `
-    <div class="flex items-center gap-3 mb-3">
-      <span class="px-3 py-1 text-xs font-bold" style="background:${dirBg};color:#fff;border-radius:3px;letter-spacing:0.05em">${dir}</span>
-      <span class="font-mono text-slate-200">${e.model}</span>
-      <span class="text-xs text-slate-500">|</span>
-      <span class="text-sm">score <span class="font-mono ${meets ? 'text-emerald-400' : 'text-amber-400'}">${score}/${threshold}</span></span>
-      <span class="text-xs text-slate-500">|</span>
-      <span class="text-sm">RR <span class="font-mono text-slate-200">${e.rr}</span></span>
-      <span class="text-xs text-slate-500">|</span>
-      <span class="text-sm">DOL <span class="font-mono text-slate-200">${dol.target_kind || '—'} @ ${dol.target_price || '—'}</span></span>
-    </div>
-    <table class="w-full text-xs">
-      <tr><td class="text-slate-500 py-0.5" style="width:15%">entry</td><td class="font-mono text-slate-200">$${e.entry}</td>
-          <td class="text-slate-500" style="width:15%">stop</td><td class="font-mono text-slate-200">$${e.stop}</td>
-          <td class="text-slate-500" style="width:15%">target</td><td class="font-mono text-slate-200">$${e.target}</td></tr>
-    </table>
-    ${dec.dry_run ? `<div class="mt-2 text-xs text-slate-500">dry-run: state <span class="text-slate-200 font-mono">${dec.dry_run.state}</span> · avg $${dec.dry_run.avg_price} · qty ${dec.dry_run.filled_qty} · fee $${dec.dry_run.fee}</div>` : ''}
-    ${meets ? '' : '<div class="mt-2 text-xs text-amber-400">分數未達門檻 — 不會送單</div>'}
-    ${live_html}
-  `;
-}
-
-async function cdeskForceLive() {
-  const symbol = $('cdesk-symbol').value;
-  if (!confirm(`強制送單 (測試 / 演示用)\n\n對 ${symbol} 跳過驗收歷史檢查，把匯流門檻降到 5、單筆 notional 上限 $1000、interval=15m，直接送單到模擬撮合。\n\n注意：此按鈕繞過了 production 紀律閘 — 僅用於試跑系統流程。`)) return;
-  const btn = $('cdesk-force-btn'); btn.disabled = true; btn.textContent = '送單中…';
-  $('cdesk-proposal').innerHTML = '<span class="text-amber-400">強制 live 送單中 (min_score=5, notional=$1000)…</span>';
-  try {
-    const r = await fetch('/api/smc-crypto/execute', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        symbol, interval: '15m',
-        min_confluence_score: 5, min_rr: 1.5,
-        risk_pct: 0.05, max_notional_usdt: 1000,
-      }),
-    });
-    const data = await r.json();
-    const decs = data.decisions || [];
-    const dec = decs[0] || {};
-    cdeskRenderProposal(dec, data);
-    cdeskRefreshState();
-    cdeskRefreshAcceptance();
-  } catch (e) {
-    $('cdesk-proposal').innerHTML = `<span class="text-red-400">強制送單失敗: ${e.message}</span>`;
-  } finally {
-    btn.disabled = false; btn.textContent = '強制送單';
-  }
-}
-
-async function cdeskScan() {
-  const symbol = $('cdesk-symbol').value;
-  const interval = (_cdeskProfile && _cdeskProfile.profile && _cdeskProfile.profile.interval) || '15m';
-  const minScore = (_cdeskProfile && _cdeskProfile.profile && _cdeskProfile.profile.min_confluence_score) || 8;
-  const maxNotional = (_cdeskProfile && _cdeskProfile.profile && _cdeskProfile.profile.max_notional_usdt) || 2000;
-  const el = $('cdesk-proposal');
-  el.innerHTML = '<span class="text-amber-400">掃描中…</span>';
-  try {
-    const url = `/api/smc-crypto/scan?symbol=${encodeURIComponent(symbol)}&interval=${interval}&min_confluence_score=${minScore}&max_notional_usdt=${maxNotional}&risk_pct=0.05`;
-    const r = await fetch(url);
-    const data = await r.json();
-    _cdeskLastScan = data;
-    const d = data.decision || {};
-    d.bias = d.bias || '—';
-    cdeskRenderProposal(d, {started_at: data.generated_at});
-  } catch (err) {
-    el.innerHTML = `<div class="text-red-400">掃描失敗: ${err.message}</div>`;
-  }
-}
-
-async function cdeskExecute() {
-  if (!_cdeskLastScan || !_cdeskLastScan.decision || !_cdeskLastScan.decision.entry) {
-    alert('沒有可執行的提案，請先掃描');
-    return;
-  }
-  if (!confirm('確認送單到模擬撮合？此操作會佔用模擬帳戶資金。')) return;
-  const btn = $('cdesk-execute-btn'); btn.disabled = true; btn.textContent = '送單中…';
-  try {
-    const payload = {
-      symbol: $('cdesk-symbol').value,
-      interval: $('cdesk-interval').value,
-      min_confluence_score: parseInt($('cdesk-min-score').value || 8),
-      max_notional_usdt: parseFloat($('cdesk-max-notional').value || 2000),
-      risk_pct: 0.05,
-    };
-    const r = await fetch('/api/smc-crypto/execute', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload),
-    });
-    const out = await r.json();
-    const dec = (out.decisions || [])[0];
-    const acc = out.acceptance || {};
-    const verdictColor = acc.conclusion === 'passed' ? '#10b981'
-      : acc.conclusion === 'conditionally_passed' ? '#f59e0b' : '#ef4444';
-    let html = '<div class="p-3 rounded" style="background:rgba(15,23,42,0.5);">';
-    if (dec) {
-      html += `<div class="mb-2 font-semibold">action: <code class="text-amber-300">${dec.action}</code></div>`;
-      if (dec.live_order && dec.live_order.status >= 200 && dec.live_order.status < 300) {
-        const op = dec.live_order.payload || {};
-        html += `<div class="text-emerald-400">★ 已送單: ${op.id} · ${op.side?.toUpperCase()} ${op.quantity}@${op.price}</div>`;
-      } else if (dec.live_order) {
-        const err = ((dec.live_order.payload || {}).detail || {}).error || {};
-        html += `<div class="text-red-400">送單失敗: ${err.code} - ${err.message}</div>`;
-      }
-    }
-    html += `<div class="mt-2 pt-2 border-t border-slate-700">
-      <div>驗收結論: <span style="color:${verdictColor};font-weight:600">${acc.conclusion_label || acc.conclusion}</span></div>
-      <div class="text-xs text-slate-500">gates pass=${acc.passed} fail=${acc.failed} · blocking=${(acc.blocking_issues || []).length}</div>
-    </div></div>`;
-    $('cdesk-proposal').innerHTML = html;
-    cdeskRefreshState();
-    cdeskRefreshAcceptance();
-  } catch (err) {
-    alert('送單失敗: ' + err.message);
-  } finally {
-    btn.disabled = false; btn.textContent = '確認下單 → 模擬市場';
-  }
-}
+// Cleaned duplicate functions.
 
 function cdeskSwitchSubTab(tabName) {
   const tabs = ['holdings', 'open-orders', 'history-orders', 'fills'];
