@@ -1178,34 +1178,39 @@ body { background: var(--bg-base); color: var(--text-primary); }
       </div>
     </div>
 
-    <!-- 主雙欄佈局 (左右雙欄 6-6 對分) -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-3 mb-3">
-      
-      <!-- 左欄: 全幣種 SMC 策略與決策矩陣 (占 6 格) -->
-      <div class="lg:col-span-6 space-y-3">
-        <details class="glass-card-sm p-4 block" style="border-top: 3px solid #10b981;" open>
-          <summary class="text-sm text-slate-200 font-semibold cursor-pointer select-none flex items-center justify-between outline-none pb-2 border-b border-slate-800/80">
-            <span class="flex items-center gap-1.5">
-              <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-emerald-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-              SMC 實時策略與決策矩陣 (Multi-Symbol Grid)
-            </span>
-            <div class="flex items-center gap-2 mr-4 text-xs font-normal text-slate-500">
-              <span id="cdesk-proposal-time">—</span>
-              <span class="text-slate-600">|</span>
-              <span class="hover:text-slate-300">展開/收起</span>
-            </div>
-          </summary>
-          
-          <!-- 多幣種卡片網格容器 -->
-          <div id="cdesk-symbols-container" class="space-y-3 mt-3">
-            <div class="text-xs text-slate-500 text-center py-8">正在加載全幣種策略與決策矩陣…</div>
-          </div>
-        </details>
+    <!-- 側邊欄抽屜懸浮觸發按鈕 (獨立於其他面板，懸浮在左側邊緣) -->
+    <button onclick="toggleCdeskDrawer(true)" class="fixed left-0 top-1/2 transform -translate-y-1/2 z-40 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-4 px-2 rounded-r-lg shadow-2xl flex flex-col items-center gap-1.5 transition-all duration-200 group hover:pl-3" style="writing-mode: vertical-lr; letter-spacing: 0.1em; border: 1px solid rgba(16,185,129,0.4); border-left: none;">
+      <div class="flex items-center justify-center transform group-hover:scale-110 transition-transform">
+        <svg style="width:14px;height:14px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-emerald-100"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
       </div>
-      
-      <!-- 右欄: 資產、損益與統合控制台 (占 6 格) -->
-      <div class="lg:col-span-6 space-y-3">
-        <!-- 核心統計損益卡片 (4卡片緊湊併排) -->
+      <span class="text-xs font-bold text-slate-100 select-none">決策矩陣 PANEL</span>
+    </button>
+
+    <!-- 側邊欄抽屜背景遮罩 (Overlay) -->
+    <div id="cdesk-drawer-overlay" class="fixed inset-0 z-40 hidden" style="background: rgba(2, 6, 23, 0.65); backdrop-filter: blur(4px); transition: opacity 0.3s; opacity: 0;" onclick="toggleCdeskDrawer(false)"></div>
+
+    <!-- 側邊欄抽屜主體 (Drawer Container) -->
+    <div id="cdesk-drawer" class="fixed top-0 left-0 h-full w-[460px] max-w-[90vw] z-50 bg-[#0f172a]/95 border-r border-slate-800/80 shadow-2xl transform -translate-x-full transition-transform duration-300 ease-in-out flex flex-col" style="backdrop-filter: blur(8px);">
+      <!-- Drawer 頂部標頭 -->
+      <div class="p-4 border-b border-slate-800/80 flex items-center justify-between" style="background: rgba(15, 23, 42, 0.4);">
+        <span class="text-sm text-slate-200 font-semibold flex items-center gap-1.5">
+          <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-emerald-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+          SMC 實時策略與決策矩陣
+        </span>
+        <div class="flex items-center gap-3">
+          <span id="cdesk-proposal-time" class="text-xs text-slate-500">—</span>
+          <button onclick="toggleCdeskDrawer(false)" class="text-slate-400 hover:text-white text-lg font-bold p-1 transition-colors">✕</button>
+        </div>
+      </div>
+      <!-- Drawer 內容區 (滾動) -->
+      <div class="flex-1 overflow-y-auto p-4 space-y-3" id="cdesk-symbols-container">
+        <div class="text-xs text-slate-500 text-center py-8">正在加載全幣種策略與決策矩陣…</div>
+      </div>
+    </div>
+
+    <!-- 主內容區 (佔滿 100% 寬度，提供最開闊的資產控制視角) -->
+    <div class="w-full space-y-3 mb-3">
+      <!-- 核心統計損益卡片 (4卡片緊湊併排) -->
         <div class="grid grid-cols-4 gap-2">
           <div class="p-3 rounded border-l-4 border-emerald-500" style="background:#0f172a">
             <div class="text-[10px] text-slate-500 font-semibold">帳戶淨值 (USDT)</div>
@@ -1258,7 +1263,6 @@ body { background: var(--bg-base); color: var(--text-primary); }
             <div id="cdesk-fills" class="text-xs">—</div>
           </div>
         </div>
-      </div>
     </div>
 
 
@@ -11167,7 +11171,26 @@ async function cdeskRefreshHistory() {
   }
 }
 
-// Cleaned duplicate functions.
+function toggleCdeskDrawer(open) {
+  const drawer = $('cdesk-drawer');
+  const overlay = $('cdesk-drawer-overlay');
+  if (!drawer || !overlay) return;
+  
+  if (open) {
+    overlay.classList.remove('hidden');
+    // Ensure styles are applied after element is unhidden
+    setTimeout(() => {
+      overlay.style.opacity = '1';
+      drawer.style.transform = 'translateX(0)';
+    }, 20);
+  } else {
+    overlay.style.opacity = '0';
+    drawer.style.transform = 'translateX(-100%)';
+    setTimeout(() => {
+      overlay.classList.add('hidden');
+    }, 300);
+  }
+}
 
 function cdeskSwitchSubTab(tabName) {
   const tabs = ['holdings', 'open-orders', 'history-orders', 'fills'];
