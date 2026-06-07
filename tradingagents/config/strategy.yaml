@@ -38,6 +38,7 @@ risk:
   min_rr: 1.5
   risk_pct: 0.01
   max_single_loss_pct: 0.05
+  max_notional_cap_pct: 0.10
   daily_loss_limit: 50000
   max_drawdown_limit: 50000
   defensive_mode_pnl_trigger: 80000

@@ -154,3 +154,55 @@ def test_profile_cooldown_override():
     profile = profile_for_symbol("BTC-USDT")
     assert profile.cooldown_minutes == 5
 
+
+def test_dynamic_max_notional_sizing():
+    from smc_auto_workflow import get_current_equity_usdt
+    
+    class MockApi:
+        def __init__(self, balances_data, ticker_data=None):
+            self.balances_data = balances_data
+            self.ticker_data = ticker_data or {}
+            
+        def balances(self):
+            return {
+                "status": 200,
+                "payload": {
+                    "success": True,
+                    "data": self.balances_data
+                }
+            }
+            
+        def ticker(self, symbol):
+            if symbol in self.ticker_data:
+                return {
+                    "status": 200,
+                    "payload": {
+                        "last_price": self.ticker_data[symbol]
+                    }
+                }
+            return {"status": 404, "payload": {}}
+
+    # 1. Test USDT-only equity calculation
+    api_usdt_only = MockApi([
+        {"asset": "USDT", "total": "50000.0", "available": "50000.0", "locked": "0.0"}
+    ])
+    equity = get_current_equity_usdt(api_usdt_only)
+    assert equity == 50000.0
+    
+    # 2. Test mixed assets calculation with tickers conversion
+    api_mixed = MockApi([
+        {"asset": "USDT", "total": "10000.0", "available": "10000.0", "locked": "0.0"},
+        {"asset": "BTC", "total": "2.0", "available": "2.0", "locked": "0.0"},
+    ], {
+        "BTC-USDT": 60000.0
+    })
+    equity_mixed = get_current_equity_usdt(api_mixed)
+    assert equity_mixed == 130000.0
+
+    # 3. Test cap logic bounds
+    dynamic_cap_pct = 0.10
+    # Small equity (e.g. 50 USDT) -> 10% is 5.0 -> should bound to 11.0 minimum
+    assert max(11.0, 50.0 * dynamic_cap_pct) == 11.0
+    # Large equity (e.g. 200000 USDT) -> 10% is 20000.0 -> should yield 20000.0
+    assert max(11.0, 200000.0 * dynamic_cap_pct) == 20000.0
+

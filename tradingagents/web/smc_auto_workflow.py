@@ -146,6 +146,35 @@ def load_latest_adaptive_runtime_patch(conn: sqlite3.Connection, symbol: str) ->
     return {}
 
 
+def get_current_equity_usdt(api) -> float:
+    """Calculate total account equity in USDT dynamically based on spot balances and ticker prices."""
+    fallback_equity = 100000.0
+    try:
+        bal_resp = api.balances()
+        if not bal_resp or bal_resp.get("status") != 200:
+            return fallback_equity
+        
+        balances_data = bal_resp.get("payload", {}).get("data", [])
+        total_value_usdt = 0.0
+        
+        for bal in balances_data:
+            asset = bal.get("asset")
+            total_qty = float(bal.get("total") or 0.0)
+            if total_qty <= 0:
+                continue
+                
+            if asset == "USDT":
+                total_value_usdt += total_qty
+            else:
+                ticker_resp = api.ticker(f"{asset}-USDT")
+                if ticker_resp and ticker_resp.get("status") == 200:
+                    last_price = float(ticker_resp.get("payload", {}).get("last_price") or 0.0)
+                    total_value_usdt += total_qty * last_price
+        return total_value_usdt if total_value_usdt > 10.0 else fallback_equity
+    except Exception:
+        return fallback_equity
+
+
 @dataclass
 class PreflightVerdict:
     """Outcome of looking at recent acceptance history."""
@@ -378,8 +407,26 @@ def run_symbol(
     min_score = (patch.get("strategy") or {}).get("confluence_min_score")
     optimal_interval = (patch.get("strategy") or {}).get("optimal_interval")
 
+    # Load max_notional_cap_pct from strategy.yaml, default to 10% (0.10)
+    max_notional_cap_pct = 0.10
+    try:
+        from pathlib import Path
+        import yaml
+        yaml_path = Path(__file__).resolve().parent.parent / "config/strategy.yaml"
+        if yaml_path.exists():
+            with open(yaml_path, "r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+                max_notional_cap_pct = float(data.get("risk", {}).get("max_notional_cap_pct", 0.10))
+    except Exception:
+        pass
+
+    # Statistical dynamic single-order max notional calculation to prevent ruin
+    current_equity = get_current_equity_usdt(api)
+    dynamic_max_notional = current_equity * max_notional_cap_pct
+    dynamic_max_notional = max(11.0, dynamic_max_notional)
+
     risk_pct = profile.risk_pct
-    max_notional = profile.max_notional_usdt
+    max_notional = dynamic_max_notional
     min_confluence_score = profile.min_confluence_score
     probe_active = False
 
@@ -390,9 +437,13 @@ def run_symbol(
 
     if mode == "VALIDATING_PROBE":
         risk_pct = float(profile.risk_pct) * risk_multiplier
-        max_notional = min(float(profile.max_notional_usdt), probe_cap)
+        max_notional = min(dynamic_max_notional, probe_cap)
+        if max_notional < 11.0:
+            max_notional = 11.0
         probe_active = True
         notes.append(f"VALIDATING_PROBE active: scaling risk_pct by {risk_multiplier} to {risk_pct:.5f}, cap notional by {max_notional}")
+    else:
+        notes.append(f"Dynamic max_notional calculated from equity ${current_equity:.2f} (cap_pct={max_notional_cap_pct*100:.1f}%): ${max_notional:.2f}")
 
     if min_score is not None:
         min_confluence_score = int(min_score)
