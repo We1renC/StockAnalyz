@@ -226,6 +226,9 @@ def compute_pnl_snapshot(api, conn: Optional[sqlite3.Connection] = None) -> dict
         fills = (f.get("payload") or {}).get("fills") or f.get("payload") or []
         if isinstance(fills, dict):
             fills = fills.get("data") or []
+        if isinstance(fills, list):
+            # Sort chronologically (oldest first) so cost-basis is computed correctly
+            fills = sorted(fills, key=lambda x: x.get("executed_at", ""))
         total_fills = len(fills) if isinstance(fills, list) else 0
         cost: dict[str, dict] = {}     # asset → {qty, avg}
         realized = 0.0
