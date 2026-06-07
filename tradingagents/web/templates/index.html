@@ -1183,20 +1183,24 @@ body { background: var(--bg-base); color: var(--text-primary); }
       
       <!-- 左欄: 全幣種 SMC 策略與決策矩陣 (占 6 格) -->
       <div class="lg:col-span-6 space-y-3">
-        <div class="glass-card-sm p-4" style="border-top: 3px solid #10b981;">
-          <div class="flex items-center justify-between mb-3 pb-2 border-b border-slate-800/80">
-            <span class="text-sm text-slate-200 font-semibold flex items-center gap-1.5">
+        <details class="glass-card-sm p-4 block" style="border-top: 3px solid #10b981;" open>
+          <summary class="text-sm text-slate-200 font-semibold cursor-pointer select-none flex items-center justify-between outline-none pb-2 border-b border-slate-800/80">
+            <span class="flex items-center gap-1.5">
               <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-emerald-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
               SMC 實時策略與決策矩陣 (Multi-Symbol Grid)
             </span>
-            <span id="cdesk-proposal-time" class="text-xs text-slate-500">—</span>
-          </div>
+            <div class="flex items-center gap-2 mr-4 text-xs font-normal text-slate-500">
+              <span id="cdesk-proposal-time">—</span>
+              <span class="text-slate-600">|</span>
+              <span class="hover:text-slate-300">展開/收起</span>
+            </div>
+          </summary>
           
           <!-- 多幣種卡片網格容器 -->
-          <div id="cdesk-symbols-container" class="space-y-3">
+          <div id="cdesk-symbols-container" class="space-y-3 mt-3">
             <div class="text-xs text-slate-500 text-center py-8">正在加載全幣種策略與決策矩陣…</div>
           </div>
-        </div>
+        </details>
       </div>
       
       <!-- 右欄: 資產、損益與統合控制台 (占 6 格) -->
