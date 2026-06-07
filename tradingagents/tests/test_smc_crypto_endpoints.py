@@ -219,3 +219,45 @@ def test_extracted_router_endpoints_still_reachable(client):
     ]:
         r = client.get(route)
         assert r.status_code < 500, f"{route} -> {r.status_code}"
+
+
+def test_historical_relearn_endpoints(client, monkeypatch):
+    import subprocess
+    import os
+    
+    class DummyProcess:
+        pid = 12345
+        def poll(self):
+            return None
+        def terminate(self):
+            pass
+        def wait(self, timeout=None):
+            return 0
+            
+    # Mock Popen 以防真實啟動背景腳本
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: DummyProcess())
+    # Mock os 信號發送以防真實 kill 進程
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: None)
+    monkeypatch.setattr(os, "getpgid", lambda pid: 12345)
+    
+    # 1. 測試開始端點
+    r_start = client.post("/api/smc-crypto/historical-relearn/start", json={"symbols": "BTC-USDT,ETH-USDT"})
+    assert r_start.status_code == 200
+    body_start = r_start.json()
+    assert body_start["status"] == "started"
+    assert body_start["symbols"] == ["BTC-USDT", "ETH-USDT"]
+    
+    # 2. 測試狀態查詢端點
+    r_status = client.get("/api/smc-crypto/historical-relearn/status?offset=0")
+    assert r_status.status_code == 200
+    body_status = r_status.json()
+    assert body_status["running"] is True
+    assert body_status["symbols"] == ["BTC-USDT", "ETH-USDT"]
+    assert "logs" in body_status
+    
+    # 3. 測試中止端點
+    r_stop = client.post("/api/smc-crypto/historical-relearn/stop")
+    assert r_stop.status_code == 200
+    body_stop = r_stop.json()
+    assert body_stop["status"] == "stopped"
+

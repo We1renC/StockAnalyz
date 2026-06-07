@@ -4344,6 +4344,90 @@ def api_smc_crypto_training_history(symbol: Optional[str] = None, limit: int = 5
         raise HTTPException(status_code=500, detail=f"history failed: {e}")
 
 
+@app.get("/api/smc-crypto/all-symbols-overview")
+def api_smc_crypto_all_symbols_overview():
+    """一次性回傳所有幣種的學習狀態、最優策略參數（含學習後覆寫的時框）與即時 KPI 摘要。
+    
+    供前端「全幣種即時交易概覽」Dashboard 使用，避免需要逐一查詢每個幣種。
+    """
+    SYMBOLS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT"]
+    try:
+        import json as _json
+        from smc_auto_workflow import profile_for_symbol, load_latest_adaptive_runtime_patch
+        from smc_training_history import summarize_training_history
+        from dataclasses import asdict
+
+        conn = get_db()
+        results = []
+        try:
+            for sym in SYMBOLS:
+                item = {"symbol": sym}
+                try:
+                    # 1. 基本策略 profile（靜態配置）
+                    profile = profile_for_symbol(sym)
+                    item["profile"] = asdict(profile)
+                except Exception as e:
+                    item["profile"] = {"error": str(e)}
+
+                try:
+                    # 2. 從資料庫讀取最新自適應 runtime patch（包含學習後最優時框）
+                    patch = load_latest_adaptive_runtime_patch(conn, sym)
+                    strategy_patch = patch.get("strategy") or {}
+                    state_patch = patch.get("state") or {}
+                    item["adaptive_patch"] = {
+                        "optimal_interval": strategy_patch.get("optimal_interval"),
+                        "min_confluence_score": strategy_patch.get("min_confluence_score"),
+                        "min_rr": strategy_patch.get("min_rr"),
+                        "risk_pct": strategy_patch.get("risk_pct"),
+                        "risk_multiplier": strategy_patch.get("risk_multiplier"),
+                        "probe_notional_cap_usdt": strategy_patch.get("probe_notional_cap_usdt"),
+                        "mode": state_patch.get("mode"),
+                    }
+                except Exception as e:
+                    item["adaptive_patch"] = {"error": str(e)}
+
+                try:
+                    # 3. 訓練歷史摘要（KPI）
+                    summary = summarize_training_history(conn, symbol=sym)
+                    latest = (summary or {}).get("latest") or {}
+                    item["kpi"] = {
+                        "equity_usdt": latest.get("equity_usdt"),
+                        "equity_delta_usdt": latest.get("equity_delta_usdt"),
+                        "realized_pnl_usdt": latest.get("realized_pnl_usdt"),
+                        "unrealized_pnl_usdt": latest.get("unrealized_pnl_usdt"),
+                        "total_fills": latest.get("total_fills"),
+                        "winning_fills": latest.get("winning_fills"),
+                        "ledger_size": latest.get("ledger_size"),
+                        "state": latest.get("state"),
+                        "expected_R": summary.get("avg_expected_R"),
+                        "win_rate": summary.get("avg_win_rate"),
+                        "total_ticks": summary.get("total_ticks"),
+                        "learning_indicator": latest.get("learning_indicator"),
+                        "global_training_sample_size": (
+                            summary.get("latest_training") or {}
+                        ).get("global_training_sample_size"),
+                        "global_training_adopted": (
+                            summary.get("latest_training") or {}
+                        ).get("global_training_adopted"),
+                        "global_training_mode": (
+                            summary.get("latest_training") or {}
+                        ).get("global_training_mode"),
+                        "global_training_verdict_reason": (
+                            summary.get("latest_training") or {}
+                        ).get("global_training_verdict_reason"),
+                    }
+                except Exception as e:
+                    item["kpi"] = {"error": str(e)}
+
+                results.append(item)
+        finally:
+            conn.close()
+
+        return {"symbols": results, "generated_at": datetime.now(UTC).isoformat()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"all-symbols-overview failed: {e}")
+
+
 @app.post("/api/smc-crypto/auto-learn-tick")
 def api_smc_crypto_auto_learn_tick(payload: dict):
     """One tick of the self-learning loop for a single symbol.
@@ -4526,6 +4610,172 @@ def api_smc_crypto_auto_learn_tick(payload: dict):
         return tick_response
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"auto-learn-tick failed: {e}")
+
+
+# 歷史資料學習背景行程狀態管理
+import os
+import sys
+import subprocess
+import signal
+
+class HistoricalRelearnManager:
+    def __init__(self):
+        self.process = None
+        self.symbols = []
+        self.start_time = None
+        self.log_file = BASE / "tmp" / "historical_relearn.log"
+
+    def is_running(self):
+        if self.process is None:
+            return False
+        # 檢查子行程是否已結束
+        ret = self.process.poll()
+        return ret is None
+
+_relearn_manager = HistoricalRelearnManager()
+
+
+@app.post("/api/smc-crypto/historical-relearn/start")
+def api_smc_crypto_historical_relearn_start(payload: dict):
+    """一鍵啟動背景歷史數據學習工作流"""
+    if _relearn_manager.is_running():
+        return {"status": "already_running", "message": "歷史學習工作流正在執行中"}
+
+    symbols = payload.get("symbols", "BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT,XRP-USDT")
+    # 確保 symbols 是合法格式
+    symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if not symbol_list:
+        raise HTTPException(400, "無效的 symbols")
+
+    # 確保 tmp 目錄存在
+    tmp_dir = BASE / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    
+    log_file_path = _relearn_manager.log_file
+    # 清空日誌檔案
+    with open(log_file_path, "w", encoding="utf-8") as f:
+        f.write(f"=== 歷史學習工作流啟動 ({datetime.now().isoformat()}) ===\n")
+        f.write(f"目標幣種: {', '.join(symbol_list)}\n\n")
+
+    # 使用 Popen 啟動 reset_and_relearn.py
+    script_path = BASE / "scratch" / "reset_and_relearn.py"
+    
+    cmd = [
+        sys.executable,
+        "-u", # 無緩衝輸出
+        str(script_path),
+        "--symbols", ",".join(symbol_list)
+    ]
+    
+    try:
+        # 開啟 log 檔案供子行程寫入
+        log_fh = open(log_file_path, "a", encoding="utf-8")
+        if sys.platform != "win32":
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                cwd=str(BASE),
+                preexec_fn=os.setsid
+            )
+        else:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                cwd=str(BASE)
+            )
+        
+        _relearn_manager.process = proc
+        _relearn_manager.symbols = symbol_list
+        _relearn_manager.start_time = time.time()
+        
+        return {
+            "status": "started",
+            "message": "歷史學習工作流已啟動",
+            "symbols": symbol_list
+        }
+    except Exception as e:
+        raise HTTPException(500, f"啟動歷史學習失敗: {e}")
+
+
+@app.post("/api/smc-crypto/historical-relearn/stop")
+def api_smc_crypto_historical_relearn_stop():
+    """停止歷史數據學習工作流"""
+    if not _relearn_manager.is_running():
+        return {"status": "not_running", "message": "歷史學習工作流並未執行"}
+
+    proc = _relearn_manager.process
+    try:
+        if sys.platform != "win32":
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            proc.terminate()
+        
+        try:
+            proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            if sys.platform != "win32":
+                os.killpg(pgid, signal.SIGKILL)
+            else:
+                proc.kill()
+            proc.wait()
+
+        # 寫入日誌通知被手動中止
+        log_file_path = _relearn_manager.log_file
+        if log_file_path.exists():
+            with open(log_file_path, "a", encoding="utf-8") as f:
+                f.write(f"\n\n=== 歷史學習工作流已被手動中止 ({datetime.now().isoformat()}) ===\n")
+
+        return {"status": "stopped", "message": "歷史學習工作流已被手動中止"}
+    except Exception as e:
+        raise HTTPException(500, f"中止歷史學習失敗: {e}")
+
+
+@app.get("/api/smc-crypto/historical-relearn/status")
+def api_smc_crypto_historical_relearn_status(offset: int = 0):
+    """查詢歷史數據學習工作流狀態與增量日誌"""
+    running = _relearn_manager.is_running()
+    exit_code = None
+    if _relearn_manager.process is not None:
+        exit_code = _relearn_manager.process.poll()
+
+    log_file_path = _relearn_manager.log_file
+    logs = ""
+    new_offset = offset
+
+    if log_file_path.exists():
+        try:
+            file_size = log_file_path.stat().st_size
+            if file_size > offset:
+                with open(log_file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    f.seek(offset)
+                    logs = f.read()
+                    new_offset = f.tell()
+            elif file_size < offset:
+                with open(log_file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    logs = f.read()
+                    new_offset = f.tell()
+        except Exception as e:
+            logs = f"\n[讀取日誌出錯: {e}]\n"
+
+    elapsed = 0.0
+    if _relearn_manager.start_time is not None:
+        if running:
+            elapsed = time.time() - _relearn_manager.start_time
+        else:
+            if log_file_path.exists():
+                elapsed = max(0.0, log_file_path.stat().st_mtime - _relearn_manager.start_time)
+
+    return {
+        "running": running,
+        "exit_code": exit_code,
+        "symbols": _relearn_manager.symbols,
+        "elapsed": elapsed,
+        "logs": logs,
+        "new_offset": new_offset
+    }
 
 
 @app.post("/api/smc-crypto/train")
