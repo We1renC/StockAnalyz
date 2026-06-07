@@ -10784,27 +10784,139 @@ async function cdeskRefreshAll() {
 }
 
 async function cdeskAutoRun() {
-  const symbol = $('cdesk-symbol').value;
-  if (!confirm(`對 ${symbol} 執行自動工作流？\n系統會自動: 策略掃描 → dry-run → 風控 → 送單與否由驗收歷史決定`)) return;
+  if (!confirm(`確認對所有幣種執行自動工作流？\n系統會自動: 策略掃描 → dry-run → 風控 → 送單與否由驗收歷史決定`)) return;
   const btn = $('cdesk-auto-btn'); btn.disabled = true; btn.textContent = '執行中…';
   try {
     const r = await fetch('/api/smc-crypto/auto-run', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({symbol}),
+      body: JSON.stringify({symbol: 'ALL'}),
     });
     const data = await r.json();
-    const u = data.unified || {};
-    const decs = u.decisions || [];
-    const dec = decs[0] || {};
-    cdeskRenderProposal(dec, data);
-    cdeskRefreshState();
-    cdeskRefreshAcceptance();
-    cdeskOnSymbolChange();
+    if (data.is_all) {
+      cdeskRenderAllProposals(data.results, data);
+    } else {
+      const u = data.unified || {};
+      const decs = u.decisions || [];
+      const dec = decs[0] || {};
+      cdeskRenderProposal(dec, data);
+    }
+    await Promise.all([
+      cdeskRefreshState(),
+      cdeskRefreshAcceptance(),
+      cdeskOnSymbolChange(),
+      cdeskLoadFillsAndStrategyPnl(),
+    ]);
   } catch (err) {
     $('cdesk-proposal').innerHTML = `<span class="text-red-400">執行失敗: ${err.message}</span>`;
   } finally {
     btn.disabled = false; btn.textContent = '自動執行';
   }
+}
+
+function cdeskRenderAllProposals(results, meta) {
+  const el = $('cdesk-proposal');
+  $('cdesk-proposal-time').textContent = (meta && meta.started_at) || new Date().toISOString().slice(0,19);
+  
+  if (!results || results.length === 0) {
+    el.innerHTML = `<div class="text-slate-400">無執行結果</div>`;
+    return;
+  }
+  
+  const htmls = results.map(res => {
+    const sym = res.symbol;
+    const action = res.workflow_action;
+    
+    let badgeColor = '#64748b'; // gray default
+    let actionLabel = action;
+    if (action === 'executed') {
+      badgeColor = '#10b981';
+      actionLabel = '已送單 (LIVE)';
+    } else if (action === 'dry_run_only') {
+      badgeColor = '#0284c7';
+      actionLabel = '僅模擬 (DRY-RUN)';
+    } else if (action === 'blocked') {
+      badgeColor = '#d97706';
+      actionLabel = '已阻擋 (BLOCKED)';
+    } else if (action === 'cooldown') {
+      badgeColor = '#475569';
+      actionLabel = '冷卻中 (COOLDOWN)';
+    }
+    
+    const u = res.unified || {};
+    const decs = u.decisions || [];
+    const dec = decs[0];
+    
+    let detailHtml = '';
+    if (action === 'cooldown') {
+      const remaining = res.cooldown_seconds_remaining != null ? res.cooldown_seconds_remaining + '秒' : '未知';
+      detailHtml = `<div class="text-xs text-slate-500 mt-1">冷卻剩餘時間: <span class="font-mono text-slate-300 font-semibold">${remaining}</span></div>`;
+    } else if (dec && dec.entry) {
+      const e = dec.entry;
+      const dir = e.direction === 1 ? 'LONG' : 'SHORT';
+      const dirBg = e.direction === 1 ? '#065f46' : '#7f1d1d';
+      const score = (e.confluence || {}).score;
+      const threshold = (e.confluence || {}).threshold;
+      const meets = score >= threshold;
+      const dol = e.dol_target || {};
+      
+      let liveHtml = '';
+      if (dec.live_order) {
+        const lo = dec.live_order;
+        if (lo.status >= 200 && lo.status < 300) {
+          const op = lo.payload || {};
+          liveHtml = `<div class="mt-1.5 p-1 px-2 text-[11px] font-semibold inline-block rounded" style="background:#064e3b;color:#d1fae5;">已送單: ${op.id} (${(op.side||'').toUpperCase()} ${op.quantity} @ ${op.price})</div>`;
+        } else {
+          const err = ((lo.payload || {}).detail || {}).error || {};
+          liveHtml = `<div class="mt-1.5 p-1 px-2 text-[11px] inline-block rounded" style="background:#7f1d1d;color:#fecaca;">送單失敗 ${lo.status}: ${err.code || ''}</div>`;
+        }
+      }
+      
+      let dryHtml = '';
+      if (dec.dry_run) {
+        dryHtml = `<div class="text-[10px] text-slate-500 mt-1">模擬撮合: 狀態 <span class="text-slate-300">${dec.dry_run.state}</span> · 均價 $${dec.dry_run.avg_price} · 數量 ${dec.dry_run.filled_qty}</div>`;
+      }
+      
+      detailHtml = `
+        <div class="mt-2 pl-3 border-l-2 border-slate-700 space-y-1">
+          <div class="flex items-center gap-2 text-xs flex-wrap">
+            <span class="px-1.5 py-0.5 text-[10px] font-bold rounded" style="background:${dirBg};color:#fff">${dir}</span>
+            <span class="font-mono text-slate-300">${e.model}</span>
+            <span class="text-slate-600">|</span>
+            <span>score <strong class="${meets ? 'text-emerald-400' : 'text-amber-400'}">${score}/${threshold}</strong></span>
+            <span class="text-slate-600">|</span>
+            <span>RR <strong class="text-slate-300">${e.rr}</strong></span>
+            ${dol.target_price ? `<span class="text-slate-600">|</span><span>DOL ${dol.target_kind} @ ${dol.target_price}</span>` : ''}
+          </div>
+          <div class="text-[11px] text-slate-400 font-mono mt-1">
+            entry: $${e.entry} &nbsp;&nbsp; stop: $${e.stop} &nbsp;&nbsp; target: $${e.target}
+          </div>
+          ${dryHtml}
+          ${liveHtml}
+        </div>
+      `;
+    } else {
+      const reason = dec ? (dec.action || '—') : (res.preflight && res.preflight.reason ? res.preflight.reason : 'no_decision');
+      detailHtml = `<div class="text-[11px] text-slate-500 mt-1">無合適提案 (原因: <span class="font-mono text-amber-500">${reason}</span>)</div>`;
+    }
+    
+    let notesHtml = '';
+    if (res.notes && res.notes.length > 0) {
+      notesHtml = `<div class="text-[10px] text-slate-500 mt-1 flex flex-wrap gap-1">${res.notes.map(n => `<span class="bg-slate-800/60 px-1.5 py-0.5 rounded text-slate-400">${n}</span>`).join('')}</div>`;
+    }
+    
+    return `
+      <div class="p-3 mb-2 rounded bg-slate-900/40 border border-slate-800/80">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-bold text-slate-200">${sym}</span>
+          <span class="text-[10px] px-2 py-0.5 font-semibold font-mono rounded-full" style="background:${badgeColor}22;color:${badgeColor};border:1px solid ${badgeColor}44">${actionLabel}</span>
+        </div>
+        ${detailHtml}
+        ${notesHtml}
+      </div>
+    `;
+  }).join('');
+  
+  el.innerHTML = `<div class="space-y-1">${htmls}</div>`;
 }
 
 function cdeskRenderProposal(dec, meta) {

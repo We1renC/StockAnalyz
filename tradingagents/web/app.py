@@ -4170,17 +4170,41 @@ def api_smc_crypto_auto_run(payload: dict):
     try:
         from smc_auto_workflow import run_symbol
         from dataclasses import asdict
-        symbol = (payload or {}).get("symbol") or "BTC-USDT"
-        force_live = bool((payload or {}).get("force_live"))
-        ignore_cooldown = bool((payload or {}).get("ignore_cooldown"))
+        import os
+        from datetime import datetime, UTC
+
+        payload_dict = payload or {}
+        symbol = payload_dict.get("symbol") or "ALL"
+        force_live = bool(payload_dict.get("force_live"))
+        ignore_cooldown = bool(payload_dict.get("ignore_cooldown"))
         api = _crypto_api_client()
-        result = run_symbol(
-            api, symbol,
-            db_path=_portfolio_db_path(),
-            force_live=force_live, ignore_cooldown=ignore_cooldown,
-            journal_dir="tmp/smc_auto",
-        )
-        return asdict(result)
+
+        if symbol.upper() == "ALL":
+            symbols_str = os.environ.get("SMC_AUTOLEARN_SYMBOLS", "BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT,XRP-USDT")
+            active_symbols = [s.strip() for s in symbols_str.split(",") if s.strip()]
+            results = []
+            for sym in active_symbols:
+                res = run_symbol(
+                    api, sym,
+                    db_path=_portfolio_db_path(),
+                    force_live=force_live, ignore_cooldown=ignore_cooldown,
+                    journal_dir="tmp/smc_auto",
+                )
+                results.append(asdict(res))
+            return {
+                "success": True,
+                "is_all": True,
+                "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "results": results
+            }
+        else:
+            result = run_symbol(
+                api, symbol,
+                db_path=_portfolio_db_path(),
+                force_live=force_live, ignore_cooldown=ignore_cooldown,
+                journal_dir="tmp/smc_auto",
+            )
+            return asdict(result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"auto-run failed: {e}")
 

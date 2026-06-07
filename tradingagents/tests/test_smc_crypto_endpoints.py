@@ -273,3 +273,17 @@ def test_fills_and_strategy_pnl_endpoint(client):
     assert isinstance(body["strategy_pnl"], list)
 
 
+def test_auto_run_all_endpoint(client):
+    r = client.post("/api/smc-crypto/auto-run", json={"symbol": "ALL", "ignore_cooldown": True})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is True
+    assert body["is_all"] is True
+    assert "results" in body
+    assert isinstance(body["results"], list)
+    assert len(body["results"]) > 0
+    for res in body["results"]:
+        assert "symbol" in res
+        assert "workflow_action" in res
+
+

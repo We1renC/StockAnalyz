@@ -17,8 +17,8 @@ def init_crypto_db(conn: sqlite3.Connection):
     DROP TABLE IF EXISTS crypto_api_keys;
     DROP TABLE IF EXISTS crypto_markets;
     DROP TABLE IF EXISTS crypto_balances;
-    DROP TABLE IF EXISTS crypto_orders;
     DROP TABLE IF EXISTS crypto_fills;
+    DROP TABLE IF EXISTS crypto_orders;
     DROP TABLE IF EXISTS crypto_ledger;
     DROP TABLE IF EXISTS crypto_audit_logs;
     DROP TABLE IF EXISTS crypto_risk_limits;
