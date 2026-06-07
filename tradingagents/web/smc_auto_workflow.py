@@ -372,7 +372,7 @@ def run_symbol(
     # Phase C — unified pipeline
     mode = (patch.get("state") or {}).get("mode", "DRY_RUN")
     risk_multiplier = float((patch.get("risk") or {}).get("risk_multiplier", 1.0))
-    probe_cap = float((patch.get("risk") or {}).get("probe_notional_cap_usdt", 5.0))
+    probe_cap = float((patch.get("risk") or {}).get("probe_notional_cap_usdt", 11.0))
     min_score = (patch.get("strategy") or {}).get("confluence_min_score")
     optimal_interval = (patch.get("strategy") or {}).get("optimal_interval")
 

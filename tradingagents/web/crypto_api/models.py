@@ -208,7 +208,8 @@ def seed_crypto_data(conn: sqlite3.Connection):
         ("BTC-USDT", "BTC", "USDT", "trading", 2, 6, "0.00001", "100", "5", "0.01", "0.000001", "0.001", "0.001"),
         ("ETH-USDT", "ETH", "USDT", "trading", 2, 5, "0.0001", "1000", "5", "0.01", "0.00001", "0.0015", "0.002"),
         ("SOL-USDT", "SOL", "USDT", "trading", 3, 3, "0.01", "10000", "5", "0.001", "0.001", "0.002", "0.0025"),
-        ("XRP-USDT", "XRP", "USDT", "trading", 4, 1, "0.1", "100000", "5", "0.0001", "0.1", "0.002", "0.0025")
+        ("XRP-USDT", "XRP", "USDT", "trading", 4, 1, "0.1", "100000", "5", "0.0001", "0.1", "0.002", "0.0025"),
+        ("BNB-USDT", "BNB", "USDT", "trading", 2, 4, "0.001", "10000", "5", "0.01", "0.001", "0.002", "0.0025")
     ]
     for m in markets:
         c.execute("""
@@ -242,7 +243,8 @@ def seed_crypto_data(conn: sqlite3.Connection):
         ("acct_123", "USDT", "100000.00", "0.00", "100000.00"),
         ("acct_123", "BTC", "2.000000", "0.00", "2.000000"),
         ("acct_123", "ETH", "10.00000", "0.00", "10.00000"),
-        ("acct_123", "SOL", "100.000", "0.00", "100.000")
+        ("acct_123", "SOL", "100.000", "0.00", "100.000"),
+        ("acct_123", "BNB", "1000.000", "0.00", "1000.000")
     ]
     for bal in balances:
         c.execute("""
@@ -252,7 +254,7 @@ def seed_crypto_data(conn: sqlite3.Connection):
         """, (bal[0], bal[1], bal[2], bal[3], bal[4], "2026-06-04T10:00:00Z"))
 
     # 4. Seed default risk limits for acct_123
-    allowed_syms = json.dumps(["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT"])
+    allowed_syms = json.dumps(["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "BNB-USDT"])
     c.execute("""
     INSERT OR IGNORE INTO crypto_risk_limits
     (account_id, max_single_order_notional, max_daily_notional, max_open_orders, max_price_deviation_percent, max_asset_exposure, allowed_symbols, blocked_symbols, updated_at)

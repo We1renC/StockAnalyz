@@ -1061,6 +1061,8 @@ def train_from_ledger(
             account_equity=100_000.0,
             base_risk_pct=base_risk_pct,
             stop_distance_pct=stop_distance_pct,
+            probe_notional_cap_usdt=11.0,
+            min_probe_notional_usdt=5.5,
         )
         if not probe_plan.get("allow_order"):
             adaptive_state["mode"] = probe_plan.get("state_hint", "DRY_RUN")
@@ -1096,7 +1098,11 @@ def train_from_ledger(
         },
         "risk": {
             "risk_multiplier": adaptive_state["risk_multiplier"],
-            "probe_notional_cap_usdt": float(probe_plan.get("notional_usdt") or 5.0),
+            "probe_notional_cap_usdt": float(
+                probe_plan.get("notional_usdt")
+                if probe_plan.get("notional_usdt") is not None
+                else 11.0
+            ),
         },
         "strategy": {
             "confluence_min_score": adaptive_state["dynamic_confluence_threshold"],
