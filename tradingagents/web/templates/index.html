@@ -1389,6 +1389,76 @@ body { background: var(--bg-base); color: var(--text-primary); }
     <input type="hidden" id="cdesk-interval" value="auto">
     <input type="hidden" id="cdesk-min-score" value="auto">
     <input type="hidden" id="cdesk-max-notional" value="auto">
+
+    <!-- 全幣種成交紀錄與策略盈虧 -->
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-3">
+      <!-- 左：全幣種成交紀錄 -->
+      <div class="glass-card-sm p-4">
+        <div class="flex items-center justify-between mb-3 border-b border-slate-800/60 pb-2">
+          <span class="text-sm text-slate-200 font-semibold flex items-center gap-1.5">
+            <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-emerald-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
+            全幣種成交明細 (Mock Broker)
+          </span>
+          <div class="flex items-center gap-2">
+            <select id="cdesk-fills-symbol-filter" onchange="cdeskRenderFillsTable()" class="text-xs px-2 py-1" style="background:#0f172a; color:#fff; border-radius:4px; border:1px solid #334155;">
+              <option value="ALL">全部幣種</option>
+              <option value="BTC-USDT">BTC-USDT</option>
+              <option value="ETH-USDT">ETH-USDT</option>
+              <option value="SOL-USDT">SOL-USDT</option>
+              <option value="BNB-USDT">BNB-USDT</option>
+              <option value="XRP-USDT">XRP-USDT</option>
+            </select>
+            <button onclick="cdeskLoadFillsAndStrategyPnl()" class="text-xs px-2 py-1" style="background:#1e293b;color:#94a3b8;border-radius:3px">↺ 刷新</button>
+          </div>
+        </div>
+        <div style="max-height:350px; overflow-y:auto;">
+          <table class="w-full text-xs font-mono">
+            <thead style="position:sticky; top:0; background:#0f172a; z-index:1">
+              <tr class="text-slate-500" style="border-bottom:1px solid #334155">
+                <th class="text-left py-2 px-1">時間</th>
+                <th class="text-left py-2 px-1">幣種</th>
+                <th class="text-left py-2 px-1">方向</th>
+                <th class="text-right py-2 px-1">價格</th>
+                <th class="text-right py-2 px-1">數量</th>
+                <th class="text-right py-2 px-1">名義價值</th>
+                <th class="text-right py-2 px-1">手續費</th>
+              </tr>
+            </thead>
+            <tbody id="cdesk-all-fills-rows">
+              <tr><td colspan="7" class="py-4 text-center text-slate-500">載入中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 右：策略績效與盈虧 -->
+      <div class="glass-card-sm p-4">
+        <div class="flex items-center justify-between mb-3 border-b border-slate-800/60 pb-2">
+          <span class="text-sm text-slate-200 font-semibold flex items-center gap-1.5">
+            <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-sky-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 3.055A9.003 9.003 0 1020.945 13H11V3.055z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z"></path></svg>
+            SMC 策略盈虧與績效 (Ledger)
+          </span>
+          <span id="cdesk-strategy-pnl-updated" class="text-xs text-slate-500">—</span>
+        </div>
+        <div style="max-height:350px; overflow-y:auto;">
+          <table class="w-full text-xs font-mono">
+            <thead style="position:sticky; top:0; background:#0f172a; z-index:1">
+              <tr class="text-slate-500" style="border-bottom:1px solid #334155">
+                <th class="text-left py-2 px-1">策略 (Model)</th>
+                <th class="text-right py-2 px-1">成交筆數</th>
+                <th class="text-right py-2 px-1">勝率</th>
+                <th class="text-right py-2 px-1">總盈虧 (R)</th>
+                <th class="text-right py-2 px-1">平均 R</th>
+                <th class="text-right py-2 px-1">勝/敗/平</th>
+              </tr>
+            </thead>
+            <tbody id="cdesk-strategy-pnl-rows">
+              <tr><td colspan="6" class="py-4 text-center text-slate-500">載入中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div id="tab-smc-analysis" class="tab-content hidden">
@@ -10713,6 +10783,7 @@ async function cdeskRefreshAll() {
     cdeskRefreshHistory(),
     cdeskOnSymbolChange(),
     cdeskRefreshOverview(),
+    cdeskLoadFillsAndStrategyPnl(),
   ]);
 }
 
@@ -11225,6 +11296,123 @@ async function cdeskRefreshOverview() {
   } catch (err) {
     if (grid) grid.innerHTML = `<div class="text-xs text-red-400 py-2" style="grid-column:1/-1">載入失敗: ${err.message}</div>`;
   }
+}
+
+let cdeskCachedFills = []; // 儲存所有成交明細資料
+
+async function cdeskLoadFillsAndStrategyPnl() {
+  const fillsTbody = $('cdesk-all-fills-rows');
+  const pnlTbody = $('cdesk-strategy-pnl-rows');
+  const pnlUpdated = $('cdesk-strategy-pnl-updated');
+  
+  if (!fillsTbody || !pnlTbody) return;
+  
+  try {
+    const r = await fetch('/api/smc-crypto/fills-and-strategy-pnl');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    
+    cdeskCachedFills = data.fills || [];
+    cdeskRenderFillsTable();
+    
+    // 渲染策略盈虧
+    const strategies = data.strategy_pnl || [];
+    if (pnlUpdated) pnlUpdated.textContent = '更新於 ' + new Date().toLocaleTimeString('zh-TW');
+    
+    if (strategies.length === 0) {
+      pnlTbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-slate-500">無策略交易數據</td></tr>`;
+      return;
+    }
+    
+    const pnlHtml = strategies.map(s => {
+      const totalR = s.total_pnl_r.toFixed(2);
+      const avgR = s.avg_r.toFixed(2);
+      const wr = (s.win_rate * 100).toFixed(1) + '%';
+      const rColor = s.total_pnl_r > 0 ? '#10b981' : s.total_pnl_r < 0 ? '#ef4444' : '#94a3b8';
+      const avgColor = s.avg_r > 0 ? '#10b981' : s.avg_r < 0 ? '#ef4444' : '#94a3b8';
+      
+      // 策略名稱對照表
+      const MODEL_NAME = {
+        unicorn: 'Unicorn 獨角獸',
+        sweep_reversal: 'Sweep Reversal 掃單反轉',
+        power_of_three: 'Power of Three 三位一體',
+        ob_fvg_continuation: 'OB/FVG Continuation 順勢突破',
+        silver_bullet: 'Silver Bullet 銀色子彈',
+        ote_retracement: 'OTE Retracement 黃金分割折返'
+      };
+      
+      const friendlyName = MODEL_NAME[s.model] || s.model;
+      
+      // 點擊展開的子明細 (Symbol breakdown)
+      const breakdownItems = Object.entries(s.symbol_breakdown || {}).map(([sym, stats]) => {
+        const symR = stats.total_pnl_r.toFixed(2);
+        const symColor = stats.total_pnl_r > 0 ? 'text-emerald-400' : stats.total_pnl_r < 0 ? 'text-red-400' : 'text-slate-400';
+        return `<span class="mr-3 inline-block font-mono text-[10px] text-slate-500">
+          ${sym.replace('-USDT','')}: <strong class="${symColor}">${symR >= 0 ? '+' : ''}${symR} R</strong> (${stats.win_trades}勝/${stats.loss_trades}敗)
+        </span>`;
+      }).join('');
+      
+      return `
+        <tr class="hover:bg-slate-800/40" style="border-bottom:1px solid #1e293b">
+          <td class="py-2.5 px-1 font-semibold text-slate-200">
+            <div>${friendlyName}</div>
+            <div class="text-[10px] text-slate-500 mt-0.5 flex flex-wrap">${breakdownItems}</div>
+          </td>
+          <td class="py-2.5 px-1 text-right font-mono">${s.total_trades}</td>
+          <td class="py-2.5 px-1 text-right font-mono text-slate-300">${wr}</td>
+          <td class="py-2.5 px-1 text-right font-mono font-bold" style="color:${rColor}">${s.total_pnl_r >= 0 ? '+' : ''}${totalR}</td>
+          <td class="py-2.5 px-1 text-right font-mono" style="color:${avgColor}">${s.avg_r >= 0 ? '+' : ''}${avgR}</td>
+          <td class="py-2.5 px-1 text-right font-mono text-slate-400">${s.win_trades} / ${s.loss_trades} / ${s.flat_trades}</td>
+        </tr>
+      `;
+    }).join('');
+    
+    pnlTbody.innerHTML = pnlHtml;
+    
+  } catch (err) {
+    console.error('cdeskLoadFillsAndStrategyPnl 錯誤:', err);
+    if (fillsTbody) fillsTbody.innerHTML = `<tr><td colspan="7" class="py-4 text-center text-red-400">載入失敗: ${err.message}</td></tr>`;
+    if (pnlTbody) pnlTbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-red-400">載入失敗: ${err.message}</td></tr>`;
+  }
+}
+
+function cdeskRenderFillsTable() {
+  const tbody = $('cdesk-all-fills-rows');
+  if (!tbody) return;
+  
+  const filter = $('cdesk-fills-symbol-filter').value;
+  const filtered = filter === 'ALL' 
+    ? cdeskCachedFills 
+    : cdeskCachedFills.filter(f => f.symbol === filter);
+    
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" class="py-4 text-center text-slate-500">尚無成交紀錄</td></tr>`;
+    return;
+  }
+  
+  const html = filtered.map(f => {
+    const sideClass = f.side === 'buy' ? 'text-emerald-400' : 'text-red-400';
+    const sideLabel = f.side === 'buy' ? '買入 (BUY)' : '賣出 (SELL)';
+    const qty = parseFloat(f.quantity).toString();
+    const price = parseFloat(f.price).toLocaleString('en-US', {maximumFractionDigits: 4});
+    const notional = parseFloat(f.notional).toLocaleString('en-US', {maximumFractionDigits: 2}) + ' USDT';
+    const fee = parseFloat(f.fee).toFixed(4) + ' ' + f.fee_asset;
+    const time = f.executed_at ? new Date(f.executed_at).toLocaleString('zh-TW', {hour12: false}) : '—';
+    
+    return `
+      <tr class="hover:bg-slate-800/40" style="border-bottom:1px solid #1e293b">
+        <td class="py-2 px-1 text-slate-400 whitespace-nowrap">${time}</td>
+        <td class="py-2 px-1 font-bold text-slate-300">${f.symbol.replace('-USDT','')}</td>
+        <td class="py-2 px-1 font-bold ${sideClass}">${sideLabel}</td>
+        <td class="py-2 px-1 text-right font-mono">${price}</td>
+        <td class="py-2 px-1 text-right font-mono">${qty}</td>
+        <td class="py-2 px-1 text-right font-mono text-slate-300">${notional}</td>
+        <td class="py-2 px-1 text-right font-mono text-slate-500">${fee}</td>
+      </tr>
+    `;
+  }).join('');
+  
+  tbody.innerHTML = html;
 }
 </script>
 </body>

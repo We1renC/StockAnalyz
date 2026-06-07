@@ -261,3 +261,15 @@ def test_historical_relearn_endpoints(client, monkeypatch):
     body_stop = r_stop.json()
     assert body_stop["status"] == "stopped"
 
+
+def test_fills_and_strategy_pnl_endpoint(client):
+    r = client.get("/api/smc-crypto/fills-and-strategy-pnl")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is True
+    assert "fills" in body
+    assert "strategy_pnl" in body
+    assert isinstance(body["fills"], list)
+    assert isinstance(body["strategy_pnl"], list)
+
+

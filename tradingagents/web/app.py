@@ -4428,6 +4428,108 @@ def api_smc_crypto_all_symbols_overview():
         raise HTTPException(status_code=500, detail=f"all-symbols-overview failed: {e}")
 
 
+@app.get("/api/smc-crypto/fills-and-strategy-pnl")
+def api_smc_crypto_fills_and_strategy_pnl():
+    """Returns execution fills of all symbols and strategy performance from training ledger."""
+    try:
+        # 1. Query all fills from database (crypto_fills)
+        conn = get_db()
+        fills_list = []
+        try:
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            rows = c.execute("SELECT * FROM crypto_fills ORDER BY executed_at DESC").fetchall()
+            fills_list = [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+        # 2. Compute strategy performance from smc_training_ledger.jsonl
+        import json
+        from pathlib import Path
+        
+        strategy_stats = {}
+        ledger_path = Path(LedgerPaths.training_ledger())
+        if ledger_path.exists():
+            try:
+                with open(ledger_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        try:
+                            trade = json.loads(line)
+                            model = trade.get("model", "unknown")
+                            r_multiple = float(trade.get("r_multiple") or 0.0)
+                            pnl_usdt = float(trade.get("pnl_usdt") or 0.0)
+                            
+                            stats = strategy_stats.setdefault(model, {
+                                "model": model,
+                                "total_trades": 0,
+                                "total_pnl_r": 0.0,
+                                "total_pnl_usdt": 0.0,
+                                "win_trades": 0,
+                                "loss_trades": 0,
+                                "flat_trades": 0,
+                                "symbol_breakdown": {}
+                            })
+                            
+                            stats["total_trades"] += 1
+                            stats["total_pnl_r"] += r_multiple
+                            stats["total_pnl_usdt"] += pnl_usdt
+                            
+                            if r_multiple > 0.0:
+                                stats["win_trades"] += 1
+                            elif r_multiple < 0.0:
+                                stats["loss_trades"] += 1
+                            else:
+                                stats["flat_trades"] += 1
+                                
+                            sym = trade.get("symbol", "unknown")
+                            sym_stats = stats["symbol_breakdown"].setdefault(sym, {
+                                "total_trades": 0,
+                                "total_pnl_r": 0.0,
+                                "win_trades": 0,
+                                "loss_trades": 0
+                            })
+                            sym_stats["total_trades"] += 1
+                            sym_stats["total_pnl_r"] += r_multiple
+                            if r_multiple > 0.0:
+                                sym_stats["win_trades"] += 1
+                            elif r_multiple < 0.0:
+                                sym_stats["loss_trades"] += 1
+                                
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+
+        strategy_list = []
+        for model, stats in strategy_stats.items():
+            total = stats["total_trades"]
+            stats["win_rate"] = stats["win_trades"] / total if total > 0 else 0.0
+            stats["avg_r"] = stats["total_pnl_r"] / total if total > 0 else 0.0
+            
+            for sym, sym_stats in stats["symbol_breakdown"].items():
+                sym_total = sym_stats["total_trades"]
+                sym_stats["win_rate"] = sym_stats["win_trades"] / sym_total if sym_total > 0 else 0.0
+                sym_stats["avg_r"] = sym_stats["total_pnl_r"] / sym_total if sym_total > 0 else 0.0
+                
+            strategy_list.append(stats)
+
+        strategy_list.sort(key=lambda x: x["total_pnl_r"], reverse=True)
+
+        return {
+            "success": True,
+            "fills": fills_list,
+            "strategy_pnl": strategy_list,
+            "generated_at": datetime.now(UTC).isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"fills-and-strategy-pnl failed: {e}")
+
+
+
+
+
 @app.post("/api/smc-crypto/auto-learn-tick")
 def api_smc_crypto_auto_learn_tick(payload: dict):
     """One tick of the self-learning loop for a single symbol.
