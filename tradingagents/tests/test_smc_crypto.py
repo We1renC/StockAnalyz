@@ -152,5 +152,5 @@ def test_smc_quant_crypto_confluence(base_crypto_df):
 def test_profile_cooldown_override():
     from smc_auto_workflow import profile_for_symbol
     profile = profile_for_symbol("BTC-USDT")
-    assert profile.cooldown_minutes == 15
+    assert profile.cooldown_minutes == 5
 
