@@ -43,6 +43,12 @@ def _token() -> str:
     env_token = os.environ.get("DASHBOARD_API_TOKEN", "").strip()
     if env_token:
         return env_token
+    # Phase-1 token rollout: under pytest the production settings.json now
+    # holds a REAL token — without this guard every TestClient-based test
+    # would 401. SMC_TEST_MODE skips ONLY the settings fallback; tests that
+    # explicitly setenv DASHBOARD_API_TOKEN still exercise enforcement.
+    if os.environ.get("SMC_TEST_MODE", "").strip():
+        return ""
     try:
         from llm_providers import load_settings
         settings = load_settings() or {}

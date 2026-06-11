@@ -9,6 +9,13 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 if str(WEB_DIR) not in sys.path:
     sys.path.insert(0, str(WEB_DIR))
 
+# Phase-1 token rollout: the production settings.json holds a real
+# dashboard_api_token. SMC_TEST_MODE makes api_auth skip the settings
+# fallback so TestClient-based tests aren't all 401; tests that
+# explicitly setenv DASHBOARD_API_TOKEN still exercise enforcement.
+import os
+os.environ.setdefault("SMC_TEST_MODE", "1")
+
 
 import pytest
 

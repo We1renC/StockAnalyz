@@ -1,6 +1,31 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
+<script>
+/* Phase-1 API token: server injects window.__SMC_API_TOKEN__ before this
+   block when dashboard_api_token is configured. We wrap fetch so every
+   same-origin /api/ + /v1/ call carries X-API-Token. CSRF defense: a
+   cross-origin page cannot read this document (same-origin policy), so
+   it can never obtain the token; its forged requests fail the header
+   check with 401. No token configured -> no-op. */
+(function () {
+  var t = window.__SMC_API_TOKEN__;
+  if (!t) return;
+  var orig = window.fetch;
+  window.fetch = function (input, init) {
+    try {
+      var url = (typeof input === 'string') ? input : ((input && input.url) || '');
+      if (url.indexOf('/api/') === 0 || url.indexOf('/v1/') === 0) {
+        init = init || {};
+        var h = new Headers(init.headers || ((typeof input !== 'string' && input && input.headers) || undefined));
+        h.set('X-API-Token', t);
+        init.headers = h;
+      }
+    } catch (e) { /* never break a request over header decoration */ }
+    return orig.call(this, input, init);
+  };
+})();
+</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="dark">

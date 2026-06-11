@@ -2136,7 +2136,23 @@ async def monitor_loop():
 @app.get("/", response_class=HTMLResponse)
 def home():
     html_path = BASE / "templates" / "index.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    html = html_path.read_text(encoding="utf-8")
+    # Phase-1 token rollout: inject the API token so the template's fetch
+    # wrapper (right after <head>) decorates every /api/ + /v1/ call with
+    # X-API-Token. Injected BEFORE the wrapper script so it's defined when
+    # the wrapper reads it. No token configured → page served unchanged.
+    try:
+        from learning.api_auth import _token
+        tok = _token()
+        if tok:
+            html = html.replace(
+                "<head>",
+                f'<head>\n<script>window.__SMC_API_TOKEN__={json.dumps(tok)};</script>',
+                1,
+            )
+    except Exception:
+        pass
+    return HTMLResponse(html)
 
 @app.get("/api/market")
 def api_market():

@@ -1170,6 +1170,9 @@ def test_api_token_reads_local_settings_when_env_missing(monkeypatch, tmp_path):
     import json
     import llm_providers
     monkeypatch.delenv("DASHBOARD_API_TOKEN", raising=False)
+    # Phase-1: conftest sets SMC_TEST_MODE which skips the settings
+    # fallback; this test specifically exercises that fallback.
+    monkeypatch.delenv("SMC_TEST_MODE", raising=False)
     settings_path = tmp_path / "settings.json"
     settings_path.write_text(
         json.dumps({"dashboard_api_token": "from-settings"}, ensure_ascii=False),
@@ -3081,3 +3084,37 @@ def test_p1_autolearn_error_streak_fires_alert(monkeypatch):
     asyncio.run(run())
     assert len(alerts) >= 1          # fired at the 5th error
     assert "Z-USDT" in alerts[0]
+
+
+def test_p1_token_injected_into_dashboard_page(monkeypatch):
+    """Phase-1 token: GET / injects window.__SMC_API_TOKEN__ before the
+    fetch wrapper when a token is configured; absent otherwise."""
+    import importlib
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "tok-abc-123")
+    from fastapi.testclient import TestClient
+    import app as _app
+    client = TestClient(_app.app)
+    page = client.get("/").text
+    inj = page.find('window.__SMC_API_TOKEN__="tok-abc-123"')
+    wrap = page.find("var t = window.__SMC_API_TOKEN__")
+    assert inj != -1, "token script must be injected"
+    assert wrap != -1, "fetch wrapper must be present"
+    assert inj < wrap, "token must be defined BEFORE the wrapper reads it"
+    # without token → no injection, wrapper no-ops
+    monkeypatch.delenv("DASHBOARD_API_TOKEN")
+    page2 = client.get("/").text
+    assert 'window.__SMC_API_TOKEN__="tok-abc-123"' not in page2
+
+
+def test_p1_protected_endpoint_enforces_token_via_middleware(monkeypatch):
+    """With token set, protected endpoint 401s without header, 200 with."""
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "tok-xyz")
+    monkeypatch.setenv("SMC_LEDGER_DIR", "/tmp/p1-token-test")
+    from fastapi.testclient import TestClient
+    import app as _app
+    client = TestClient(_app.app)
+    r1 = client.get("/api/smc-crypto/learning-health")
+    assert r1.status_code == 401
+    r2 = client.get("/api/smc-crypto/learning-health",
+                     headers={"X-API-Token": "tok-xyz"})
+    assert r2.status_code == 200

@@ -88,3 +88,14 @@ launchctl load   ~/Library/LaunchAgents/com.smc.dashboard.plist   # 啟用
 ### 市場資料
 - settings.json `binance_api_url` 已切 `https://data-api.binance.vision`
   （mainnet 公開資料，免 key；BTC 1h 從 73 根 → 500 根）
+
+### API Token（已啟用 2026-06-12）
+- `settings.json` `dashboard_api_token` 已設（敏感值不入版控）
+- 受保護前綴：`/api/smc-crypto/*` `/api/learning/*` `/api/strategy/*` 等
+  → 無 `X-API-Token` header 一律 401
+- Dashboard 自動運作：`GET /` 服務時注入 token + 全域 fetch wrapper
+  （亦為 CSRF 防禦：跨源頁面因同源政策讀不到 token）
+- curl 手動呼叫受保護端點：
+  `curl -H "X-API-Token: $(python -c 'import json;print(json.load(open("settings.json"))["dashboard_api_token"])')" http://127.0.0.1:6500/api/smc-crypto/ops-metrics`
+- 測試環境：conftest 設 `SMC_TEST_MODE=1` 跳過 settings fallback；
+  顯式 setenv `DASHBOARD_API_TOKEN` 的測試仍驗證強制執行
