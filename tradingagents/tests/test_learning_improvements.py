@@ -2791,3 +2791,146 @@ def test_adaptive_window_embargo_drift(tmp_path):
     assert any("Regime drift detected" in note for note in res.notes)
 
 
+
+
+# ─── Batch fix D1-D5: data integrity rails ───
+
+def test_d1_trade_id_anchors_on_absolute_time_not_window_index():
+    """D1: the same physical entry detected in two different sliding
+    windows (different entry_index) must produce the SAME trade_id."""
+    from smc_quant import build_trade_record
+    entry = {"model": "unicorn", "direction": 1, "entry": 1596.605,
+              "stop": 1590.0, "target": 1610.0,
+              "factors": {}, "confluence": {"score": 9}, "triggered": True}
+    rec_w1 = build_trade_record(
+        entry, trade_outcome={"outcome": "target", "r_multiple": 2.0,
+                                "entry_index": 477},
+        symbol="ETH-USDT", timeframe="1h",
+        entry_time="2026-06-05 17:23:00")
+    rec_w2 = build_trade_record(
+        entry, trade_outcome={"outcome": "target", "r_multiple": 2.0,
+                                "entry_index": 377},   # different window
+        symbol="ETH-USDT", timeframe="1h",
+        entry_time="2026-06-05 17:23:00")
+    assert rec_w1["trade_id"] == rec_w2["trade_id"]
+    assert "477" not in rec_w1["trade_id"]
+    assert "2026-06-05 17:23:00" in rec_w1["trade_id"]
+
+
+def test_d2_min_risk_floor_rejects_degenerate_stops():
+    """D2: entry 60830.02 / stop 60829.999 (risk $0.021) is discarded."""
+    import pandas as pd
+    from smc_quant import evaluate_entry_models
+    df = pd.DataFrame({
+        "open": [60830.0] * 30, "high": [60900.0] * 30,
+        "low": [60800.0] * 30, "close": [60850.0] * 30,
+        "volume": [1000] * 30,
+    })
+    degenerate = {"model": "unicorn", "direction": 1, "triggered": True,
+                    "entry": 60830.02, "stop": 60829.999, "target": 61000.0,
+                    "bos_index": 0}
+    out = evaluate_entry_models(df, [degenerate])
+    assert out["metrics"]["count"] == 0   # rejected, never replayed
+
+
+def test_d2_r_multiple_winsorized_at_cap():
+    """D2: a legitimate-but-extreme settle is capped at ±R_MULTIPLE_CAP."""
+    import pandas as pd
+    from smc_quant import evaluate_entry_models, R_MULTIPLE_CAP
+    # risk = 100 (passes floor), target 50,000 away → raw R would be 500
+    df = pd.DataFrame({
+        "open": [10000.0] * 30, "high": [99999.0] * 30,
+        "low": [9990.0] * 30, "close": [50000.0] * 30,
+        "volume": [1000] * 30,
+    })
+    extreme = {"model": "x", "direction": 1, "triggered": True,
+                "entry": 10000.0, "stop": 9900.0, "target": 60000.0,
+                "bos_index": 0}   # _entry_bar_of reads structural anchors
+    out = evaluate_entry_models(df, [extreme])
+    assert out["metrics"]["count"] == 1
+    assert abs(out["trades"][0]["r_multiple"]) <= R_MULTIPLE_CAP
+
+
+def test_d3_factor_lift_reads_ledger_factors_dict():
+    """D3: cluster ensemble computes lift from the `factors` dict shape
+    the §18.2 ledger actually writes (was silently matching nothing)."""
+    from learning.cluster_ensemble import build_cluster_weight_table
+    recs = []
+    for i in range(15):
+        recs.append({"model": "unicorn", "symbol": "BTC", "interval": "1h",
+                       "regime": "trending", "outcome": "target",
+                       "r_multiple": 1.0,
+                       "factors": {"htf_bias_aligned": True}})
+    for i in range(15):
+        recs.append({"model": "unicorn", "symbol": "BTC", "interval": "1h",
+                       "regime": "trending", "outcome": "stop",
+                       "r_multiple": -1.0,
+                       "factors": {"htf_bias_aligned": False}})
+    table = build_cluster_weight_table(recs, factors=["htf_bias_aligned"],
+                                          min_samples=10)
+    k = ("unicorn", "BTC", "1h", "trending")
+    assert k in table
+    stats = table[k]["factors"].get("htf_bias_aligned")
+    assert stats is not None, "factors dict shape must be readable"
+    assert stats["n_active"] == 15
+    assert stats["lift"] == 2.0   # +1 active vs -1 inactive
+
+
+def test_d4_rotation_exempts_seeded_reference_history(tmp_path):
+    """D4: backtest_seed records survive rotation; live records trim."""
+    import json
+    from learning.ledger_rotation import rotate_ledger
+    p = tmp_path / "led.jsonl"
+    rows = []
+    for i in range(200):   # seeded reference history
+        rows.append({"symbol": "BTC-USDT", "source": "backtest_seed",
+                       "entry_time": f"2026-01-{1 + i//24:02d}T{i%24:02d}:00:00",
+                       "outcome": "target", "r_multiple": 1.0})
+    for i in range(80):    # live-loop records
+        rows.append({"symbol": "BTC-USDT", "source": "backtest",
+                       "entry_time": f"2026-03-{1 + i//24:02d}T{i%24:02d}:00:00",
+                       "outcome": "stop", "r_multiple": -1.0})
+    p.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    rep = rotate_ledger(str(p), keep_per_symbol=50,
+                          archive_dir=str(tmp_path / "arch"))
+    assert rep["rotated"] is True
+    s = rep["per_symbol"]["BTC-USDT"]
+    assert s["protected"] == 200          # all seed records kept
+    assert s["archived"] == 30            # only live overflow archived
+    live = [json.loads(l) for l in open(p) if l.strip()]
+    n_seed = sum(1 for r in live if r.get("source") == "backtest_seed")
+    assert n_seed == 200
+
+
+def test_d5_persist_clips_absurd_r_and_stamps_audit_fields(tmp_path):
+    """D5: a +10,105R record is winsorized at write time with r_raw kept."""
+    import json
+    from smc_quant import persist_trade_records, load_trade_records
+    p = str(tmp_path / "led.jsonl")
+    persist_trade_records([{
+        "trade_id": "X:1", "symbol": "BTC-USDT", "model": "unicorn",
+        "outcome": "target", "r_multiple": 10105.714,
+        "entry_time": "2026-06-06T00:00:00",
+    }], p)
+    rec = load_trade_records(p)[0]
+    assert rec["r_multiple"] == 20.0
+    assert rec["r_raw"] == 10105.714
+    assert rec["r_clipped"] is True
+
+
+def test_d5_selfcheck_ledger_integrity_flags_corruption(tmp_path, monkeypatch):
+    """D5: selfcheck warns/fails on dup-heavy or fat-tail ledgers."""
+    import json, importlib
+    monkeypatch.setenv("SMC_LEDGER_DIR", str(tmp_path))
+    # corrupt ledger: 10 records, 5 sharing one trade_id + a 500R artifact
+    rows = [{"trade_id": "dup", "symbol": "B", "r_multiple": 500.0,
+              "outcome": "target"} for _ in range(5)]
+    rows += [{"trade_id": f"u{i}", "symbol": "B", "r_multiple": 1.0,
+               "outcome": "target"} for i in range(5)]
+    (tmp_path / "smc_training_ledger.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in rows) + "\n")
+    import learning.selfcheck as sc
+    importlib.reload(sc)
+    out = sc.run_selfcheck()
+    by = {c["name"]: c for c in out["checks"]}
+    assert by["ledger_integrity"]["status"] == "fail"   # 40% dup + 500R

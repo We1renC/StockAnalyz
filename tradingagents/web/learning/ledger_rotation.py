@@ -43,8 +43,15 @@ def rotate_ledger(
     keep_per_symbol: int = 500,
     archive_dir: Optional[str] = None,
     now_iso: Optional[str] = None,
+    protected_sources: tuple[str, ...] = ("backtest_seed",),
 ) -> dict:
     """Trim ``path`` to the most-recent ``keep_per_symbol`` rows/symbol.
+
+    Audit fix D4: records whose ``source`` is in ``protected_sources``
+    are REFERENCE HISTORY (e.g. the 6-month historical_seeder backfill)
+    and are exempt from trimming — the June-6 incident saw a fresh 33k
+    seed get archived away by this very rotation within 6 hours. Only
+    live-loop records count against (and are trimmed by) the cap.
 
     Returns a report dict. Writes nothing if already under the cap for
     every symbol.
@@ -64,18 +71,24 @@ def rotate_ledger(
     kept: list[dict] = []
     archived: list[dict] = []
     per_symbol_report: dict[str, dict] = {}
+    prot = set(protected_sources or ())
     for sym, rows in by_sym.items():
-        rows.sort(key=_ts_key)
-        if len(rows) <= keep_per_symbol:
-            kept.extend(rows)
-            per_symbol_report[sym] = {"before": len(rows), "kept": len(rows), "archived": 0}
+        protected = [r for r in rows if str(r.get("source") or "") in prot]
+        trimmable = [r for r in rows if str(r.get("source") or "") not in prot]
+        trimmable.sort(key=_ts_key)
+        kept.extend(protected)
+        if len(trimmable) <= keep_per_symbol:
+            kept.extend(trimmable)
+            per_symbol_report[sym] = {"before": len(rows), "kept": len(rows),
+                                        "archived": 0, "protected": len(protected)}
             continue
-        keep = rows[-keep_per_symbol:]
-        overflow = rows[:-keep_per_symbol]
+        keep = trimmable[-keep_per_symbol:]
+        overflow = trimmable[:-keep_per_symbol]
         kept.extend(keep)
         archived.extend(overflow)
         per_symbol_report[sym] = {
-            "before": len(rows), "kept": len(keep), "archived": len(overflow),
+            "before": len(rows), "kept": len(protected) + len(keep),
+            "archived": len(overflow), "protected": len(protected),
         }
 
     if not archived:

@@ -392,6 +392,7 @@ def auto_backtest_window(
     max_hold_bars: int = 20,
     db_path: Optional[str] = None,
     model_version: str = ADAPTIVE_MODEL_VERSION,
+    source: str = "backtest",
 ) -> BacktestSummary:
     """Pull klines, run SMC engine in one shot, evaluate every triggered entry,
     persist outcomes into the §18.2 trade ledger.
@@ -461,7 +462,7 @@ def auto_backtest_window(
                     probe=False,
                     model_version=model_version,
                     config_hash=config_snapshot["hash"],
-                    source="backtest",
+                    source=source,
                     state_hint="READY",
                     regime=trade_regime,
                 )
@@ -484,7 +485,7 @@ def auto_backtest_window(
                 trade_records,
                 config_hash=config_snapshot["hash"],
                 model_version=model_version,
-                source="backtest",
+                source=source,
             )
             record_adaptive_audit_event(
                 conn,

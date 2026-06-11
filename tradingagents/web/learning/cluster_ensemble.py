@@ -136,13 +136,22 @@ def _factor_lift(records: list[dict], factor: str) -> Optional[dict]:
             rm = float(r["r_multiple"])
         except (TypeError, ValueError):
             continue
-        # Factor presence can be in two shapes:
-        #   1. factors_active: ["htf_bias_aligned", ...]
-        #   2. contributing_factors: [{"factor": "...", "weight": 2}, ...]
+        # Factor presence can be in three shapes:
+        #   1. factors: {"htf_bias_aligned": true, ...}   ← what the §18.2
+        #      ledger (build_trade_record) ACTUALLY writes. Audit fix D3:
+        #      this was missing, so 100% of ledger records matched nothing
+        #      → factor lift was None everywhere → cluster ensemble never
+        #      learned from a single real record.
+        #   2. factors_active: ["htf_bias_aligned", ...]
+        #   3. contributing_factors: [{"factor": "...", "weight": 2}, ...]
         active = False
-        fa = r.get("factors_active")
-        if isinstance(fa, (list, tuple)):
-            active = factor in fa
+        fd = r.get("factors")
+        if isinstance(fd, dict):
+            active = bool(fd.get(factor))
+        if not active:
+            fa = r.get("factors_active")
+            if isinstance(fa, (list, tuple)):
+                active = factor in fa
         if not active:
             cf = r.get("contributing_factors") or []
             for f in cf:

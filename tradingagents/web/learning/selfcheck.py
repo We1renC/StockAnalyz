@@ -101,9 +101,58 @@ def _wal_size() -> tuple:
     return "pass", f"-wal {mb:.2f}MB"
 
 
+def _ledger_integrity() -> tuple:
+    """Audit fix D5: dup-rate + R-tail integrity probe on the ledger.
+
+    The June-8 audit found the ledger 81% duplicates with a +10,105R
+    artifact — both invisible until manually computed. This check makes
+    that class of corruption a boot-time warning.
+    """
+    import json as _json
+    from smc_quant import LedgerPaths
+    path = LedgerPaths.training_ledger()
+    if not os.path.exists(path):
+        return "pass", "no ledger yet"
+    ids = set()
+    n = 0
+    dups = 0
+    max_abs_r = 0.0
+    with open(path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            try:
+                r = _json.loads(line)
+            except Exception:
+                continue
+            n += 1
+            tid = r.get("trade_id")
+            if tid:
+                if tid in ids:
+                    dups += 1
+                ids.add(tid)
+            try:
+                max_abs_r = max(max_abs_r, abs(float(r.get("r_multiple") or 0)))
+            except (TypeError, ValueError):
+                pass
+    if n == 0:
+        return "pass", "empty ledger"
+    dup_rate = dups / n
+    issues = []
+    if dup_rate > 0.005:
+        issues.append(f"dup_rate={dup_rate:.1%}")
+    if max_abs_r > 25.0:
+        issues.append(f"max|R|={max_abs_r:.0f}")
+    if issues:
+        status = "fail" if (dup_rate > 0.10 or max_abs_r > 100) else "warn"
+        return status, f"{n} records, " + ", ".join(issues)
+    return "pass", f"{n} records, dup_rate={dup_rate:.2%}, max|R|={max_abs_r:.1f}"
+
+
 _CHECKS = [
     ("db_wal", _db_wal),
     ("ledger_readable", _ledger_readable),
+    ("ledger_integrity", _ledger_integrity),
     ("strategy_yaml_valid", _strategy_yaml_valid),
     ("autolearn_scheduler", _autolearn),
     ("api_token", _api_token),

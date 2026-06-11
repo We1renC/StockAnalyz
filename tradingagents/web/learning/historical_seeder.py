@@ -202,10 +202,13 @@ def seed_one_symbol(
     while stub._cursor_end <= len(all_klines):
         # auto_backtest_window will fetch via stub.klines, run SMC, evaluate,
         # and persist via persist_trade_records (which dedups by trade_id).
+        # D4: stamp source="backtest_seed" so ledger rotation treats these
+        # as protected reference history (live-loop records stay trimmable).
         try:
             auto_backtest_window(
                 stub, symbol, interval=interval, bars=bars_per_run,
                 ledger_path=ledger_path, db_path=db_path,
+                source="backtest_seed",
             )
             backtests += 1
         except Exception as exc:

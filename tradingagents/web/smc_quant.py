@@ -4846,12 +4846,25 @@ def _entry_bar_of(entry: dict) -> int:
     return max(indexes) if indexes else -1
 
 
+# Audit fix D2 (data integrity): two numeric-sanity rails for backtest R.
+#   • MIN_RISK_FLOOR_PCT — an entry whose stop sits closer than this
+#     fraction of price is geometrically meaningless (entry 60830.02 with
+#     stop 60829.999 → risk $0.021 → one favorable tick = +10,105R). Such
+#     candidates are discarded before replay.
+#   • R_MULTIPLE_CAP — winsorize any surviving settle at ±cap so a single
+#     tail artifact can never dominate Σ R / mean R downstream.
+MIN_RISK_FLOOR_PCT = 0.0005   # 5 bps of entry price
+R_MULTIPLE_CAP = 20.0
+
+
 def evaluate_entry_models(
     df: pd.DataFrame,
     entries: list[dict],
     *,
     max_hold_bars: int = 20,
     only_triggered: bool = True,
+    min_risk_floor_pct: float = MIN_RISK_FLOOR_PCT,
+    r_multiple_cap: float = R_MULTIPLE_CAP,
 ) -> dict:
     """§10 Bar-by-bar replay for §5 entry-model candidates.
 
@@ -4884,6 +4897,10 @@ def evaluate_entry_models(
         risk = abs(entry_price - stop)
         if risk <= 0 or direction == 0:
             continue
+        # D2: relative risk floor — reject degenerate stops (risk ≈ 0
+        # produced +10,105R artifacts that poisoned every downstream stat).
+        if entry_price > 0 and risk < entry_price * float(min_risk_floor_pct):
+            continue
         start_idx = _entry_bar_of(e) + 1
         if start_idx <= 0 or start_idx >= len(df):
             continue
@@ -4909,6 +4926,10 @@ def evaluate_entry_models(
                     outcome = "target"; settled_at = j
                     r_multiple = abs(target - entry_price) / risk
                     break
+        # D2: winsorize — a settle can never contribute more than ±cap R.
+        cap = float(r_multiple_cap)
+        if cap > 0:
+            r_multiple = max(-cap, min(cap, r_multiple))
         trades.append({
             "model": e.get("model"),
             "direction": direction,
@@ -6648,9 +6669,16 @@ def build_trade_record(
     else:
         regime_str = str(regime) if regime else "unknown"
         regime_obj = {}
+    # Audit fix D1 (data integrity): trade_id must anchor on ABSOLUTE
+    # entry_time, never the window-relative entry_index. With sliding
+    # backtest windows the same physical entry got a different index in
+    # every window → different trade_id → dedup miss → the ledger ended
+    # up 81% duplicates (one entry persisted up to 95×).
+    _abs_time = entry_time or entry.get("time") or ""
+    _default_tid = f"{symbol}:{entry.get('model')}:{_abs_time}:{entry.get('entry')}"
     return {
         "schema_version": TRADE_RECORD_SCHEMA_VERSION,
-        "trade_id": trade_id or f"{symbol}:{entry.get('model')}:{entry.get('entry')}:{trade_outcome.get('entry_index')}",
+        "trade_id": trade_id or _default_tid,
         "symbol": symbol,
         "market": market or infer_market(symbol),
         "timeframe": timeframe,

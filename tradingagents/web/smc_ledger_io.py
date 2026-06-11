@@ -133,6 +133,31 @@ def _normalize_record_by_version(record: dict) -> dict:
     return record
 
 
+# Audit fix D5: write-time numeric rail. Mirrors the D2 cap in
+# evaluate_entry_models so a record from ANY producer (live runner,
+# seeder, future importers) can never land an absurd R in the ledger.
+LEDGER_R_MULTIPLE_CAP = 20.0
+
+
+def _validate_record_for_persist(rec: dict, *, r_cap: float = LEDGER_R_MULTIPLE_CAP) -> dict:
+    """Clamp / annotate a record before it hits disk.
+
+    |r_multiple| winsorized to ±r_cap; original kept as ``r_raw`` with
+    ``r_clipped: true`` stamped so audits can see it happened.
+    """
+    rm = rec.get("r_multiple")
+    if rm is not None:
+        try:
+            val = float(rm)
+            if abs(val) > float(r_cap):
+                rec["r_raw"] = val
+                rec["r_clipped"] = True
+                rec["r_multiple"] = max(-float(r_cap), min(float(r_cap), val))
+        except (TypeError, ValueError):
+            pass
+    return rec
+
+
 def persist_trade_records(records: list[dict], path: str, *, dedup: bool = True) -> int:
     """Append-write trade records as JSONL (one row per line).
 
@@ -159,8 +184,9 @@ def persist_trade_records(records: list[dict], path: str, *, dedup: bool = True)
         @contextmanager
         def _locked_append(_p):  # type: ignore[no-redef]
             yield
-    # Audit fix A4: stamp schema version on every record before write.
-    records = [_stamp_schema_version(dict(r)) for r in records]
+    # Audit fix A4 + D5: stamp schema version + numeric rail before write.
+    records = [_validate_record_for_persist(_stamp_schema_version(dict(r)))
+                for r in records]
     with _locked_append(path):
         if dedup:
             existing_keys: set[str] = set()
