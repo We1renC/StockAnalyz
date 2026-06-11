@@ -3020,3 +3020,64 @@ def test_r2_maintenance_rotates_interval_ledgers(tmp_path, monkeypatch):
     assert out[key_15m]["rotated"] is True
     n_15m = sum(1 for l in open(tmp_path / "smc_training_ledger.15m.jsonl") if l.strip())
     assert n_15m == 10
+
+
+# ─── Phase-1: operator alerting ───
+
+def test_p1_send_alert_cooldown_suppresses_repeat(monkeypatch):
+    """Same title within cooldown → suppressed (anti-spam)."""
+    import learning.alerting as al
+    al.reset_cooldowns()
+    sent = []
+    monkeypatch.setattr(al, "_send_telegram", lambda t, m: False)
+    monkeypatch.setattr(al, "_send_macos", lambda t, m: sent.append(t) or True)
+    clk = {"t": 0.0}
+    out1 = al.send_alert("X", "m1", now_fn=lambda: clk["t"])
+    clk["t"] += 60          # within 1800s cooldown
+    out2 = al.send_alert("X", "m2", now_fn=lambda: clk["t"])
+    clk["t"] += 1800        # past cooldown
+    out3 = al.send_alert("X", "m3", now_fn=lambda: clk["t"])
+    assert out1["sent"] is True and out1["channel"] == "macos"
+    assert out2["suppressed"] is True
+    assert out3["sent"] is True
+    assert len(sent) == 2
+
+
+def test_p1_send_alert_prefers_telegram_when_configured(monkeypatch):
+    import learning.alerting as al
+    al.reset_cooldowns()
+    monkeypatch.setattr(al, "_send_telegram", lambda t, m: True)
+    monkeypatch.setattr(al, "_send_macos", lambda t, m: (_ for _ in ()).throw(AssertionError("should not fall through")))
+    out = al.send_alert("Y", "msg")
+    assert out["channel"] == "telegram"
+
+
+def test_p1_autolearn_error_streak_fires_alert(monkeypatch):
+    """Every 5th consecutive tick error per symbol triggers an operator alert."""
+    import asyncio, importlib
+    monkeypatch.setenv("SMC_AUTOLEARN_ENABLED", "1")
+    monkeypatch.setenv("SMC_AUTOLEARN_SYMBOLS", "Z-USDT")
+    monkeypatch.setenv("SMC_AUTOLEARN_MIN_INTERVAL", "30")
+    import learning.autolearn_scheduler as sched
+    importlib.reload(sched)
+    import learning.alerting as al
+    al.reset_cooldowns()
+    alerts = []
+    monkeypatch.setattr(al, "send_alert",
+                        lambda title, msg, **kw: alerts.append(title) or {"sent": True})
+    calls = {"n": 0}
+    def bad_tick(payload):
+        calls["n"] += 1
+        if calls["n"] > 6:
+            raise KeyboardInterrupt
+        raise RuntimeError("boom")
+    clk = {"t": 0.0}
+    async def fs(d): clk["t"] += d
+    async def run():
+        try:
+            await sched.autolearn_loop(bad_tick, sleep_fn=fs, now_fn=lambda: clk["t"])
+        except KeyboardInterrupt:
+            pass
+    asyncio.run(run())
+    assert len(alerts) >= 1          # fired at the 5th error
+    assert "Z-USDT" in alerts[0]

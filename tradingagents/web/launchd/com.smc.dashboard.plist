@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- SMC Trading Dashboard — launchd 守護 (Phase-1 ops hardening)
+       安裝: cp 此檔到 ~/Library/LaunchAgents/ 後 launchctl load
+       效果: 開機自啟 + crash 10 秒內自動重啟 + log 落地 -->
+  <key>Label</key>
+  <string>com.smc.dashboard</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/w.rc/stockAnalyz/tradingagents/web/start_daemon.sh</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/smc_app.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/smc_app.log</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/w.rc/stockAnalyz/tradingagents/web</string>
+</dict>
+</plist>

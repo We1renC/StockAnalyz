@@ -203,6 +203,13 @@ async def autolearn_loop(
                 except Exception as exc:
                     _maintenance["errors"] = int(_maintenance.get("errors", 0)) + 1
                     log_event(_log, "maintenance_error", err=type(exc).__name__)
+                    try:
+                        from learning.alerting import send_alert
+                        send_alert("自動維護失敗",
+                                    f"{type(exc).__name__}: {exc}",
+                                    severity="critical")
+                    except Exception:
+                        pass
                 finally:
                     _maintenance["last_run_at"] = clock()
                     next_maint_at = clock() + maint_every
@@ -226,6 +233,16 @@ async def autolearn_loop(
                     st["next_run_at"] = clock() + floor
                     log_event(_log, "autolearn_tick_error", symbol=sym,
                               err=type(exc).__name__, errors=st["errors"])
+                    # Phase-1 alerting: persistent failure (every 5th error
+                    # per symbol) reaches the operator; cooldown dedups.
+                    if st["errors"] % 5 == 0:
+                        try:
+                            from learning.alerting import send_alert
+                            send_alert(f"學習迴路連續失敗 {sym}",
+                                        f"{st['errors']} errors, last: {type(exc).__name__}",
+                                        severity="critical")
+                        except Exception:
+                            pass
             # Sleep until the soonest next_run (bounded by floor) to avoid
             # busy-spinning.
             soonest = min((v.get("next_run_at", 0.0) for v in _state.values()),

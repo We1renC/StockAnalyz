@@ -2029,6 +2029,13 @@ async def lifespan(app: FastAPI):
             if c["status"] != "pass":
                 log_event(_sclog, "selfcheck_issue",
                           status=c["status"], check=c["name"])
+        # Phase-1 alerting: a FAIL at boot (corrupt ledger, broken yaml)
+        # must reach the operator, not just the log.
+        if sc["overall"] == "fail":
+            from learning.alerting import send_alert
+            fails = [c["name"] for c in sc["checks"] if c["status"] == "fail"]
+            send_alert("開機自檢 FAIL", f"失敗項: {', '.join(fails)}",
+                        severity="critical")
     except Exception as e:
         print(f"[startup] selfcheck failed: {e}")
 
