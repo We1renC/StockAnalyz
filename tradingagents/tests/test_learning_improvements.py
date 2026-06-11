@@ -2934,3 +2934,15 @@ def test_d5_selfcheck_ledger_integrity_flags_corruption(tmp_path, monkeypatch):
     out = sc.run_selfcheck()
     by = {c["name"]: c for c in out["checks"]}
     assert by["ledger_integrity"]["status"] == "fail"   # 40% dup + 500R
+
+
+def test_d6_persist_dedups_within_batch(tmp_path):
+    """D6: the same trade_id appearing N times in ONE batch writes once."""
+    from smc_quant import persist_trade_records, load_trade_records
+    p = str(tmp_path / "led.jsonl")
+    batch = [{"trade_id": "T:1", "symbol": "S", "model": "m",
+               "outcome": "flat", "r_multiple": 0.0,
+               "entry_time": "2026-05-04 02:15:00"}] * 21
+    n = persist_trade_records(batch, p)
+    assert n == 1
+    assert len(load_trade_records(p)) == 1

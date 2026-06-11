@@ -209,7 +209,20 @@ def persist_trade_records(records: list[dict], path: str, *, dedup: bool = True)
                                 existing_keys.add(_trade_dedup_key(json.loads(line)))
                             except Exception:
                                 continue
-            records = [r for r in records if _trade_dedup_key(r) not in existing_keys]
+            # D6: dedup must also apply WITHIN the incoming batch — one
+            # analysis can emit the same logical entry many times (e.g.
+            # power_of_three re-emitting per bar while the setup stays
+            # valid → 21 byte-identical records in one batch). The
+            # on-disk check alone let all of them through.
+            unique_batch: list[dict] = []
+            seen_in_batch: set[str] = set()
+            for r in records:
+                k = _trade_dedup_key(r)
+                if k in existing_keys or k in seen_in_batch:
+                    continue
+                seen_in_batch.add(k)
+                unique_batch.append(r)
+            records = unique_batch
             if not records:
                 return 0
 

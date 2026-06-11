@@ -12,14 +12,14 @@ confluence:
     volume_displacement: 1
     strong_dol_target: 1
     poi_displacement_missing: -2
-    displacement_extreme: 1
+    displacement_extreme: 2
     killzone_premium: 1
-    pd_extreme: 1
+    pd_extreme: 0
     perp_led_warning: -2
     cvd_aggressive_flow: 1
     altseason_tailwind: 2
-    bpr_overlap: 2
-    ifvg_overlap: 2
+    bpr_overlap: 0
+    ifvg_overlap: 1
     nearest_poi_within: 1
 crypto_confluence:
   liquidation_cluster_sweep: 2
@@ -38,7 +38,7 @@ risk:
   min_rr: 1.5
   risk_pct: 0.01
   max_single_loss_pct: 0.05
-  max_notional_cap_pct: 0.10
+  max_notional_cap_pct: 0.1
   daily_loss_limit: 50000
   max_drawdown_limit: 50000
   defensive_mode_pnl_trigger: 80000
@@ -58,6 +58,3 @@ adaptive:
   atr_window: 14
   sweep_cooldown_days: 7
   cooldown_minutes: 5
-
-
-
