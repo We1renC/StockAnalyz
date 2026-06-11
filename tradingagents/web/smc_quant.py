@@ -2657,19 +2657,33 @@ def apply_strategy_yaml_overrides() -> dict:
     # Audit fix E4: this is a read-modify-write on module globals. Under
     # FastAPI's sync-endpoint threadpool, two concurrent writers (startup
     # + a training tick) could lost-update each other. Serialize the whole
-    # rebind under _WEIGHTS_LOCK. Readers that want a consistent view use
+    # update under _WEIGHTS_LOCK. Readers that want a consistent view use
     # snapshot_confluence_weights() below.
+    #
+    # Round-2 audit P0 (import-binding staleness): these dicts MUST be
+    # mutated IN PLACE, never rebound. smc_training_loop:64 and
+    # smc_learning_orchestrator:58 import them BY VALUE at import time;
+    # a rebind (`X = {**X, **new}`) leaves those modules holding the
+    # pre-override object forever — measured live: after learned weights
+    # applied, smc_quant[bpr_overlap]=0 while training_loop saw None.
+    # The training loop was computing weight drift against a stale
+    # baseline ever since the first overrides apply.
     with _WEIGHTS_LOCK:
         if markets_yaml:
-            MARKET_CONFIGS = _merge_market_configs(MARKET_CONFIGS, markets_yaml)
+            _merged_markets = _merge_market_configs(dict(MARKET_CONFIGS), markets_yaml)
+            MARKET_CONFIGS.clear()
+            MARKET_CONFIGS.update(_merged_markets)
         conf = strategy_yaml.get("confluence") or {}
         if "weights" in conf and isinstance(conf["weights"], dict):
             # Round O: validate before applying.
             clean, rej = _sanitize_weight_overrides(conf["weights"])
             rejected.extend({"section": "confluence", **r} for r in rej)
-            CONFLUENCE_WEIGHTS_DEFAULT = {**CONFLUENCE_WEIGHTS_DEFAULT, **clean}
+            CONFLUENCE_WEIGHTS_DEFAULT.update(clean)
         if "threshold" in conf:
             try:
+                # int is immutable — rebind here is unavoidable; importers
+                # must read smc_quant.CONFLUENCE_THRESHOLD_DEFAULT at call
+                # time (training_loop fixed to do so).
                 CONFLUENCE_THRESHOLD_DEFAULT = int(conf["threshold"])
             except Exception:
                 rejected.append({"section": "confluence", "factor": "threshold",
@@ -2678,9 +2692,7 @@ def apply_strategy_yaml_overrides() -> dict:
         if isinstance(crypto_w, dict) and crypto_w:
             clean_c, rej_c = _sanitize_weight_overrides(crypto_w)
             rejected.extend({"section": "crypto_confluence", **r} for r in rej_c)
-            CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT = {
-                **CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT, **clean_c,
-            }
+            CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT.update(clean_c)
     if rejected:
         try:
             from learning.obs_log import get_logger, log_event
@@ -4280,6 +4292,18 @@ def calculate_position_size(
             "reason": "missing_entry_stop_or_equity",
         }
     stop_distance = abs(entry - stop)
+    # Round-2 audit P1: the same degenerate-stop class D2 blocked in
+    # backtests could still reach LIVE sizing — a $0.021 stop distance on
+    # a $60k asset explodes qty until the notional cap clamps it, placing
+    # a max-size order that stop-outs on the next tick. Same 5bps floor.
+    if entry > 0 and 0 < stop_distance < entry * MIN_RISK_FLOOR_PCT:
+        return {
+            "qty": 0,
+            "risk_amount": 0,
+            "stop_distance": stop_distance,
+            "blocked": True,
+            "reason": "degenerate_stop_distance",
+        }
     if stop_distance <= 0:
         return {
             "qty": 0,

@@ -79,6 +79,13 @@ def _run_maintenance() -> dict:
         keep = int(os.environ.get("SMC_LEDGER_KEEP_PER_SYMBOL", "1000"))
         out["rotation"] = rotate_ledger(LedgerPaths.training_ledger(),
                                           keep_per_symbol=keep)
+        # Round-2 audit: the interval-scoped ledgers (.15m/.1h/...) were
+        # never rotated — the .15m file had grown past the main one.
+        import glob as _glob
+        base = LedgerPaths.training_ledger()
+        for p in _glob.glob(base.replace(".jsonl", ".*.jsonl")):
+            out[f"rotation:{os.path.basename(p)}"] = rotate_ledger(
+                p, keep_per_symbol=keep)
     except Exception as exc:
         out["rotation"] = {"error": f"{type(exc).__name__}: {exc}"}
     try:

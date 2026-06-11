@@ -981,10 +981,15 @@ def train_from_ledger(
     probe_plan: dict = {}
     adaptive_patch_key: Optional[str] = None
     strategy_patch_key: Optional[str] = None
+    # Round-2 audit: read the threshold from the module attr at CALL time —
+    # ints are immutable so the import-time binding goes stale after any
+    # strategy.yaml threshold override (the dict globals are now mutated
+    # in place, but ints can't be).
+    import smc_quant as _sq
     current_threshold = float(
         (config_snapshot.get("data") or {}).get("confluence", {}).get(
             "threshold",
-            CONFLUENCE_THRESHOLD_DEFAULT,
+            _sq.CONFLUENCE_THRESHOLD_DEFAULT,
         )
     )
     current_sr = float(adaptive_metrics["sharpe"].get("sharpe") or 0.0)

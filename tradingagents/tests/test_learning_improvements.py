@@ -2531,7 +2531,17 @@ def test_roundp_selfcheck_warns_when_token_and_autolearn_unset(monkeypatch, tmp_
 
 
 def test_historical_seeder_fetch_klines_window():
-    """Historical seeder pages multiple chunks from Binance public data."""
+    """Historical seeder pages multiple chunks from Binance public data.
+
+    Round-2 audit: live-network test — skip when offline so CI without
+    internet doesn't fail spuriously.
+    """
+    import socket
+    try:
+        socket.create_connection(("data-api.binance.vision", 443), timeout=3).close()
+    except OSError:
+        import pytest as _pytest
+        _pytest.skip("offline: data-api.binance.vision unreachable")
     from learning.historical_seeder import fetch_klines_window
     from datetime import datetime, timezone, timedelta
     end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -2946,3 +2956,67 @@ def test_d6_persist_dedups_within_batch(tmp_path):
     n = persist_trade_records(batch, p)
     assert n == 1
     assert len(load_trade_records(p)) == 1
+
+
+# ─── Round-2 review fixes ───
+
+def test_r2_apply_overrides_mutates_in_place_not_rebind(monkeypatch):
+    """Round-2 P0: import-by-value holders (smc_training_loop) MUST see
+    learned weights after apply_strategy_yaml_overrides. Rebinding broke
+    this — training computed weight drift against a stale baseline."""
+    import smc_quant
+    obj_before = smc_quant.CONFLUENCE_WEIGHTS_DEFAULT
+    monkeypatch.setattr(smc_quant, "load_yaml_config", lambda name: (
+        {"confluence": {"weights": {"htf_bias_aligned": 4}}}
+        if name == "strategy.yaml" else {}
+    ))
+    smc_quant.apply_strategy_yaml_overrides()
+    # SAME object (in-place), new content
+    assert smc_quant.CONFLUENCE_WEIGHTS_DEFAULT is obj_before
+    assert obj_before["htf_bias_aligned"] == 4
+    # an import-by-value holder sees it too
+    import smc_training_loop
+    assert smc_training_loop.CONFLUENCE_WEIGHTS_DEFAULT["htf_bias_aligned"] == 4
+
+
+def test_r2_position_size_blocks_degenerate_stop():
+    """Round-2 P1: live sizing path rejects sub-5bps stop distances
+    (was: qty explodes until notional cap → max-size order, 2-cent stop)."""
+    from smc_quant import calculate_position_size
+    out = calculate_position_size(
+        {"entry": 60830.02, "stop": 60829.999, "direction": 1},
+        account_equity=100_000.0, risk_pct=0.01,
+    )
+    assert out["blocked"] is True
+    assert out["reason"] == "degenerate_stop_distance"
+    assert out["qty"] == 0
+    # sane stop still sizes normally
+    ok = calculate_position_size(
+        {"entry": 60830.0, "stop": 60200.0, "direction": 1},
+        account_equity=100_000.0, risk_pct=0.01,
+    )
+    assert not ok.get("blocked")
+    assert ok["qty"] > 0
+
+
+def test_r2_maintenance_rotates_interval_ledgers(tmp_path, monkeypatch):
+    """Round-2: .15m/.1h interval ledgers are rotated too (were unbounded)."""
+    import json, importlib
+    monkeypatch.setenv("SMC_LEDGER_DIR", str(tmp_path))
+    monkeypatch.setenv("SMC_LEDGER_KEEP_PER_SYMBOL", "10")
+    rows = [{"symbol": "BTC-USDT", "source": "backtest",
+              "entry_time": f"2026-01-01T{i:02d}:00:00",
+              "outcome": "stop", "r_multiple": -1.0} for i in range(24)]
+    (tmp_path / "smc_training_ledger.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in rows) + "\n")
+    (tmp_path / "smc_training_ledger.15m.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in rows) + "\n")
+    import learning.autolearn_scheduler as sched
+    importlib.reload(sched)
+    out = sched._run_maintenance()
+    assert out["rotation"]["rotated"] is True
+    key_15m = "rotation:smc_training_ledger.15m.jsonl"
+    assert key_15m in out
+    assert out[key_15m]["rotated"] is True
+    n_15m = sum(1 for l in open(tmp_path / "smc_training_ledger.15m.jsonl") if l.strip())
+    assert n_15m == 10
