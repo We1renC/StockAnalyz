@@ -40,8 +40,14 @@ except ImportError:
     from llm_providers import load_settings
 
 def get_crypto_db():
-    conn = sqlite3.connect(DB)
+    conn = sqlite3.connect(DB, check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except Exception:
+        pass
     return conn
 
 # Helper to fetch current prices from Binance or simulate them

@@ -15,8 +15,14 @@ BASE = Path(__file__).parent.parent
 DB = BASE / "portfolio.db"
 
 def get_crypto_db():
-    conn = sqlite3.connect(DB)
+    conn = sqlite3.connect(DB, check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except Exception:
+        pass
     return conn
 
 async def dispatch_webhook(account_id: str, event_type: str, data: Dict[str, Any]):

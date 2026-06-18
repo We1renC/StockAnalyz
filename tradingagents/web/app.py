@@ -4238,9 +4238,9 @@ def api_smc_crypto_profile(symbol: str = "BTC-USDT"):
     try:
         from smc_auto_workflow import profile_for_symbol, preflight, cooldown_remaining
         from dataclasses import asdict
-        import sqlite3
+        from deps import get_db
         profile = profile_for_symbol(symbol)
-        conn = sqlite3.connect(_portfolio_db_path())
+        conn = get_db(_portfolio_db_path())
         conn.row_factory = sqlite3.Row
         try:
             v = preflight(conn, symbol)

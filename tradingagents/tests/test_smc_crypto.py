@@ -206,3 +206,51 @@ def test_dynamic_max_notional_sizing():
     # Large equity (e.g. 200000 USDT) -> 10% is 20000.0 -> should yield 20000.0
     assert max(11.0, 200000.0 * dynamic_cap_pct) == 20000.0
 
+
+def test_cooldown_registry_persistence(tmp_path):
+    from smc_auto_workflow import _CooldownRegistry
+    from datetime import datetime, timezone
+    
+    db_file = str(tmp_path / "test_portfolio.db")
+    symbol = "BTC-USDT"
+    
+    _CooldownRegistry.reset()
+    
+    now_utc = datetime.now(timezone.utc)
+    _CooldownRegistry.record_fire(symbol, db_file, now_utc)
+    
+    t1 = _CooldownRegistry.last_fire(symbol, db_file)
+    assert t1 is not None
+    assert abs((t1 - now_utc).total_seconds()) < 1.0
+    
+    _CooldownRegistry.reset()
+    
+    t2 = _CooldownRegistry.last_fire(symbol, db_file)
+    assert t2 is not None
+    assert abs((t2 - now_utc).total_seconds()) < 1.0
+
+
+def test_get_current_equity_usdt_ticker_fallback():
+    from smc_auto_workflow import get_current_equity_usdt
+    
+    class MockApiFail:
+        def balances(self):
+            return {
+                "status": 200,
+                "payload": {
+                    "success": True,
+                    "data": [
+                        {"asset": "USDT", "total": "500.0"},
+                        {"asset": "BTC", "total": "0.1"}
+                    ]
+                }
+            }
+        
+        def ticker(self, symbol):
+            return {"status": 500, "payload": {}}
+
+    api_fail = MockApiFail()
+    equity = get_current_equity_usdt(api_fail)
+    assert equity == 7300.0
+
+

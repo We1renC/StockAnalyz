@@ -166,10 +166,25 @@ def get_current_equity_usdt(api) -> float:
             if asset == "USDT":
                 total_value_usdt += total_qty
             else:
-                ticker_resp = api.ticker(f"{asset}-USDT")
-                if ticker_resp and ticker_resp.get("status") == 200:
-                    last_price = float(ticker_resp.get("payload", {}).get("last_price") or 0.0)
-                    total_value_usdt += total_qty * last_price
+                last_price = 0.0
+                try:
+                    ticker_resp = api.ticker(f"{asset}-USDT")
+                    if ticker_resp and ticker_resp.get("status") == 200:
+                        last_price = float(ticker_resp.get("payload", {}).get("last_price") or 0.0)
+                except Exception:
+                    pass
+                
+                if last_price <= 0.0:
+                    FALLBACK_PRICES = {
+                        "BTC": 68000.0,
+                        "ETH": 3500.0,
+                        "SOL": 150.0,
+                        "BNB": 600.0,
+                        "XRP": 0.6,
+                    }
+                    last_price = FALLBACK_PRICES.get(asset.upper(), 1.0)
+                
+                total_value_usdt += total_qty * last_price
         return total_value_usdt if total_value_usdt > 10.0 else fallback_equity
     except Exception:
         return fallback_equity
@@ -238,16 +253,41 @@ def preflight(conn: sqlite3.Connection, symbol: str) -> PreflightVerdict:
 # ---------------------------------------------------------------------------
 
 class _CooldownRegistry:
-    """In-memory per-(symbol, db_path) last-fire timestamp."""
+    """Persistent per-(symbol, db_path) last-fire timestamp via SQLite with in-memory fallback."""
     _store: dict[tuple[str, str], datetime] = {}
 
     @classmethod
     def last_fire(cls, symbol: str, db_path: str) -> Optional[datetime]:
+        if db_path and db_path != ":memory:":
+            try:
+                import sqlite3
+                conn = sqlite3.connect(db_path, timeout=10.0)
+                conn.execute("CREATE TABLE IF NOT EXISTS smc_cooldown_registry (symbol TEXT PRIMARY KEY, last_fire_at TEXT)")
+                conn.commit()
+                cursor = conn.cursor()
+                cursor.execute("SELECT last_fire_at FROM smc_cooldown_registry WHERE symbol = ?", (symbol.upper(),))
+                row = cursor.fetchone()
+                conn.close()
+                if row and row[0]:
+                    return datetime.fromisoformat(row[0])
+            except Exception:
+                pass
         return cls._store.get((symbol.upper(), db_path))
 
     @classmethod
     def record_fire(cls, symbol: str, db_path: str, at: Optional[datetime] = None) -> None:
-        cls._store[(symbol.upper(), db_path)] = at or datetime.now(timezone.utc)
+        fire_time = at or datetime.now(timezone.utc)
+        if db_path and db_path != ":memory:":
+            try:
+                import sqlite3
+                conn = sqlite3.connect(db_path, timeout=10.0)
+                conn.execute("CREATE TABLE IF NOT EXISTS smc_cooldown_registry (symbol TEXT PRIMARY KEY, last_fire_at TEXT)")
+                conn.execute("REPLACE INTO smc_cooldown_registry (symbol, last_fire_at) VALUES (?, ?)", (symbol.upper(), fire_time.isoformat()))
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+        cls._store[(symbol.upper(), db_path)] = fire_time
 
     @classmethod
     def reset(cls) -> None:

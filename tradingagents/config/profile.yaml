@@ -1,0 +1,13 @@
+min_score: 6.0
+min_rr: 3.0
+risk_pct: 2.0
+last_auto_apply:
+  ts: '2026-06-11T10:47:45+00:00'
+  delta_sharpe: 0.3385
+  sharpe: 0.3385
+  n_trades: 3831
+  before:
+    min_score: null
+    min_rr: null
+    risk_pct: null
+    sharpe: 0.0
