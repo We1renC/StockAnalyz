@@ -430,7 +430,7 @@ def auto_backtest_window(
                 "unicorn", "silver_bullet", "power_of_three"):
         all_entries.extend(em.get(key) or [])
     bt = evaluate_entry_models(df, all_entries, max_hold_bars=max_hold_bars,
-                                only_triggered=False)
+                                only_triggered=True)
     # P1-7 audit fix: tag the regime at the entry bar so attribution can
     # group by regime later. Compute once on the full df, then slice per trade.
     try:
@@ -1437,6 +1437,7 @@ def audit_learning_capability(
     *,
     symbol: Optional[str] = None,
     baseline_weights: Optional[dict] = None,
+    db_path: Optional[str] = None,
 ) -> LearningAudit:
     """Quantitative answer to 'does the model learn?'.
 
@@ -1470,12 +1471,29 @@ def audit_learning_capability(
         if k not in base:
             drift[k] = {"baseline": None, "current": cur, "delta": cur}
 
-    # Recompute expectancy with baseline vs current weights:
-    # we can't re-score historical trades against weights cheaply without
-    # re-running the engine, so we use ledger expectancy as 'after' and
-    # store baseline as 0R per the conservative assumption.
     expected_after = float(compute_expectancy(records).get("expected_R") or 0)
+    
+    # G5: Fetch pre-training baseline expectancy from database
     expected_before = 0.0
+    from deps import portfolio_db_path
+    db = db_path or portfolio_db_path()
+    if db and os.path.exists(db):
+        try:
+            conn = sqlite3.connect(db, timeout=5.0)
+            c = conn.cursor()
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='smc_baseline_snapshots'")
+            if c.fetchone() is not None:
+                sym_key = symbol or "ALL"
+                row = c.execute(
+                    "SELECT expected_R FROM smc_baseline_snapshots WHERE symbol = ? ORDER BY saved_at DESC LIMIT 1",
+                    (sym_key,)
+                ).fetchone()
+                if row:
+                    expected_before = float(row[0])
+            conn.close()
+        except Exception:
+            pass
+
     delta = expected_after - expected_before
 
     if ledger_size < 30:
@@ -1527,17 +1545,38 @@ def run_training_cycle(
     ledger_path = ledger_path or LedgerPaths.training_ledger()
     conn = connect_db(db_path, row_factory=True)
     backtest_summaries: list[dict] = []
+    target_symbol = "ALL" if len(symbols) > 1 else symbols[0]
     try:
         for sym in symbols:
             bs = auto_backtest_window(api, sym, interval=interval, bars=bars,
                                        ledger_path=ledger_path, db_path=db_path)
             backtest_summaries.append(asdict(bs))
+
+        # G5: Snapshot pre-training expectancy as the baseline
+        try:
+            records_before = read_trade_ledger(ledger_path, symbol=target_symbol)
+            expectancy_before = float(compute_expectancy(records_before).get("expected_R") or 0.0)
+            win_rate_before = float(compute_expectancy(records_before).get("win_rate") or 0.0)
+            
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS smc_baseline_snapshots ("
+                "symbol TEXT, expected_R REAL, win_rate REAL, saved_at TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO smc_baseline_snapshots (symbol, expected_R, win_rate, saved_at) "
+                "VALUES (?, ?, ?, ?)",
+                (target_symbol, expectancy_before, win_rate_before, datetime.now(timezone.utc).isoformat())
+            )
+            conn.commit()
+        except Exception as e:
+            print(f"Error saving baseline snapshot: {e}")
+
         training = train_from_ledger(
             ledger_path=ledger_path,
             db_path=db_path,
-            symbol="ALL" if len(symbols) > 1 else symbols[0],
+            symbol=target_symbol,
         )
-        audit = audit_learning_capability(ledger_path=ledger_path)
+        audit = audit_learning_capability(ledger_path=ledger_path, db_path=db_path, symbol=target_symbol)
         scenarios = {sym: run_scenarios_for_symbol(conn, sym) for sym in symbols}
         return {
             "started_at": started_at,

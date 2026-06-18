@@ -71,8 +71,42 @@ except Exception:  # pragma: no cover - obs_log always present
 
 @dataclass
 class CryptoApiCredentials:
-    api_key: str = "api_key_xxx"
-    api_secret: str = "secret_xxx"
+    api_key: str = None
+    api_secret: str = None
+
+    def __post_init__(self):
+        import os
+        import sys
+        from pathlib import Path
+        
+        # 1. Check env vars
+        env_key = os.environ.get("CRYPTO_API_KEY")
+        env_secret = os.environ.get("CRYPTO_API_SECRET")
+        if env_key and env_secret:
+            self.api_key = self.api_key or env_key
+            self.api_secret = self.api_secret or env_secret
+            
+        # 2. Check settings.json
+        if not self.api_key or not self.api_secret:
+            try:
+                base_dir = Path(__file__).resolve().parent
+                sys.path.append(str(base_dir))
+                from llm_providers import load_settings
+                settings = load_settings() or {}
+                self.api_key = self.api_key or settings.get("crypto_api_key")
+                self.api_secret = self.api_secret or settings.get("crypto_api_secret")
+            except Exception:
+                pass
+                
+        # 3. Fallback to default in dev/test
+        if not self.api_key or not self.api_secret:
+            env = os.environ.get("ENVIRONMENT", "development").lower()
+            if env == "production":
+                raise RuntimeError("CRYPTO_API_KEY/SECRET not configured — refusing to run in production")
+            else:
+                self.api_key = self.api_key or "api_key_xxx"
+                self.api_secret = self.api_secret or "secret_xxx"
+
 
 
 class CryptoApiClient:

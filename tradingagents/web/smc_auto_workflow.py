@@ -146,13 +146,12 @@ def load_latest_adaptive_runtime_patch(conn: sqlite3.Connection, symbol: str) ->
     return {}
 
 
-def get_current_equity_usdt(api) -> float:
+def get_current_equity_usdt(api) -> Optional[float]:
     """Calculate total account equity in USDT dynamically based on spot balances and ticker prices."""
-    fallback_equity = 100000.0
     try:
         bal_resp = api.balances()
         if not bal_resp or bal_resp.get("status") != 200:
-            return fallback_equity
+            return None
         
         balances_data = bal_resp.get("payload", {}).get("data", [])
         total_value_usdt = 0.0
@@ -185,9 +184,9 @@ def get_current_equity_usdt(api) -> float:
                     last_price = FALLBACK_PRICES.get(asset.upper(), 1.0)
                 
                 total_value_usdt += total_qty * last_price
-        return total_value_usdt if total_value_usdt > 10.0 else fallback_equity
+        return total_value_usdt if total_value_usdt > 10.0 else None
     except Exception:
-        return fallback_equity
+        return None
 
 
 @dataclass
@@ -288,6 +287,58 @@ class _CooldownRegistry:
             except Exception:
                 pass
         cls._store[(symbol.upper(), db_path)] = fire_time
+
+    @classmethod
+    def try_acquire_cooldown(cls, symbol: str, db_path: str, cooldown_s: float) -> bool:
+        """Atomic check-and-set for cooldown: returns True if acquired, False if still in cooldown."""
+        now = datetime.now(timezone.utc)
+        symbol_upper = symbol.upper()
+        
+        # 1. Fallback for :memory: or if db_path is empty
+        if not db_path or db_path == ":memory:":
+            last = cls._store.get((symbol_upper, db_path))
+            if last and (now - last).total_seconds() < cooldown_s:
+                return False
+            cls._store[(symbol_upper, db_path)] = now
+            return True
+            
+        # 2. SQLite atomic check-and-set
+        try:
+            import sqlite3
+            conn = sqlite3.connect(db_path, timeout=10.0)
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute("CREATE TABLE IF NOT EXISTS smc_cooldown_registry (symbol TEXT PRIMARY KEY, last_fire_at TEXT)")
+                cursor = conn.cursor()
+                cursor.execute("SELECT last_fire_at FROM smc_cooldown_registry WHERE symbol = ?", (symbol_upper,))
+                row = cursor.fetchone()
+                if row and row[0]:
+                    last_time = datetime.fromisoformat(row[0])
+                    if last_time.tzinfo is None:
+                        last_time = last_time.replace(tzinfo=timezone.utc)
+                    if (now - last_time).total_seconds() < cooldown_s:
+                        conn.rollback()
+                        return False
+                
+                conn.execute(
+                    "REPLACE INTO smc_cooldown_registry (symbol, last_fire_at) VALUES (?, ?)",
+                    (symbol_upper, now.isoformat())
+                )
+                conn.commit()
+                cls._store[(symbol_upper, db_path)] = now
+                return True
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+        except Exception:
+            # Fallback on database errors
+            last = cls._store.get((symbol_upper, db_path))
+            if last and (now - last).total_seconds() < cooldown_s:
+                return False
+            cls._store[(symbol_upper, db_path)] = now
+            return True
 
     @classmethod
     def reset(cls) -> None:
@@ -406,15 +457,93 @@ def run_symbol(
     # Cooldown guard
     cd = cooldown_remaining(symbol, db_path, profile) if not ignore_cooldown else None
 
-    # Phase B — pre-flight (E3: WAL-enabled shared connect)
+    # Phase B — pre-flight (E3: WAL-enabled shared connect) and daily loss limit check
     from smc_quant import connect_db
     conn = connect_db(db_path, row_factory=True)
+    daily_loss_breached = False
+    daily_realized_pnl = 0.0
+    daily_loss_limit = 50000.0
     try:
         verdict = preflight(conn, symbol)
         patch = load_latest_adaptive_runtime_patch(conn, symbol)
+        
+        # Load daily_loss_limit from strategy.yaml
+        try:
+            from pathlib import Path
+            import yaml
+            yaml_path = Path(__file__).resolve().parent.parent / "config/strategy.yaml"
+            if yaml_path.exists():
+                with open(yaml_path, "r", encoding="utf-8") as fh:
+                    data = yaml.safe_load(fh) or {}
+                    daily_loss_limit = float(data.get("risk", {}).get("daily_loss_limit", 50000.0))
+        except Exception:
+            pass
+
+        # Calculate daily realized PnL from crypto_fills
+        c = conn.cursor()
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='crypto_fills'")
+        if c.fetchone() is not None:
+            from decimal import Decimal
+            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            rows = c.execute("SELECT symbol, side, price, quantity, fee, executed_at FROM crypto_fills ORDER BY executed_at ASC").fetchall()
+            cost_basis = {}
+            for row in rows:
+                sym = row["symbol"]
+                side = row["side"]
+                qty = Decimal(row["quantity"])
+                price = Decimal(row["price"])
+                fee = Decimal(row["fee"])
+                executed_at = row["executed_at"]
+                
+                base_asset = sym.split("-")[0]
+                pos = cost_basis.setdefault(base_asset, {"qty": Decimal("0"), "avg_price": Decimal("0")})
+                
+                if side == "buy":
+                    new_qty = pos["qty"] + qty
+                    if new_qty > 0:
+                        pos["avg_price"] = (pos["avg_price"] * pos["qty"] + price * qty) / new_qty
+                    else:
+                        pos["avg_price"] = price
+                    pos["qty"] = new_qty
+                else: # sell
+                    if pos["qty"] > 0:
+                        closed_qty = min(qty, pos["qty"])
+                        trade_pnl = (price - pos["avg_price"]) * closed_qty - fee
+                        if executed_at >= today_start:
+                            daily_realized_pnl += float(trade_pnl)
+                        pos["qty"] = max(Decimal("0"), pos["qty"] - qty)
+            
+            if daily_realized_pnl < -daily_loss_limit:
+                daily_loss_breached = True
     finally:
         conn.close()
     place_live = (verdict.allowed_live or force_live)
+
+    # G11: Atomic check-and-set cooldown lock if going live
+    if place_live and not ignore_cooldown:
+        recent = _recent_outcomes_for_cooldown(db_path, symbol)
+        multiplier = _adaptive_cooldown_multiplier(recent)
+        effective_cooldown_s = profile.cooldown_minutes * 60 * multiplier
+        
+        acquired = _CooldownRegistry.try_acquire_cooldown(symbol, db_path, effective_cooldown_s)
+        if not acquired:
+            cd = cooldown_remaining(symbol, db_path, profile)
+            notes.append(f"CIRCUIT BREAKER: Atomic cooldown registry lock failed, symbol in cooldown: {cd}s remaining")
+            return AutoRunResult(
+                symbol=symbol,
+                started_at=started_at,
+                elapsed_seconds=round(time.time() - t0, 3),
+                profile=asdict(profile),
+                preflight={
+                    "allowed_live": verdict.allowed_live,
+                    "reason": verdict.reason,
+                    "last_conclusion": verdict.last_conclusion,
+                    "last_run_at": verdict.last_run_at,
+                },
+                cooldown_seconds_remaining=cd,
+                workflow_action="cooldown",
+                notes=notes,
+            )
 
     result = AutoRunResult(
         symbol=symbol,
@@ -462,6 +591,18 @@ def run_symbol(
 
     # Statistical dynamic single-order max notional calculation to prevent ruin
     current_equity = get_current_equity_usdt(api)
+    if current_equity is None:
+        notes.append("BLOCKED: equity fetch failed — refusing to size position")
+        result.workflow_action = "blocked"
+        result.elapsed_seconds = round(time.time() - t0, 3)
+        return result
+
+    if daily_loss_breached:
+        notes.append(f"CIRCUIT BREAKER: Daily loss limit hit: {daily_realized_pnl:.2f} < -{daily_loss_limit}")
+        result.workflow_action = "blocked"
+        result.elapsed_seconds = round(time.time() - t0, 3)
+        return result
+
     dynamic_max_notional = current_equity * max_notional_cap_pct
     dynamic_max_notional = max(11.0, dynamic_max_notional)
 

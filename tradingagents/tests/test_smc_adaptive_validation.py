@@ -241,6 +241,14 @@ def test_preflight_and_run_symbol_in_validating_probe_mode(tmp_path):
     # 模擬 ticker
     api.ticker.return_value = {"status": 200, "payload": {"price": "100.0"}}
     api.create_order.return_value = {"status": 200, "payload": {"id": "order-123"}}
+    api.balances.return_value = {
+        "status": 200,
+        "payload": {
+            "data": [
+                {"asset": "USDT", "total": "100000.0"},
+            ]
+        }
+    }
 
     # 我們可以使用 patch 來監控 UnifiedTradingSession 的初始化或 UnifiedSessionConfig 的生成
     from unittest.mock import patch as mock_patch

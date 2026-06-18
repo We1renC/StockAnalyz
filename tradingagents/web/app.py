@@ -132,9 +132,12 @@ SSL_CONTEXT.verify_flags &= ~ssl.VERIFY_X509_STRICT
 from deps import (  # noqa: E402
     get_db,
     _apply_db_pragmas,
-    portfolio_db_path as _portfolio_db_path,
+    portfolio_db_path as _original_portfolio_db_path,
     make_crypto_api_client,
 )
+
+def _portfolio_db_path() -> str:
+    return str(DB)
 
 def init_db():
     conn = get_db()

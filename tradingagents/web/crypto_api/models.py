@@ -8,25 +8,33 @@ from decimal import Decimal
 def decimal_to_str(d: Optional[Decimal]) -> Optional[str]:
     return str(d) if d is not None else None
 
-def init_crypto_db(conn: sqlite3.Connection):
+import logging
+_logger = logging.getLogger(__name__)
+
+def init_crypto_db(conn: sqlite3.Connection, *, force_reset: bool = False):
+    """初始化加密交易資料庫。
+    
+    Args:
+        force_reset: 僅在明確傳入 True 時才刪除資料表（僅限開發環境）
+    """
     c = conn.cursor()
     
-    # Optional: drop tables if structure changes (for development convenience, we drop the tables once to reset them)
-    # We can do this safely since it's a new feature and there is no production data yet.
-    c.executescript("""
-    DROP TABLE IF EXISTS crypto_api_keys;
-    DROP TABLE IF EXISTS crypto_markets;
-    DROP TABLE IF EXISTS crypto_balances;
-    DROP TABLE IF EXISTS crypto_fills;
-    DROP TABLE IF EXISTS crypto_orders;
-    DROP TABLE IF EXISTS crypto_ledger;
-    DROP TABLE IF EXISTS crypto_audit_logs;
-    DROP TABLE IF EXISTS crypto_risk_limits;
-    DROP TABLE IF EXISTS crypto_kill_switch;
-    DROP TABLE IF EXISTS crypto_webhook_endpoints;
-    DROP TABLE IF EXISTS crypto_nonces;
-    """)
-    conn.commit()
+    if force_reset:
+        _logger.warning("force_reset=True — dropping all crypto tables!")
+        c.executescript("""
+        DROP TABLE IF EXISTS crypto_api_keys;
+        DROP TABLE IF EXISTS crypto_markets;
+        DROP TABLE IF EXISTS crypto_balances;
+        DROP TABLE IF EXISTS crypto_fills;
+        DROP TABLE IF EXISTS crypto_orders;
+        DROP TABLE IF EXISTS crypto_ledger;
+        DROP TABLE IF EXISTS crypto_audit_logs;
+        DROP TABLE IF EXISTS crypto_risk_limits;
+        DROP TABLE IF EXISTS crypto_kill_switch;
+        DROP TABLE IF EXISTS crypto_webhook_endpoints;
+        DROP TABLE IF EXISTS crypto_nonces;
+        """)
+        conn.commit()
 
     c.executescript("""
     -- API Keys table
@@ -219,10 +227,32 @@ def seed_crypto_data(conn: sqlite3.Connection):
         """, m)
 
     # 2. Seed default API key if not exists
-    # Key: api_key_xxx, Secret: secret_xxx
+    import os
+    import sys
     import hashlib
-    api_key = "api_key_xxx"
-    api_secret = "secret_xxx"
+    from pathlib import Path
+
+    api_key = os.environ.get("CRYPTO_API_KEY")
+    api_secret = os.environ.get("CRYPTO_API_SECRET")
+    
+    if not api_key or not api_secret:
+        try:
+            sys.path.append(str(Path(__file__).parent.parent))
+            from llm_providers import load_settings
+            settings = load_settings() or {}
+            api_key = api_key or settings.get("crypto_api_key")
+            api_secret = api_secret or settings.get("crypto_api_secret")
+        except Exception as e:
+            _logger.debug(f"Failed to load settings.json in seed_crypto_data: {e}")
+            
+    if not api_key or not api_secret:
+        env = os.environ.get("ENVIRONMENT", "development").lower()
+        if env == "production":
+            raise RuntimeError("CRYPTO_API_KEY/SECRET not configured — refusing to start in production")
+        else:
+            api_key = api_key or "api_key_xxx"
+            api_secret = api_secret or "secret_xxx"
+
     key_hash = hashlib.sha256(api_key.encode('utf-8')).hexdigest()
     
     scopes = json.dumps([

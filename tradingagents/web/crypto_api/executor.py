@@ -397,11 +397,11 @@ async def validate_pre_trade_risk(conn: sqlite3.Connection, account_id: str, ord
     }
 
 # Execute immediate fill for market order or matched order
-def fill_order(conn: sqlite3.Connection, order_id: str, fill_price: Decimal, fill_qty: Decimal, is_maker: bool = False):
+def _fill_order_tx_internal(conn: sqlite3.Connection, order_id: str, fill_price: Decimal, fill_qty: Decimal, is_maker: bool = False):
     c = conn.cursor()
     order_row = c.execute("SELECT * FROM crypto_orders WHERE id = ?", (order_id,)).fetchone()
     if not order_row:
-        return
+        return None
     order = dict(order_row)
     account_id = order["account_id"]
     symbol = order["symbol"]
@@ -547,23 +547,35 @@ def fill_order(conn: sqlite3.Connection, order_id: str, fill_price: Decimal, fil
         WHERE id = ?
     """, (new_status, str(new_filled), str(remaining), str(fill_price), str(fee), fee_asset, now_iso, order_id))
     
-    conn.commit()
+    return account_id, fill_id, base_asset, quote_asset
 
+def fill_order(conn: sqlite3.Connection, order_id: str, fill_price: Decimal, fill_qty: Decimal, is_maker: bool = False):
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        res = _fill_order_tx_internal(conn, order_id, fill_price, fill_qty, is_maker)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    if not res:
+        return
+        
+    account_id, fill_id, base_asset, quote_asset = res
+    
     # 4. Trigger WebSocket & Webhook dispatches
+    c = conn.cursor()
     updated_order_row = c.execute("SELECT * FROM crypto_orders WHERE id = ?", (order_id,)).fetchone()
-    updated_order = dict(updated_order_row)
-    
-    # Broadcast order event
-    _safe_create_task(ws_manager.push_private(account_id, "orders", "order.updated", updated_order))
-    
-    # Broadcast fill event
+    if updated_order_row:
+        updated_order = dict(updated_order_row)
+        _safe_create_task(ws_manager.push_private(account_id, "orders", "order.updated", updated_order))
+        _safe_create_task(dispatch_webhook(account_id, "order.updated", updated_order))
+        
     fill_row = c.execute("SELECT * FROM crypto_fills WHERE id = ?", (fill_id,)).fetchone()
-    fill_data = dict(fill_row)
-    _safe_create_task(ws_manager.push_private(account_id, "fills", "fill.created", fill_data))
-    
-    # Dispatch webhooks
-    _safe_create_task(dispatch_webhook(account_id, "order.updated", updated_order))
-    _safe_create_task(dispatch_webhook(account_id, "fill.created", fill_data))
+    if fill_row:
+        fill_data = dict(fill_row)
+        _safe_create_task(ws_manager.push_private(account_id, "fills", "fill.created", fill_data))
+        _safe_create_task(dispatch_webhook(account_id, "fill.created", fill_data))
 
     # Balances push
     for asset in (base_asset, quote_asset):
