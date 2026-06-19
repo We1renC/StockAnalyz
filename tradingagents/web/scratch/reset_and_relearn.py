@@ -113,13 +113,10 @@ def main():
         clean_ledger_files(ledger_path, [sym])
         reset_database(db_path, [sym])
 
-        # 時框與歷史回溯月份對應
+        # 時框與歷史回溯月份對應（限制為最短 1m，最長 3m）
         interval_months = {
             "1m": 0.5,    # 15 天
-            "3m": 1.0,    # 1 個月
-            "5m": 2.0,    # 2 個月
-            "15m": 6.0,   # 6 個月
-            "30m": 6.0    # 6 個月
+            "3m": 1.0     # 1 個月
         }
 
         print(f"\n=== 2. 多時框交易模擬播種 (1m ~ 30m) ===")

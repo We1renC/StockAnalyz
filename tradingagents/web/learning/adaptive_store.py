@@ -8,7 +8,7 @@ import json
 import os
 import sqlite3
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 from uuid import uuid4

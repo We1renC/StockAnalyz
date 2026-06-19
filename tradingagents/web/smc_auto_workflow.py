@@ -83,7 +83,7 @@ def profile_for_symbol(symbol: str) -> SmcAutoProfile:
     if sym in _MAJOR:
         profile = SmcAutoProfile(
             tier="major",
-            interval="1h", bars=500,
+            interval="3m", bars=500,
             swing_length=5, internal_swing_length=3,
             min_confluence_score=8, min_rr=1.5,
             risk_pct=0.02, max_notional_usdt=5_000.0,
@@ -92,7 +92,7 @@ def profile_for_symbol(symbol: str) -> SmcAutoProfile:
     elif sym in _ALTCOIN:
         profile = SmcAutoProfile(
             tier="altcoin",
-            interval="15m", bars=500,
+            interval="3m", bars=500,
             swing_length=4, internal_swing_length=2,
             min_confluence_score=9, min_rr=1.8,
             risk_pct=0.01, max_notional_usdt=2_000.0,
@@ -102,7 +102,7 @@ def profile_for_symbol(symbol: str) -> SmcAutoProfile:
         # smallcap / unknown — most conservative defaults
         profile = SmcAutoProfile(
             tier="smallcap",
-            interval="15m", bars=500,
+            interval="3m", bars=500,
             swing_length=3, internal_swing_length=2,
             min_confluence_score=10, min_rr=2.0,
             risk_pct=0.005, max_notional_usdt=500.0,
