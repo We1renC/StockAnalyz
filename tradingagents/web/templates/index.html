@@ -1203,40 +1203,65 @@ body { background: var(--bg-base); color: var(--text-primary); }
       </div>
     </div>
 
-    <!-- 側邊欄抽屜懸浮觸發按鈕 (獨立於其他面板，懸浮在左側邊緣) -->
-    <button onclick="toggleCdeskDrawer(true)" class="fixed left-0 top-1/2 transform -translate-y-1/2 z-40 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-4 px-2 rounded-r-lg shadow-2xl flex flex-col items-center gap-1.5 transition-all duration-200 group hover:pl-3" style="writing-mode: vertical-lr; letter-spacing: 0.1em; border: 1px solid rgba(16,185,129,0.4); border-left: none;">
-      <div class="flex items-center justify-center transform group-hover:scale-110 transition-transform">
-        <svg style="width:14px;height:14px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-emerald-100"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-      </div>
-      <span class="text-xs font-bold text-slate-100 select-none">決策矩陣 PANEL</span>
-    </button>
-
-    <!-- 側邊欄抽屜背景遮罩 (Overlay) -->
-    <div id="cdesk-drawer-overlay" class="fixed inset-0 z-40 hidden" style="background: rgba(2, 6, 23, 0.65); backdrop-filter: blur(4px); transition: opacity 0.3s; opacity: 0;" onclick="toggleCdeskDrawer(false)"></div>
-
-    <!-- 側邊欄抽屜主體 (Drawer Container) -->
-    <div id="cdesk-drawer" class="fixed top-0 left-0 h-full w-[460px] max-w-[90vw] z-50 bg-[#0f172a]/95 border-r border-slate-800/80 shadow-2xl transform -translate-x-full transition-transform duration-300 ease-in-out flex flex-col" style="backdrop-filter: blur(8px);">
-      <!-- Drawer 頂部標頭 -->
-      <div class="p-4 border-b border-slate-800/80 flex items-center justify-between" style="background: rgba(15, 23, 42, 0.4);">
-        <span class="text-sm text-slate-200 font-semibold flex items-center gap-1.5">
-          <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-emerald-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-          SMC 實時策略與決策矩陣
-        </span>
-        <div class="flex items-center gap-3">
-          <span id="cdesk-proposal-time" class="text-xs text-slate-500">—</span>
-          <button onclick="toggleCdeskDrawer(false)" class="text-slate-400 hover:text-white text-lg font-bold p-1 transition-colors">✕</button>
+    <!-- 隱藏舊的側邊欄抽屜元素 -->
+    <div style="display: none;">
+      <!-- 側邊欄抽屜懸浮觸發按鈕 (獨立於其他面板，懸浮在左側邊緣) -->
+      <button onclick="toggleCdeskDrawer(true)" class="fixed left-0 top-1/2 transform -translate-y-1/2 z-40 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-4 px-2 rounded-r-lg shadow-2xl flex flex-col items-center gap-1.5 transition-all duration-200 group hover:pl-3" style="writing-mode: vertical-lr; letter-spacing: 0.1em; border: 1px solid rgba(16,185,129,0.4); border-left: none;">
+        <div class="flex items-center justify-center transform group-hover:scale-110 transition-transform">
+          <svg style="width:14px;height:14px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-emerald-100"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
         </div>
-      </div>
-      <!-- Drawer 內容區 (滾動) -->
-      <div class="flex-1 overflow-y-auto p-4 space-y-3" id="cdesk-symbols-container">
-        <div class="text-xs text-slate-500 text-center py-8">正在加載全幣種策略與決策矩陣…</div>
+        <span class="text-xs font-bold text-slate-100 select-none">決策矩陣 PANEL</span>
+      </button>
+
+      <!-- 側邊欄抽屜背景遮罩 (Overlay) -->
+      <div id="cdesk-drawer-overlay" class="fixed inset-0 z-40 hidden" style="background: rgba(2, 6, 23, 0.65); backdrop-filter: blur(4px); transition: opacity 0.3s; opacity: 0;" onclick="toggleCdeskDrawer(false)"></div>
+
+      <!-- 側邊欄抽屜主體 (Drawer Container) -->
+      <div id="cdesk-drawer" class="fixed top-0 left-0 h-full w-[460px] max-w-[90vw] z-50 bg-[#0f172a]/95 border-r border-slate-800/80 shadow-2xl transform -translate-x-full transition-transform duration-300 ease-in-out flex flex-col" style="backdrop-filter: blur(8px);">
+        <!-- Drawer 頂部標頭 -->
+        <div class="p-4 border-b border-slate-800/80 flex items-center justify-between" style="background: rgba(15, 23, 42, 0.4);">
+          <span class="text-sm text-slate-200 font-semibold flex items-center gap-1.5">
+            <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-emerald-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+            SMC 實時策略與決策矩陣
+          </span>
+          <div class="flex items-center gap-3">
+            <span id="cdesk-proposal-time-hidden" class="text-xs text-slate-500">—</span>
+            <button onclick="toggleCdeskDrawer(false)" class="text-slate-400 hover:text-white text-lg font-bold p-1 transition-colors">✕</button>
+          </div>
+        </div>
+        <!-- Drawer 內容區 (滾動) -->
+        <div class="flex-1 overflow-y-auto p-4 space-y-3" id="cdesk-symbols-container-drawer-hidden">
+          <div class="text-xs text-slate-500 text-center py-8">正在加載全幣種策略與決策矩陣…</div>
+        </div>
       </div>
     </div>
 
-    <!-- 主內容區 (佔滿 100% 寬度，提供最開闊的資產控制視角) -->
-    <div class="w-full space-y-3 mb-3">
-      <!-- 核心統計損益卡片 (4卡片緊湊併排) -->
-        <div class="grid grid-cols-4 gap-2">
+    <!-- 兩欄佈局：左側為實時策略決策，右側為損益與交易控制/歷史 -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+      <!-- 左側欄：SMC 實時策略與決策提案 -->
+      <div class="lg:col-span-5 flex flex-col gap-4">
+        <div class="glass-card-sm p-4 flex flex-col h-full">
+          <div class="border-b border-slate-700/80 pb-3 mb-3 flex items-center justify-between">
+            <span class="text-sm font-bold text-slate-100 flex items-center gap-1.5">
+              <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-emerald-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+              SMC 實時策略提案與決策矩陣
+            </span>
+            <div class="flex items-center gap-2">
+              <span id="cdesk-proposal-time" class="text-xs font-mono text-slate-500">—</span>
+              <button onclick="cdeskRefreshAll()" class="text-[10px] px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition-colors">↺ 刷新策略</button>
+            </div>
+          </div>
+          <!-- 決策卡片容器 -->
+          <div class="space-y-3" id="cdesk-symbols-container">
+            <div class="text-xs text-slate-500 text-center py-8">正在加載全幣種策略與決策矩陣…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右側欄：損益統計、資產/委託控制台、歷史成交與策略績效 -->
+      <div class="lg:col-span-7 flex flex-col gap-4">
+        <!-- 頂部損益卡片 (4卡片緊湊併排) -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <div class="p-3 rounded border-l-4 border-emerald-500" style="background:#0f172a">
             <div class="text-[10px] text-slate-500 font-semibold">帳戶淨值 (USDT)</div>
             <div id="cdesk-kpi-equity" class="text-sm font-mono text-slate-100 font-bold mt-1">—</div>
@@ -1288,11 +1313,83 @@ body { background: var(--bg-base); color: var(--text-primary); }
             <div id="cdesk-fills" class="text-xs">—</div>
           </div>
         </div>
+
+        <!-- 歷史成交明細與策略期望值分析 (將原本折疊的面板移出並直接顯示) -->
+        <div class="glass-card-sm p-4 flex flex-col gap-4">
+          <div class="border-b border-slate-700/80 pb-3 flex items-center justify-between flex-wrap gap-2">
+            <span class="text-xs text-slate-200 font-semibold flex items-center gap-1.5">
+              <svg style="width:14px;height:14px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-sky-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
+              全幣種歷史成交與策略績效分析
+            </span>
+            <div class="flex items-center gap-2">
+              <select id="cdesk-fills-symbol-filter" onchange="cdeskRenderFillsTable()" class="text-xs px-2 py-1" style="background:#0f172a; color:#fff; border-radius:4px; border:1px solid #334155;">
+                <option value="ALL">全部幣種</option>
+                <option value="BTC-USDT">BTC-USDT</option>
+                <option value="ETH-USDT">ETH-USDT</option>
+                <option value="SOL-USDT">SOL-USDT</option>
+                <option value="BNB-USDT">BNB-USDT</option>
+                <option value="XRP-USDT">XRP-USDT</option>
+              </select>
+              <button onclick="cdeskLoadFillsAndStrategyPnl()" class="text-[10px] px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-400 rounded transition-colors">↺ 刷新績效</button>
+            </div>
+          </div>
+          
+          <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <!-- 左：全幣種成交紀錄 -->
+            <div class="bg-slate-900/10 p-2 rounded border border-slate-800/40">
+              <div class="mb-2 text-[11px] text-slate-400 font-semibold">成交明細 (Mock Broker)</div>
+              <div style="max-height:240px; overflow-y:auto;">
+                <table class="w-full text-xs font-mono">
+                  <thead style="position:sticky; top:0; background:#0f172a; z-index:1">
+                    <tr class="text-slate-500" style="border-bottom:1px solid #334155">
+                      <th class="text-left py-2 px-1">時間</th>
+                      <th class="text-left py-2 px-1">幣種</th>
+                      <th class="text-left py-2 px-1">方向</th>
+                      <th class="text-right py-2 px-1">價格</th>
+                      <th class="text-right py-2 px-1">數量</th>
+                      <th class="text-right py-2 px-1">名義價值</th>
+                      <th class="text-right py-2 px-1">手續費</th>
+                    </tr>
+                  </thead>
+                  <tbody id="cdesk-all-fills-rows">
+                    <tr><td colspan="7" class="py-4 text-center text-slate-500">載入中...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- 右：策略績效與盈虧 -->
+            <div class="bg-slate-900/10 p-2 rounded border border-slate-800/40">
+              <div class="mb-2 flex items-center justify-between text-[11px] text-slate-400 font-semibold">
+                <span>SMC 策略盈虧與績效 (Ledger)</span>
+                <span id="cdesk-strategy-pnl-updated" class="text-slate-500 font-normal">—</span>
+              </div>
+              <div style="max-height:240px; overflow-y:auto;">
+                <table class="w-full text-xs font-mono">
+                  <thead style="position:sticky; top:0; background:#0f172a; z-index:1">
+                    <tr class="text-slate-500" style="border-bottom:1px solid #334155">
+                      <th class="text-left py-2 px-1">策略 (Model)</th>
+                      <th class="text-right py-2 px-1">成交</th>
+                      <th class="text-right py-2 px-1">勝率</th>
+                      <th class="text-right py-2 px-1">總盈虧 (R)</th>
+                      <th class="text-right py-2 px-1">平均 R</th>
+                      <th class="text-right py-2 px-1">勝/敗/平</th>
+                    </tr>
+                  </thead>
+                  <tbody id="cdesk-strategy-pnl-rows">
+                    <tr><td colspan="6" class="py-4 text-center text-slate-500">載入中...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
 
-    <!-- 進階日誌與細節終端 (全部折疊收納，保持介面極致簡潔) -->
-    <div class="mt-4 space-y-3">
+    <!-- 進階日誌與細節終端 (全部折疊收納，保持介面極致簡潔，使用 style="display:none;" 隱藏) -->
+    <div class="mt-4 space-y-3" style="display: none;">
       
       <!-- CLI 執行進度折疊面版 -->
       <details class="glass-card-sm p-4 border border-slate-800/80">
@@ -1405,82 +1502,7 @@ body { background: var(--bg-base); color: var(--text-primary); }
         </div>
       </details>
 
-      <!-- 全幣種成交紀錄與策略盈虧折疊面板 -->
-      <details class="glass-card-sm p-4 border border-slate-800/80">
-        <summary class="text-sm text-slate-300 font-semibold cursor-pointer select-none flex items-center justify-between outline-none">
-          <span class="flex items-center gap-2">
-            <svg style="width:16px;height:16px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" class="text-sky-400"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
-            全幣種歷史成交明細與策略期望值分析
-          </span>
-          <span class="text-xs text-slate-500 font-normal mr-4">Fills & Strategy PnL</span>
-        </summary>
-        <div class="mt-3">
-          <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            <!-- 左：全幣種成交紀錄 -->
-            <div class="bg-slate-900/10 p-2 rounded border border-slate-800/40">
-              <div class="flex items-center justify-between mb-3 border-b border-slate-800/60 pb-2">
-                <span class="text-xs text-slate-300 font-semibold">成交明細 (Mock Broker)</span>
-                <div class="flex items-center gap-2">
-                  <select id="cdesk-fills-symbol-filter" onchange="cdeskRenderFillsTable()" class="text-xs px-2 py-1" style="background:#0f172a; color:#fff; border-radius:4px; border:1px solid #334155;">
-                    <option value="ALL">全部幣種</option>
-                    <option value="BTC-USDT">BTC-USDT</option>
-                    <option value="ETH-USDT">ETH-USDT</option>
-                    <option value="SOL-USDT">SOL-USDT</option>
-                    <option value="BNB-USDT">BNB-USDT</option>
-                    <option value="XRP-USDT">XRP-USDT</option>
-                  </select>
-                  <button onclick="cdeskLoadFillsAndStrategyPnl()" class="text-[10px] px-2 py-0.5 bg-slate-800 text-slate-400 rounded">↺ 刷新</button>
-                </div>
-              </div>
-              <div style="max-height:280px; overflow-y:auto;">
-                <table class="w-full text-xs font-mono">
-                  <thead style="position:sticky; top:0; background:#0f172a; z-index:1">
-                    <tr class="text-slate-500" style="border-bottom:1px solid #334155">
-                      <th class="text-left py-2 px-1">時間</th>
-                      <th class="text-left py-2 px-1">幣種</th>
-                      <th class="text-left py-2 px-1">方向</th>
-                      <th class="text-right py-2 px-1">價格</th>
-                      <th class="text-right py-2 px-1">數量</th>
-                      <th class="text-right py-2 px-1">名義價值</th>
-                      <th class="text-right py-2 px-1">手續費</th>
-                    </tr>
-                  </thead>
-                  <tbody id="cdesk-all-fills-rows">
-                    <tr><td colspan="7" class="py-4 text-center text-slate-500">載入中...</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
 
-            <!-- 右：策略績效與盈虧 -->
-            <div class="bg-slate-900/10 p-2 rounded border border-slate-800/40">
-              <div class="flex items-center justify-between mb-3 border-b border-slate-800/60 pb-2">
-                <span class="text-xs text-slate-300 font-semibold flex items-center gap-1.5">
-                  SMC 策略盈虧與績效 (Ledger)
-                </span>
-                <span id="cdesk-strategy-pnl-updated" class="text-xs text-slate-500">—</span>
-              </div>
-              <div style="max-height:280px; overflow-y:auto;">
-                <table class="w-full text-xs font-mono">
-                  <thead style="position:sticky; top:0; background:#0f172a; z-index:1">
-                    <tr class="text-slate-500" style="border-bottom:1px solid #334155">
-                      <th class="text-left py-2 px-1">策略 (Model)</th>
-                      <th class="text-right py-2 px-1">成交筆數</th>
-                      <th class="text-right py-2 px-1">勝率</th>
-                      <th class="text-right py-2 px-1">總盈虧 (R)</th>
-                      <th class="text-right py-2 px-1">平均 R</th>
-                      <th class="text-right py-2 px-1">勝/敗/平</th>
-                    </tr>
-                  </thead>
-                  <tbody id="cdesk-strategy-pnl-rows">
-                    <tr><td colspan="6" class="py-4 text-center text-slate-500">載入中...</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
-      </details>
     </div>
 
     <!-- 自動執行結果 / hidden compat fields -->
@@ -10856,6 +10878,11 @@ async function cdeskRefreshAll() {
         return renderSymbolCard(d.symbol, d.profile, d.scan, overviewSym);
       }).join('');
       container.innerHTML = cardsHtml;
+      
+      const timeEl = $('cdesk-proposal-time');
+      if (timeEl) {
+        timeEl.textContent = new Date().toLocaleTimeString('zh-TW');
+      }
     }
     
     if (hasCooldown) {
