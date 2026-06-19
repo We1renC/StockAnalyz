@@ -268,13 +268,13 @@ def seed_crypto_data(conn: sqlite3.Connection):
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, ("key_123", "acct_123", "default-test-key", key_hash, api_secret, scopes, ip_whitelist, "active", "2030-12-31T23:59:59Z", "2026-06-04T10:00:00Z"))
 
-    # 3. Seed default balances for acct_123
+    # 3. Seed default balances for acct_123 (Starting with USDT only for quantitative trading)
     balances = [
         ("acct_123", "USDT", "100000.00", "0.00", "100000.00"),
-        ("acct_123", "BTC", "2.000000", "0.00", "2.000000"),
-        ("acct_123", "ETH", "10.00000", "0.00", "10.00000"),
-        ("acct_123", "SOL", "100.000", "0.00", "100.000"),
-        ("acct_123", "BNB", "1000.000", "0.00", "1000.000")
+        ("acct_123", "BTC", "0.000000", "0.00", "0.000000"),
+        ("acct_123", "ETH", "0.00000", "0.00", "0.00000"),
+        ("acct_123", "SOL", "0.000", "0.00", "0.000"),
+        ("acct_123", "BNB", "0.000", "0.00", "0.000")
     ]
     for bal in balances:
         c.execute("""
