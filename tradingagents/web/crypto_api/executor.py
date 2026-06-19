@@ -186,8 +186,82 @@ class MarketPriceEngine:
                 }
             ]
 
+    def _aggregate_15s_bars(self, group: list) -> dict:
+        bars = [g[1] for g in group]
+        open_time = bars[0][0]
+        open_price = bars[0][1]
+        high_price = max(float(b[2]) for b in bars)
+        low_price = min(float(b[3]) for b in bars)
+        close_price = bars[-1][4]
+        volume = sum(float(b[5]) for b in bars)
+        close_time = bars[-1][6]
+        quote_volume = sum(float(b[7]) for b in bars)
+        trade_count = sum(int(b[8]) for b in bars)
+        
+        return {
+            "open_time": datetime.fromtimestamp(open_time/1000.0, UTC).isoformat().replace("+00:00", "Z"),
+            "open": str(open_price),
+            "high": f"{high_price:.2f}",
+            "low": f"{low_price:.2f}",
+            "close": str(close_price),
+            "volume": f"{volume:.6f}",
+            "quote_volume": f"{quote_volume:.6f}",
+            "trade_count": trade_count,
+            "close_time": datetime.fromtimestamp(close_time/1000.0, UTC).isoformat().replace("+00:00", "Z")
+        }
+
     async def get_klines(self, symbol: str, interval: str, limit: int = 500) -> List[Dict[str, Any]]:
         binance_sym = symbol.replace("-", "")
+        
+        if interval == "15s":
+            try:
+                # Fetch 1s bars from mainnet binance public API since it is guaranteed to support 1s
+                total_1s_needed = limit * 15
+                pages = (total_1s_needed + 999) // 1000
+                pages = min(pages, 5) # limit to max 5 pages (5000 seconds)
+                all_1s_bars = []
+                end_t = None
+                
+                def fetch_page(url_str):
+                    req = urllib.request.Request(url_str, headers={"User-Agent": "Mozilla/5.0"})
+                    with urllib.request.urlopen(req, timeout=4) as res:
+                        return json.loads(res.read().decode('utf-8'))
+                
+                for _ in range(pages):
+                    url = f"https://api.binance.com/api/v3/klines?symbol={binance_sym}&interval=1s&limit=1000"
+                    if end_t:
+                        url += f"&endTime={end_t - 1}"
+                    page = await asyncio.to_thread(fetch_page, url)
+                    if not page:
+                        break
+                    all_1s_bars = page + all_1s_bars
+                    end_t = page[0][0]
+                    await asyncio.sleep(0.02)
+                
+                # Aggregate into 15s bars
+                aggregated = []
+                current_group = []
+                for bar in all_1s_bars:
+                    t_ms = bar[0]
+                    t_sec = t_ms // 1000
+                    group_id = t_sec // 15
+                    if not current_group:
+                        current_group.append((group_id, bar))
+                    else:
+                        if current_group[0][0] == group_id:
+                            current_group.append((group_id, bar))
+                        else:
+                            aggregated.append(self._aggregate_15s_bars(current_group))
+                            current_group = [(group_id, bar)]
+                if current_group:
+                    aggregated.append(self._aggregate_15s_bars(current_group))
+                
+                return aggregated[-limit:]
+            except Exception as e:
+                _logger.warning("Failed to fetch/aggregate 15s klines: %s", e)
+                # Fallback to standard price walk mock below
+        
+        # Standard intervals
         url = f"{self.base_url}/api/v3/klines?symbol={binance_sym}&interval={interval}&limit={limit}"
         try:
             def fetch():
