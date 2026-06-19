@@ -105,11 +105,13 @@ def _parse_ts(value) -> Optional[datetime]:
 # ---------------------------------------------------------------------------
 
 def _resolve_outcome(
+    api: CryptoApiClient,
     rec: dict,
     fills_by_order: dict[str, list[dict]],
     current_price: Optional[float],
     *,
     stale_threshold: datetime,
+    ledger_path: str,
 ) -> Optional[dict]:
     """Return the patched rec with resolved outcome, or None if still pending.
 
@@ -147,9 +149,67 @@ def _resolve_outcome(
         float(f.get("price") or 0) * float(f.get("quantity") or 0) for f in fills
     ) / total_qty
 
-    # If current price not available we can't tell if target/stop was hit
-    if current_price is None or plan_stop <= 0 or plan_target <= 0 or direction == 0:
-        return None
+    # G10: Place stop-loss/take-profit protection orders if the position is open but order IDs are not saved
+    sl_id = rec.get("stop_loss_order_id")
+    tp_id = rec.get("take_profit_order_id")
+    sym = rec.get("symbol")
+    
+    if not sl_id or not tp_id:
+        side = "sell" if direction == 1 else "buy"
+        try:
+            # 1. Place Stop Loss (stop_market)
+            sl_payload = {
+                "symbol": sym,
+                "side": side,
+                "type": "stop_market",
+                "stop_price": str(round(plan_stop, 2)),
+                "quantity": str(round(total_qty, 4)),
+            }
+            sl_resp = api.create_order(sl_payload)
+            if sl_resp.get("status") in (200, 201):
+                sl_id = (sl_resp.get("payload") or {}).get("id")
+                
+            # 2. Place Take Profit (limit)
+            tp_payload = {
+                "symbol": sym,
+                "side": side,
+                "type": "limit",
+                "price": str(round(plan_target, 2)),
+                "quantity": str(round(total_qty, 4)),
+            }
+            tp_resp = api.create_order(tp_payload)
+            if tp_resp.get("status") in (200, 201):
+                tp_id = (tp_resp.get("payload") or {}).get("id")
+                
+            if sl_id and tp_id:
+                rec["stop_loss_order_id"] = sl_id
+                rec["take_profit_order_id"] = tp_id
+                # Write back to ledger immediately to preserve protection order IDs
+                persist_trade_records([rec], ledger_path, dedup=True)
+        except Exception:
+            pass
+
+    # Check SL / TP order status on exchange
+    sl_filled = False
+    tp_filled = False
+    if sl_id:
+        try:
+            resp = api.get_order(sl_id)
+            if resp.get("status") == 200:
+                o_status = (resp.get("payload") or {}).get("status")
+                if o_status == "filled":
+                    sl_filled = True
+        except Exception:
+            pass
+    if tp_id:
+        try:
+            resp = api.get_order(tp_id)
+            if resp.get("status") == 200:
+                o_status = (resp.get("payload") or {}).get("status")
+                if o_status == "filled":
+                    tp_filled = True
+        except Exception:
+            pass
 
     risk = abs(plan_entry - plan_stop)
     if risk <= 0:
@@ -160,26 +220,72 @@ def _resolve_outcome(
     patched["actual_filled_qty"] = total_qty
     patched["resolved_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-    # Long → stop pierced when current <= stop; target hit when current >= target
-    # Short → reverse
+    # If stop loss filled, cancel take profit and resolve as stop
+    if sl_filled:
+        if tp_id:
+            try:
+                api.cancel_order(tp_id)
+            except Exception:
+                pass
+        patched["outcome"] = "stop"
+        patched["r_multiple"] = -1.0
+        patched["resolution_reason"] = "exchange_stop_loss_filled"
+        return patched
+
+    # If take profit filled, cancel stop loss and resolve as target
+    if tp_filled:
+        if sl_id:
+            try:
+                api.cancel_order(sl_id)
+            except Exception:
+                pass
+        patched["outcome"] = "target"
+        patched["r_multiple"] = rr_planned if rr_planned > 0 else (plan_target - plan_entry) / risk if direction == 1 else (plan_entry - plan_target) / risk
+        patched["resolution_reason"] = "exchange_take_profit_filled"
+        return patched
+
+    # Fallback to price-based trigger (e.g. if order lookup failed or in testing)
+    if current_price is None or plan_stop <= 0 or plan_target <= 0 or direction == 0:
+        return None
+
     if direction == 1:
         if current_price <= plan_stop:
+            if tp_id:
+                try:
+                    api.cancel_order(tp_id)
+                except Exception:
+                    pass
             patched["outcome"] = "stop"
             patched["r_multiple"] = -1.0
             patched["resolution_reason"] = "stop_pierced_long"
             return patched
         if current_price >= plan_target:
+            if sl_id:
+                try:
+                    api.cancel_order(sl_id)
+                except Exception:
+                    pass
             patched["outcome"] = "target"
             patched["r_multiple"] = rr_planned if rr_planned > 0 else (plan_target - plan_entry) / risk
             patched["resolution_reason"] = "target_hit_long"
             return patched
     else:
         if current_price >= plan_stop:
+            if tp_id:
+                try:
+                    api.cancel_order(tp_id)
+                except Exception:
+                    pass
             patched["outcome"] = "stop"
             patched["r_multiple"] = -1.0
             patched["resolution_reason"] = "stop_pierced_short"
             return patched
         if current_price <= plan_target:
+            if sl_id:
+                try:
+                    api.cancel_order(sl_id)
+                except Exception:
+                    pass
             patched["outcome"] = "target"
             patched["r_multiple"] = rr_planned if rr_planned > 0 else (plan_entry - plan_target) / risk
             patched["resolution_reason"] = "target_hit_short"
@@ -187,8 +293,17 @@ def _resolve_outcome(
 
     # Filled but neither stop nor target hit; check staleness
     if entry_time and entry_time < stale_threshold:
+        if sl_id:
+            try:
+                api.cancel_order(sl_id)
+            except Exception:
+                pass
+        if tp_id:
+            try:
+                api.cancel_order(tp_id)
+            except Exception:
+                pass
         patched["outcome"] = "flat"
-        # MTM PnL as r-multiple
         if direction == 1:
             patched["r_multiple"] = (current_price - plan_entry) / risk
         else:
@@ -264,8 +379,9 @@ def reconcile_paper_trades(
     for rec in pending:
         sym = rec.get("symbol")
         patched = _resolve_outcome(
-            rec, fills_by_order, current_prices.get(sym),
+            api, rec, fills_by_order, current_prices.get(sym),
             stale_threshold=stale_threshold,
+            ledger_path=ledger_path,
         )
         if patched is None:
             result.still_pending += 1

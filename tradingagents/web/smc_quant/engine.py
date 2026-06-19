@@ -16,285 +16,29 @@ import numpy as np
 import pandas as pd
 
 
-@dataclass(frozen=True)
-class SMCConfig:
-    swing_length: int = 5
-    internal_swing_length: int = 3
-    close_break: bool = True
-    liquidity_range_percent: float = 0.01
-    displacement_atr_mult: float = 1.2
-    displacement_body_ratio: float = 0.7
-    min_rr: float = 1.5
-    entry_threshold: int = 8
-
-
-DEFAULT_CONFLUENCE_WEIGHTS = {
-    "htf_bias_alignment": 2,
-    "premium_discount_alignment": 2,
-    "unmitigated_ob": 2,
-    "unfilled_fvg": 1,
-    "liquidity_sweep": 2,
-    "ltf_choch": 2,
-    "ote_zone": 1,
-    "killzone": 1,
-    "displacement": 1,
-    "unicorn_pattern": 2,
-    "smt_divergence_pattern": 2,
-    "silver_bullet_pattern": 1,
-    "power_of_three_pattern": 1,
-    # Crypto-Specific Confluence Factors
-    "liquidation_cluster_sweep": 2,
-    "oi_squeeze_confirm": 2,
-    "cvd_divergence_confirm": 2,
-    "extreme_funding_rate": 1,
-    "coinbase_premium_alignment": 1,
-    "alt_align_btc_bias": 2,
-    "cme_gap_hit": 1,
-}
-
-
-def load_yaml_config(filename: str, *, search_paths: Optional[list[str]] = None) -> dict:
-    """§M0.3 — load YAML config from one of ``config/markets.yaml`` /
-    ``config/strategy.yaml`` and return parsed dict; missing file or
-    missing pyyaml → ``{}`` so the in-code defaults still drive behaviour.
-    """
-    import os
-    paths = search_paths or [
-        os.path.join(os.path.dirname(__file__), "..", "config", filename),
-        os.path.join(os.path.dirname(__file__), "config", filename),
-        os.path.join(os.getcwd(), "config", filename),
-    ]
-    for p in paths:
-        ap = os.path.abspath(p)
-        if not os.path.exists(ap):
-            continue
-        try:
-            import yaml
-        except Exception:
-            return {}
-        try:
-            with open(ap, "r", encoding="utf-8") as fh:
-                data = yaml.safe_load(fh) or {}
-            if isinstance(data, dict):
-                return data
-        except Exception:
-            return {}
-    return {}
-
-
-def _merge_market_configs(base: dict, overrides: dict) -> dict:
-    out = {k: dict(v) for k, v in base.items()}
-    for market, cfg in (overrides or {}).items():
-        if not isinstance(cfg, dict):
-            continue
-        merged = dict(out.get(market, {}))
-        merged.update(cfg)
-        out[market] = merged
-    return out
-
-
-MARKET_CONFIGS = {
-    "tw": {
-        "timezone": "Asia/Taipei",
-        "session": "09:00-13:30",
-        "primary_killzone": "09:00-10:00",
-        "tick_size": 0.01,
-        "daily_price_limit_pct": 10,
-        "commission_pct": 0.001425,
-        "transaction_tax_pct": 0.003,
-        "default_timeframes": {"htf": "1y", "mtf": "6mo", "ltf": "1mo"},
-    },
-    "us": {
-        "timezone": "America/New_York",
-        "session": "09:30-16:00",
-        "primary_killzone": "09:30-10:00",
-        "tick_size": 0.01,
-        "daily_price_limit_pct": None,
-        "commission_pct": 0.0,
-        "transaction_tax_pct": 0.0,
-        "default_timeframes": {"htf": "1y", "mtf": "6mo", "ltf": "1mo"},
-    },
-    "crypto": {
-        "timezone": "UTC",
-        "session": "24/7",
-        "primary_killzone": "London/NY",
-        "tick_size": 0.01,
-        "daily_price_limit_pct": None,
-        "commission_pct": 0.0006,
-        "funding_sensitive": True,
-        "default_timeframes": {"htf": "1d", "mtf": "4h", "ltf": "15m"},
-        "max_leverage": 3,
-    },
-}
-
-
-def infer_market(symbol: str) -> str:
-    upper = (symbol or "").upper()
-    if upper.endswith((".TW", ".TWO")):
-        return "tw"
-    if any(x in upper for x in ("BTC", "ETH", "USDT", "USD-")) or "/" in upper:
-        return "crypto"
-    return "us"
-
-
-def market_config(symbol: str) -> dict:
-    return deepcopy(MARKET_CONFIGS[infer_market(symbol)])
-
-
-def confluence_weights(overrides: Optional[dict[str, int]] = None) -> dict[str, int]:
-    weights = dict(DEFAULT_CONFLUENCE_WEIGHTS)
-    for key, value in (overrides or {}).items():
-        if key in weights:
-            weights[key] = int(value)
-    return weights
-
-
-def _safe_float(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    try:
-        v = float(value)
-        if math.isnan(v) or math.isinf(v):
-            return None
-        return v
-    except (TypeError, ValueError):
-        return None
-
-
-def _ts_value(index_value) -> int:
-    return int(pd.Timestamp(index_value).timestamp())
-
-
-def _record_time(index_value) -> str:
-    return pd.Timestamp(index_value).isoformat()
-
-
-def _round_tick(value: float, tick_size: float = 0.01) -> float:
-    if tick_size <= 0:
-        return round(float(value), 4)
-    return round(round(float(value) / tick_size) * tick_size, 4)
-
-
-def normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or len(df) == 0:
-        return pd.DataFrame()
-    out = df.copy()
-    out.columns = [str(c).lower() for c in out.columns]
-    rename = {
-        "open": "open",
-        "high": "high",
-        "low": "low",
-        "close": "close",
-        "volume": "volume",
-    }
-    out = out.rename(columns=rename)
-    required = ["open", "high", "low", "close"]
-    for col in required:
-        if col not in out:
-            return pd.DataFrame()
-        out[col] = pd.to_numeric(out[col], errors="coerce")
-    if "volume" not in out:
-        out["volume"] = 0.0
-    out["volume"] = pd.to_numeric(out["volume"], errors="coerce").fillna(0.0)
-    out = out.dropna(subset=required)
-    out.index = pd.to_datetime(out.index).tz_localize(None)
-    return out.sort_index()
-
-
-def atr(df: pd.DataFrame, n: int = 14) -> pd.Series:
-    high = df["high"]
-    low = df["low"]
-    close = df["close"]
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [(high - low), (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    return tr.rolling(n, min_periods=1).mean()
-
-
-def detect_swings(df: pd.DataFrame, swing_length: int = 5, label: str = "swing") -> list[dict]:
-    swings: list[dict] = []
-    if len(df) < swing_length * 2 + 1:
-        return swings
-    highs = df["high"].to_numpy()
-    lows = df["low"].to_numpy()
-    idx = list(df.index)
-    for i in range(swing_length, len(df) - swing_length):
-        high_window = highs[i - swing_length : i + swing_length + 1]
-        low_window = lows[i - swing_length : i + swing_length + 1]
-        if highs[i] == np.nanmax(high_window):
-            swings.append(
-                {
-                    "index": i,
-                    "time": _record_time(idx[i]),
-                    "time_unix": _ts_value(idx[i]),
-                    "confirm_index": i + swing_length,
-                    "confirm_time": _record_time(idx[i + swing_length]),
-                    "confirm_time_unix": _ts_value(idx[i + swing_length]),
-                    "type": "high",
-                    "direction": -1,
-                    "level": round(float(highs[i]), 4),
-                    "scope": label,
-                    "lookahead_safe": True,
-                }
-            )
-        if lows[i] == np.nanmin(low_window):
-            swings.append(
-                {
-                    "index": i,
-                    "time": _record_time(idx[i]),
-                    "time_unix": _ts_value(idx[i]),
-                    "confirm_index": i + swing_length,
-                    "confirm_time": _record_time(idx[i + swing_length]),
-                    "confirm_time_unix": _ts_value(idx[i + swing_length]),
-                    "type": "low",
-                    "direction": 1,
-                    "level": round(float(lows[i]), 4),
-                    "scope": label,
-                    "lookahead_safe": True,
-                }
-            )
-    return sorted(swings, key=lambda x: (x["index"], x["type"]))
-
-
-def detect_displacement(df: pd.DataFrame, cfg: SMCConfig) -> list[dict]:
-    if len(df) == 0:
-        return []
-    a = atr(df)
-    out: list[dict] = []
-    for i, (ts, row) in enumerate(df.iterrows()):
-        rng = float(row["high"] - row["low"])
-        body = abs(float(row["close"] - row["open"]))
-        atr_v = float(a.iloc[i]) if i < len(a) else 0.0
-        body_ratio = body / rng if rng > 0 else 0
-        if (atr_v > 0 and body >= cfg.displacement_atr_mult * atr_v) or body_ratio >= cfg.displacement_body_ratio:
-            direction = 1 if row["close"] >= row["open"] else -1
-            # §3.11 — strength grading by ATR multiple so the §5.2 scorer can
-            # distinguish a marginal displacement from an institutional candle.
-            atr_mult = (body / atr_v) if atr_v > 0 else 0.0
-            if atr_mult >= 2.5:
-                strength = "extreme"
-            elif atr_mult >= 1.8:
-                strength = "strong"
-            elif atr_mult >= cfg.displacement_atr_mult:
-                strength = "normal"
-            else:
-                strength = "body_only"
-            out.append(
-                {
-                    "index": i,
-                    "time": _record_time(ts),
-                    "direction": direction,
-                    "body": round(body, 4),
-                    "range": round(rng, 4),
-                    "atr": round(atr_v, 4),
-                    "body_ratio": round(body_ratio, 3),
-                    "atr_multiple": round(atr_mult, 3),
-                    "strength": strength,
-                }
-            )
-    return out
+from .config import (
+    SMCConfig,
+    DEFAULT_CONFLUENCE_WEIGHTS,
+    load_yaml_config,
+    _merge_market_configs,
+    MARKET_CONFIGS,
+    infer_market,
+    market_config,
+    confluence_weights,
+)
+from .utils import (
+    _safe_float,
+    _ts_value,
+    _record_time,
+    _round_tick,
+    normalize_ohlcv,
+    atr,
+)
+from .structure import (
+    detect_swings,
+    detect_swings_lookahead_safe,
+    detect_displacement,
+)
 
 
 def detect_structure(df: pd.DataFrame, swings: list[dict], cfg: SMCConfig) -> list[dict]:
@@ -2651,8 +2395,9 @@ def apply_strategy_yaml_overrides() -> dict:
     """
     global MARKET_CONFIGS, CONFLUENCE_WEIGHTS_DEFAULT
     global CONFLUENCE_THRESHOLD_DEFAULT, CRYPTO_CONFLUENCE_WEIGHTS_DEFAULT
-    markets_yaml = load_yaml_config("markets.yaml")
-    strategy_yaml = load_yaml_config("strategy.yaml")
+    import smc_quant
+    markets_yaml = smc_quant.load_yaml_config("markets.yaml")
+    strategy_yaml = smc_quant.load_yaml_config("strategy.yaml")
     rejected: list = []
     # Audit fix E4: this is a read-modify-write on module globals. Under
     # FastAPI's sync-endpoint threadpool, two concurrent writers (startup

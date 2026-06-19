@@ -3,13 +3,19 @@ import hashlib
 import json
 import time
 import sqlite3
+import logging
+import threading
 from datetime import datetime, UTC
 from fastapi import Request, Header, HTTPException, Depends, Response
 from typing import List, Optional, Dict, Any, Tuple
 from pathlib import Path
 
+_logger = logging.getLogger(__name__)
 BASE = Path(__file__).parent.parent
 DB = BASE / "portfolio.db"
+
+_last_nonce_cleanup = 0.0
+_cleanup_lock = threading.Lock()
 
 # Get DB helper
 def get_crypto_db():
@@ -164,6 +170,20 @@ async def authenticate_request(
                 )
         except json.JSONDecodeError:
             pass
+
+    # 5.5. Periodic Nonce TTL cleanup (G25)
+    global _last_nonce_cleanup
+    now_time = time.time()
+    if now_time - _last_nonce_cleanup > 60.0:
+        with _cleanup_lock:
+            if now_time - _last_nonce_cleanup > 60.0:
+                _last_nonce_cleanup = now_time
+                try:
+                    cutoff = int(now_time * 1000) - 60000
+                    c.execute("DELETE FROM crypto_nonces WHERE timestamp < ?", (cutoff,))
+                    conn.commit()
+                except Exception as cleanup_err:
+                    _logger.warning("Failed to cleanup expired nonces: %s", cleanup_err)
 
     # 6. Check Nonce (replay protection)
     try:

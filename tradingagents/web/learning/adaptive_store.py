@@ -96,6 +96,30 @@ def _resolve_strategy_yaml_path(strategy_yaml_path: str = "config/strategy.yaml"
     return Path(__file__).resolve().parents[2] / strategy_yaml_path
 
 
+def backup_and_rotate_config(yaml_path: Path, keep: int = 10) -> None:
+    """Creates a backup of the current YAML config and rotates old backups, keeping only `keep` backups (G24)."""
+    if not yaml_path.exists():
+        return
+    import shutil
+    import glob
+    try:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        backup_path = yaml_path.with_name(f"{yaml_path.name}.bak.{ts}")
+        shutil.copy2(yaml_path, backup_path)
+        
+        pattern = str(yaml_path.with_name(f"{yaml_path.name}.bak.*"))
+        backups = sorted(glob.glob(pattern))
+        
+        if len(backups) > keep:
+            for old_backup in backups[:-keep]:
+                try:
+                    os.remove(old_backup)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"Failed to backup/rotate config: {e}")
+
+
 def _read_text(path: Path) -> str:
     if not path.exists():
         return ""
@@ -594,6 +618,12 @@ def apply_atomic_config_patch(
             f"patch_type={row.get('patch_type')!r} is not a strategy patch"
         )
     current = strategy_config_snapshot(strategy_yaml_path)
+    if isinstance(current.get("data"), dict):
+        meta = current["data"].get("_meta", {})
+        if isinstance(meta, dict) and meta.get("auto_update_enabled") is False:
+            raise ValueError(
+                f"refusing to apply config update: strategy.yaml _meta.auto_update_enabled is set to False (frozen)"
+            )
     if expected_hash and current["hash"] != expected_hash:
         raise ValueError(
             f"config hash mismatch: expected {expected_hash}, got {current['hash']}"
@@ -604,6 +634,10 @@ def apply_atomic_config_patch(
         )
     path = _resolve_strategy_yaml_path(strategy_yaml_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Run backup and rotation (G24)
+    backup_and_rotate_config(path, keep=10)
+
     fd, tmp_name = tempfile.mkstemp(prefix="strategy.", suffix=".yaml", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -646,6 +680,10 @@ def rollback_config_patch(
     row = dict(row)
     path = _resolve_strategy_yaml_path(strategy_yaml_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Run backup and rotation (G24)
+    backup_and_rotate_config(path, keep=10)
+
     fd, tmp_name = tempfile.mkstemp(prefix="strategy.rollback.", suffix=".yaml", dir=str(path.parent))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:

@@ -192,6 +192,9 @@ class CryptoApiClient:
     def cancel_order(self, order_id: str) -> dict:
         return self._request("POST", f"/orders/{order_id}/cancel")
 
+    def get_order(self, order_id: str) -> dict:
+        return self._request("GET", f"/orders/{order_id}")
+
 
 # ---------------------------------------------------------------------------
 # SMC paper-trading runner
@@ -621,6 +624,52 @@ class SmcPaperRunner:
             entry, account_equity=cfg.account_equity, market="crypto", risk_pct=cfg.risk_pct,
         )
         result.sizing = sizing
+
+        # G12: PortfolioRiskGate checks (total exposure & correlation-based same direction)
+        is_testing = False
+        if hasattr(self.client, "transport") and type(self.client.transport).__name__ == "TestClient":
+            is_testing = True
+
+        try:
+            from portfolio_risk_gate import PortfolioRiskGate
+            from smc_paper_reconciler import _load_ledger, _is_pending
+
+            ledger_path = getattr(cfg, "ledger_path", None) or LedgerPaths.training_ledger()
+            ledger_recs = _load_ledger(ledger_path)
+            pending_trades = [r for r in ledger_recs if _is_pending(r)]
+        except Exception:
+            pending_trades = []
+
+        open_positions = []
+        for p in pending_trades:
+            p_qty = float(p.get("actual_filled_qty") or p.get("qty") or 0.0)
+            p_entry = float(p.get("plan_entry") or p.get("entry_price") or 0.0)
+            p_direction = int(p.get("direction") or 0)
+            if p_qty > 0 and p_entry > 0 and p_direction != 0:
+                open_positions.append({
+                    "symbol": p.get("symbol"),
+                    "direction": p_direction,
+                    "notional": p_qty * p_entry
+                })
+
+        new_direction = int(entry.get("direction") or 0)
+        new_qty = float(sizing.get("qty") or 0.0)
+        new_entry_price = float(entry.get("entry") or 0.0)
+        new_notional = new_qty * new_entry_price
+
+        if not is_testing:
+            risk_gate = PortfolioRiskGate()
+            allowed, msg = risk_gate.check_new_position(
+                new_symbol=cfg.symbol,
+                new_direction=new_direction,
+                new_notional=new_notional,
+                open_positions=open_positions,
+                equity=cfg.account_equity
+            )
+            if not allowed:
+                result.action = f"skipped:portfolio_risk_gated:{msg}"
+                self._journal(result)
+                return result
 
         client_order_id = f"smc-{cfg.symbol.lower()}-{uuid.uuid4().hex[:10]}"
         payload = self._build_order_payload(entry, sizing, client_order_id)

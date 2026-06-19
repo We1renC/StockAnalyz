@@ -14,12 +14,12 @@ confluence:
     poi_displacement_missing: -2
     displacement_extreme: 2
     killzone_premium: 1
-    pd_extreme: 0
+    pd_extreme: 1
     perp_led_warning: -2
     cvd_aggressive_flow: 1
     altseason_tailwind: 2
     bpr_overlap: 0
-    ifvg_overlap: 1
+    ifvg_overlap: 2
     nearest_poi_within: 1
 crypto_confluence:
   liquidation_cluster_sweep: 2

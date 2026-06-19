@@ -48,6 +48,8 @@ from typing import Any, Optional
 from smc_paper_runner import CryptoApiClient
 from smc_unified_system import UnifiedTradingSession, UnifiedSessionConfig
 from paper_acceptance_store import load_acceptance_reports
+from learning.obs_log import get_logger, swallow
+_logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +111,11 @@ def profile_for_symbol(symbol: str) -> SmcAutoProfile:
 
     # Check for custom overrides in config/strategy.yaml
     try:
-        import yaml
-        yaml_path = Path(__file__).resolve().parent.parent / "config/strategy.yaml"
+        # Check if override in strategy.yaml
+        config_dir = Path(__file__).parent.parent / "config"
+        yaml_path = config_dir / "strategy.yaml"
         if yaml_path.exists():
+            import yaml
             with open(yaml_path, "r", encoding="utf-8") as fh:
                 data = yaml.safe_load(fh) or {}
             # Allow override under either adaptive or risk section
@@ -121,8 +125,8 @@ def profile_for_symbol(symbol: str) -> SmcAutoProfile:
             if custom_cooldown is not None:
                 from dataclasses import replace
                 profile = replace(profile, cooldown_minutes=int(custom_cooldown))
-    except Exception:
-        pass
+    except Exception as e:
+        _logger.warning("Failed to load strategy yaml override for cooldown: %s", e)
 
     return profile
 
@@ -141,8 +145,8 @@ def load_latest_adaptive_runtime_patch(conn: sqlite3.Connection, symbol: str) ->
     if row:
         try:
             return json.loads(row["patch_payload"])
-        except Exception:
-            pass
+        except Exception as e:
+            _logger.error("Failed to parse patch_payload: %s", e)
     return {}
 
 
@@ -170,9 +174,22 @@ def get_current_equity_usdt(api) -> Optional[float]:
                     ticker_resp = api.ticker(f"{asset}-USDT")
                     if ticker_resp and ticker_resp.get("status") == 200:
                         last_price = float(ticker_resp.get("payload", {}).get("last_price") or 0.0)
-                except Exception:
-                    pass
+                except Exception as e:
+                    _logger.warning("Failed to fetch ticker for %s: %s", asset, e)
                 
+                if last_price <= 0.0:
+                    try:
+                        from deps import get_db
+                        with get_db() as conn:
+                            row = conn.execute(
+                                "SELECT price FROM price_cache WHERE symbol = ? OR symbol = ?",
+                                (f"{asset}-USDT", asset)
+                            ).fetchone()
+                            if row and row["price"] is not None:
+                                last_price = float(row["price"])
+                    except Exception as db_err:
+                        _logger.warning("Failed to lookup price_cache for %s: %s", asset, db_err)
+
                 if last_price <= 0.0:
                     FALLBACK_PRICES = {
                         "BTC": 68000.0,
@@ -185,7 +202,8 @@ def get_current_equity_usdt(api) -> Optional[float]:
                 
                 total_value_usdt += total_qty * last_price
         return total_value_usdt if total_value_usdt > 10.0 else None
-    except Exception:
+    except Exception as e:
+        _logger.exception("Failed to get current equity USDT: %s", e)
         return None
 
 
@@ -269,8 +287,8 @@ class _CooldownRegistry:
                 conn.close()
                 if row and row[0]:
                     return datetime.fromisoformat(row[0])
-            except Exception:
-                pass
+            except Exception as e:
+                _logger.warning("Failed to query last_fire from DB for %s: %s", symbol, e)
         return cls._store.get((symbol.upper(), db_path))
 
     @classmethod
@@ -284,8 +302,8 @@ class _CooldownRegistry:
                 conn.execute("REPLACE INTO smc_cooldown_registry (symbol, last_fire_at) VALUES (?, ?)", (symbol.upper(), fire_time.isoformat()))
                 conn.commit()
                 conn.close()
-            except Exception:
-                pass
+            except Exception as e:
+                _logger.warning("Failed to write record_fire to DB for %s: %s", symbol, e)
         cls._store[(symbol.upper(), db_path)] = fire_time
 
     @classmethod
@@ -571,8 +589,7 @@ def run_symbol(
     mode = (patch.get("state") or {}).get("mode", "DRY_RUN")
     risk_multiplier = float((patch.get("risk") or {}).get("risk_multiplier", 1.0))
     probe_cap = float((patch.get("risk") or {}).get("probe_notional_cap_usdt", 11.0))
-    if probe_cap < 5.5:
-        probe_cap = 11.0
+    probe_cap = max(5.5, min(probe_cap, 1000.0))
     min_score = (patch.get("strategy") or {}).get("confluence_min_score")
     optimal_interval = (patch.get("strategy") or {}).get("optimal_interval")
 

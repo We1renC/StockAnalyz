@@ -78,6 +78,7 @@ from smc_quant import (
     persist_trade_records,
     run_closed_loop_calibration,
     sharpe_ratio,
+    _entry_bar_of,
 )
 from smc_paper_runner import CryptoApiClient
 from smc_auto_workflow import profile_for_symbol
@@ -158,6 +159,22 @@ def _emit_edge_decay_trail(
             )
         except Exception:
             pass
+
+    # 1.5) Real-time operator push notification (G19)
+    try:
+        from learning.alerting import send_alert
+        send_alert(
+            title=f"Edge Decay: {symbol} Demoted",
+            message=(
+                f"Symbol {symbol} has been demoted to {new_mode} due to strategy edge decay.\n"
+                f"Reason: {msg}\n"
+                f"Overall Expectancy: {decay.get('overall_expectancy')}R (Recent: {decay.get('recent_expectancy')}R)\n"
+                f"Overall Win Rate: {decay.get('overall_win_rate')} (Recent: {decay.get('recent_win_rate')})"
+            ),
+            severity="warning",
+        )
+    except Exception:
+        pass
 
     # 2) Obsidian markdown note — only when vault path is configured
     try:
@@ -382,6 +399,12 @@ def _interval_ledger_path(base_ledger_path: str, interval: str) -> str:
     return f"{base}.{interval}{ext or '.jsonl'}"
 
 
+@dataclass
+class AccountContext:
+    equity: float
+    available_cash: float
+
+
 def auto_backtest_window(
     api: CryptoApiClient,
     symbol: str,
@@ -393,6 +416,7 @@ def auto_backtest_window(
     db_path: Optional[str] = None,
     model_version: str = ADAPTIVE_MODEL_VERSION,
     source: str = "backtest",
+    account_ctx: Optional[AccountContext] = None,
 ) -> BacktestSummary:
     """Pull klines, run SMC engine in one shot, evaluate every triggered entry,
     persist outcomes into the §18.2 trade ledger.
@@ -414,12 +438,20 @@ def auto_backtest_window(
     # evaluate_entry_models expects lowercase columns (h.low etc.)
     df = normalize_ohlcv(df_raw)
     cluster_weight_table = load_runtime_cluster_weight_table(ledger_path)
+
+    # G8: Inject real account context instead of hardcoded $100k equity
+    if account_ctx is not None:
+        equity = account_ctx.equity
+    else:
+        from smc_auto_workflow import get_current_equity_usdt
+        equity = get_current_equity_usdt(api) or 100_000.0
+
     analysis = build_smc_analysis(
         df_raw, symbol=symbol,
         timeframe=interval,
         config=SMCConfig(swing_length=profile.swing_length,
                          internal_swing_length=profile.internal_swing_length),
-        account_equity=100_000.0,
+        account_equity=equity,
         cluster_weight_table=cluster_weight_table,
         cluster_key_hint=("runtime", symbol, interval, None),
     )
@@ -429,7 +461,57 @@ def auto_backtest_window(
     for key in ("sweep_reversal", "ob_fvg_continuation", "ote_retracement",
                 "unicorn", "silver_bullet", "power_of_three"):
         all_entries.extend(em.get(key) or [])
-    bt = evaluate_entry_models(df, all_entries, max_hold_bars=max_hold_bars,
+
+    # G9: Filter all entries to ensure they are 100% lookahead-safe.
+    safe_entries: list[dict] = []
+    for e in all_entries:
+        t = _entry_bar_of(e)
+        if t < 0 or t >= len(df_raw):
+            continue
+        try:
+            # Run a sliced build_smc_analysis up to the entry's confirmation bar to prevent lookahead leakage
+            df_sliced = df_raw.iloc[:t + 1]
+            analysis_sliced = build_smc_analysis(
+                df_sliced, symbol=symbol,
+                timeframe=interval,
+                config=SMCConfig(swing_length=profile.swing_length,
+                                 internal_swing_length=profile.internal_swing_length),
+                account_equity=equity,
+                cluster_weight_table=cluster_weight_table,
+                cluster_key_hint=("runtime", symbol, interval, None),
+            )
+            model_name = e.get("model")
+            em_sliced = (analysis_sliced.get("concepts") or {}).get("entry_models") or {}
+            candidates = em_sliced.get(model_name) or []
+            
+            matched_cand = None
+            for cand in candidates:
+                if not cand.get("triggered"):
+                    continue
+                if model_name == "sweep_reversal":
+                    if cand.get("sweep_index") == e.get("sweep_index") and cand.get("direction") == e.get("direction"):
+                        matched_cand = cand
+                        break
+                elif model_name == "ob_fvg_continuation":
+                    if cand.get("bos_index") == e.get("bos_index") and cand.get("direction") == e.get("direction"):
+                        matched_cand = cand
+                        break
+                elif model_name == "unicorn":
+                    if cand.get("breaker_index") == e.get("breaker_index") and cand.get("fvg_index") == e.get("fvg_index"):
+                        matched_cand = cand
+                        break
+                else:
+                    cand_t = _entry_bar_of(cand)
+                    if cand_t == t and cand.get("direction") == e.get("direction"):
+                        matched_cand = cand
+                        break
+            
+            if matched_cand:
+                safe_entries.append(matched_cand)
+        except Exception:
+            pass
+
+    bt = evaluate_entry_models(df, safe_entries, max_hold_bars=max_hold_bars,
                                 only_triggered=True)
     # P1-7 audit fix: tag the regime at the entry bar so attribution can
     # group by regime later. Compute once on the full df, then slice per trade.
@@ -1263,13 +1345,37 @@ def train_from_ledger(
                     adaptive_conn.commit()
                 else:
                     import yaml  # type: ignore
+                    from learning.adaptive_store import backup_and_rotate_config, compute_config_hash
 
                     existing = {}
                     if yaml_path.exists():
                         with open(yaml_path, "r", encoding="utf-8") as fh:
                             existing = yaml.safe_load(fh) or {}
-                    existing.setdefault("confluence", {})["weights"] = weights_after
+
+                    meta = existing.get("_meta") or {}
+                    if isinstance(meta, dict) and meta.get("auto_update_enabled") is False:
+                        apply_strategy_patch = False
+                        notes.append("strategy.yaml update skipped: auto_update_enabled is set to False (frozen)")
+                    
                     if apply_strategy_patch:
+                        existing.setdefault("confluence", {})["weights"] = weights_after
+                        
+                        # Update metadata (G24)
+                        new_meta = existing.setdefault("_meta", {})
+                        new_meta["schema_version"] = 3
+                        new_meta["last_trained_at"] = datetime.now(timezone.utc).isoformat()
+                        new_meta.setdefault("auto_update_enabled", True)
+                        
+                        # Temporary dump to compute hash without _meta.config_hash itself
+                        temp_existing = dict(existing)
+                        if "config_hash" in new_meta:
+                            del new_meta["config_hash"]
+                        dumped_temp = yaml.safe_dump(temp_existing, allow_unicode=True, sort_keys=False)
+                        new_meta["config_hash"] = compute_config_hash(dumped_temp)
+
+                        # Backup and rotate (G24)
+                        backup_and_rotate_config(yaml_path, keep=10)
+
                         fd, tmp_name = tempfile.mkstemp(
                             prefix="strategy.",
                             suffix=".yaml",
@@ -1473,7 +1579,7 @@ def audit_learning_capability(
 
     expected_after = float(compute_expectancy(records).get("expected_R") or 0)
     
-    # G5: Fetch pre-training baseline expectancy from database
+    # G5: Fetch pre-training baseline expectancy from database (using the previous cycle's snapshot via OFFSET 1)
     expected_before = 0.0
     from deps import portfolio_db_path
     db = db_path or portfolio_db_path()
@@ -1485,7 +1591,7 @@ def audit_learning_capability(
             if c.fetchone() is not None:
                 sym_key = symbol or "ALL"
                 row = c.execute(
-                    "SELECT expected_R FROM smc_baseline_snapshots WHERE symbol = ? ORDER BY saved_at DESC LIMIT 1",
+                    "SELECT expected_R FROM smc_baseline_snapshots WHERE symbol = ? ORDER BY saved_at DESC LIMIT 1 OFFSET 1",
                     (sym_key,)
                 ).fetchone()
                 if row:
@@ -1546,10 +1652,15 @@ def run_training_cycle(
     conn = connect_db(db_path, row_factory=True)
     backtest_summaries: list[dict] = []
     target_symbol = "ALL" if len(symbols) > 1 else symbols[0]
+    from smc_auto_workflow import get_current_equity_usdt
+    equity = get_current_equity_usdt(api) or 100_000.0
+    account_ctx = AccountContext(equity=equity, available_cash=equity)
+
     try:
         for sym in symbols:
             bs = auto_backtest_window(api, sym, interval=interval, bars=bars,
-                                       ledger_path=ledger_path, db_path=db_path)
+                                       ledger_path=ledger_path, db_path=db_path,
+                                       account_ctx=account_ctx)
             backtest_summaries.append(asdict(bs))
 
         # G5: Snapshot pre-training expectancy as the baseline

@@ -52,6 +52,20 @@ def _sigmoid(z):
     return 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
 
 
+def compute_roc_auc_numpy(y_true, y_scores) -> float:
+    """Compute Area Under the ROC Curve (ROC AUC) using pure NumPy."""
+    y_true = np.asarray(y_true)
+    y_scores = np.asarray(y_scores)
+    pos = y_scores[y_true == 1]
+    neg = y_scores[y_true == 0]
+    if len(pos) == 0 or len(neg) == 0:
+        return 0.5
+    pos_col = pos[:, np.newaxis]
+    greater = (pos_col > neg).sum()
+    equal = (pos_col == neg).sum()
+    return float(greater + 0.5 * equal) / (len(pos) * len(neg))
+
+
 def fit_uniqueness_weighted_lr(
     X,
     y,
@@ -74,7 +88,7 @@ def fit_uniqueness_weighted_lr(
             "coefficients": {},
             "intercept": 0.0,
             "proposal": {},
-            "diagnostics": {"sample_size": 0},
+            "diagnostics": {"sample_size": 0, "auc": 0.5},
         }
 
     scaled = standardize_matrix(X_arr)
@@ -109,8 +123,10 @@ def fit_uniqueness_weighted_lr(
             break
         prev_loss = loss
 
-    preds = (_sigmoid(Xz @ theta + bias) >= 0.5).astype(int)
+    p_prob = _sigmoid(Xz @ theta + bias)
+    preds = (p_prob >= 0.5).astype(int)
     accuracy = float(np.mean(preds == y_arr))
+    auc = compute_roc_auc_numpy(y_arr, p_prob)
     cols = list(feature_cols or [f"x{i}" for i in range(k)])
     coefficients = {col: float(theta[idx]) for idx, col in enumerate(cols)}
     proposal = {}
@@ -148,6 +164,7 @@ def fit_uniqueness_weighted_lr(
         "diagnostics": {
             "sample_size": n,
             "accuracy": round(accuracy, 4),
+            "auc": round(auc, 4),
             "log_loss": round(prev_loss or 0.0, 6),
             "weight_mean": round(float(np.mean(w)), 6),
             "weight_std": round(float(np.std(w)), 6),

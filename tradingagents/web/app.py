@@ -390,53 +390,9 @@ def init_db():
     ensure_paper_acceptance_schema(conn)
     ensure_adaptive_calibration_schema(conn)
 
-    # Migration: positions target columns
-    c = conn.cursor()
-    for col in ("target_entry", "target_profit", "target_stop"):
-        try:
-            c.execute(f"ALTER TABLE positions ADD COLUMN {col} REAL")
-            conn.commit()
-        except Exception:
-            pass
-
-    # Migration: market_state extended indicators
-    for col in ("sox", "sox_ma60", "ndx", "ndx_ma20", "tnx", "dxy", "hsntech",
-                "twii_ma20", "twii_ma120", "spx_ma20", "spx_ma120"):
-        try:
-            c.execute(f"ALTER TABLE market_state ADD COLUMN {col} REAL")
-            conn.commit()
-        except Exception:
-            pass
-
-    # Migration: price_cache structured meta fields
-    for col_def in ("nav REAL", "pb REAL", "quote_type TEXT"):
-        try:
-            c.execute(f"ALTER TABLE price_cache ADD COLUMN {col_def}")
-            conn.commit()
-        except Exception:
-            pass
-
-    # Migration: trades table (for pre-existing DBs)
-    for col_def in (
-        "name TEXT DEFAULT ''",
-        "fee REAL DEFAULT 0",
-        "tax REAL DEFAULT 0",
-        "settle_date TEXT",
-        "notes TEXT DEFAULT ''",
-    ):
-        try:
-            c.execute(f"ALTER TABLE trades ADD COLUMN {col_def}")
-            conn.commit()
-        except Exception:
-            pass
-
-    # Migration: smc_backtest_trades mae and mfe columns
-    for col in ("mae", "mfe"):
-        try:
-            c.execute(f"ALTER TABLE smc_backtest_trades ADD COLUMN {col} REAL")
-            conn.commit()
-        except Exception:
-            pass
+    # Centralized versioned schema migration (G14)
+    from migrations import run_migrations
+    run_migrations(conn)
 
     # Crypto DB init and seed
     try:
@@ -4127,27 +4083,26 @@ def api_smc_crypto_scan(
     UI calls this to display a proposed entry + simulated fill so the
     human can decide whether to confirm-and-execute.
     """
+    from smc_unified_system import UnifiedTradingSession, UnifiedSessionConfig
+    api = _crypto_api_client()
+    cfg = UnifiedSessionConfig(
+        symbols=[symbol], interval=interval, bars=bars,
+        min_confluence_score=min_confluence_score, min_rr=min_rr,
+        risk_pct=risk_pct, max_notional_usdt=max_notional_usdt,
+    )
+    session = UnifiedTradingSession(api, cfg)
     try:
-        from smc_unified_system import UnifiedTradingSession, UnifiedSessionConfig
-        api = _crypto_api_client()
-        cfg = UnifiedSessionConfig(
-            symbols=[symbol], interval=interval, bars=bars,
-            min_confluence_score=min_confluence_score, min_rr=min_rr,
-            risk_pct=risk_pct, max_notional_usdt=max_notional_usdt,
-        )
-        session = UnifiedTradingSession(api, cfg)
-        try:
-            decisions = session.propose_signals()
-            decisions = session.dry_run_signals(decisions)
-            return {
-                "symbol": symbol, "interval": interval, "bars": bars,
-                "decision": _smc_crypto_serialise(decisions[0]) if decisions else None,
-                "generated_at": datetime.now().isoformat(timespec="seconds"),
-            }
-        finally:
-            session.close()
+        decisions = session.propose_signals()
+        decisions = session.dry_run_signals(decisions)
+        return {
+            "symbol": symbol, "interval": interval, "bars": bars,
+            "decision": _smc_crypto_serialise(decisions[0]) if decisions else None,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"scan failed: {e}")
+    finally:
+        session.close()
 
 
 @app.post("/api/smc-crypto/execute")
@@ -4426,8 +4381,7 @@ def api_smc_crypto_all_symbols_overview():
                     state_patch = patch.get("state") or {}
                     risk_patch = patch.get("risk") or {}
                     probe_cap = float(risk_patch.get("probe_notional_cap_usdt") or 11.0)
-                    if probe_cap < 5.5:
-                        probe_cap = 11.0
+                    probe_cap = max(5.5, min(probe_cap, 1000.0))
                     item["adaptive_patch"] = {
                         "optimal_interval": strategy_patch.get("optimal_interval"),
                         "min_confluence_score": strategy_patch.get("min_confluence_score"),
@@ -5360,6 +5314,133 @@ def api_smc_learning_decay(symbol: Optional[str] = None):
         raise HTTPException(status_code=500, detail=f"Failed to monitor decay: {str(e)}")
     finally:
         conn.close()
+
+
+@app.get("/metrics")
+def api_metrics():
+    """Expose system metrics in Prometheus format (G20)."""
+    from fastapi.responses import PlainTextResponse
+    lines = []
+    
+    def fmt_labels(labels_dict):
+        if not labels_dict:
+            return ""
+        return "{" + ",".join(f'{k}="{v}"' for k, v in labels_dict.items()) + "}"
+
+    conn = get_db()
+    try:
+        # 1. Orders Placed
+        lines.append("# HELP smc_orders_total Total number of SMC crypto orders placed.")
+        lines.append("# TYPE smc_orders_total counter")
+        try:
+            rows = conn.execute("SELECT symbol, side, status, COUNT(*) as cnt FROM crypto_orders GROUP BY symbol, side, status").fetchall()
+            for r in rows:
+                lines.append(f'smc_orders_total{fmt_labels({"symbol": r["symbol"], "side": r["side"], "status": r["status"]})} {r["cnt"]}')
+        except Exception:
+            pass
+
+        # 2. Fills
+        lines.append("# HELP smc_fills_total Total number of completed SMC crypto fills.")
+        lines.append("# TYPE smc_fills_total counter")
+        lines.append("# HELP smc_realized_pnl_usdt Total realized PnL in USDT from fills.")
+        lines.append("# TYPE smc_realized_pnl_usdt gauge")
+        try:
+            rows = conn.execute("SELECT symbol, side, COUNT(*) as cnt, SUM(pnl) as total_pnl FROM crypto_fills GROUP BY symbol, side").fetchall()
+            pnl_by_symbol = {}
+            for r in rows:
+                lines.append(f'smc_fills_total{fmt_labels({"symbol": r["symbol"], "side": r["side"]})} {r["cnt"]}')
+                pnl_by_symbol[r["symbol"]] = pnl_by_symbol.get(r["symbol"], 0.0) + (r["total_pnl"] or 0.0)
+            for sym, val in pnl_by_symbol.items():
+                lines.append(f'smc_realized_pnl_usdt{fmt_labels({"symbol": sym})} {val:.6f}')
+        except Exception:
+            pass
+
+        # 3. Balances & Equity
+        lines.append("# HELP smc_balance_available Available asset balance in the exchange.")
+        lines.append("# TYPE smc_balance_available gauge")
+        lines.append("# HELP smc_balance_locked Locked asset balance in the exchange.")
+        lines.append("# TYPE smc_balance_locked gauge")
+        lines.append("# HELP smc_balance_total Total asset balance in the exchange.")
+        lines.append("# TYPE smc_balance_total gauge")
+        
+        equity = 0.0
+        try:
+            rows = conn.execute("SELECT asset, available, locked, total FROM crypto_balances").fetchall()
+            for r in rows:
+                asset = r["asset"]
+                avail = float(r["available"] or 0.0)
+                lock = float(r["locked"] or 0.0)
+                tot = float(r["total"] or 0.0)
+                lines.append(f'smc_balance_available{fmt_labels({"asset": asset})} {avail:.6f}')
+                lines.append(f'smc_balance_locked{fmt_labels({"asset": asset})} {lock:.6f}')
+                lines.append(f'smc_balance_total{fmt_labels({"asset": asset})} {tot:.6f}')
+                
+                if asset == "USDT":
+                    equity += tot
+                else:
+                    price_row = conn.execute(
+                        "SELECT price FROM price_cache WHERE symbol = ? OR symbol = ?",
+                        (f"{asset}-USDT", asset)
+                    ).fetchone()
+                    price = float(price_row["price"]) if (price_row and price_row["price"] is not None) else 0.0
+                    if price <= 0.0:
+                        fb = {"BTC": 68000.0, "ETH": 3500.0, "SOL": 150.0, "BNB": 600.0, "XRP": 0.6}
+                        price = fb.get(asset.upper(), 1.0)
+                    equity += tot * price
+        except Exception:
+            pass
+            
+        lines.append("# HELP smc_account_equity_usdt Total dynamic account equity valued in USDT.")
+        lines.append("# TYPE smc_account_equity_usdt gauge")
+        lines.append(f"smc_account_equity_usdt {equity:.6f}")
+
+        # 4. Active Positions
+        lines.append("# HELP smc_position_shares Active position shares/contracts.")
+        lines.append("# TYPE smc_position_shares gauge")
+        lines.append("# HELP smc_position_cost_price Active position average cost price.")
+        lines.append("# TYPE smc_position_cost_price gauge")
+        try:
+            rows = conn.execute("SELECT symbol, shares, cost_price FROM positions").fetchall()
+            for r in rows:
+                sym = r["symbol"]
+                shares = float(r["shares"] or 0.0)
+                cost = float(r["cost_price"] or 0.0)
+                lines.append(f'smc_position_shares{fmt_labels({"symbol": sym})} {shares:.6f}')
+                lines.append(f'smc_position_cost_price{fmt_labels({"symbol": sym})} {cost:.6f}')
+        except Exception:
+            pass
+
+        # 5. Baseline expectations & win rate
+        lines.append("# HELP smc_strategy_expected_r Latest expectancy R-multiple from ML training.")
+        lines.append("# TYPE smc_strategy_expected_r gauge")
+        lines.append("# HELP smc_strategy_win_rate Latest win rate from ML training.")
+        lines.append("# TYPE smc_strategy_win_rate gauge")
+        try:
+            rows = conn.execute(
+                "SELECT symbol, expected_R, win_rate FROM smc_baseline_snapshots WHERE id IN (SELECT MAX(id) FROM smc_baseline_snapshots GROUP BY symbol)"
+            ).fetchall()
+            for r in rows:
+                lines.append(f'smc_strategy_expected_r{fmt_labels({"symbol": r["symbol"]})} {r["expected_R"]:.4f}')
+                lines.append(f'smc_strategy_win_rate{fmt_labels({"symbol": r["symbol"]})} {r["win_rate"]:.4f}')
+        except Exception:
+            pass
+
+        # 6. Confluence Scores
+        lines.append("# HELP smc_latest_signal_confluence_score Latest confluence score recorded.")
+        lines.append("# TYPE smc_latest_signal_confluence_score gauge")
+        try:
+            rows = conn.execute(
+                "SELECT symbol, confluence_score FROM smc_trade_journal WHERE id IN (SELECT MAX(id) FROM smc_trade_journal GROUP BY symbol)"
+            ).fetchall()
+            for r in rows:
+                lines.append(f'smc_latest_signal_confluence_score{fmt_labels({"symbol": r["symbol"]})} {r["confluence_score"]}')
+        except Exception:
+            pass
+
+    finally:
+        conn.close()
+        
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
 @app.post("/api/research/backfill/{symbol}")

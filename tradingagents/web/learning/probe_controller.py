@@ -19,6 +19,7 @@ def compute_probe_notional(
 ) -> float:
     if risk_multiplier <= 0:
         return 0.0
+    probe_notional_cap_usdt = max(1.0, min(float(probe_notional_cap_usdt), 1000.0))
     stop_distance_pct = max(float(stop_distance_pct), 1e-4)
     risk_budget = float(equity_usdt) * float(base_risk_pct) * float(risk_multiplier)
     risk_based_notional = risk_budget / stop_distance_pct
