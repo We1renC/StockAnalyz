@@ -114,7 +114,18 @@ def seed():
             c.execute("INSERT INTO positions (symbol, name, category, shares, cost_price, currency, purchase_date) VALUES (?, ?, ?, ?, ?, ?, ?)", full_p)
     for w in WATCHLIST:
         c.execute("INSERT INTO watchlist (symbol, name, category, currency, target_entry, target_add, target_profit, target_stop, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", w)
-    conn.commit()
+    
+    # Initialize and reset mock exchange balances to USDT-only
+    try:
+        from crypto_api.models import init_crypto_db, seed_crypto_data
+        init_crypto_db(conn)
+        seed_crypto_data(conn)
+        c.execute("UPDATE crypto_balances SET available = '100000.00', locked = '0.00', total = '100000.00' WHERE asset = 'USDT'")
+        c.execute("UPDATE crypto_balances SET available = '0.00', locked = '0.00', total = '0.00' WHERE asset != 'USDT'")
+        conn.commit()
+        print("✓ 已將加密模擬交易餘額初始化為僅 100,000 USDT (其他幣種為 0)")
+    except Exception as e:
+        print(f"⚠️ 初始化加密模擬交易餘額失敗: {e}")
 
     pos_count = c.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
     watch_count = c.execute("SELECT COUNT(*) FROM watchlist").fetchone()[0]
